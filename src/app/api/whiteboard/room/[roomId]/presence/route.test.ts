@@ -93,8 +93,8 @@ describe('room presence API', () => {
     const data = await response.json();
 
     expect(data.users).toEqual([
-      { peerId: 'peer-alice', userName: 'Alice', color: '#3498db', isHost: true },
-      { peerId: 'peer-bob', userName: 'Bob', color: '#e74c3c', isHost: false },
+      { peerId: 'peer-alice', userName: 'Alice', color: '#3498db', isHost: true, isWaiting: false },
+      { peerId: 'peer-bob', userName: 'Bob', color: '#e74c3c', isHost: false, isWaiting: false },
     ]);
 
     await DELETE(deleteRequest(roomId, 'peer-alice'), params(roomId));
@@ -112,7 +112,7 @@ describe('room presence API', () => {
 
     expect(deleteResponse.status).toBe(200);
     expect(deleteData.users).toEqual([
-      { peerId: 'peer-alice', userName: 'Alice', color: '#3498db', isHost: true },
+      { peerId: 'peer-alice', userName: 'Alice', color: '#3498db', isHost: true, isWaiting: false },
     ]);
 
     await DELETE(deleteRequest(roomId, 'peer-alice'), params(roomId));
