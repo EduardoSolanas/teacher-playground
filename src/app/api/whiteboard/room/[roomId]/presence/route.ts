@@ -1,63 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRoomDb, getRoomHostPeerId } from '@/lib/whiteboard/roomDb';
-
-const ACTIVE_WINDOW_MS = 10_000;
-
-export function readActiveUsers(db: ReturnType<typeof getRoomDb>, roomId: string) {
-  const cutoff = Date.now() - ACTIVE_WINDOW_MS;
-  db.prepare(`DELETE FROM room_presence WHERE last_seen < ?`).run(cutoff);
-
-  const hostPeerId = getRoomHostPeerId(db, roomId);
-
-  const rows = db.prepare(
-    `SELECT peer_id, user_name, color, first_seen
-     FROM room_presence
-     WHERE room_id = ? AND last_seen >= ?
-     ORDER BY first_seen ASC`
-  ).all(roomId, cutoff) as Array<{
-    peer_id: string;
-    user_name: string;
-    color: string;
-    first_seen: number;
-  }>;
-
-  const waitingRows = db.prepare(
-    `SELECT peer_id FROM waiting_peers WHERE room_id = ?`
-  ).all(roomId) as Array<{ peer_id: string }>;
-
-  const waitingPeerIds = new Set(waitingRows.map((r) => r.peer_id));
-
-  return rows.map((row, index) => ({
-    peerId: row.peer_id,
-    userName: row.user_name,
-    color: row.color,
-    isHost: hostPeerId != null ? row.peer_id === hostPeerId : index === 0,
-    isWaiting: false,
-  }));
-}
-
-function readWaitingPeers(db: ReturnType<typeof getRoomDb>, roomId: string) {
-  const rows = db.prepare(
-    `SELECT peer_id, user_name, color, requested_at
-     FROM waiting_peers
-     WHERE room_id = ?
-     ORDER BY requested_at ASC`
-  ).all(roomId) as Array<{
-    peer_id: string;
-    user_name: string;
-    color: string;
-    requested_at: number;
-  }>;
-
-  return rows.map((row) => ({
-    peerId: row.peer_id,
-    userName: row.user_name,
-    color: row.color,
-    isWaiting: true,
-    requestedAt: row.requested_at,
-  }));
-}
-}
+import { readActiveUsers, readWaitingPeers } from '@/lib/whiteboard/presence';
 
 export async function GET(
   _request: NextRequest,

@@ -422,6 +422,30 @@ export function useCollaboration(roomId: string) {
     }
   }, [isConnected, hasJoined, localUserName, users.length]);
 
+  const approvePeer = useCallback(async (peerId: string) => {
+    try {
+      await fetch(`/api/whiteboard/room/${roomId}/waiting`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ peerId, action: 'approve' }),
+      });
+    } catch {
+      // silently fail
+    }
+  }, [roomId]);
+
+  const rejectPeer = useCallback(async (peerId: string) => {
+    try {
+      await fetch(`/api/whiteboard/room/${roomId}/waiting`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ peerId, action: 'reject' }),
+      });
+    } catch {
+      // silently fail
+    }
+  }, [roomId]);
+
   return {
     isConnected,
     isSynced,
@@ -452,5 +476,9 @@ export function useCollaboration(roomId: string) {
       saveState(elementsRef.current, newViewport);
     },
     collaboration: collaborationRef.current,
+    waitingPeers,
+    isWaiting,
+    approvePeer,
+    rejectPeer,
   };
 }

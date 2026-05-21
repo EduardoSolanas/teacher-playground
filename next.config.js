@@ -11,6 +11,13 @@ const nextConfig = {
         '**/.data/**',
       ],
     };
+
+    // Excalidraw requires JSON module support
+    config.resolve = {
+      ...config.resolve,
+      aliasFields: ['browser'],
+    };
+
     return config;
   },
 };

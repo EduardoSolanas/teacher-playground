@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRoomDb } from '@/lib/whiteboard/roomDb';
-import { readActiveUsers } from './presence/route';
+import { readActiveUsers } from '@/lib/whiteboard/presence';
 
 export async function GET(
   _request: NextRequest,
