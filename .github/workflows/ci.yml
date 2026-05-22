@@ -115,3 +115,5 @@ jobs:
         uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high
+          base-ref: ${{ github.event.before }}
+          head-ref: ${{ github.sha }}
