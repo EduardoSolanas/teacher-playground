@@ -3,15 +3,16 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "node server.js",
+    "dev": "concurrently \"node signaling-server.mjs\" \"next dev\"",
+    "dev:signaling": "node signaling-server.mjs",
     "dev:next": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e": "node scripts/run-e2e.mjs",
+    "test:e2e:ui": "node scripts/run-e2e.mjs --ui"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",
@@ -41,7 +42,9 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
-    "eslint": "^10.4.0",
+    "concurrently": "^9.2.1",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^14.2.18",
     "jsdom": "^29.1.1",
     "playwright": "^1.60.0",
     "ts-node": "^10.9.2",

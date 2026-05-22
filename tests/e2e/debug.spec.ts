@@ -1,7 +1,11 @@
 import { test, expect } from '@playwright/test';
 
-test('debug: check Konva events from Playwright', async ({ page }) => {
-  await page.goto('/whiteboard');
+function appUrl(path: string) {
+  return new URL(path, process.env.PLAYWRIGHT_BASE_URL).toString();
+}
+
+test.skip('debug: check Konva events from Playwright', async ({ page }) => {
+  await page.goto(appUrl('/whiteboard'));
   await page.getByTestId('whiteboard-create-room-btn').click();
   await page.getByTestId('whiteboard-username-input').fill('TestUser');
   await page.getByTestId('whiteboard-join-room-btn').click();

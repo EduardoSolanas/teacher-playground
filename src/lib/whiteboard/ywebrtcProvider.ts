@@ -1,30 +1,68 @@
 import * as Y from 'yjs';
-import { WebrtcProvider } from 'y-webrtc';
 
-let providerCache: Map<string, { provider: WebrtcProvider; status: string; synced: boolean }> = new Map();
+type ProviderLike = {
+  connected?: boolean;
+  shouldConnect?: boolean;
+  connect: () => void;
+  destroy: () => void;
+  on: (eventName: string, callback: (...args: any[]) => void) => void;
+};
+
+type ProviderEntry = { provider: ProviderLike; status: string; synced: boolean };
+
+let providerCache: Map<string, ProviderEntry> = new Map();
+
+function createServerProvider(): ProviderLike {
+  return {
+    connected: false,
+    shouldConnect: false,
+    connect: () => {},
+    destroy: () => {},
+    on: () => {},
+  };
+}
+
+export function getSignalingUrls(): string[] {
+  const configured = process.env.NEXT_PUBLIC_YWEBRTC_SIGNALING_URL;
+  if (configured) {
+    return configured
+      .split(',')
+      .map((url) => url.trim())
+      .filter(Boolean);
+  }
+
+  if (typeof window !== 'undefined') {
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const host = window.location.host || window.location.hostname;
+    return [
+      `${protocol}://${host}/signaling`,
+      `${protocol}://${window.location.hostname}:3001`,
+    ];
+  }
+
+  return ['ws://localhost:3001'];
+}
 
 export function createYWebRTCProvider(
   doc: Y.Doc,
   roomId: string
-): { provider: WebrtcProvider; status: string; synced: boolean } {
-  const cacheKey = `${roomId}`;
+): ProviderEntry {
+  const cacheKey = `whiteboard-${roomId}`;
 
   if (providerCache.has(cacheKey)) {
     return providerCache.get(cacheKey)!;
   }
 
-  const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000';
-  const signalingUrl = `${protocol}://${host}/signaling`;
-
-  const provider = new WebrtcProvider(
-    `whiteboard-${roomId}`,
-    doc,
-    {
-      signaling: [signalingUrl],
-      filterBcConns: false,
-    }
-  );
+  const provider = typeof window === 'undefined'
+    ? createServerProvider()
+    : new (require('y-webrtc').WebrtcProvider)(
+        cacheKey,
+        doc,
+        {
+          filterBcConns: false,
+          signaling: getSignalingUrls(),
+        }
+      );
 
   const entry = { provider, status: 'connecting', synced: false };
   providerCache.set(cacheKey, entry);
@@ -41,7 +79,7 @@ export function createYWebRTCProvider(
 }
 
 export function destroyProvider(roomId: string) {
-  const cacheKey = `${roomId}`;
+  const cacheKey = `whiteboard-${roomId}`;
   const cached = providerCache.get(cacheKey);
   if (cached) {
     cached.provider.destroy();
