@@ -103,6 +103,7 @@ jobs:
   dependency-review:
     name: Dependency review
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000')
     permissions:
       contents: read
       pull-requests: read
@@ -115,5 +116,5 @@ jobs:
         uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high
-          base-ref: ${{ github.event.before }}
-          head-ref: ${{ github.sha }}
+          base-ref: ${{ github.event.pull_request.base.sha || github.event.before }}
+          head-ref: ${{ github.event.pull_request.head.sha || github.sha }}
