@@ -1,5 +1,9 @@
 import { test, expect, Page } from '@playwright/test';
 
+function appUrl(path: string) {
+  return new URL(path, process.env.PLAYWRIGHT_BASE_URL).toString();
+}
+
 async function joinRoom(page: Page, name: string) {
   await page.context().addInitScript((n) => {
     localStorage.removeItem('whiteboard_username');
@@ -8,7 +12,7 @@ async function joinRoom(page: Page, name: string) {
     localStorage.setItem('whiteboard_user_color', '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0'));
   }, name);
 
-  await page.goto('/whiteboard');
+  await page.goto(appUrl('/whiteboard'));
   await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
   await page.getByTestId('whiteboard-create-room-btn').click();
   await expect(page.getByTestId('whiteboard-username-input')).toBeVisible();

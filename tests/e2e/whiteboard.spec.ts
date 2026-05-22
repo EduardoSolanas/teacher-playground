@@ -9,6 +9,10 @@ function generateId() {
   });
 }
 
+function appUrl(path: string) {
+  return new URL(path, process.env.PLAYWRIGHT_BASE_URL).toString();
+}
+
 async function cleanContextAndJoin(
   page: Page,
   name: string,
@@ -21,7 +25,7 @@ async function cleanContextAndJoin(
     localStorage.setItem('whiteboard_user_color', '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0'));
   }, name);
 
-  await page.goto('/whiteboard');
+  await page.goto(appUrl('/whiteboard'));
   await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
 
   if (joinCode) {
@@ -31,13 +35,20 @@ async function cleanContextAndJoin(
     await page.getByTestId('whiteboard-create-room-btn').click();
   }
 
-  await expect(page.getByTestId('whiteboard-username-input')).toBeVisible();
-  await page.getByTestId('whiteboard-username-input').fill(name);
-  await page.getByTestId('whiteboard-join-room-btn').click();
+  const canvasArea = page.getByTestId('whiteboard-canvas-area');
+  const usernameInput = page.getByTestId('whiteboard-username-input');
+  const nextView = await Promise.race([
+    canvasArea.waitFor({ state: 'visible', timeout: 15000 }).then(() => 'canvas' as const).catch(() => null),
+    usernameInput.waitFor({ state: 'visible', timeout: 15000 }).then(() => 'prompt' as const).catch(() => null),
+  ]);
+  if (nextView === 'prompt') {
+    await usernameInput.fill(name);
+    await page.getByTestId('whiteboard-join-room-btn').click();
+  }
 
   // Wait for whiteboard to be ready
-  await expect(page.getByTestId('whiteboard-palette')).toBeVisible({ timeout: 15000 });
-  await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId('whiteboard-tool-select')).toBeVisible({ timeout: 15000 });
+  await expect(canvasArea).toBeVisible({ timeout: 15000 });
 }
 
 async function getStoreState(page: Page) {
@@ -73,7 +84,7 @@ async function waitForSync(page: Page, expectedElements: number, timeout = 10000
 }
 
 async function waitForPresence(page: Page, name: string, timeout = 15000) {
-  await expect(page.getByTestId('whiteboard-presence-toggle')).toContainText(name, { timeout });
+  await expect(page.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: name }).first()).toBeVisible({ timeout });
 }
 
 async function waitForProviderConnected(page: Page, timeout = 20000) {
@@ -101,13 +112,45 @@ async function dragOnCanvas(page: Page, from: { x: number; y: number }, to: { x:
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 test.describe('Room Connection Lifecycle', () => {
+  test('disables create room button while room creation is pending', async ({ page }) => {
+    let finishCreateRoom!: () => void;
+    const createRoomPending = new Promise<void>((resolve) => {
+      finishCreateRoom = resolve;
+    });
+
+    await page.route('**/api/whiteboard/room/*', async (route) => {
+      await createRoomPending;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          updated_at: Date.now(),
+          maxUsers: 3,
+          hostPeerId: 'test-host',
+        }),
+      });
+    });
+
+    await page.goto(appUrl('/whiteboard'));
+    await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
+
+    const createButton = page.getByTestId('whiteboard-create-room-btn');
+    await createButton.click();
+
+    await expect(createButton).toBeDisabled();
+    await expect(createButton).toContainText('Creating room...');
+
+    finishCreateRoom();
+  });
+
   test('creates room and joins with username', async ({ page }) => {
     await cleanContextAndJoin(page, 'Alice');
 
     // Whiteboard UI is visible
     await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible();
-    await expect(page.getByTestId('whiteboard-palette')).toBeVisible(); // tool sidebar
-    await expect(page.getByTestId('whiteboard-top-toolbar')).toBeVisible(); // top bar
+    await expect(page.getByTestId('whiteboard-tool-select')).toBeVisible(); // tool sidebar
+    await expect(page.locator('[data-whiteboard-role="host"] [title="Library"]')).toBeVisible(); // Excalidraw top bar
     await expect(page.getByTestId('whiteboard-bottom-controls')).toBeVisible(); // bottom controls
 
     // Presence panel shows correct name
@@ -125,7 +168,7 @@ test.describe('Room Connection Lifecycle', () => {
     const roomId = roomUrl.split('/whiteboard/')[1];
 
     // Navigate to home
-    await page.goto('/whiteboard');
+    await page.goto(appUrl('/whiteboard'));
     await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
 
     // Join via code
@@ -139,7 +182,7 @@ test.describe('Room Connection Lifecycle', () => {
     await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible();
 
     // Navigate away and back
-    await page.goto('/whiteboard');
+    await page.goto(appUrl('/whiteboard'));
     await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
 
     // Create a new room — the prompt should be pre-filled

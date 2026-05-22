@@ -56,6 +56,15 @@ export function getRoomDb(): Database.Database {
     )
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kicked_peers (
+      room_id TEXT NOT NULL,
+      peer_id TEXT NOT NULL,
+      kicked_at INTEGER NOT NULL,
+      PRIMARY KEY (room_id, peer_id)
+    )
+  `);
+
   return db;
 }
 

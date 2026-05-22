@@ -11,6 +11,14 @@ import type { CanvasElement, WhiteboardUser, RemoteCursor } from '@/types/whiteb
 
 type ChangeCallback = (type: string, data: any) => void;
 
+function readProviderStatus(provider: ReturnType<typeof createYWebRTCProvider>['provider']) {
+  const shouldConnect = (provider as any).shouldConnect !== false;
+  return {
+    status: provider.connected ? 'connected' : shouldConnect ? 'connecting' : 'disconnected',
+    connected: Boolean(provider.connected),
+  };
+}
+
 export function createCollaboration(roomId: string, peerId?: string) {
   const { doc, elementsArray, viewportMap, cursorsMap } = createWhiteboardDoc(roomId);
   const { provider, status } = createYWebRTCProvider(doc, roomId);
@@ -19,6 +27,12 @@ export function createCollaboration(roomId: string, peerId?: string) {
   let localUserName = 'Anonymous';
   let localUserColor = '#3498db';
   const changeCallbacks: ChangeCallback[] = [];
+  const reconnectInterval = setInterval(() => {
+    if ((provider as any).shouldConnect !== false && !provider.connected) {
+      provider.connect();
+      changeCallbacks.forEach((cb) => cb('status', readProviderStatus(provider)));
+    }
+  }, 5_000);
 
   function setLocalCursor(x: number, y: number) {
     const cursorData = {
@@ -65,13 +79,16 @@ export function createCollaboration(roomId: string, peerId?: string) {
   function getRemoteCursors(): RemoteCursor[] {
     const cursors: RemoteCursor[] = [];
     cursorsMap.forEach((value, key) => {
-      const entry = value as RemoteCursor;
+      const entry = value as RemoteCursor & {
+        cursor?: { pointer?: { x?: number; y?: number }; x?: number; y?: number };
+      };
+      const pointer = entry.cursor?.pointer ?? entry.cursor;
       cursors.push({
         peerId: entry.peerId || key,
         userName: entry.userName || 'Anonymous',
         color: entry.color || '#3498db',
-        x: typeof entry.x === 'number' ? entry.x : 0,
-        y: typeof entry.y === 'number' ? entry.y : 0,
+        x: typeof entry.x === 'number' ? entry.x : typeof pointer?.x === 'number' ? pointer.x : 0,
+        y: typeof entry.y === 'number' ? entry.y : typeof pointer?.y === 'number' ? pointer.y : 0,
       });
     });
     return cursors;
@@ -95,9 +112,26 @@ export function createCollaboration(roomId: string, peerId?: string) {
 
   function onChange(callback: ChangeCallback) {
     changeCallbacks.push(callback);
+    callback('status', readProviderStatus(provider));
   }
 
-  doc.on('update', () => {
+  provider.on('status', (event: { connected: boolean }) => {
+    const shouldConnect = (provider as any).shouldConnect !== false;
+    changeCallbacks.forEach((cb) => cb('status', {
+      status: event.connected ? 'connected' : shouldConnect ? 'connecting' : 'disconnected',
+      connected: event.connected,
+    }));
+  });
+
+  provider.on('synced', (event: { synced: boolean }) => {
+    changeCallbacks.forEach((cb) => cb('status', {
+      status: event.synced ? 'synced' : readProviderStatus(provider).status,
+      connected: Boolean(provider.connected),
+      synced: event.synced,
+    }));
+  });
+
+  elementsArray.observeDeep(() => {
     const elements = getElementsFromArray(elementsArray);
     changeCallbacks.forEach((cb) => cb('elements', elements));
   });
@@ -118,6 +152,7 @@ export function createCollaboration(roomId: string, peerId?: string) {
   });
 
   function destroy() {
+    clearInterval(reconnectInterval);
     cursorsMap.delete(localPeerId);
     destroyProvider(roomId);
     doc.destroy();

@@ -1,4 +1,6 @@
 /** @type {import('next').NextConfig} */
+const path = require('path');
+
 const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
@@ -15,6 +17,11 @@ const nextConfig = {
     // Excalidraw requires JSON module support
     config.resolve = {
       ...config.resolve,
+      alias: {
+        ...config.resolve?.alias,
+        '@excalidraw/excalidraw$': path.resolve(__dirname, 'node_modules/@excalidraw/excalidraw/dist/prod/index.js'),
+        '@excalidraw/excalidraw/index.css$': path.resolve(__dirname, 'node_modules/@excalidraw/excalidraw/dist/prod/index.css'),
+      },
       aliasFields: ['browser'],
     };
 

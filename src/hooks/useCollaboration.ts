@@ -18,9 +18,12 @@ function elementsEqual(a: CanvasElement[], b: CanvasElement[]) {
 function applyHostFromApi(
   hostPeerIdRef: { current: string | null },
   hostPeerId: unknown,
+  setHostPeerId?: (peerId: string) => void,
 ) {
   if (hostPeerId != null && String(hostPeerId).length > 0) {
-    hostPeerIdRef.current = String(hostPeerId);
+    const nextHostPeerId = String(hostPeerId);
+    hostPeerIdRef.current = nextHostPeerId;
+    setHostPeerId?.(nextHostPeerId);
   }
 }
 
@@ -36,6 +39,7 @@ export function useCollaboration(roomId: string) {
   const [maxUsers, setMaxUsers] = useState(DEFAULT_MAX_USERS);
   const [waitingPeers, setWaitingPeers] = useState<WhiteboardUser[]>([]);
   const [isWaiting, setIsWaiting] = useState(false);
+  const [wasKicked, setWasKicked] = useState(false);
   const elementsRef = useRef<CanvasElement[]>([]);
   const viewportRef = useRef<Viewport>({ x: 0, y: 0, zoom: 1 });
   const lastRoomUpdatedAtRef = useRef(0);
@@ -43,6 +47,7 @@ export function useCollaboration(roomId: string) {
   const [localPeerId, setLocalPeerId] = useState(localPeerIdRef.current);
   /** First user to join the room (from presence API), not "this browser". */
   const hostPeerIdRef = useRef<string | null>(null);
+  const [hostPeerId, setHostPeerId] = useState<string | null>(null);
   const [localUserName, setLocalUserName] = useState('Anonymous');
   const localUserNameRef = useRef('Anonymous');
   const [hasJoined, setHasJoined] = useState(false);
@@ -97,7 +102,7 @@ export function useCollaboration(roomId: string) {
           const loadedViewport = data.viewport || { x: 0, y: 0, zoom: 1 };
           lastRoomUpdatedAtRef.current = data.updated_at || Date.now();
           setMaxUsers(data.maxUsers || DEFAULT_MAX_USERS);
-          applyHostFromApi(hostPeerIdRef, data.hostPeerId);
+          applyHostFromApi(hostPeerIdRef, data.hostPeerId, setHostPeerId);
           applyElements(loadedElements);
           applyViewport(loadedViewport);
           setStatus('connected');
@@ -132,6 +137,12 @@ export function useCollaboration(roomId: string) {
     const collaboration = ensureCollaboration();
 
     collaboration.onChange((type, data) => {
+      if (type === 'status') {
+        const nextStatus = String(data?.status || 'connecting');
+        setStatus(nextStatus);
+        setIsConnected(Boolean(data?.connected));
+        setIsSynced(Boolean(data?.synced) || nextStatus === 'synced' || nextStatus === 'connected');
+      }
       if (type === 'elements') {
         applyElements(data as CanvasElement[]);
       }
@@ -169,94 +180,8 @@ export function useCollaboration(roomId: string) {
     };
   }, [roomId]);
 
-  // Sync store changes to Yjs (local edits → broadcast)
-  const prevElementsSnapshotRef = useRef<string>('');
-  const prevElementsRefForSync = useRef<CanvasElement[]>([]);
-
-  useEffect(() => {
-    return store.subscribe(() => {
-      const collab = collaborationRef.current;
-      if (!collab) return;
-      if (isRemoteUpdateRef.current) return;
-
-      const state = store.getState();
-      const localElements = state.elements;
-      const localViewport = state.viewport;
-
-      if (localElements === prevElementsRefForSync.current) return;
-      prevElementsRefForSync.current = localElements;
-
-      const snapshot = JSON.stringify(localElements);
-      if (snapshot === prevElementsSnapshotRef.current) return;
-      prevElementsSnapshotRef.current = snapshot;
-
-      isRemoteUpdateRef.current = true;
-      try {
-        collab.doc.transact(() => {
-          const collabArr = collab.elementsArray;
-          const collabMap = new Map<string, number>();
-          for (let i = 0; i < collabArr.length; i++) {
-            const id = collabArr.get(i)?.get?.('id') as string | undefined;
-            if (id) collabMap.set(id, i);
-          }
-
-          const localIds = new Set(localElements.map((e: CanvasElement) => e.id));
-
-          // Remove deleted elements (iterate backward to keep indices stable)
-          const toDelete: number[] = [];
-          for (const [id, idx] of collabMap) {
-            if (!localIds.has(id)) toDelete.push(idx);
-          }
-          toDelete.sort((a, b) => b - a);
-          for (const idx of toDelete) {
-            collabArr.delete(idx, 1);
-          }
-
-          // Rebuild the collabMap after deletions
-          const afterDeleteMap = new Map<string, number>();
-          for (let i = 0; i < collabArr.length; i++) {
-            const id = collabArr.get(i)?.get?.('id') as string | undefined;
-            if (id) afterDeleteMap.set(id, i);
-          }
-
-          // Add new elements, update only changed ones
-          for (const el of localElements) {
-            const idx = afterDeleteMap.get(el.id);
-            if (idx === undefined) {
-              collab.addElement(el);
-            } else {
-              const yMap = collabArr.get(idx);
-              if (!yMap) continue;
-              for (const [key, value] of Object.entries(el)) {
-                const stored = yMap.get(key);
-                if (key === 'points') {
-                  const serialized = JSON.stringify(value || []);
-                  if (stored !== serialized) yMap.set(key, serialized);
-                } else {
-                  if (stored !== value) yMap.set(key, value);
-                }
-              }
-            }
-          }
-        });
-
-        // Sync viewport
-        const vp = collab.viewportMap;
-        const cx = Number(vp.get('x') ?? 0);
-        const cy = Number(vp.get('y') ?? 0);
-        const cz = Number(vp.get('zoom') ?? 1);
-        if (cx !== localViewport.x || cy !== localViewport.y || cz !== localViewport.zoom) {
-          collab.doc.transact(() => {
-            vp.set('x', localViewport.x);
-            vp.set('y', localViewport.y);
-            vp.set('zoom', localViewport.zoom);
-          });
-        }
-      } finally {
-        isRemoteUpdateRef.current = false;
-      }
-    });
-  }, []);
+  // Excalidraw is the source of truth for elements — no store-to-Yjs sync needed
+  // Yjs sync is handled entirely by ExcalidrawWrapper via onChange/onPointerUpdate
 
   // Debounced save to API
   const saveState = useCallback(
@@ -334,6 +259,7 @@ export function useCollaboration(roomId: string) {
     pendingUserNameRef.current = name;
     hasJoinedRef.current = true;
     setHasJoined(true);
+    setWasKicked(false);
     setLocalUserName(name);
     collaborationRef.current?.setLocalUserName(name);
     collaborationRef.current?.setLocalCursor(0, 0);
@@ -361,7 +287,7 @@ export function useCollaboration(roomId: string) {
         if (!cancelled && res.ok) {
           const data = await res.json();
           if (data.hostPeerId != null) {
-            applyHostFromApi(hostPeerIdRef, data.hostPeerId);
+            applyHostFromApi(hostPeerIdRef, data.hostPeerId, setHostPeerId);
           }
           if (Array.isArray(data.users) && data.users.length > 0) {
             const apiUsers = data.users as WhiteboardUser[];
@@ -385,8 +311,17 @@ export function useCollaboration(roomId: string) {
               })),
             );
           }
-          if (data.isWaiting) {
-            setIsWaiting(true);
+          if (data.isKicked) {
+            hasJoinedRef.current = false;
+            setHasJoined(false);
+            setIsWaiting(false);
+            setWasKicked(true);
+            setUsers([]);
+            setWaitingPeers([]);
+            return;
+          }
+          if (typeof data.isWaiting === 'boolean') {
+            setIsWaiting(data.isWaiting);
           }
         }
       } catch {
@@ -422,6 +357,40 @@ export function useCollaboration(roomId: string) {
     }
   }, [isConnected, hasJoined, localUserName, users.length]);
 
+  const reloadPresence = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/whiteboard/room/${roomId}/presence`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data.users)) {
+        applyHostFromApi(hostPeerIdRef, data.hostPeerId, setHostPeerId);
+        const hostId = hostPeerIdRef.current;
+        setUsers(
+          data.users.map((u: any) => ({
+            ...u,
+            isHost: hostId != null ? u.peerId === hostId : u.isHost,
+          })),
+        );
+      }
+      if (Array.isArray(data.waitingPeers)) {
+        setWaitingPeers(
+          data.waitingPeers.map((p: any) => ({
+            peerId: p.peerId,
+            userName: p.userName,
+            color: p.color,
+            isHost: false,
+            isWaiting: true,
+          })),
+        );
+      }
+      if (typeof data.isWaiting === 'boolean') {
+        setIsWaiting(data.isWaiting);
+      }
+    } catch {
+      // silently fail
+    }
+  }, [roomId]);
+
   const approvePeer = useCallback(async (peerId: string) => {
     try {
       await fetch(`/api/whiteboard/room/${roomId}/waiting`, {
@@ -429,10 +398,11 @@ export function useCollaboration(roomId: string) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ peerId, action: 'approve' }),
       });
+      await reloadPresence();
     } catch {
       // silently fail
     }
-  }, [roomId]);
+  }, [roomId, reloadPresence]);
 
   const rejectPeer = useCallback(async (peerId: string) => {
     try {
@@ -441,10 +411,49 @@ export function useCollaboration(roomId: string) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ peerId, action: 'reject' }),
       });
+      await reloadPresence();
     } catch {
       // silently fail
     }
-  }, [roomId]);
+  }, [roomId, reloadPresence]);
+
+  const leaveWaitingRoom = useCallback(async () => {
+    try {
+      await fetch(
+        `/api/whiteboard/room/${roomId}/waiting?peerId=${encodeURIComponent(localPeerIdRef.current)}`,
+        { method: 'DELETE' }
+      );
+      setIsWaiting(false);
+    } catch {
+      // silently fail
+    }
+  }, [roomId, localPeerId]);
+
+  const kickPeer = useCallback(async (peerId: string) => {
+    try {
+      await fetch(`/api/whiteboard/room/${roomId}/presence`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'kick', peerId }),
+      });
+      await reloadPresence();
+    } catch {
+      // silently fail
+    }
+  }, [roomId, reloadPresence]);
+
+  const sendToWaitingRoom = useCallback(async (peerId: string) => {
+    try {
+      await fetch(`/api/whiteboard/room/${roomId}/presence`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'suspend', peerId }),
+      });
+      await reloadPresence();
+    } catch {
+      // silently fail
+    }
+  }, [roomId, reloadPresence]);
 
   return {
     isConnected,
@@ -455,11 +464,15 @@ export function useCollaboration(roomId: string) {
     setCursor,
     setUserName,
     localPeerId,
+    isHost: hostPeerId === localPeerId,
     provider: collaborationRef.current?.provider ?? null,
     elementsArray: elements,
     status,
     maxUsers,
     elements,
+    yDoc: collaborationRef.current?.doc ?? null,
+    yElementsArray: collaborationRef.current?.elementsArray ?? null,
+    yCursorsMap: collaborationRef.current?.cursorsMap ?? null,
     setElements: (newElements: CanvasElement[]) => {
       const sameElements = elementsEqual(elementsRef.current, newElements);
       elementsRef.current = newElements;
@@ -478,7 +491,12 @@ export function useCollaboration(roomId: string) {
     collaboration: collaborationRef.current,
     waitingPeers,
     isWaiting,
+    wasKicked,
     approvePeer,
     rejectPeer,
+    leaveWaitingRoom,
+    kickPeer,
+    sendToWaitingRoom,
+    reloadPresence,
   };
 }

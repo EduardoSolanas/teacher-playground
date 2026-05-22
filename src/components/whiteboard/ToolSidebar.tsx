@@ -1,5 +1,4 @@
 import React from 'react';
-import { useWhiteboardStore } from '@/hooks/useWhiteboardStore';
 import { TOOL_SHORTCUTS } from '@/lib/whiteboard/constants';
 import type { ToolType } from '@/types/whiteboard';
 
@@ -100,22 +99,34 @@ const TOOLS: ToolItem[] = [
   },
 ];
 
-export default function ToolSidebar() {
-  const { tool, setTool } = useWhiteboardStore();
+interface ToolSidebarProps {
+  activeTool: string;
+  onToolChange: (tool: string) => void;
+  onOpenLibrary: () => void;
+  onOpenHelp: () => void;
+  showHostTools?: boolean;
+}
 
+export default function ToolSidebar({
+  activeTool,
+  onToolChange,
+  onOpenLibrary,
+  onOpenHelp,
+  showHostTools = false,
+}: ToolSidebarProps) {
   return (
     <div
       className="fixed left-0 top-0 bottom-0 w-16 flex flex-col justify-center items-center pointer-events-none z-50"
     >
       <div className="bg-slate-900/95 border border-slate-700/80 rounded-2xl p-1.5 shadow-2xl shadow-slate-950/30 backdrop-blur-md flex flex-col gap-1 pointer-events-auto">
         {TOOLS.map((t) => {
-          const isActive = tool === t.id;
+          const isActive = activeTool === t.id;
           const shortcut = TOOL_SHORTCUTS[t.id];
           return (
             <div
               key={t.id}
               data-testid={`whiteboard-tool-${t.id}`}
-              onClick={() => setTool(t.id)}
+              onClick={() => onToolChange(t.id)}
               className={`w-10 h-10 flex items-center justify-center cursor-pointer rounded-xl relative transition-all duration-200 group ${
                 isActive
                   ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/30 scale-105'
@@ -135,6 +146,42 @@ export default function ToolSidebar() {
             </div>
           );
         })}
+        {showHostTools && (
+          <>
+            <div className="my-1 border-t border-slate-700/80" />
+            <button
+              type="button"
+              data-testid="whiteboard-tool-library"
+              onClick={onOpenLibrary}
+              className="group relative flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl text-slate-400 transition-all duration-200 hover:bg-slate-800 hover:text-slate-100"
+              title="Library"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+              </svg>
+              <span className="absolute left-full z-50 ml-3 flex scale-95 items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-800/80 bg-slate-950/95 px-2.5 py-1.5 text-xs font-medium text-slate-100 opacity-0 shadow-2xl transition-all duration-150 pointer-events-none group-hover:scale-100 group-hover:opacity-100">
+                Library
+              </span>
+            </button>
+            <button
+              type="button"
+              data-testid="whiteboard-tool-help"
+              onClick={onOpenHelp}
+              className="group relative flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl text-slate-400 transition-all duration-200 hover:bg-slate-800 hover:text-slate-100"
+              title="Help"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M9.1 9a3 3 0 1 1 5.8 1c-.5 1.4-2.1 1.8-2.6 3" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+              <span className="absolute left-full z-50 ml-3 flex scale-95 items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-800/80 bg-slate-950/95 px-2.5 py-1.5 text-xs font-medium text-slate-100 opacity-0 shadow-2xl transition-all duration-150 pointer-events-none group-hover:scale-100 group-hover:opacity-100">
+                Help
+              </span>
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

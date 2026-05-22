@@ -28,3 +28,8 @@ dist/
 
 # Playwright
 test-results/
+
+playwright-report/
+
+
+.idea/
