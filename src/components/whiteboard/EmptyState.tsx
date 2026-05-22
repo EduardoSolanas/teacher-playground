@@ -38,7 +38,7 @@ export default function EmptyState() {
         Invite others to collaborate on this whiteboard
       </p>
       <div
-        className="flex gap-4 pointer-events-auto"
+        className="flex gap-4 pointer-events-none"
       >
         {['Pen (P)', 'Rectangle (R)', 'Text (T)', 'Circle (C)'].map((hint) => (
           <span
