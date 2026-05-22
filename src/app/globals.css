@@ -21,3 +21,17 @@ input,
 textarea {
   font: inherit;
 }
+
+[data-whiteboard-role="peer"] .layer-ui__wrapper__footer-right.zen-mode-transition {
+  display: none;
+}
+
+[data-whiteboard-role="peer"] [title="Library"] {
+  display: none;
+}
+
+@keyframes whiteboard-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

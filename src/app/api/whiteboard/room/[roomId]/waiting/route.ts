@@ -76,6 +76,7 @@ export async function POST(
       ).run(roomId, peerId, row.user_name, row.color, now, now);
 
       db.prepare(`DELETE FROM waiting_peers WHERE room_id = ? AND peer_id = ?`).run(roomId, peerId);
+      db.prepare(`DELETE FROM kicked_peers WHERE room_id = ? AND peer_id = ?`).run(roomId, peerId);
 
       const activeUsers = readActiveUsers(db, roomId);
       return NextResponse.json({
@@ -85,6 +86,10 @@ export async function POST(
     }
 
     if (action === 'reject') {
+      db.prepare(
+        `INSERT OR REPLACE INTO kicked_peers (room_id, peer_id, kicked_at)
+         VALUES (?, ?, ?)`
+      ).run(roomId, peerId, Date.now());
       db.prepare(`DELETE FROM waiting_peers WHERE room_id = ? AND peer_id = ?`).run(roomId, peerId);
 
       return NextResponse.json({ success: true });
@@ -112,6 +117,10 @@ export async function DELETE(
     }
 
     const db = getRoomDb();
+    db.prepare(
+      `INSERT OR REPLACE INTO kicked_peers (room_id, peer_id, kicked_at)
+       VALUES (?, ?, ?)`
+    ).run(roomId, peerId, Date.now());
     db.prepare(`DELETE FROM waiting_peers WHERE room_id = ? AND peer_id = ?`).run(roomId, peerId);
 
     return NextResponse.json({ success: true });

@@ -55,6 +55,15 @@ export async function POST(
         now,
         now,
       );
+
+      // Immediately add the host to room_presence so the room appears occupied
+      // and subsequent peers get routed to the waiting room.
+      if (hostId) {
+        db.prepare(
+          `INSERT OR REPLACE INTO room_presence (room_id, peer_id, user_name, color, first_seen, last_seen)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).run(roomId, hostId, 'Host', '#3498db', now, now);
+      }
     }
 
     return NextResponse.json({

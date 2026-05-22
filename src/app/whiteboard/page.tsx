@@ -9,6 +9,7 @@ export default function WhiteboardRoute() {
   const [joinCode, setJoinCode] = useState('');
   const [maxUsers, setMaxUsers] = useState(3);
   const [creationTimes, setCreationTimes] = useState<number[]>([]);
+  const [isCreatingRoom, setIsCreatingRoom] = useState(false);
 
   const generateRoomId = useCallback(() => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -22,27 +23,43 @@ export default function WhiteboardRoute() {
   const isValidRoomCode = (code: string): boolean => /^[a-zA-Z0-9_-]{1,20}$/.test(code);
 
   const handleCreateRoom = useCallback(async () => {
+    if (isCreatingRoom) return;
+
     const now = Date.now();
     const recent = creationTimes.filter(t => now - t < 60000);
     if (recent.length >= 10) {
       alert('Too many rooms created. Please wait.');
       return;
     }
+
+    setIsCreatingRoom(true);
     setCreationTimes([...recent, now]);
     const roomId = generateRoomId();
     const hostPeerId = getStablePeerId(roomId);
-    await fetch(`/api/whiteboard/room/${roomId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        elements: [],
-        viewport: { x: 0, y: 0, zoom: 1 },
-        maxUsers,
-        hostPeerId,
-      }),
-    });
-    router.push(`/whiteboard/${roomId}`);
-  }, [creationTimes, generateRoomId, maxUsers, router]);
+
+    try {
+      const response = await fetch(`/api/whiteboard/room/${roomId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          elements: [],
+          viewport: { x: 0, y: 0, zoom: 1 },
+          maxUsers,
+          hostPeerId,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to create room');
+      }
+
+      router.push(`/whiteboard/${roomId}`);
+    } catch {
+      setCreationTimes(recent);
+      setIsCreatingRoom(false);
+      alert('Room creation failed. Please try again.');
+    }
+  }, [creationTimes, generateRoomId, isCreatingRoom, maxUsers, router]);
 
   const handleJoinRoom = useCallback(() => {
     if (joinCode.trim().length > 0 && isValidRoomCode(joinCode.trim())) {
@@ -98,21 +115,43 @@ export default function WhiteboardRoute() {
         <button
           data-testid="whiteboard-create-room-btn"
           onClick={handleCreateRoom}
+          disabled={isCreatingRoom}
+          aria-busy={isCreatingRoom}
           style={{
-            display: 'block',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 10,
             width: '100%',
             padding: '14px 24px',
             border: 'none',
             borderRadius: 10,
-            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            background: isCreatingRoom
+              ? 'linear-gradient(135deg, #94a3b8 0%, #64748b 100%)'
+              : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
             color: '#fff',
             fontSize: 16,
             fontWeight: 600,
-            cursor: 'pointer',
+            cursor: isCreatingRoom ? 'wait' : 'pointer',
             marginBottom: 16,
+            opacity: isCreatingRoom ? 0.85 : 1,
           }}
         >
-          Create Room
+          {isCreatingRoom && (
+            <span
+              aria-hidden="true"
+              style={{
+                width: 16,
+                height: 16,
+                border: '2px solid rgba(255,255,255,0.45)',
+                borderTopColor: '#fff',
+                borderRadius: '50%',
+                animation: 'whiteboard-spin 0.8s linear infinite',
+                flexShrink: 0,
+              }}
+            />
+          )}
+          {isCreatingRoom ? 'Creating room...' : 'Create Room'}
         </button>
 
         <label

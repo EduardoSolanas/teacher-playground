@@ -42,11 +42,16 @@ export function ShortcutsHelp({ visible, shortcuts, onClose }: ShortcutsHelpProp
   const keyBadgeClasses = "inline-block px-1.5 py-0.5 bg-slate-700 rounded text-xs font-mono text-slate-300 border border-slate-600";
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[10001]" onClick={onClose}>
+    <div
+      data-testid="whiteboard-shortcuts-help"
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[10001]"
+      onClick={onClose}
+    >
       <div className="bg-slate-800 border border-slate-700 rounded-xl p-6 max-w-[500px] w-[90%] max-h-[80vh] overflow-y-auto text-slate-200" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
           <h2 className="m-0 text-lg font-semibold">Keyboard Shortcuts</h2>
           <button
+            data-testid="whiteboard-shortcuts-close"
             onClick={onClose}
             className="bg-none border-none text-slate-400 text-[20px] cursor-pointer px-2"
           >
