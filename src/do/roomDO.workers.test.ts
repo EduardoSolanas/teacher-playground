@@ -442,3 +442,58 @@ describe('room authorization matrix', () => {
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner)).status).toBe(200);
   });
 });
+
+describe('A/V token route (/api/av/token)', () => {
+  it('requires a session and a roomId', async () => {
+    const missingRoom = await authenticatedFetch('/api/av/token', session, { method: 'POST' });
+    expect(missingRoom.status).toBe(400);
+
+    const unauthed = await accessFetch('/api/av/token?roomId=av-room', 'av-no-session', 'valid', {
+      method: 'POST',
+      headers: { Origin: 'https://example.com' },
+    });
+    expect(unauthed.status).toBe(401);
+  });
+
+  it('returns 403 for outsiders and 503 for admitted peers when LiveKit is unset', async () => {
+    const owner = session;
+    const outsider = await bootstrapLocalSession('av-outsider');
+    await createRoom('av-room-core');
+
+    const denied = await authenticatedFetch('/api/av/token?roomId=av-room-core', outsider, {
+      method: 'POST',
+    });
+    expect(denied.status).toBe(403);
+
+    // Without LIVEKIT_* bindings the admitted owner still cannot mint a token.
+    const unconfigured = await authenticatedFetch('/api/av/token?roomId=av-room-core', owner, {
+      method: 'POST',
+    });
+    expect(unconfigured.status).toBe(503);
+    expect(await unconfigured.json()).toMatchObject({ reason: 'unconfigured' });
+  });
+
+  it('refuses waiting peers even after they have a presence row queued', async () => {
+    const owner = session;
+    const guest = await bootstrapLocalSession('av-waiting-guest');
+    const roomId = 'av-room-waiting';
+    await createRoom(roomId);
+    await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'host-av', userName: 'Host', color: '#111' }),
+    });
+    await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, guest, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'guest-av', userName: 'Guest', color: '#222' }),
+    });
+
+    const waitingToken = await authenticatedFetch(
+      `/api/av/token?roomId=${roomId}&identity=guest-av`,
+      guest,
+      { method: 'POST' },
+    );
+    expect(waitingToken.status).toBe(403);
+  });
+});

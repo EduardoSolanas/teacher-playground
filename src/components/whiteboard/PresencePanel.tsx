@@ -13,6 +13,8 @@ interface PresencePanelProps {
   onReject: (peerId: string) => void;
   onKick: (peerId: string) => void;
   onSuspend: (peerId: string) => void;
+  /** Peer ids whose microphone is currently muted in the voice session. */
+  mutedPeerIds?: ReadonlySet<string>;
 }
 
 export default function PresencePanel({
@@ -26,6 +28,7 @@ export default function PresencePanel({
   onReject,
   onKick,
   onSuspend,
+  mutedPeerIds,
 }: PresencePanelProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPeerId, setMenuPeerId] = useState<string | null>(null);
@@ -253,6 +256,14 @@ export default function PresencePanel({
                     )}
                     {isWaiting && (
                       <span className="text-[10px] font-semibold text-amber-600">Waiting</span>
+                    )}
+                    {!isWaiting && mutedPeerIds?.has(user.peerId) && (
+                      <span
+                        data-testid={`whiteboard-user-muted-${user.peerId}`}
+                        className="text-[10px] font-semibold text-amber-600"
+                      >
+                        Muted
+                      </span>
                     )}
                   </div>
                 )}

@@ -10,6 +10,7 @@ Browser
   |  Cloudflare Access assertion + local app session
   |-- GET /whiteboard/<roomId>        -> static asset (placeholder page)
   |-- /api/whiteboard/room/<roomId>/* -> RoomDO for that room
+  |-- POST /api/av/token?roomId=…     -> RoomDO /room/av (LiveKit JWT)
   |-- WS  /signaling?room=<roomId>    -> RoomDO for that room
 ```
 
@@ -86,6 +87,17 @@ Cloudflare Dashboard or API inventory before and after the change, the reviewed
 Wrangler diff and deployment identifier, and HTTP/WebSocket probes showing the
 approved hostname succeeds while each alternate hostname is unreachable. Until
 that evidence exists, production custom-hostname closure remains incomplete.
+
+### LiveKit voice secrets (optional)
+
+When enabling voice calling, set LiveKit credentials as Wrangler secrets (never
+commit them). See README “Voice calling” for local smoke steps.
+
+```bash
+npx wrangler secret put LIVEKIT_URL
+npx wrangler secret put LIVEKIT_API_KEY
+npx wrangler secret put LIVEKIT_API_SECRET
+```
 
 ## Deploying
 

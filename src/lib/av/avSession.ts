@@ -53,6 +53,18 @@ export interface AvProvider {
   setCamera(on: boolean): void;
   selectDevice(kind: DeviceKind, deviceId: string): Promise<void>;
   onEvents(events: AvProviderEvents): void;
+  /** Host soft-mute: ask a remote peer to mute their mic (best-effort). */
+  requestMute?(targetIdentity: string): void;
+  attachTrack?(
+    identity: string,
+    kind: 'camera' | 'microphone',
+    element: HTMLMediaElement,
+  ): void;
+  detachTrack?(
+    identity: string,
+    kind: 'camera' | 'microphone',
+    element: HTMLMediaElement,
+  ): void;
 }
 
 export interface AvSession {
@@ -66,6 +78,17 @@ export interface AvSession {
   toggleMicrophone(): void;
   toggleCamera(): void;
   selectDevice(kind: DeviceKind, deviceId: string): Promise<void>;
+  requestMute(targetIdentity: string): void;
+  attachTrack(
+    identity: string,
+    kind: 'camera' | 'microphone',
+    element: HTMLMediaElement,
+  ): void;
+  detachTrack(
+    identity: string,
+    kind: 'camera' | 'microphone',
+    element: HTMLMediaElement,
+  ): void;
   /** True when the provider is configured and a join is in flight or joined. */
   readonly isActive: boolean;
 }
@@ -199,6 +222,32 @@ export function createAvSession(provider: AvProvider): AvSession {
     }
   }
 
+  function requestMute(targetIdentity: string): void {
+    if (status !== 'joined') return;
+    try {
+      provider.requestMute?.(targetIdentity);
+    } catch (err) {
+      error = mapProviderError(err);
+      status = 'error';
+    }
+  }
+
+  function attachTrack(
+    identity: string,
+    kind: 'camera' | 'microphone',
+    element: HTMLMediaElement,
+  ): void {
+    provider.attachTrack?.(identity, kind, element);
+  }
+
+  function detachTrack(
+    identity: string,
+    kind: 'camera' | 'microphone',
+    element: HTMLMediaElement,
+  ): void {
+    provider.detachTrack?.(identity, kind, element);
+  }
+
   return {
     get status() {
       return status;
@@ -223,5 +272,8 @@ export function createAvSession(provider: AvProvider): AvSession {
     toggleMicrophone,
     toggleCamera,
     selectDevice,
+    requestMute,
+    attachTrack,
+    detachTrack,
   };
 }

@@ -42,11 +42,14 @@ function base64url(bytes: Uint8Array): string {
   return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
 }
 
-function utf8(text: string): Uint8Array {
-  return new TextEncoder().encode(text);
+function utf8(text: string): Uint8Array<ArrayBuffer> {
+  return new TextEncoder().encode(text) as Uint8Array<ArrayBuffer>;
 }
 
-async function hmacSha256(secret: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
+async function hmacSha256(
+  secret: Uint8Array<ArrayBuffer>,
+  data: Uint8Array<ArrayBuffer>,
+): Promise<Uint8Array<ArrayBuffer>> {
   const key = await crypto.subtle.importKey(
     'raw',
     secret,

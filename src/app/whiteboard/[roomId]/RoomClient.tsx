@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, Suspense } from 'react';
 import dynamic from 'next/dynamic';
 import { useCollaboration } from '@/hooks/useCollaboration';
 import { usePersistence } from '@/hooks/usePersistence';
+import { useAvSession } from '@/hooks/useAvSession';
 import UserNamePrompt from '@/components/whiteboard/UserNamePrompt';
 import LoadingScreen from '@/components/whiteboard/LoadingScreen';
 import WaitingRoom from '@/components/whiteboard/WaitingRoom';
@@ -15,6 +16,7 @@ import ToolSidebar from '@/components/whiteboard/ToolSidebar';
 import { LibraryPanel } from '@/components/whiteboard/LibraryPanel';
 import { ShortcutsHelp } from '@/components/whiteboard/ShortcutsHelp';
 import { UndoRedoBar } from '@/components/whiteboard/UndoRedoBar';
+import VoiceSessionPanel from '@/components/av/VoiceSessionPanel';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import * as store from '@/lib/whiteboard/store';
 import { cleanupStaleRooms } from '@/lib/whiteboard/persistence';
@@ -79,6 +81,15 @@ function RoomContent({ roomId }: { roomId: string }) {
 
   const { clearState } = usePersistence(roomId, elements, { x: 0, y: 0, zoom: 1 } as any);
 
+  // Voice only after admission. Waiting / kicked peers never fetch a token.
+  const avEnabled = Boolean(userName) && !isWaiting && !wasKicked;
+  const av = useAvSession({
+    roomId,
+    identity: localPeerId,
+    displayName: userName ?? 'Anonymous',
+    enabled: avEnabled,
+  });
+
   useEffect(() => { cleanupStaleRooms(); }, []);
 
   useEffect(() => {
@@ -101,12 +112,24 @@ function RoomContent({ roomId }: { roomId: string }) {
 
   useEffect(() => {
     (window as any).__whiteboardStore = store;
-    (window as any).__whiteboardCollab = { provider, status, isConnected, isSynced, localPeerId, isWaiting, waitingPeers, cursors };
+    (window as any).__whiteboardCollab = {
+      provider,
+      status,
+      isConnected,
+      isSynced,
+      localPeerId,
+      isWaiting,
+      waitingPeers,
+      cursors,
+      avStatus: av.status,
+      avUnavailable: av.unavailableReason,
+      avMicMuted: av.local.micMuted,
+    };
     return () => {
       delete (window as any).__whiteboardStore;
       delete (window as any).__whiteboardCollab;
     };
-  }, [provider, status, isConnected, isSynced, localPeerId, isWaiting, waitingPeers, cursors]);
+  }, [provider, status, isConnected, isSynced, localPeerId, isWaiting, waitingPeers, cursors, av.status, av.unavailableReason, av.local.micMuted]);
 
   const handleJoin = (name: string) => {
     setUserName(name);
@@ -172,7 +195,24 @@ function RoomContent({ roomId }: { roomId: string }) {
         {elements.length === 0 && activeTool === 'select' && <EmptyState />}
       </div>
       <RemoteCursorOverlay cursors={cursors} />
-      <PresencePanel users={users} waitingPeers={waitingPeers} localPeerId={localPeerId} isLocalHost={isLocalHost} collapsed={presenceCollapsed} onToggle={() => setPresenceCollapsed((collapsed) => !collapsed)} onApprove={approvePeer} onReject={rejectPeer} onKick={kickPeer} onSuspend={sendToWaitingRoom} />
+      <PresencePanel
+        users={users}
+        waitingPeers={waitingPeers}
+        localPeerId={localPeerId}
+        isLocalHost={isLocalHost}
+        collapsed={presenceCollapsed}
+        onToggle={() => setPresenceCollapsed((collapsed) => !collapsed)}
+        onApprove={approvePeer}
+        onReject={rejectPeer}
+        onKick={kickPeer}
+        onSuspend={sendToWaitingRoom}
+        mutedPeerIds={new Set(
+          av.participants.filter((p) => p.micMuted).map((p) => (p.identity === '__local__' ? localPeerId : p.identity)),
+        )}
+      />
+      {avEnabled && (
+        <VoiceSessionPanel av={av} localIdentity={localPeerId} isLocalHost={isLocalHost} />
+      )}
       {!isSynced && <LoadingScreen />}
       <LibraryPanel visible={isLocalHost && libraryOpen} onClose={() => setLibraryOpen(false)} />
       <ShortcutsHelp

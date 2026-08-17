@@ -9,10 +9,18 @@ import {
 } from './avSession';
 
 interface FakeAvProvider extends AvProvider {
-  calls: { connect: string[]; disconnect: number; setMicrophone: boolean[]; setCamera: boolean[]; selectDevice: string[] };
+  calls: {
+    connect: string[];
+    disconnect: number;
+    setMicrophone: boolean[];
+    setCamera: boolean[];
+    selectDevice: string[];
+    requestMute: string[];
+    attachTrack: string[];
+    detachTrack: string[];
+  };
   connectError: Error | null;
   emit: AvProviderEvents;
-  resolveConnect: (value: { token: string; url: string }) => Promise<void>;
 }
 
 function makeProvider(): FakeAvProvider {
@@ -23,6 +31,9 @@ function makeProvider(): FakeAvProvider {
     setMicrophone: [] as boolean[],
     setCamera: [] as boolean[],
     selectDevice: [] as string[],
+    requestMute: [] as string[],
+    attachTrack: [] as string[],
+    detachTrack: [] as string[],
   };
   const provider: FakeAvProvider = {
     calls,
@@ -46,6 +57,15 @@ function makeProvider(): FakeAvProvider {
     async selectDevice(kind, deviceId) {
       calls.selectDevice.push(`${kind}:${deviceId}`);
       events.onDevices?.(kind, [deviceId]);
+    },
+    requestMute(target) {
+      calls.requestMute.push(target);
+    },
+    attachTrack(identity, kind, element) {
+      calls.attachTrack.push(`${identity}:${kind}:${element.tagName}`);
+    },
+    detachTrack(identity, kind, element) {
+      calls.detachTrack.push(`${identity}:${kind}:${element.tagName}`);
     },
     onEvents(next) {
       events = next;
@@ -169,6 +189,26 @@ describe('createAvSession', () => {
     provider.emit.onError?.({ kind: 'permission-denied', message: 'denied' });
     expect(session.status).toBe('error');
     expect(session.error?.kind).toBe('permission-denied');
+  });
+
+  it('requestMute forwards only when joined', async () => {
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+    session.requestMute('peer-1');
+    expect(provider.calls.requestMute).toEqual([]);
+    await session.join('token', 'url');
+    session.requestMute('peer-1');
+    expect(provider.calls.requestMute).toEqual(['peer-1']);
+  });
+
+  it('attachTrack and detachTrack forward to the provider', async () => {
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+    const el = { tagName: 'AUDIO' } as HTMLMediaElement;
+    session.attachTrack('peer-1', 'microphone', el);
+    session.detachTrack('peer-1', 'microphone', el);
+    expect(provider.calls.attachTrack).toEqual(['peer-1:microphone:AUDIO']);
+    expect(provider.calls.detachTrack).toEqual(['peer-1:microphone:AUDIO']);
   });
 });
 
