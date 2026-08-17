@@ -8,6 +8,7 @@ import type {
 import { createCollaboration } from '@/lib/whiteboard/collaboration';
 import { getStablePeerId } from '@/lib/whiteboard/peerId';
 import * as store from '@/lib/whiteboard/store';
+import { ajaxFetch } from '@/lib/http/ajaxFetch';
 
 const DEFAULT_MAX_USERS = 3;
 
@@ -93,7 +94,7 @@ export function useCollaboration(roomId: string) {
 
     async function loadRoom() {
       try {
-        const res = await fetch(`/api/whiteboard/room/${roomId}`);
+        const res = await ajaxFetch(`/api/whiteboard/room/${roomId}`);
         if (cancelled) return;
 
         if (res.ok) {
@@ -189,7 +190,7 @@ export function useCollaboration(roomId: string) {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(async () => {
         try {
-          const res = await fetch(`/api/whiteboard/room/${roomId}`, {
+          const res = await ajaxFetch(`/api/whiteboard/room/${roomId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -221,7 +222,7 @@ export function useCollaboration(roomId: string) {
       if (entry?.provider?.connected) return;
 
       try {
-        const res = await fetch(`/api/whiteboard/room/${roomId}`);
+        const res = await ajaxFetch(`/api/whiteboard/room/${roomId}`);
         if (cancelled || !res.ok) return;
 
         const data = await res.json();
@@ -273,7 +274,7 @@ export function useCollaboration(roomId: string) {
     async function updatePresence() {
       try {
         const res = hasJoined
-          ? await fetch(`/api/whiteboard/room/${roomId}/presence`, {
+          ? await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -282,7 +283,7 @@ export function useCollaboration(roomId: string) {
                 color: localUserColorRef.current,
               }),
             })
-          : await fetch(`/api/whiteboard/room/${roomId}/presence`);
+          : await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`);
 
         if (!cancelled && res.ok) {
           const data = await res.json();
@@ -337,7 +338,7 @@ export function useCollaboration(roomId: string) {
       window.clearInterval(interval);
       if (hasJoined) {
         const url = `/api/whiteboard/room/${roomId}/presence?peerId=${encodeURIComponent(localPeerIdRef.current)}`;
-        fetch(url, { method: 'DELETE', keepalive: true }).catch(() => {});
+        ajaxFetch(url, { method: 'DELETE', keepalive: true }).catch(() => {});
       }
     };
   }, [isConnected, hasJoined, roomId, localUserName]);
@@ -359,7 +360,7 @@ export function useCollaboration(roomId: string) {
 
   const reloadPresence = useCallback(async () => {
     try {
-      const res = await fetch(`/api/whiteboard/room/${roomId}/presence`);
+      const res = await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`);
       if (!res.ok) return;
       const data = await res.json();
       if (Array.isArray(data.users)) {
@@ -393,7 +394,7 @@ export function useCollaboration(roomId: string) {
 
   const approvePeer = useCallback(async (peerId: string) => {
     try {
-      await fetch(`/api/whiteboard/room/${roomId}/waiting`, {
+      await ajaxFetch(`/api/whiteboard/room/${roomId}/waiting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ peerId, action: 'approve' }),
@@ -406,7 +407,7 @@ export function useCollaboration(roomId: string) {
 
   const rejectPeer = useCallback(async (peerId: string) => {
     try {
-      await fetch(`/api/whiteboard/room/${roomId}/waiting`, {
+      await ajaxFetch(`/api/whiteboard/room/${roomId}/waiting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ peerId, action: 'reject' }),
@@ -419,7 +420,7 @@ export function useCollaboration(roomId: string) {
 
   const leaveWaitingRoom = useCallback(async () => {
     try {
-      await fetch(
+      await ajaxFetch(
         `/api/whiteboard/room/${roomId}/waiting?peerId=${encodeURIComponent(localPeerIdRef.current)}`,
         { method: 'DELETE' }
       );
@@ -431,7 +432,7 @@ export function useCollaboration(roomId: string) {
 
   const kickPeer = useCallback(async (peerId: string) => {
     try {
-      await fetch(`/api/whiteboard/room/${roomId}/presence`, {
+      await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'kick', peerId }),
@@ -444,7 +445,7 @@ export function useCollaboration(roomId: string) {
 
   const sendToWaitingRoom = useCallback(async (peerId: string) => {
     try {
-      await fetch(`/api/whiteboard/room/${roomId}/presence`, {
+      await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'suspend', peerId }),

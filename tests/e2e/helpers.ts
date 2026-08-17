@@ -6,10 +6,23 @@ function appUrl(path: string) {
   return new URL(path, process.env.PLAYWRIGHT_BASE_URL).toString();
 }
 
+async function expectSessionCookie(page: Page) {
+  await expect.poll(
+    async () => (await page.context().cookies()).find((cookie) => cookie.name === '__Host-teacher-session'),
+    { timeout: 15000, message: 'secure local session bootstrap did not set its cookie' },
+  ).toMatchObject({
+    name: '__Host-teacher-session',
+    secure: true,
+    httpOnly: true,
+    path: '/',
+  });
+}
+
 // ── Room Creation & Joining ──────────────────────────────────────────────────
 
 async function createRoomWithMaxUsers(page: Page, name: string, maxUsers: number) {
   await page.goto(appUrl('/whiteboard'));
+  await expectSessionCookie(page);
   await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
 
   const maxUsersInput = page.locator('input[type="number"]');
@@ -25,8 +38,36 @@ async function createRoomWithMaxUsers(page: Page, name: string, maxUsers: number
   return new URL(page.url()).pathname.split('/').pop()!;
 }
 
+let contextSubject = 0;
+
+/** Explicit contexts do not inherit Playwright `use` headers. */
+async function newAuthenticatedContext(browser: Browser, subject?: string) {
+  const issuer = process.env.E2E_ACCESS_ISSUER;
+  if (!issuer) throw new Error('E2E_ACCESS_ISSUER is missing; use npm run test:e2e');
+  const identity = subject ?? `e2e-peer-${contextSubject++}`;
+  const response = await fetch(`${issuer}/token?sub=${encodeURIComponent(identity)}`);
+  if (!response.ok) throw new Error(`E2E local Access token failed: ${response.status}`);
+  const token = (await response.json()).token;
+  return browser.newContext({
+    storageState: {
+      cookies: [{
+        name: 'CF_Authorization',
+        value: token,
+        domain: 'localhost',
+        path: '/',
+        expires: Math.floor(Date.now() / 1000) + 3_600,
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      }],
+      origins: [],
+    },
+  });
+}
+
 async function joinExistingRoom(page: Page, roomId: string, name = 'Peer') {
   await page.goto(`/whiteboard/${roomId}`);
+  await expectSessionCookie(page);
 
   const isPromptVisible = await page.getByTestId('whiteboard-username-input').isVisible().catch(() => false);
   if (isPromptVisible) {
@@ -116,6 +157,8 @@ async function joinRoomApprovedViaUrl(peerPage: Page, hostPage: Page, roomUrl: s
 
 export {
   appUrl,
+  expectSessionCookie,
+  newAuthenticatedContext,
   createRoomWithMaxUsers,
   joinExistingRoom,
   getCollabState,

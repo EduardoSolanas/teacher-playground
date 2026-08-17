@@ -30,6 +30,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Scan tracked files for secrets and PII
+        run: npm run security:scan
+
       - name: Typecheck
         run: npm run typecheck
 

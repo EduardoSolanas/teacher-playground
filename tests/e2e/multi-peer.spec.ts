@@ -4,6 +4,7 @@ import {
   joinExistingRoom,
   approveFirstWaitingPeer,
   expectWaiting,
+  newAuthenticatedContext,
 } from './helpers';
 
 // ── Scene element helpers (copied from excalidraw-sync.spec.ts) ────────────
@@ -65,7 +66,7 @@ test.describe('Multi-peer collaboration', () => {
     const roomId = await createRoomWithMaxUsers(page, 'MultiHost', 2);
 
     // Peer joins and gets approved
-    const peerContext = await browser.newContext();
+    const peerContext = await newAuthenticatedContext(browser);
     const peerPage = await peerContext.newPage();
     try {
       await joinExistingRoom(peerPage, roomId, 'MultiPeer');
@@ -92,7 +93,7 @@ test.describe('Multi-peer collaboration', () => {
     const roomId = await createRoomWithMaxUsers(page, 'ConcurrentHost', 2);
 
     // Peer joins and gets approved
-    const peerContext = await browser.newContext();
+    const peerContext = await newAuthenticatedContext(browser);
     const peerPage = await peerContext.newPage();
     try {
       await joinExistingRoom(peerPage, roomId, 'ConcurrentPeer');
@@ -133,7 +134,7 @@ test.describe('Multi-peer collaboration', () => {
 
     // The peer is approved BEFORE any content exists, so this exercises clear-board
     // propagation rather than the known late-joiner history defect.
-    const peerContext = await browser.newContext();
+    const peerContext = await newAuthenticatedContext(browser);
     const peerPage = await peerContext.newPage();
     try {
       await joinExistingRoom(peerPage, roomId, 'ClearPeer');
@@ -166,7 +167,7 @@ test.describe('Multi-peer collaboration', () => {
     const roomId = await createRoomWithMaxUsers(page, 'DisconnectHost', 2);
 
     // Peer joins and gets approved
-    const peerContext = await browser.newContext();
+    const peerContext = await newAuthenticatedContext(browser);
     const peerPage = await peerContext.newPage();
 
     await joinExistingRoom(peerPage, roomId, 'DisconnectPeer');
@@ -190,7 +191,7 @@ test.describe('Multi-peer collaboration', () => {
     const roomId = await createRoomWithMaxUsers(page, 'PresenceHost', 2);
 
     // Peer joins and gets approved
-    const peerContext = await browser.newContext();
+    const peerContext = await newAuthenticatedContext(browser);
     const peerPage = await peerContext.newPage();
     try {
       await joinExistingRoom(peerPage, roomId, 'PresencePeer');

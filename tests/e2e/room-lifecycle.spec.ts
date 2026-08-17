@@ -5,6 +5,7 @@ import {
   joinExistingRoom,
   approveFirstWaitingPeer,
   expectWaiting,
+  newAuthenticatedContext,
 } from './helpers';
 
 // ── Scene element helpers (copied from excalidraw-sync.spec.ts) ────────────
@@ -66,7 +67,7 @@ test.describe('Room lifecycle', () => {
     const hostRoomId = await createRoomWithMaxUsers(page, 'LifecycleHost', 2);
 
     // Peer joins the same room by code
-    const peerContext = await browser.newContext();
+    const peerContext = await newAuthenticatedContext(browser);
     const peerPage = await peerContext.newPage();
     try {
       await joinExistingRoom(peerPage, hostRoomId, 'LifecyclePeer');
@@ -143,7 +144,7 @@ test.describe('Room lifecycle', () => {
 
     // Create three rooms in separate contexts
     for (let i = 0; i < 3; i++) {
-      const ctx = await browser.newContext();
+      const ctx = await newAuthenticatedContext(browser);
       const page = await ctx.newPage();
       try {
         const roomId = await createRoomWithMaxUsers(page, `RoomCreator${i}`, 2);
@@ -166,7 +167,7 @@ test.describe('Room lifecycle', () => {
     const roomId = await createRoomWithMaxUsers(page, 'PresenceHost', 2);
 
     // Peer joins with a special username
-    const peerContext = await browser.newContext();
+    const peerContext = await newAuthenticatedContext(browser);
     const peerPage = await peerContext.newPage();
     try {
       const specialName = "Ann O'Brien";

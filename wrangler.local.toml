@@ -1,9 +1,18 @@
-name = "teacher-playground"
+# Dedicated local cryptographic issuer environment. This file is never used by
+# the production deployment workflow; local-access-issuer.mjs generates keys at
+# process start and exposes only its JWKS/token test harness.
+name = "teacher-playground-local"
 main = "src/worker.ts"
 compatibility_date = "2024-12-10"
 compatibility_flags = ["nodejs_compat"]
-workers_dev = false
+workers_dev = true
 preview_urls = false
+
+[vars]
+ENVIRONMENT = "local-test"
+ACCESS_ISSUER = "http://127.0.0.1:8790"
+ACCESS_AUDIENCE = "teacher-playground-local"
+ACCESS_JWKS_URL = "http://127.0.0.1:8790/jwks"
 
 [assets]
 directory = "./out"
@@ -18,8 +27,6 @@ class_name = "RoomDO"
 name = "IDENTITY"
 class_name = "IdentityDO"
 
-# new_sqlite_classes (not new_classes) gives the Durable Object a
-# SQLite-backed storage backend, which is what DODatabase requires.
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RoomDO"]

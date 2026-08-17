@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
+import { newAuthenticatedContext } from './helpers';
 
 function appUrl(path: string) {
   return new URL(path, process.env.PLAYWRIGHT_BASE_URL).toString();
@@ -285,8 +286,8 @@ test.describe('Excalidraw', () => {
 
 test.describe('Excalidraw Collaboration', () => {
   test('drawings sync in both directions in the same room', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
@@ -319,8 +320,8 @@ test.describe('Excalidraw Collaboration', () => {
   });
 
   test('drawing a rectangle on one peer appears on the other', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
@@ -346,8 +347,8 @@ test.describe('Excalidraw Collaboration', () => {
   });
 
   test('drawing a circle on one peer appears on the other', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
@@ -370,8 +371,8 @@ test.describe('Excalidraw Collaboration', () => {
   });
 
   test('drawing a pen stroke on one peer appears on the other', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
@@ -399,7 +400,7 @@ test.describe('Excalidraw Collaboration', () => {
   });
 
   test('tool switch on one peer highlights the correct button locally', async ({ browser }) => {
-    const context = await browser.newContext();
+    const context = await newAuthenticatedContext(browser);
 
     const page1 = await context.newPage();
     const page2 = await context.newPage();
@@ -427,7 +428,7 @@ test.describe('Excalidraw Collaboration', () => {
   });
 
   test('presence panel shows at least one user', async ({ browser }) => {
-    const context = await browser.newContext();
+    const context = await newAuthenticatedContext(browser);
 
     const page1 = await context.newPage();
     const page2 = await context.newPage();
@@ -475,8 +476,8 @@ test.describe('Excalidraw Collaboration', () => {
   });
 
   test('disconnected peer catches up from API fallback', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();

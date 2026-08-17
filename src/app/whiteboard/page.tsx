@@ -3,6 +3,7 @@
 import { useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { getStablePeerId } from '@/lib/whiteboard/peerId';
+import { ajaxFetch } from '@/lib/http/ajaxFetch';
 
 export default function WhiteboardRoute() {
   const router = useRouter();
@@ -38,7 +39,7 @@ export default function WhiteboardRoute() {
     const hostPeerId = getStablePeerId(roomId);
 
     try {
-      const response = await fetch(`/api/whiteboard/room/${roomId}`, {
+      const response = await ajaxFetch(`/api/whiteboard/room/${roomId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -5,7 +5,14 @@ if (!Number.isInteger(appPort)) {
   throw new Error("Run E2E tests through `npm run test:e2e` so dynamic ports are allocated.");
 }
 
-const baseURL = `http://127.0.0.1:${appPort}`;
+// Chromium permits Secure cookies on the loopback `localhost` origin. Keep
+// the cookie Secure/__Host- prefixed in local browser coverage.
+const baseURL = `http://localhost:${appPort}`;
+const accessIssuer = process.env.E2E_ACCESS_ISSUER;
+const accessToken = process.env.E2E_ACCESS_TOKEN;
+if (!accessIssuer || !accessToken) {
+  throw new Error("Run E2E tests through npm run test:e2e so the local Access issuer is configured.");
+}
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -21,6 +28,19 @@ export default defineConfig({
   use: {
     ...devices["Desktop Chrome"],
     baseURL,
+    storageState: {
+      cookies: [{
+        name: "CF_Authorization",
+        value: accessToken,
+        domain: "localhost",
+        path: "/",
+        expires: Math.floor(Date.now() / 1000) + 3_600,
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+      }],
+      origins: [],
+    },
     trace: "on-first-retry",
     screenshot: "only-on-failure",
     video: "retain-on-failure",
@@ -30,15 +50,4 @@ export default defineConfig({
       name: "chromium",
     },
   ],
-  // Serves the built static export through the real workerd runtime, so E2E
-  // exercises the deployed code path: Durable Object rooms and same-origin
-  // /signaling. `npm run test:e2e` builds `out/` before starting Playwright.
-  webServer: {
-    command: `npx wrangler dev --ip 127.0.0.1 --port ${appPort}`,
-    url: baseURL,
-    reuseExistingServer: false,
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: 120000,
-  },
 });

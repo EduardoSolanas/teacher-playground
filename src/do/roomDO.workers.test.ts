@@ -1,14 +1,22 @@
-import { describe, it, expect } from 'vitest';
-import { SELF } from 'cloudflare:test';
+import { beforeEach, describe, it, expect } from 'vitest';
+import { env } from 'cloudflare:workers';
+import { runDurableObjectAlarm } from 'cloudflare:test';
+import { getIdentityObject, type IdentityDO } from './IdentityDO';
+import {
+  accessFetch,
+  authenticatedFetch,
+  bootstrapLocalSession,
+  type LocalAuthSession,
+} from '../test/workerAuth';
 
-const BASE = 'https://example.com';
+let session: LocalAuthSession;
 
-function roomUrl(roomId: string, suffix = ''): string {
-  return `${BASE}/api/whiteboard/room/${roomId}${suffix}`;
-}
+beforeEach(async () => {
+  session = await bootstrapLocalSession('room-worker-test');
+});
 
 async function createRoom(roomId: string, body: Record<string, unknown> = {}) {
-  return SELF.fetch(roomUrl(roomId), {
+  return authenticatedFetch(`/api/whiteboard/room/${roomId}`, session, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ elements: [], ...body }),
@@ -25,7 +33,7 @@ describe('Worker routing into RoomDO', () => {
       maxUsers: 4,
     });
 
-    const fetched = await SELF.fetch(roomUrl('alpha'));
+    const fetched = await authenticatedFetch('/api/whiteboard/room/alpha', session);
     expect(fetched.status).toBe(200);
     expect(await fetched.json()).toMatchObject({
       room_id: 'alpha',
@@ -36,7 +44,7 @@ describe('Worker routing into RoomDO', () => {
   });
 
   it('returns 404 for a room that does not exist', async () => {
-    const res = await SELF.fetch(roomUrl('nope'));
+    const res = await authenticatedFetch('/api/whiteboard/room/nope', session);
     expect(res.status).toBe(404);
   });
 
@@ -44,8 +52,8 @@ describe('Worker routing into RoomDO', () => {
     await createRoom('room-a', { name: 'A' });
     await createRoom('room-b', { name: 'B' });
 
-    const a = await (await SELF.fetch(roomUrl('room-a'))).json();
-    const b = await (await SELF.fetch(roomUrl('room-b'))).json();
+    const a = await (await authenticatedFetch('/api/whiteboard/room/room-a', session)).json();
+    const b = await (await authenticatedFetch('/api/whiteboard/room/room-b', session)).json();
 
     expect((a as { name: string }).name).toBe('A');
     expect((b as { name: string }).name).toBe('B');
@@ -53,28 +61,28 @@ describe('Worker routing into RoomDO', () => {
 
   it('deletes a room', async () => {
     await createRoom('doomed');
-    const del = await SELF.fetch(roomUrl('doomed'), { method: 'DELETE' });
+    const del = await authenticatedFetch('/api/whiteboard/room/doomed', session, { method: 'DELETE' });
     expect(del.status).toBe(200);
 
-    const after = await SELF.fetch(roomUrl('doomed'));
+    const after = await authenticatedFetch('/api/whiteboard/room/doomed', session);
     expect(after.status).toBe(404);
   });
 
   it('routes the presence sub-path', async () => {
     await createRoom('present');
-    const res = await SELF.fetch(roomUrl('present', '/presence'));
+    const res = await authenticatedFetch('/api/whiteboard/room/present/presence', session);
     expect(res.status).toBe(200);
   });
 
   it('rejects unknown paths', async () => {
-    const res = await SELF.fetch(`${BASE}/nothing/here`);
+    const res = await accessFetch('/nothing/here', 'room-worker-test');
     expect(res.status).toBe(404);
   });
 });
 
 describe('y-webrtc signaling over Durable Object WebSockets', () => {
   async function connect(roomId: string): Promise<WebSocket> {
-    const res = await SELF.fetch(`${BASE}/signaling?room=${roomId}`, {
+    const res = await authenticatedFetch(`/signaling?room=${roomId}`, session, {
       headers: { Upgrade: 'websocket' },
     });
     expect(res.status).toBe(101);
@@ -95,14 +103,14 @@ describe('y-webrtc signaling over Durable Object WebSockets', () => {
   }
 
   it('requires a room on the signaling URL', async () => {
-    const res = await SELF.fetch(`${BASE}/signaling`, {
+    const res = await authenticatedFetch('/signaling', session, {
       headers: { Upgrade: 'websocket' },
     });
     expect(res.status).toBe(400);
   });
 
   it('rejects a non-websocket request', async () => {
-    const res = await SELF.fetch(`${BASE}/signaling?room=x`);
+    const res = await authenticatedFetch('/signaling?room=x', session);
     expect(res.status).toBe(426);
   });
 
@@ -123,7 +131,7 @@ describe('y-webrtc signaling over Durable Object WebSockets', () => {
     expect(payload.clients).toBe(2);
   });
 
-  // server.js sends a publish to every subscriber including the publisher, and
+  // The previous signaling implementation sent a publish to every subscriber including the publisher, and
   // y-webrtc relies on that for peer discovery; it de-duplicates by peer id.
   it('echoes a publish back to its sender, as the reference server does', async () => {
     const a = await connect('echo-room');
@@ -158,20 +166,104 @@ describe('y-webrtc signaling over Durable Object WebSockets', () => {
 
 describe('static asset serving', () => {
   it('serves the app shell at the root', async () => {
-    const res = await SELF.fetch(`${BASE}/`);
+    const res = await accessFetch('/', 'room-worker-test');
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/html');
   });
 
   it('serves the placeholder room page for an arbitrary room URL', async () => {
-    const res = await SELF.fetch(`${BASE}/whiteboard/some-room-id`);
+    const res = await accessFetch('/whiteboard/some-room-id', 'room-worker-test');
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/html');
   });
 
   it('serves the same page regardless of room id', async () => {
-    const a = await (await SELF.fetch(`${BASE}/whiteboard/room-aaa`)).text();
-    const b = await (await SELF.fetch(`${BASE}/whiteboard/room-bbb`)).text();
+    const a = await (await accessFetch('/whiteboard/room-aaa', 'room-worker-test')).text();
+    const b = await (await accessFetch('/whiteboard/room-bbb', 'room-worker-test')).text();
     expect(a).toBe(b);
+  });
+});
+
+describe('revocation closes live signaling sockets', () => {
+  const IDENTITY_BASE = 'https://identity';
+
+  function identity() {
+    return getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  }
+
+  function roomStub(roomId: string) {
+    return env.ROOMS.get(env.ROOMS.idFromName(roomId));
+  }
+
+  async function changeAccount(path: 'revoke-all' | 'disable', accountId: string) {
+    return identity().fetch(`${IDENTITY_BASE}/accounts/${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId }),
+    });
+  }
+
+  async function openSocket(roomId: string, authSession: LocalAuthSession) {
+    const res = await authenticatedFetch(`/signaling?room=${roomId}`, authSession, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(res.status).toBe(101);
+    const ws = res.webSocket!;
+    ws.accept();
+    return ws;
+  }
+
+  function closeSignal(ws: WebSocket): { closed: boolean; code?: number } {
+    const state = { closed: false } as { closed: boolean; code?: number };
+    ws.addEventListener('close', (event: CloseEvent) => {
+      state.closed = true;
+      state.code = event.code;
+    }, { once: true });
+    return state;
+  }
+
+  it('closes an established socket after the account epoch advances', async () => {
+    const roomId = 'revoke-room-epoch';
+    const subject = await bootstrapLocalSession('revoke-epoch');
+    const ws = await openSocket(roomId, subject);
+    const closed = closeSignal(ws);
+
+    // Socket survives a check while the account is still authorized.
+    await runDurableObjectAlarm(roomStub(roomId));
+    expect(closed.closed).toBe(false);
+
+    await changeAccount('revoke-all', subject.accountId);
+    await runDurableObjectAlarm(roomStub(roomId));
+
+    expect(closed.closed).toBe(true);
+  });
+
+  it('closes an established socket when the account is disabled', async () => {
+    const roomId = 'revoke-room-disabled';
+    const subject = await bootstrapLocalSession('revoke-disabled');
+    const ws = await openSocket(roomId, subject);
+    const closed = closeSignal(ws);
+
+    await changeAccount('disable', subject.accountId);
+    await runDurableObjectAlarm(roomStub(roomId));
+
+    expect(closed.closed).toBe(true);
+  });
+
+  it('leaves another account\'s socket open when one account is revoked', async () => {
+    const roomId = 'revoke-room-isolated';
+    const target = await bootstrapLocalSession('revoke-isolated-target');
+    const other = await bootstrapLocalSession('revoke-isolated-other');
+
+    const revokedWs = await openSocket(roomId, target);
+    const survivorWs = await openSocket(roomId, other);
+    const revoked = closeSignal(revokedWs);
+    const survivor = closeSignal(survivorWs);
+
+    await changeAccount('revoke-all', target.accountId);
+    await runDurableObjectAlarm(roomStub(roomId));
+
+    expect(revoked.closed).toBe(true);
+    expect(survivor.closed).toBe(false);
   });
 });

@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
+import { newAuthenticatedContext } from './helpers';
 
 function appUrl(path: string) {
   return new URL(path, process.env.PLAYWRIGHT_BASE_URL).toString();

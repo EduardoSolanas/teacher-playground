@@ -4,6 +4,7 @@ import {
   joinExistingRoom,
   expectWaiting,
   approveFirstWaitingPeer,
+  newAuthenticatedContext,
 } from './helpers';
 
 // These tests exercise the app as it is actually built today: the board is an
@@ -75,7 +76,7 @@ test.describe('Excalidraw scene sync', () => {
   test('an element added by the host reaches an approved peer', async ({ page, browser }) => {
     const roomId = await createRoomWithMaxUsers(page, 'SyncHost', 3);
 
-    const peerContext = await browser.newContext();
+    const peerContext = await newAuthenticatedContext(browser);
     const peerPage = await peerContext.newPage();
     try {
       await joinExistingRoom(peerPage, roomId, 'SyncPeer');
@@ -103,7 +104,7 @@ test.describe('Excalidraw scene sync', () => {
     await appendElement(page, rectangle('backlog-rect-1', 120, 120));
     await expect.poll(async () => sceneElementIds(page), { timeout: 10000 }).toContain('backlog-rect-1');
 
-    const peerContext = await browser.newContext();
+    const peerContext = await newAuthenticatedContext(browser);
     const peerPage = await peerContext.newPage();
     try {
       await joinExistingRoom(peerPage, roomId, 'BacklogPeer');
@@ -124,7 +125,7 @@ test.describe('Excalidraw scene sync', () => {
 
     await appendElement(page, rectangle('gated-rect-1', 90, 90));
 
-    const peerContext = await browser.newContext();
+    const peerContext = await newAuthenticatedContext(browser);
     const peerPage = await peerContext.newPage();
     try {
       await joinExistingRoom(peerPage, roomId, 'GatePeer');

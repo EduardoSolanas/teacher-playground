@@ -1,4 +1,5 @@
 import { test, expect, Page, Browser } from '@playwright/test';
+import { newAuthenticatedContext } from './helpers';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -368,7 +369,7 @@ test.describe('Multi-Peer Sync', () => {
     await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible();
 
     // Bob joins in separate browser context (simulates different browser/process)
-    const bobContext = await browser.newContext();
+    const bobContext = await newAuthenticatedContext(browser);
     const bobPage = await bobContext.newPage();
     try {
       await bobContext.addInitScript(() => {
@@ -420,7 +421,7 @@ test.describe('Multi-Peer Sync', () => {
     const roomUrl = page.url();
 
     // Bob joins
-    const bobContext = await browser.newContext();
+    const bobContext = await newAuthenticatedContext(browser);
     const bobPage = await bobContext.newPage();
     try {
       await bobContext.addInitScript(() => {
@@ -467,7 +468,7 @@ test.describe('Multi-Peer Sync', () => {
       await cleanContextAndJoin(page, 'SimAlice');
     const roomUrl = page.url();
 
-    const bobContext = await browser.newContext();
+    const bobContext = await newAuthenticatedContext(browser);
     const bobPage = await bobContext.newPage();
     try {
       await bobContext.addInitScript(() => {
@@ -518,7 +519,7 @@ test.describe('Multi-Peer Sync', () => {
     await cleanContextAndJoin(page, 'LeftAlice');
     const roomUrl = page.url();
 
-    const bobContext = await browser.newContext();
+    const bobContext = await newAuthenticatedContext(browser);
     const bobPage = await bobContext.newPage();
     try {
       await bobContext.addInitScript(() => {
@@ -574,7 +575,7 @@ test.describe('Multi-Peer Sync', () => {
     expect(aliceState.elements?.length).toBeGreaterThanOrEqual(3);
 
     // Bob joins late
-    const bobContext = await browser.newContext();
+    const bobContext = await newAuthenticatedContext(browser);
     const bobPage = await bobContext.newPage();
     try {
       await bobContext.addInitScript(() => {
@@ -669,7 +670,7 @@ test.describe('Reconnection & Resilience', () => {
     await cleanContextAndJoin(page, 'ClearAlice');
     const roomUrl = page.url();
 
-    const bobContext = await browser.newContext();
+    const bobContext = await newAuthenticatedContext(browser);
     const bobPage = await bobContext.newPage();
     try {
       await bobContext.addInitScript(() => {
@@ -720,7 +721,7 @@ test.describe('Reconnection & Resilience', () => {
     await cleanContextAndJoin(page, 'VPAlice');
     const roomUrl = page.url();
 
-    const bobContext = await browser.newContext();
+    const bobContext = await newAuthenticatedContext(browser);
     const bobPage = await bobContext.newPage();
     try {
       await bobContext.addInitScript(() => {
@@ -793,7 +794,7 @@ test.describe('Edge Cases', () => {
     await cleanContextAndJoin(page, 'UndoAlice');
     const roomUrl = page.url();
 
-    const bobContext = await browser.newContext();
+    const bobContext = await newAuthenticatedContext(browser);
     const bobPage = await bobContext.newPage();
     try {
       await bobContext.addInitScript(() => {
@@ -876,7 +877,7 @@ test.describe('Edge Cases', () => {
     await cleanContextAndJoin(page, 'CountAlice');
     const roomUrl = page.url();
 
-    const bobContext = await browser.newContext();
+    const bobContext = await newAuthenticatedContext(browser);
     const bobPage = await bobContext.newPage();
     try {
       await bobContext.addInitScript(() => {

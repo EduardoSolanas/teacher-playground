@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { AccessSessionBootstrap } from "../components/AccessSessionBootstrap";
 
 export const metadata: Metadata = {
   title: "Whiteboard",
@@ -13,7 +14,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body><AccessSessionBootstrap>{children}</AccessSessionBootstrap></body>
     </html>
   );
 }

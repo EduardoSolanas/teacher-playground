@@ -20,14 +20,15 @@ architectural point: `y-webrtc` connects participants directly, so HTTP and
 signaling checks alone cannot enforce a read-only viewer or revoke an already
 connected peer.
 
-Dependency status also needs a precise correction:
+Original dependency/deployment baseline (now remediated locally):
 
-- `npm audit --omit=dev` reports **0 production vulnerabilities**.
-- Full `npm audit` reports **4 development-chain vulnerabilities: 2 critical
-  and 2 high**, involving `concurrently`/`shell-quote`, Vite, and
-  `brace-expansion`.
-- The Docker runtime copies the complete `node_modules`, so development-only
-  packages are currently present in the runtime image.
+- The original `npm audit --omit=dev` reported **0 production vulnerabilities**,
+  while the full audit reported **4 development-chain vulnerabilities: 2
+  critical and 2 high**, involving `concurrently`/`shell-quote`, Vite, and
+  `brace-expansion`. Both current audit commands now report zero vulnerabilities.
+- The original Docker runtime copied the complete `node_modules`, including
+  development-only packages. The unsupported Docker/Node production path has
+  since been removed from the current tree.
 
 ## Authentication and authorization architecture decision
 
@@ -279,10 +280,11 @@ physically purges records rather than only ignoring them.
 
 ### SEC-008 — treat tracked SQLite state as a potential data incident
 
-**Evidence:** `git ls-files .data` returns `.data/whiteboard.db`,
-`.data/whiteboard.db-shm`, and `.data/whiteboard.db-wal`; the schema can contain
-board content, names, emails, and token hashes. `.gitignore` does not ignore
-`.data/`.
+**Original evidence (locally remediated):** `git ls-files .data` returned
+`.data/whiteboard.db`, `.data/whiteboard.db-shm`, and
+`.data/whiteboard.db-wal`; the schema can contain board content, names, emails,
+and token hashes. The current index no longer tracks these files and `.data/`
+is ignored. Public-history and external incident actions remain incomplete.
 
 - [ ] Stop tracking all database/WAL/SHM files and ignore `.data/`.
 - [ ] Replace them with synthetic fixtures or schema migrations only.
@@ -298,10 +300,12 @@ synthetic data; repository/history scans report no secrets or PII.
 
 ### SEC-009 — harden or remove the legacy Node signaling deployment
 
-**Evidence:** `server.js:69-70` performs unguarded `JSON.parse`; both Node
-signaling implementations have unbounded subscriptions and messages;
-`signaling-server.mjs:128-135` accepts upgrades on every path and binds to
-`0.0.0.0`. `Dockerfile:67` starts `server.js`.
+**Original evidence (legacy production path removed):** `server.js:69-70`
+performed unguarded `JSON.parse`; both Node signaling implementations had
+unbounded subscriptions and messages; `signaling-server.mjs:128-135` accepts
+upgrades on every path and binds to `0.0.0.0`; and `Dockerfile:67` started
+`server.js`. The current supported deployment no longer references those
+Node/Docker artifacts; the retained signaling source is unsupported.
 
 - [ ] Prefer removing the legacy deployment if Cloudflare is authoritative.
 - [ ] Otherwise add parse guards, strict schemas/path/origin checks, `maxPayload`,
@@ -315,9 +319,11 @@ health and authorized collaboration continue after hostile input.
 
 ### SEC-010 — close supply-chain and deployment gaps
 
-**Evidence:** full `npm audit` is not clean; `.github/workflows/ci.yml:85-104`
-makes audit non-blocking; `Dockerfile:18,48` ships dev dependencies. Docker and
-workflows use Node 20, which reached EOL on 2026-03-24 according to the
+**Original evidence (partly remediated):** full `npm audit` was not clean;
+`.github/workflows/ci.yml` made audit non-blocking; and `Dockerfile:18,48`
+shipped dev dependencies. The current audits are clean and the Docker path is
+removed, while workflow/runtime hardening tasks below remain open. Workflows
+use Node 20, which reached EOL on 2026-03-24 according to the
 [official Node.js release schedule](https://nodejs.org/en/about/previous-releases).
 Secret-bearing Actions use mutable major tags; GitHub states a
 [full commit SHA is the immutable form](https://docs.github.com/en/actions/reference/security/secure-use).
@@ -411,54 +417,131 @@ headers, limits, and error behavior on every supported deployment.
 
 Checkbox status is evidence-based: `[x]` means verified complete in the current
 tree and `[ ]` means not implemented or not yet verified. Do not start a later
-phase until the preceding phase gate passes, except for isolated research or
-test preparation.
+phase until the preceding phase gate passes. If an external-authority-only
+blocker prevents a gate, safe locally implementable work in later phases may
+continue, but the affected task and gate stay unchecked and no external
+behavior is claimed.
+
+The detailed SEC checklists above are broader acceptance sub-items. A checked
+Implementation-phase task verifies only the narrower task named there and its
+recorded evidence; it does not imply that every checkbox in the referenced SEC
+section is complete. Those detailed sub-items remain unchecked until their own
+acceptance tests and evidence are satisfied.
 
 ### Phase 0 — contain exposure and establish the baseline
 
 - [x] Record the current source, architecture, dependency, and authentication
   findings in this remediation plan.
-- [ ] Stop tracking `.data/` database, WAL, and SHM files; add the required
+- [x] Stop tracking `.data/` database, WAL, and SHM files; add the required
   ignore and clean synthetic-test-data rules (SEC-008).
+  - Evidence: independent verifier APPROVE; task-owned diffs are clean, local
+    files remain ignored and unchanged, 40 unit persistence tests and 12 real
+    Durable Object SQLite contract tests pass.
 - [ ] Determine whether tracked database content left the repository boundary;
   document the incident decision and rotate/revoke affected credentials or
   grants where required (SEC-008).
-- [ ] Record the supported production deployment. Remove the legacy Node path if
+  - Evidence: confirmed public exposure is documented in
+    `SECURITY_INCIDENT_2026-08-17.md`. Local future-commit containment is done;
+    public-history purge, visibility/notification decisions, and deployed grant
+    invalidation require explicit external authority and remain incomplete. An
+    independent incident verifier returned `APPROVE-AS-BLOCKED` for this status.
+- [x] Record the supported production deployment. Remove the legacy Node path if
   Cloudflare Worker plus Durable Objects is authoritative (SEC-009).
-- [ ] Remediate the full development dependency audit, not only
+  - Evidence: independent verifier APPROVE; Cloudflare Worker plus Durable
+    Objects is the sole supported production path, the Node/Docker/GHCR path is
+    removed, the unsupported signaling server is unreachable from scripts, and
+    the policy, 117 unit, 27 real-workerd, and typecheck checks pass.
+- [x] Remediate the full development dependency audit, not only
   `npm audit --omit=dev`, and record any time-limited exceptions (SEC-010).
+  - Evidence: independent verifier APPROVE; the regression test proves the
+    former vulnerable lock fails, current installed and locked graphs resolve
+    patched versions, both audit commands report zero vulnerabilities, and 118
+    unit plus 27 real-workerd tests, lint, and typecheck pass. No exception is
+    required.
 
 **Phase gate**
 
 - [ ] A clean checkout contains no real database/PII, both audit commands have no
   unaccepted high/critical finding, and there is one declared production path.
+  - Evidence: independent security-architect `APPROVE-AS-BLOCKED`; every local
+    Phase 0 condition passes, including the blocking 693-file tracked-tree scan,
+    zero-vulnerability audits, sole Worker/Durable Object deployment, 124 unit
+    tests, and 27 real-workerd tests. The gate remains open because public Git
+    history, external copies, incident decisions, and deployed grant/session
+    invalidation require repository/data/deployment-owner authority.
 
 ### Phase 1 — establish social identity and locally controlled sessions
 
 - [ ] Confirm Cloudflare Access user limits, pricing, and product fit for the
   expected number of teachers and students before making it mandatory.
+  - Evidence: current official limits, seat semantics, pricing, and go/no-go
+    thresholds are recorded in `CLOUDFLARE_ACCESS_PRODUCT_FIT.md`. Commercial
+    fit remains blocked until the product owner supplies the expected distinct
+    teacher/student count and the billing owner accepts the resulting plan.
 - [ ] Create one hostname-based self-hosted Access application covering the site,
   APIs, and `/signaling`; configure Google and Facebook and prohibit `Bypass`
   rules.
+  - Evidence contract and exact external blockers are recorded in
+    `CLOUDFLARE_ACCESS_STAGING.md`. The task remains unchecked because no
+    authorized staging account, hostname, Access configuration, or Google and
+    Facebook OAuth credentials are available for real verification. An
+    independent verifier returned `APPROVE-AS-BLOCKED` and confirmed Wrangler
+    is unauthenticated and no staging Access evidence exists.
 - [ ] Declare the production custom domain/route and set `workers_dev = false`
   and `preview_urls = false`; close every alternate or direct backend origin.
-- [ ] Choose one identity rule before creating tables. Recommended KISS model:
+  - Evidence: the two generated-hostname settings and their real-file regression
+    test are locally complete; an independent verifier returned
+    `APPROVE-AS-BLOCKED`. The task stays open until an owner supplies the custom
+    hostname/zone, inventories deployed origins, applies the route, and proves
+    every alternate HTTP/WebSocket origin fails closed.
+- [x] Choose one identity rule before creating tables. Recommended KISS model:
   one `(Access issuer, Access subject)` maps to one local account, with no social
   account-linking UI and a documented recovery path if the Access subject
   changes.
-- [ ] Add an authoritative global account/session store with `accounts`,
+  - Decision and recovery contract are recorded in
+    `SECURITY_IDENTITY_MODEL.md`; implementation tables are intentionally deferred
+    to the next task. An independent security-architecture verifier returned
+    `APPROVE`, including subject-change, race, duplicate-email, audit, and
+    revocation behavior.
+- [x] Add an authoritative global account/session store with `accounts`,
   `access_subjects`, and `sessions`; do not duplicate identity PII in every room.
-- [ ] Create an opaque server-managed `__Host-` application session after Access
+  - Evidence: independent verifier `APPROVE`; 14 real-SQLite identity tests and
+    8 real-workerd IdentityDO tests prove exact composite identity, concurrent
+    first-login convergence, singleton access, hash-only session schema,
+    constraints/cascades, no public route, and room/global schema separation.
+- [x] Create an opaque server-managed `__Host-` application session after Access
   authentication, bind it to the Access principal and local authorization epoch,
   store only its hash, and implement rotation, idle/absolute expiry, logout,
   revoke-all, and account disablement.
-- [ ] Require a verified Access context on every protected Worker request and
+  - Evidence: independent verifier `APPROVE`; 8 real-SQLite and 16 real-workerd
+    tests prove hash-only 256-bit sessions, exact `__Host-` cookie protections,
+    bounded idle/absolute expiry, non-extending atomic rotation, logout,
+    epoch revocation, disablement, and fail-closed concurrency. The Access
+    verification boundary and public session route are intentionally the next
+    task.
+- [x] Require a verified Access context on every protected Worker request and
   verify the expected audience and human-user identity. If explicit JOSE
   verification is retained as a fallback, validate algorithm, key ID, token
   type, issuer, audience, time claims, and non-empty subject with rotation-aware
   JWKS caching.
-- [ ] Enforce exact `Origin`/CSRF checks for state changes and ensure expired SPA
+  - Evidence: independent verifier `APPROVE`; production and local assets run
+    the Worker first, 37 focused verifier tests and 50 real-workerd tests prove
+    fail-closed RS256/claims/context validation, bounded rotation-aware JWKS
+    handling, local account/session binding, and JSON/no-store failures. A fresh
+    isolated build and 5 real Chromium tests prove secure session bootstrap,
+    protected API access, authenticated WebSocket `101`, and rejection of
+    missing, malformed, forged, duplicate, and oversized credentials. Real
+    Cloudflare variables and Google/Facebook staging remain external gate work.
+- [x] Enforce exact `Origin`/CSRF checks for state changes and ensure expired SPA
   requests return an API `401`, not an HTML login page.
+  - Evidence: independent verifier `APPROVE`; 9 focused and 53 full real-workerd
+    tests prove exact-Origin rejection before session, Durable Object, body, or
+    WebSocket work with no rejected side effects. All browser API/auth calls use
+    forced same-origin credentials and Cloudflare's documented
+    `X-Requested-With: XMLHttpRequest` contract. A fresh build and 2 real
+    Chromium flows prove valid API/WebSocket operation and an expired signed
+    Access assertion returning JSON/no-store `401`, no redirect or navigation,
+    and fail-closed session UI. Real Access expiry remains a staging-gate check.
 
 **Phase gate**
 
