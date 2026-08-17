@@ -440,11 +440,28 @@ acceptance tests and evidence are satisfied.
 - [ ] Determine whether tracked database content left the repository boundary;
   document the incident decision and rotate/revoke affected credentials or
   grants where required (SEC-008).
-  - Evidence: confirmed public exposure is documented in
-    `SECURITY_INCIDENT_2026-08-17.md`. Local future-commit containment is done;
-    public-history purge, visibility/notification decisions, and deployed grant
-    invalidation require explicit external authority and remain incomplete. An
-    independent incident verifier returned `APPROVE-AS-BLOCKED` for this status.
+  - Evidence: confirmed public exposure and the public-history purge are
+    documented in `SECURITY_INCIDENT_2026-08-17.md`. The purge is complete: on
+    2026-08-17, `git filter-repo --invert-paths --path .data/` removed the
+    artifacts from every public ref, and `main`, `master`,
+    `cloudflare-workers-port`, and `codex/whiteboard-realtime-ci` were force-
+    pushed. Re-verified independently in this pass: a fresh clone of
+    `origin` shows zero commits touching `.data`, zero objects under that
+    path (checked across all 627 blobs reachable from all four remote
+    branches), and zero blobs beginning with the SQLite file magic; `git
+    ls-tree -r --name-only` on each of the four branch tips also contains no
+    `.data` path. What genuinely remains outstanding, and is not within this
+    repository's control: GitHub has not yet been asked to drop cached commit
+    views and API responses, so old objects may still be retrievable there;
+    the data owner has not yet determined whether any rows were real
+    classroom data, which also determines any notification duty; grants and
+    sessions in any deployed environment have not been invalidated; and
+    downstream clones, forks, and Actions artifacts have not been identified.
+    Every commit hash on every branch changed, so anyone holding a clone from
+    before the rewrite can reintroduce the purged objects by pushing from it;
+    this is not fully closed until those clones are accounted for. An
+    independent incident verifier returned `APPROVE-AS-BLOCKED` for this
+    status.
 - [x] Record the supported production deployment. Remove the legacy Node path if
   Cloudflare Worker plus Durable Objects is authoritative (SEC-009).
   - Evidence: independent verifier APPROVE; Cloudflare Worker plus Durable
@@ -463,12 +480,23 @@ acceptance tests and evidence are satisfied.
 
 - [ ] A clean checkout contains no real database/PII, both audit commands have no
   unaccepted high/critical finding, and there is one declared production path.
-  - Evidence: independent security-architect `APPROVE-AS-BLOCKED`; every local
-    Phase 0 condition passes, including the blocking 693-file tracked-tree scan,
-    zero-vulnerability audits, sole Worker/Durable Object deployment, 124 unit
-    tests, and 27 real-workerd tests. The gate remains open because public Git
-    history, external copies, incident decisions, and deployed grant/session
-    invalidation require repository/data/deployment-owner authority.
+  - Evidence, re-verified in this pass: a fresh clone of `origin` contains no
+    `.data` commits, objects, or SQLite-magic blobs on any of the four public
+    branches (see above); `npm audit` and `npm audit --omit=dev` both report
+    "found 0 vulnerabilities"; `DEPLOY.md` declares Cloudflare Worker plus
+    Durable Objects as the sole supported production path and states the
+    Node/Docker/GHCR paths are removed, and no `Dockerfile` or `server.js`
+    remain in the working tree; `npm run security:scan` passed over 714
+    tracked files; and the test baseline is green — `npm test` 203/203, `npm
+    run test:workers` 68/68, `npm run typecheck` clean on both tsconfigs.
+    Every technical condition in this gate now passes. The gate stays open
+    because the purge's completion does not resolve what remains outside this
+    repository's control: GitHub cached commit views/API responses have not
+    been asked to drop the old objects, the data owner has not determined
+    whether any exposed rows were real classroom data, grants/sessions in any
+    deployed environment have not been invalidated, and downstream clones,
+    forks, and Actions artifacts have not been identified — any of which could
+    still expose or reintroduce the purged data.
 
 ### Phase 1 — establish social identity and locally controlled sessions
 
