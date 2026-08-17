@@ -16,7 +16,7 @@ describe('authoritative identity store', () => {
     applyIdentitySchema(db);
   });
 
-  it('creates only the global account, subject, and session tables', () => {
+  it('creates only the global account, subject, session, and audit tables', () => {
     const tables = db
       .prepare(
         `SELECT name FROM sqlite_master
@@ -26,7 +26,7 @@ describe('authoritative identity store', () => {
       .all()
       .map((row) => (row as { name: string }).name);
 
-    expect(tables).toEqual(['access_subjects', 'accounts', 'sessions']);
+    expect(tables).toEqual(['access_subjects', 'accounts', 'authorization_audit', 'sessions']);
 
     const columns = tables.flatMap((table) =>
       db

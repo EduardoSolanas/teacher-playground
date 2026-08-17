@@ -1,6 +1,8 @@
 import type { RoomDatabase } from '../whiteboard/db';
 import {
   type AccountState,
+  type AuditContext,
+  recordAuthorizationAudit,
   resolveAccountForSubject,
 } from './identityStore';
 
@@ -355,6 +357,7 @@ function changeAccountAuthorization(
   state: AccountState | null,
   advanceEpoch: boolean,
   now: number,
+  audit: AuditContext & { action: 'revoke-all' | 'disable' | 'enable' },
 ): AuthorizationChange | null {
   return db.transaction(() => {
     const account = currentAccount(db, accountId);
@@ -372,6 +375,22 @@ function changeAccountAuthorization(
          WHERE account_id = ? AND revoked_at IS NULL`,
       )
       .run(now, accountId).changes;
+
+    // Written inside the same transaction: an authorization change is never
+    // visible without the record of who made it and why.
+    recordAuthorizationAudit(db, {
+      accountId,
+      action: audit.action,
+      actor: audit.actor,
+      reason: audit.reason,
+      previousState: account.state,
+      nextState,
+      previousEpoch: account.authorizationEpoch,
+      nextEpoch,
+      revokedSessions,
+      createdAt: now,
+    });
+
     return {
       accountId,
       authorizationEpoch: nextEpoch,
@@ -384,25 +403,37 @@ function changeAccountAuthorization(
 export function revokeAllSessions(
   db: RoomDatabase,
   accountId: string,
+  audit: AuditContext,
   now = Date.now(),
 ): AuthorizationChange | null {
-  return changeAccountAuthorization(db, accountId, null, true, now);
+  return changeAccountAuthorization(db, accountId, null, true, now, {
+    ...audit,
+    action: 'revoke-all',
+  });
 }
 
 export function disableAccount(
   db: RoomDatabase,
   accountId: string,
+  audit: AuditContext,
   now = Date.now(),
 ): AuthorizationChange | null {
-  return changeAccountAuthorization(db, accountId, 'disabled', true, now);
+  return changeAccountAuthorization(db, accountId, 'disabled', true, now, {
+    ...audit,
+    action: 'disable',
+  });
 }
 
 export function enableAccount(
   db: RoomDatabase,
   accountId: string,
+  audit: AuditContext,
   now = Date.now(),
 ): AuthorizationChange | null {
-  return changeAccountAuthorization(db, accountId, 'active', false, now);
+  return changeAccountAuthorization(db, accountId, 'active', false, now, {
+    ...audit,
+    action: 'enable',
+  });
 }
 
 export function parseSessionCookie(cookieHeader: string | null | undefined): string | null {

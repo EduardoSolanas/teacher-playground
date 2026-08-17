@@ -16,13 +16,20 @@ import {
   sessionCookie,
   validateSession,
 } from './sessionStore';
-import { applyIdentitySchema } from './identityStore';
+import {
+  IdentityInputError,
+  applyIdentitySchema,
+  readAuthorizationAudit,
+  validateAuditContext,
+} from './identityStore';
 
 const PRINCIPAL = {
   issuer: 'https://access.example.com',
   subject: 'access-subject-1',
 } as const;
 const T0 = 1_800_000_000_000;
+
+const AUDIT = { actor: 'operator@example.com', reason: 'security test' };
 
 describe('opaque application session store', () => {
   let db: Database.Database;
@@ -180,7 +187,7 @@ describe('opaque application session store', () => {
     const one = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
     const two = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0 + 1);
 
-    expect(revokeAllSessions(db, one.accountId, T0 + 100)).toEqual({
+    expect(revokeAllSessions(db, one.accountId, AUDIT, T0 + 100)).toEqual({
       accountId: one.accountId,
       authorizationEpoch: 1,
       state: 'active',
@@ -191,7 +198,7 @@ describe('opaque application session store', () => {
 
     const three = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0 + 200);
     expect(three.authorizationEpoch).toBe(1);
-    expect(disableAccount(db, one.accountId, T0 + 300)).toEqual({
+    expect(disableAccount(db, one.accountId, AUDIT, T0 + 300)).toEqual({
       accountId: one.accountId,
       authorizationEpoch: 2,
       state: 'disabled',
@@ -202,7 +209,7 @@ describe('opaque application session store', () => {
       issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0 + 302),
     ).rejects.toThrow('Unauthorized');
 
-    expect(enableAccount(db, one.accountId, T0 + 400)).toEqual({
+    expect(enableAccount(db, one.accountId, AUDIT, T0 + 400)).toEqual({
       accountId: one.accountId,
       authorizationEpoch: 2,
       state: 'active',
@@ -252,5 +259,99 @@ describe('opaque application session store', () => {
     ).toBeNull();
     expect(parseSessionCookie(`${SESSION_COOKIE_NAME}=short`)).toBeNull();
     expect(parseSessionCookie(undefined)).toBeNull();
+  });
+});
+
+describe('authorization audit trail', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    applyIdentitySchema(db);
+  });
+
+  async function account() {
+    return (await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0)).accountId;
+  }
+
+  it('records who acted, why, and what changed for every operation', async () => {
+    const accountId = await account();
+
+    revokeAllSessions(db, accountId, { actor: 'ops@example.com', reason: 'lost device' }, T0 + 10);
+    disableAccount(db, accountId, { actor: 'ops@example.com', reason: 'offboarded' }, T0 + 20);
+    enableAccount(db, accountId, { actor: 'admin@example.com', reason: 'returned' }, T0 + 30);
+
+    const audit = readAuthorizationAudit(db, accountId);
+    expect(audit).toHaveLength(3);
+    expect(audit[0]).toMatchObject({
+      action: 'revoke-all',
+      actor: 'ops@example.com',
+      reason: 'lost device',
+      previousState: 'active',
+      nextState: 'active',
+      previousEpoch: 0,
+      nextEpoch: 1,
+      revokedSessions: 1,
+      createdAt: T0 + 10,
+    });
+    expect(audit[1]).toMatchObject({
+      action: 'disable',
+      reason: 'offboarded',
+      previousEpoch: 1,
+      nextEpoch: 2,
+      nextState: 'disabled',
+    });
+    expect(audit[2]).toMatchObject({
+      action: 'enable',
+      actor: 'admin@example.com',
+      previousState: 'disabled',
+      nextState: 'active',
+      previousEpoch: 2,
+      nextEpoch: 2,
+    });
+  });
+
+  it('writes no audit row when the account does not exist', () => {
+    expect(revokeAllSessions(db, 'no-such-account', AUDIT, T0)).toBeNull();
+    expect(readAuthorizationAudit(db, 'no-such-account')).toEqual([]);
+  });
+
+  it('keeps the audit row and the authorization change in one transaction', async () => {
+    const accountId = await account();
+    revokeAllSessions(db, accountId, AUDIT, T0 + 10);
+
+    const epoch = (db
+      .prepare(`SELECT authorization_epoch AS epoch FROM accounts WHERE account_id = ?`)
+      .get(accountId) as { epoch: number }).epoch;
+
+    // The epoch moved and exactly one record explains it.
+    expect(epoch).toBe(1);
+    const audit = readAuthorizationAudit(db, accountId);
+    expect(audit).toHaveLength(1);
+    expect(audit[0].nextEpoch).toBe(epoch);
+  });
+
+  it('refuses to store a blank or oversized actor or reason', () => {
+    for (const context of [
+      { actor: '', reason: 'ok' },
+      { actor: '   ', reason: 'ok' },
+      { actor: 'ops', reason: '' },
+      { actor: 'a'.repeat(257), reason: 'ok' },
+      { actor: 'ops', reason: 'r'.repeat(1025) },
+    ]) {
+      expect(() => validateAuditContext(context)).toThrow(IdentityInputError);
+    }
+
+    expect(validateAuditContext({ actor: ' ops ', reason: ' why ' }))
+      .toEqual({ actor: 'ops', reason: 'why' });
+  });
+
+  it('survives account deletion so the record outlives the account', async () => {
+    const accountId = await account();
+    revokeAllSessions(db, accountId, AUDIT, T0 + 10);
+
+    db.prepare(`DELETE FROM accounts WHERE account_id = ?`).run(accountId);
+
+    expect(readAuthorizationAudit(db, accountId)).toHaveLength(1);
   });
 });

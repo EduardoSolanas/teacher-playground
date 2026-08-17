@@ -220,7 +220,7 @@ describe('revocation closes live signaling sockets', () => {
     return identity().fetch(`${IDENTITY_BASE}/accounts/${path}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ accountId }),
+      body: JSON.stringify({ accountId, actor: 'test-operator', reason: 'automated test' }),
     });
   }
 
@@ -316,7 +316,7 @@ describe('revocation check runs without being triggered by hand', () => {
       .fetch('https://identity/accounts/revoke-all', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ accountId: subject.accountId }),
+        body: JSON.stringify({ accountId: subject.accountId, actor: 'test-operator', reason: 'automated test' }),
       });
 
     // Deliberately no runDurableObjectAlarm(): this proves the object

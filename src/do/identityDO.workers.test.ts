@@ -10,6 +10,7 @@ import {
   SESSION_COOKIE_NAME,
   clearSessionCookie,
 } from '../lib/identity/sessionStore';
+import { readAuthorizationAudit } from '../lib/identity/identityStore';
 
 declare global {
   namespace Cloudflare {
@@ -68,7 +69,7 @@ async function changeAccount(
   return identityStub().fetch(`https://identity/accounts/${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ accountId }),
+    body: JSON.stringify({ accountId, actor: 'test-operator', reason: 'automated test' }),
   });
 }
 
@@ -389,6 +390,8 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
         .prepare(
           `UPDATE sessions SET idle_expires_at = ? WHERE account_id = ?`,
         )
+        // Must stay above created_at: the schema enforces
+        // idle_expires_at > created_at, so this cannot be backdated further.
         .run(Date.now() - 1, body.accountId);
     });
 
@@ -549,6 +552,63 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
 
     const wrongMethod = await identityStub().fetch('https://identity/accounts/authorizations');
     expect(wrongMethod.status).toBe(405);
+  });
+
+
+  it('refuses an authorization change that names no actor or reason', async () => {
+    const issued = await issueSession('do-audit-required');
+    const { accountId } = await issued.json() as { accountId: string };
+
+    for (const body of [
+      { accountId },
+      { accountId, actor: 'ops' },
+      { accountId, reason: 'why' },
+      { accountId, actor: '  ', reason: 'why' },
+      { accountId, actor: 'ops', reason: '  ' },
+    ]) {
+      const response = await identityStub().fetch('https://identity/accounts/revoke-all', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(response.status, JSON.stringify(body)).toBe(400);
+    }
+
+    // The rejected attempts changed nothing.
+    const status = await identityStub().fetch('https://identity/accounts/authorizations', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountIds: [accountId] }),
+    });
+    expect(await status.json()).toEqual({
+      accounts: { [accountId]: { state: 'active', authorizationEpoch: 0 } },
+    });
+  });
+
+  it('persists an audit record through the real Durable Object', async () => {
+    const issued = await issueSession('do-audit-record');
+    const { accountId } = await issued.json() as { accountId: string };
+
+    await identityStub().fetch('https://identity/accounts/disable', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId, actor: 'ops@example.com', reason: 'incident 42' }),
+    });
+
+    const audit = await runInDurableObject(identityStub(), (instance) =>
+      readAuthorizationAudit(instance.db, accountId));
+
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({
+      accountId,
+      action: 'disable',
+      actor: 'ops@example.com',
+      reason: 'incident 42',
+      previousState: 'active',
+      nextState: 'disabled',
+      previousEpoch: 0,
+      nextEpoch: 1,
+    });
   });
 
   it('does not expose any session or account-control path through the public Worker', async () => {

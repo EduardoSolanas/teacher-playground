@@ -27,8 +27,11 @@ test.describe('local Access edge and session bootstrap', () => {
     await expectSessionCookie(page);
     await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
 
+    // 403, not 401: the request cleared the Access edge and the local session,
+    // and was then refused by room authorization for a room it does not belong
+    // to. A non-member sees the same answer whether or not the room exists.
     const apiStatus = await page.evaluate(async () => (await fetch('/api/whiteboard/room/access-edge-probe')).status);
-    expect(apiStatus).toBe(404);
+    expect(apiStatus).toBe(403);
 
     const roomId = await createRoomWithMaxUsers(page, 'AccessEdgeHost', 2);
     const signalingResult = await page.evaluate((room) => new Promise<string>((resolve) => {

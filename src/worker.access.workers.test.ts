@@ -230,7 +230,7 @@ describe('real local Access boundary through workerd', () => {
     const disabled = await identity.fetch('https://identity/accounts/disable', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ accountId: session.accountId }),
+      body: JSON.stringify({ accountId: session.accountId, actor: 'test-operator', reason: 'automated test' }),
     });
     expect(disabled.status).toBe(200);
     const denied = await authenticatedFetch('/api/whiteboard/room/boundary-disabled', session);

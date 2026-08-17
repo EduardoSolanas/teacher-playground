@@ -92,7 +92,7 @@ verified against a real Cloudflare Access deployment; see
 | Revocation closes live room sockets | Covered | `src/do/roomDO.workers.test.ts` |
 | Forged email, provider label, or client header cannot select an account | Covered | `src/lib/access/accessVerifier.test.ts`, `src/do/identityDO.workers.test.ts` |
 | Room authorization is keyed to the local account | Covered | `src/do/roomDO.workers.test.ts`, `tests/e2e/room-authorization.spec.ts` |
-| Recovery leaves an audit record | **Not implemented** | — |
+| Recovery leaves an audit record | Covered | `src/lib/identity/sessionStore.test.ts`, `src/do/identityDO.workers.test.ts` |
 | Audited operator recovery workflow | **Not implemented** | — |
 
 ## Room authorization
@@ -124,14 +124,29 @@ Two consequences worth knowing:
   bound to the verified account on join so an approval can promote the right
   account.
 
+## Audit trail
+
+Every operator action that changes what an account may do — `revoke-all`,
+`disable`, `enable` — writes a row to `authorization_audit` **inside the same
+transaction** as the change, so an authorization change is never visible without
+the record explaining it. Each row carries the actor, the reason, the previous
+and next state, the previous and next epoch, how many sessions were revoked, and
+when.
+
+`actor` and `reason` are mandatory and are rejected when blank or oversized: an
+audit log with an optional actor proves nothing. A change that names neither is
+refused with `400` and alters no state.
+
+The table is deliberately not `ON DELETE CASCADE`, so the record outlives the
+account it describes.
+
 ### Outstanding
 
-There is no audit table and no audit write anywhere in the codebase, so the
-recovery requirement above is only partly met: an operator can advance the
-epoch, revoke sessions, and disconnect live sockets, but that action leaves no
-durable record of who performed it, when, or why. Until that exists, subject
-recovery must continue to mean creating a new account, and any epoch change
-should be recorded outside the application.
+The audit trail records operator actions, but there is still no audited
+*workflow* for subject recovery: nothing verifies that an operator independently
+confirmed control of both identities before rebinding, and there is no
+administrative interface for it. Subject recovery therefore still means creating
+a new account.
 
 The older bearer-token grant matrix (`src/lib/whiteboard/access.ts`) still backs
 the `/requests` endpoints and now sits alongside account-keyed membership.

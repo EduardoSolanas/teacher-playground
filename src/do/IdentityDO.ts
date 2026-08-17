@@ -64,13 +64,25 @@ function isAuthorizationsBody(value: unknown): value is { accountIds: string[] }
   );
 }
 
-function isAccountBody(value: unknown): value is { accountId: string } {
+// Actor and reason are mandatory so no authorization change can be made
+// without a durable record of who made it and why.
+function isAccountBody(value: unknown): value is {
+  accountId: string;
+  actor: string;
+  reason: string;
+} {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false;
   }
   const body = value as Record<string, unknown>;
   return (
-    Object.keys(body).length === 1 &&
+    Object.keys(body).length === 3 &&
+    typeof body.actor === 'string' &&
+    body.actor.trim().length > 0 &&
+    body.actor.length <= 256 &&
+    typeof body.reason === 'string' &&
+    body.reason.trim().length > 0 &&
+    body.reason.length <= 1024 &&
     typeof body.accountId === 'string' &&
     body.accountId.length >= 1 &&
     body.accountId.length <= 128
@@ -259,7 +271,10 @@ export class IdentityDO extends DurableObject {
       if (request.method !== 'POST') return methodNotAllowed('POST');
       const parsed = await readExactJson(request, isAccountBody);
       if ('response' in parsed) return parsed.response;
-      const result = accountOperation(this.db, parsed.body.accountId);
+      const result = accountOperation(this.db, parsed.body.accountId, {
+        actor: parsed.body.actor,
+        reason: parsed.body.reason,
+      });
       return result
         ? Response.json(result)
         : Response.json({ error: 'Not found' }, { status: 404 });

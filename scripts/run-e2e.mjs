@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import net from 'node:net';
 import { resolve } from 'node:path';
 
@@ -20,8 +20,23 @@ function getAvailablePort() {
   });
 }
 
+/**
+ * Windows signals only reach the process itself, so wrangler's workerd
+ * grandchild outlives the run and keeps a handle on ./out. The next build then
+ * fails with EBUSY. taskkill /T ends the whole tree.
+ */
+function killTree(pid) {
+  if (process.platform !== 'win32' || !pid) return;
+  spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
+}
+
 async function stopChild(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  if (!child) return;
+  if (child.exitCode !== null || child.signalCode !== null) {
+    // The parent is gone, but a detached grandchild may not be.
+    killTree(child.pid);
+    return;
+  }
   child.kill('SIGTERM');
   const stopped = await Promise.race([
     new Promise((resolveExit) => {
@@ -30,8 +45,13 @@ async function stopChild(child) {
     }),
     new Promise((resolveTimeout) => setTimeout(() => resolveTimeout(false), 5_000)),
   ]);
-  if (stopped || child.exitCode !== null) return;
+  if (stopped || child.exitCode !== null) {
+    // Exiting cleanly does not guarantee its children did.
+    killTree(child.pid);
+    return;
+  }
   child.kill('SIGKILL');
+  killTree(child.pid);
   await Promise.race([
     new Promise((resolveExit) => {
       child.once('exit', resolveExit);
