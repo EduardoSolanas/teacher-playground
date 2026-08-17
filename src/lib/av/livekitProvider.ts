@@ -6,8 +6,8 @@
  * `avSession.ts` (unit-tested against a fake). Connecting this adapter to a
  * real LiveKit server requires a configured project (see README).
  *
- * Phase 3 voice slice: connect publishes microphone only. Camera helpers remain
- * for the follow-up video card and are not enabled here.
+ * Connect publishes microphone + camera. Permission denial for either device is
+ * isolated so a denied camera still allows voice (tile shows "Camera off").
  */
 
 import {
@@ -49,11 +49,17 @@ export class LiveKitProvider implements AvProvider {
   async connect(token: string, url: string): Promise<void> {
     this.ensureWired();
     await this.room.connect(url, token);
-    // Voice-only publish. Permission denial surfaces via MediaDevicesError.
+    // Publish microphone + camera. Mic denial is fatal for the call UX; camera
+    // denial is soft — stay joined with cam off (tile shows "Camera off").
     try {
       await this.room.localParticipant.setMicrophoneEnabled(true);
     } catch (error) {
       this.events.onError?.(mapProviderError(error));
+    }
+    try {
+      await this.room.localParticipant.setCameraEnabled(true);
+    } catch {
+      // leave camera off; MediaDevicesError also covers async device errors
     }
     this.emitLocal();
     this.refreshDevices();
@@ -183,6 +189,12 @@ export class LiveKitProvider implements AvProvider {
     void Room.getLocalDevices('audioinput').then((devices) => {
       this.events.onDevices?.(
         'microphone',
+        devices.map((device) => device.deviceId),
+      );
+    });
+    void Room.getLocalDevices('videoinput').then((devices) => {
+      this.events.onDevices?.(
+        'camera',
         devices.map((device) => device.deviceId),
       );
     });

@@ -16,7 +16,7 @@ import ToolSidebar from '@/components/whiteboard/ToolSidebar';
 import { LibraryPanel } from '@/components/whiteboard/LibraryPanel';
 import { ShortcutsHelp } from '@/components/whiteboard/ShortcutsHelp';
 import { UndoRedoBar } from '@/components/whiteboard/UndoRedoBar';
-import VoiceSessionPanel from '@/components/av/VoiceSessionPanel';
+import AvSessionPanel from '@/components/av/AvSessionPanel';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import * as store from '@/lib/whiteboard/store';
 import { cleanupStaleRooms } from '@/lib/whiteboard/persistence';
@@ -124,12 +124,13 @@ function RoomContent({ roomId }: { roomId: string }) {
       avStatus: av.status,
       avUnavailable: av.unavailableReason,
       avMicMuted: av.local.micMuted,
+      avCamOn: av.local.camOn,
     };
     return () => {
       delete (window as any).__whiteboardStore;
       delete (window as any).__whiteboardCollab;
     };
-  }, [provider, status, isConnected, isSynced, localPeerId, isWaiting, waitingPeers, cursors, av.status, av.unavailableReason, av.local.micMuted]);
+  }, [provider, status, isConnected, isSynced, localPeerId, isWaiting, waitingPeers, cursors, av.status, av.unavailableReason, av.local.micMuted, av.local.camOn]);
 
   const handleJoin = (name: string) => {
     setUserName(name);
@@ -211,7 +212,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         )}
       />
       {avEnabled && (
-        <VoiceSessionPanel av={av} localIdentity={localPeerId} isLocalHost={isLocalHost} />
+        <AvSessionPanel av={av} localIdentity={localPeerId} isLocalHost={isLocalHost} />
       )}
       {!isSynced && <LoadingScreen />}
       <LibraryPanel visible={isLocalHost && libraryOpen} onClose={() => setLibraryOpen(false)} />

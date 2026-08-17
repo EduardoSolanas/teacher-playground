@@ -30,6 +30,7 @@ export interface UseAvSessionResult {
   readonly devices: Record<DeviceKind, string[]>;
   readonly unavailableReason: 'unconfigured' | 'forbidden' | 'waiting' | null;
   readonly toggleMicrophone: () => void;
+  readonly toggleCamera: () => void;
   readonly selectDevice: (kind: DeviceKind, deviceId: string) => Promise<void>;
   readonly requestMute: (identity: string) => void;
   readonly attachTrack: (
@@ -190,6 +191,10 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
     unavailableReason,
     toggleMicrophone: () => {
       sessionRef.current?.toggleMicrophone();
+      refresh();
+    },
+    toggleCamera: () => {
+      sessionRef.current?.toggleCamera();
       refresh();
     },
     selectDevice: async (kind, deviceId) => {
