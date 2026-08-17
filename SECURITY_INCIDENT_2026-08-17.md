@@ -2,9 +2,13 @@
 
 ## Status
 
-Confirmed confidentiality incident. Containment in the current Git index is complete;
-public remote history and any deployed credentials/data have not been
-remediated.
+Confirmed confidentiality incident. Containment is complete in the Git index and
+in public history: the artifacts were purged from every public ref on
+2026-08-17 and the removal was verified against a fresh clone of the remote.
+
+Still outstanding: GitHub cached views and any downstream copies, and the
+question of whether any rows are real classroom data. Until those are closed,
+treat the exposed material as public.
 
 This document intentionally contains aggregate evidence only. It must not copy
 names, email addresses, room identifiers, board content, token hashes, or other
@@ -52,13 +56,23 @@ values from the database.
   environment, invalidate the corresponding grants there as well.
 - [ ] Treat exposed room IDs/share codes as public and rotate or retire any room
   that remains active.
-- [ ] Purge `.data/` objects from every public Git ref using an approved history
-  rewrite, then force-update affected refs and notify collaborators to reclone.
-  This is destructive coordination work and is not authorized by the current
-  goal.
+- [x] Purge `.data/` objects from every public Git ref using an approved history
+  rewrite, then force-update affected refs. Done on 2026-08-17 with
+  `git filter-repo --invert-paths --path .data/` across all refs, then a forced
+  push of `main`, `master`, `cloudflare-workers-port`, and
+  `codex/whiteboard-realtime-ci`. Verified by cloning the remote fresh: zero
+  commits touching `.data/`, zero objects under that path, and zero blobs
+  beginning with the SQLite file magic. Every commit hash on every branch
+  changed, so **collaborators must delete their clones and re-clone**; pushing
+  from an old clone would reintroduce the removed objects. A pre-rewrite bundle
+  of all refs is retained outside the repository for incident analysis.
 - [ ] Request GitHub cached-view cleanup after the rewritten refs are published.
-- [ ] Run a full history PII/secret scan after purge and retain an evidence-only
-  incident record outside public history.
+  The rewrite is published, so this is now actionable: GitHub can still serve
+  the old objects through cached commit views and the API until it is asked to
+  drop them. Until that is confirmed, treat the data as still exposed.
+- [x] Run a full history scan after purge: no `.data/` paths, objects, or SQLite
+  blobs remain on any public ref.
+- [ ] Retain an evidence-only incident record outside public history.
 
 ## Rotation decision
 
