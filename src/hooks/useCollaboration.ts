@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import * as Y from 'yjs';
 import type {
   WhiteboardUser,
   CanvasElement,
@@ -9,6 +10,7 @@ import { createCollaboration } from '@/lib/whiteboard/collaboration';
 import { getStablePeerId } from '@/lib/whiteboard/peerId';
 import * as store from '@/lib/whiteboard/store';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
+import { reconcileElements } from '@/lib/whiteboard/excalidrawSync';
 
 const DEFAULT_MAX_USERS = 3;
 
@@ -82,6 +84,34 @@ export function useCollaboration(roomId: string) {
     isRemoteUpdateRef.current = false;
   }, []);
 
+  /**
+   * Publishes elements into the shared document so the canvas sees them: the
+   * Excalidraw scene is driven by the Yjs observer alone, so state that only
+   * reaches React never reaches the board.
+   *
+   * Safe to replace the array wholesale because callers pass a reconciled list
+   * that already contains every local element.
+   */
+  const publishToSharedDoc = useCallback((nextElements: CanvasElement[]) => {
+    const collaboration = collaborationRef.current;
+    const doc = collaboration?.doc;
+    const elementsArray = collaboration?.elementsArray;
+    if (!doc || !elementsArray) return;
+
+    // Not the 'local' origin: the wrapper ignores that to avoid echoing its own
+    // edits, and this needs to reach the scene.
+    doc.transact(() => {
+      if (elementsArray.length > 0) elementsArray.delete(0, elementsArray.length);
+      for (const element of nextElements) {
+        const map = new Y.Map();
+        for (const [key, value] of Object.entries(element as Record<string, unknown>)) {
+          map.set(key, value);
+        }
+        elementsArray.push([map]);
+      }
+    }, 'api-fallback');
+  }, []);
+
   const applyViewport = useCallback((nextViewport: Viewport) => {
     viewportRef.current = nextViewport;
     setViewport(nextViewport);
@@ -131,7 +161,7 @@ export function useCollaboration(roomId: string) {
 
     loadRoom();
     return () => { cancelled = true; };
-  }, [isConnected, roomId, applyElements, applyViewport]);
+  }, [roomId, applyElements, publishToSharedDoc, applyViewport]);
 
   // Set up collaboration event listeners
   useEffect(() => {
@@ -212,8 +242,8 @@ export function useCollaboration(roomId: string) {
   );
 
   useEffect(() => {
-    if (!isConnected) return;
-
+    // Not gated on isConnected: that goes false exactly when the link has
+    // dropped, which is when this fallback is needed.
     let cancelled = false;
 
     async function pollRoomState() {
@@ -235,7 +265,15 @@ export function useCollaboration(roomId: string) {
         const remoteElements = data.elements || [];
         const remoteViewport = data.viewport || { x: 0, y: 0, zoom: 1 };
         lastRoomUpdatedAtRef.current = updatedAt;
-        applyElements(remoteElements);
+        // Reconcile rather than overwrite: the snapshot is written on a
+        // debounce, so it can be older than what the user just drew. Merging
+        // per element keeps unsaved local work while still catching up.
+        const merged = reconcileElements(
+          elementsRef.current,
+          remoteElements,
+        ) as unknown as CanvasElement[];
+        applyElements(merged);
+        publishToSharedDoc(merged);
         applyViewport(remoteViewport);
       } catch {
         // WebRTC/Yjs and local edits can continue when polling is unavailable.

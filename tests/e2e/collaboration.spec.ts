@@ -480,20 +480,7 @@ test.describe('Excalidraw Collaboration', () => {
       .toBe(true);
   });
 
-  // NOT IMPLEMENTED. The Excalidraw scene is driven solely by the Yjs observer,
-  // and nothing feeds polled elements into the shared document, so a peer whose
-  // link is down never sees the catch-up on its canvas. Verified directly: the
-  // server holds the element and the peer's store reaches 1 while its scene
-  // stays empty.
-  //
-  // Two fixes were attempted and both reverted. Polling whenever the link looks
-  // down makes page1 poll as soon as its only peer leaves, fetch server state
-  // that predates the local save, and — combined with driving the scene from
-  // that state — erase drawing that had not been persisted yet. Losing a
-  // teacher's work to fix a catch-up path is the wrong trade, so this needs a
-  // design that reconciles polled state with unsaved local edits rather than
-  // overwriting them.
-  test.fixme('disconnected peer catches up from API fallback', async ({ browser }) => {
+  test('disconnected peer catches up from API fallback', async ({ browser }) => {
     const context1 = await newAuthenticatedContext(browser);
     const context2 = await newAuthenticatedContext(browser);
 

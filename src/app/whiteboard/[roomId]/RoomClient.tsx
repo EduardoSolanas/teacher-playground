@@ -43,6 +43,7 @@ function RoomContent({ roomId }: { roomId: string }) {
   const handleToolChange = useCallback((tool: string) => {
     store.setTool(tool as Parameters<typeof store.setTool>[0]);
   }, []);
+  const [boardEverShown, setBoardEverShown] = useState(false);
   const [presenceCollapsed, setPresenceCollapsed] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const { activeShortcuts, showShortcutsHelp, setShowShortcutsHelp } = useKeyboardShortcuts();
@@ -79,6 +80,10 @@ function RoomContent({ roomId }: { roomId: string }) {
   const { clearState } = usePersistence(roomId, elements, { x: 0, y: 0, zoom: 1 } as any);
 
   useEffect(() => { cleanupStaleRooms(); }, []);
+
+  useEffect(() => {
+    if (status === 'connected' || status === 'synced') setBoardEverShown(true);
+  }, [status]);
 
   useEffect(() => {
     if (userName || typeof window === 'undefined') return;
@@ -129,7 +134,11 @@ function RoomContent({ roomId }: { roomId: string }) {
     );
   }
 
-  if (status !== 'synced' && status !== 'connected' && status !== 'connecting') {
+  // Only before the board has ever appeared. Replacing a working board with a
+  // loading screen the moment the link drops throws away a canvas the user can
+  // still draw on, unmounts the collaboration listeners, and means a
+  // reconnecting peer has nowhere to apply the state it catches up on.
+  if (!boardEverShown && status !== 'synced' && status !== 'connected' && status !== 'connecting') {
     return <LoadingScreen error={error} />;
   }
 

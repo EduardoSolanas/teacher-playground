@@ -270,13 +270,23 @@ test.describe('Waiting Room', () => {
 
     await expectNotWaiting(page2);
 
-    // Peer joins again -> waiting room
-    await page2.goto(`/whiteboard/${roomId}`);
-    const isPrompt = await page2.getByTestId('whiteboard-username-input').isVisible().catch(() => false);
-    if (isPrompt) {
-      await page2.getByTestId('whiteboard-username-input').fill('Peer');
-      await page2.getByTestId('whiteboard-join-room-btn').click();
-    }
+    // Peer joins again -> waiting room. Uses the shared helper rather than
+    // sampling isVisible() straight after goto: the page has not rendered at
+    // that point, so the username was never entered and the rejoin silently
+    // did not happen.
+    await joinExistingRoom(page2, roomId, 'Peer');
+
+    // Being kicked clears the stored username, so the prompt can reappear once
+    // the rejoin is processed. Without answering it a second time the peer
+    // never posts presence again and never reaches the queue.
+    const rejoinPrompt = page2.getByTestId('whiteboard-username-input');
+    await rejoinPrompt
+      .waitFor({ state: 'visible', timeout: 5000 })
+      .then(async () => {
+        await rejoinPrompt.fill('Peer', { timeout: 5000 }).catch(() => {});
+        await page2.getByTestId('whiteboard-join-room-btn').click({ timeout: 5000 }).catch(() => {});
+      })
+      .catch(() => {});
 
     await expectWaiting(page2);
 
