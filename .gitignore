@@ -17,8 +17,8 @@ dist/
 *.log
 
 # Local env files
-.env*.local
-.env
+.env*
+!.env*.example
 
 # Vercel
 .vercel
@@ -30,6 +30,18 @@ dist/
 test-results/
 
 playwright-report/
+e2e-results.txt
+test-output.txt
+test-results.txt
 
 
 .idea/
+
+# Wrangler local state
+.wrangler/
+
+# Local SQLite data
+.data/
+
+# Local scratch output
+tmp/

@@ -1,0 +1,36 @@
+# Dedicated local cryptographic issuer environment. This file is never used by
+# the production deployment workflow; local-access-issuer.mjs generates keys at
+# process start and exposes only its JWKS/token test harness.
+name = "teacher-playground-local"
+main = "src/worker.ts"
+compatibility_date = "2024-12-10"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+preview_urls = false
+
+[vars]
+ENVIRONMENT = "local-test"
+ACCESS_ISSUER = "http://127.0.0.1:8790"
+ACCESS_AUDIENCE = "teacher-playground-local"
+ACCESS_JWKS_URL = "http://127.0.0.1:8790/jwks"
+
+[assets]
+directory = "./out"
+binding = "ASSETS"
+run_worker_first = true
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "RoomDO"
+
+[[durable_objects.bindings]]
+name = "IDENTITY"
+class_name = "IdentityDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoomDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["IdentityDO"]

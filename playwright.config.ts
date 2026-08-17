@@ -1,13 +1,18 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const appPort = Number(process.env.E2E_PORT);
-const signalingPort = Number(process.env.E2E_SIGNALING_PORT);
-if (!Number.isInteger(appPort) || !Number.isInteger(signalingPort)) {
+if (!Number.isInteger(appPort)) {
   throw new Error("Run E2E tests through `npm run test:e2e` so dynamic ports are allocated.");
 }
 
-const baseURL = `http://127.0.0.1:${appPort}`;
-const signalingURL = `ws://127.0.0.1:${signalingPort}`;
+// Chromium permits Secure cookies on the loopback `localhost` origin. Keep
+// the cookie Secure/__Host- prefixed in local browser coverage.
+const baseURL = `http://localhost:${appPort}`;
+const accessIssuer = process.env.E2E_ACCESS_ISSUER;
+const accessToken = process.env.E2E_ACCESS_TOKEN;
+if (!accessIssuer || !accessToken) {
+  throw new Error("Run E2E tests through npm run test:e2e so the local Access issuer is configured.");
+}
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -23,6 +28,19 @@ export default defineConfig({
   use: {
     ...devices["Desktop Chrome"],
     baseURL,
+    storageState: {
+      cookies: [{
+        name: "CF_Authorization",
+        value: accessToken,
+        domain: "localhost",
+        path: "/",
+        expires: Math.floor(Date.now() / 1000) + 3_600,
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+      }],
+      origins: [],
+    },
     trace: "on-first-retry",
     screenshot: "only-on-failure",
     video: "retain-on-failure",
@@ -32,17 +50,4 @@ export default defineConfig({
       name: "chromium",
     },
   ],
-  webServer: {
-    command: "npm run dev",
-    url: baseURL,
-    reuseExistingServer: false,
-    env: {
-      PORT: String(appPort),
-      SIGNALING_PORT: String(signalingPort),
-      NEXT_PUBLIC_YWEBRTC_SIGNALING_URL: signalingURL,
-    },
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: 120000,
-  },
 });

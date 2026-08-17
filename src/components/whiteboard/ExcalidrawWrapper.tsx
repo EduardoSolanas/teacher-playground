@@ -142,7 +142,11 @@ export default function ExcalidrawWrapper({
 
   const handleAPI = useCallback((api: any) => {
     apiRef.current = api;
-    if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
+    // E2E runs against a production build, so the handle is also exposed when
+    // the build is explicitly flagged for testing. Real deploys leave it off.
+    const exposeDebugApi =
+      process.env.NODE_ENV !== 'production' || process.env.NEXT_PUBLIC_E2E === '1';
+    if (exposeDebugApi && typeof window !== 'undefined') {
       (window as any).__debugExcalidrawApi = api;
     }
 

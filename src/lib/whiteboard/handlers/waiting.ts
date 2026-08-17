@@ -1,15 +1,13 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getRoomDb } from '@/lib/whiteboard/roomDb';
-import { readActiveUsers } from '@/lib/whiteboard/presence';
+import type { RoomDatabase } from '../db';
+import { readActiveUsers } from '../presence';
+import { parseBody, waitingPostSchema } from '../requestSchemas';
 
-export async function GET(
-  _request: NextRequest,
-  { params }: { params: Promise<{ roomId: string }> }
-) {
+export async function handleWaitingGet(
+  db: RoomDatabase,
+  roomId: string,
+  _request: Request,
+): Promise<Response> {
   try {
-    const { roomId } = await params;
-    const db = getRoomDb();
-
     const rows = db.prepare(
       `SELECT peer_id, user_name, color, requested_at
        FROM waiting_peers
@@ -22,7 +20,7 @@ export async function GET(
       requested_at: number;
     }>;
 
-    return NextResponse.json({
+    return Response.json({
       waitingPeers: rows.map((row) => ({
         peerId: row.peer_id,
         userName: row.user_name,
@@ -31,30 +29,32 @@ export async function GET(
       })),
     });
   } catch (e) {
-    return NextResponse.json(
+    return Response.json(
       { error: e instanceof Error ? e.message : 'Failed to read waiting peers' },
       { status: 500 }
     );
   }
 }
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ roomId: string }> }
-) {
+export async function handleWaitingPost(
+  db: RoomDatabase,
+  roomId: string,
+  request: Request,
+): Promise<Response> {
   try {
-    const { roomId } = await params;
-    const body = await request.json();
-    const { peerId, action } = body;
-
-    if (!peerId || !['approve', 'reject'].includes(action)) {
-      return NextResponse.json(
-        { error: 'peerId and action (approve/reject) are required' },
-        { status: 400 }
-      );
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
 
-    const db = getRoomDb();
+    const parseResult = parseBody(waitingPostSchema, body);
+    if (!parseResult.ok) {
+      return Response.json({ error: parseResult.error }, { status: 400 });
+    }
+
+    const { peerId, action } = parseResult.data;
 
     if (action === 'approve') {
       const row = db.prepare(
@@ -62,7 +62,7 @@ export async function POST(
       ).get(roomId, peerId) as { user_name: string; color: string } | undefined;
 
       if (!row) {
-        return NextResponse.json({ error: 'Peer not found in waiting list' }, { status: 404 });
+        return Response.json({ error: 'Peer not found in waiting list' }, { status: 404 });
       }
 
       const now = Date.now();
@@ -79,7 +79,7 @@ export async function POST(
       db.prepare(`DELETE FROM kicked_peers WHERE room_id = ? AND peer_id = ?`).run(roomId, peerId);
 
       const activeUsers = readActiveUsers(db, roomId);
-      return NextResponse.json({
+      return Response.json({
         users: activeUsers,
         success: true,
       });
@@ -92,40 +92,40 @@ export async function POST(
       ).run(roomId, peerId, Date.now());
       db.prepare(`DELETE FROM waiting_peers WHERE room_id = ? AND peer_id = ?`).run(roomId, peerId);
 
-      return NextResponse.json({ success: true });
+      return Response.json({ success: true });
     }
 
-    return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    return Response.json({ error: 'Invalid action' }, { status: 400 });
   } catch (e) {
-    return NextResponse.json(
+    return Response.json(
       { error: e instanceof Error ? e.message : 'Failed to process waiting peer' },
       { status: 500 }
     );
   }
 }
 
-export async function DELETE(
-  request: NextRequest,
-  { params }: { params: Promise<{ roomId: string }> }
-) {
+export async function handleWaitingDelete(
+  db: RoomDatabase,
+  roomId: string,
+  request: Request,
+): Promise<Response> {
   try {
-    const { roomId } = await params;
-    const peerId = request.nextUrl.searchParams.get('peerId');
+    const url = new URL(request.url);
+    const peerId = url.searchParams.get('peerId');
 
     if (!peerId) {
-      return NextResponse.json({ error: 'peerId is required' }, { status: 400 });
+      return Response.json({ error: 'peerId is required' }, { status: 400 });
     }
 
-    const db = getRoomDb();
     db.prepare(
       `INSERT OR REPLACE INTO kicked_peers (room_id, peer_id, kicked_at)
        VALUES (?, ?, ?)`
     ).run(roomId, peerId, Date.now());
     db.prepare(`DELETE FROM waiting_peers WHERE room_id = ? AND peer_id = ?`).run(roomId, peerId);
 
-    return NextResponse.json({ success: true });
+    return Response.json({ success: true });
   } catch (e) {
-    return NextResponse.json(
+    return Response.json(
       { error: e instanceof Error ? e.message : 'Failed to remove waiting peer' },
       { status: 500 }
     );

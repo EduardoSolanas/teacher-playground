@@ -1,0 +1,28 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["esnext"],
+    "types": [
+      "node",
+      "@cloudflare/workers-types",
+      "@cloudflare/vitest-pool-workers/types"
+    ],
+    "jsx": "react-jsx",
+    "incremental": false,
+    "plugins": []
+  },
+  "include": [
+    "src/worker.ts",
+    "src/do/**/*.ts",
+    "src/lib/whiteboard/doDatabase.ts",
+    "src/lib/whiteboard/db.ts",
+    "src/lib/whiteboard/roomSchema.ts",
+    "src/lib/whiteboard/access.ts",
+    "src/lib/whiteboard/authz.ts",
+    "src/lib/whiteboard/presence.ts",
+    "src/lib/identity/**/*.ts",
+    "src/test/**/*.ts",
+    "src/**/*.workers.test.ts"
+  ],
+  "exclude": ["node_modules"]
+}

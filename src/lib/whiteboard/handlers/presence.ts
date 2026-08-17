@@ -1,54 +1,59 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getRoomDb, getRoomHostPeerId } from '@/lib/whiteboard/roomDb';
-import { readActiveUsers, readWaitingPeers } from '@/lib/whiteboard/presence';
+import type { RoomDatabase } from '../db';
+import { readActiveUsers, readWaitingPeers } from '../presence';
+import { getRoomHostPeerId } from '../roomSchema';
+import { parseBody, presencePostSchema } from '../requestSchemas';
 
-export async function GET(
-  _request: NextRequest,
-  { params }: { params: Promise<{ roomId: string }> }
-) {
+export async function handlePresenceGet(
+  db: RoomDatabase,
+  roomId: string,
+  _request: Request,
+): Promise<Response> {
   try {
-    const { roomId } = await params;
-    const db = getRoomDb();
-    return NextResponse.json({
+    return Response.json({
       users: readActiveUsers(db, roomId),
       waitingPeers: readWaitingPeers(db, roomId),
       hostPeerId: getRoomHostPeerId(db, roomId),
     });
   } catch (e) {
-    return NextResponse.json(
+    return Response.json(
       { error: e instanceof Error ? e.message : 'Failed to read presence' },
       { status: 500 }
     );
   }
 }
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ roomId: string }> }
-) {
+export async function handlePresencePost(
+  db: RoomDatabase,
+  roomId: string,
+  request: Request,
+): Promise<Response> {
   try {
-    const { roomId } = await params;
-    const body = await request.json();
-    const { action, peerId, userName, color } = body as {
-      action?: string;
-      peerId?: string;
-      userName?: string;
-      color?: string;
-    };
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
+
+    const parseResult = parseBody(presencePostSchema, body);
+    if (!parseResult.ok) {
+      return Response.json({ error: parseResult.error }, { status: 400 });
+    }
+
+    const { action, peerId, userName, color } = parseResult.data;
 
     // Host actions: kick or suspend a peer
     if (action === 'kick' || action === 'suspend') {
       if (!peerId) {
-        return NextResponse.json({ error: 'peerId is required' }, { status: 400 });
+        return Response.json({ error: 'peerId is required' }, { status: 400 });
       }
 
-      const db = getRoomDb();
       const targetRow = db.prepare(
         `SELECT peer_id, user_name, color FROM room_presence WHERE room_id = ? AND peer_id = ?`
       ).get(roomId, peerId) as { peer_id: string; user_name: string; color: string } | undefined;
 
       if (!targetRow) {
-        return NextResponse.json({ error: 'Peer not found in room' }, { status: 404 });
+        return Response.json({ error: 'Peer not found in room' }, { status: 404 });
       }
 
       if (action === 'kick') {
@@ -59,7 +64,7 @@ export async function POST(
         db.prepare(`DELETE FROM room_presence WHERE room_id = ? AND peer_id = ?`).run(roomId, peerId);
         db.prepare(`DELETE FROM waiting_peers WHERE room_id = ? AND peer_id = ?`).run(roomId, peerId);
 
-        return NextResponse.json({
+        return Response.json({
           users: readActiveUsers(db, roomId),
           waitingPeers: readWaitingPeers(db, roomId),
           kickedPeer: { peerId: targetRow.peer_id, userName: targetRow.user_name },
@@ -76,7 +81,7 @@ export async function POST(
 
         db.prepare(`DELETE FROM room_presence WHERE room_id = ? AND peer_id = ?`).run(roomId, peerId);
 
-        return NextResponse.json({
+        return Response.json({
           users: readActiveUsers(db, roomId),
           waitingPeers: readWaitingPeers(db, roomId),
           suspendedPeer: { peerId: targetRow.peer_id, userName: targetRow.user_name },
@@ -91,10 +96,8 @@ export async function POST(
     const c = String(color || '#3498db');
 
     if (!pId) {
-      return NextResponse.json({ error: 'peerId is required' }, { status: 400 });
+      return Response.json({ error: 'peerId is required' }, { status: 400 });
     }
-
-    const db = getRoomDb();
 
     const roomRow = db.prepare(`SELECT max_users FROM rooms WHERE room_id = ?`).get(roomId) as
       | { max_users: number }
@@ -115,7 +118,7 @@ export async function POST(
       db.prepare(`DELETE FROM room_presence WHERE room_id = ? AND peer_id = ?`).run(roomId, pId);
       db.prepare(`DELETE FROM waiting_peers WHERE room_id = ? AND peer_id = ?`).run(roomId, pId);
 
-      return NextResponse.json({
+      return Response.json({
         users: readActiveUsers(db, roomId),
         waitingPeers: readWaitingPeers(db, roomId),
         hostPeerId: getRoomHostPeerId(db, roomId),
@@ -139,7 +142,7 @@ export async function POST(
         `UPDATE room_presence SET user_name = ?, color = ?, last_seen = ? WHERE room_id = ? AND peer_id = ?`
       ).run(uName, c, now, roomId, pId);
 
-      return NextResponse.json({
+      return Response.json({
         users: readActiveUsers(db, roomId),
         waitingPeers: readWaitingPeers(db, roomId),
         hostPeerId,
@@ -154,7 +157,7 @@ export async function POST(
         `UPDATE waiting_peers SET user_name = ?, color = ? WHERE room_id = ? AND peer_id = ?`
       ).run(uName, c, roomId, pId);
 
-      return NextResponse.json({
+      return Response.json({
         users: activeUsers,
         waitingPeers: readWaitingPeers(db, roomId),
         hostPeerId: getRoomHostPeerId(db, roomId),
@@ -168,7 +171,7 @@ export async function POST(
          VALUES (?, ?, ?, ?, ?)`
       ).run(roomId, pId, uName, c, now);
 
-      return NextResponse.json({
+      return Response.json({
         users: activeUsers,
         waitingPeers: readWaitingPeers(db, roomId),
         hostPeerId: getRoomHostPeerId(db, roomId),
@@ -182,7 +185,7 @@ export async function POST(
          VALUES (?, ?, ?, ?, ?)`
       ).run(roomId, pId, uName, c, now);
 
-      return NextResponse.json({
+      return Response.json({
         users: activeUsers,
         waitingPeers: readWaitingPeers(db, roomId),
         hostPeerId: getRoomHostPeerId(db, roomId),
@@ -199,42 +202,42 @@ export async function POST(
         last_seen = excluded.last_seen`
     ).run(roomId, pId, uName, c, now, now);
 
-    return NextResponse.json({
+    return Response.json({
       users: readActiveUsers(db, roomId),
       waitingPeers: readWaitingPeers(db, roomId),
       hostPeerId: getRoomHostPeerId(db, roomId),
       isWaiting: false,
     });
   } catch (e) {
-    return NextResponse.json(
+    return Response.json(
       { error: e instanceof Error ? e.message : 'Failed to update presence' },
       { status: 500 }
     );
   }
 }
 
-export async function DELETE(
-  request: NextRequest,
-  { params }: { params: Promise<{ roomId: string }> }
-) {
+export async function handlePresenceDelete(
+  db: RoomDatabase,
+  roomId: string,
+  request: Request,
+): Promise<Response> {
   try {
-    const { roomId } = await params;
-    const peerId = request.nextUrl.searchParams.get('peerId');
+    const url = new URL(request.url);
+    const peerId = url.searchParams.get('peerId');
     if (!peerId) {
-      return NextResponse.json({ error: 'peerId is required' }, { status: 400 });
+      return Response.json({ error: 'peerId is required' }, { status: 400 });
     }
 
-    const db = getRoomDb();
     db.prepare(`DELETE FROM room_presence WHERE room_id = ? AND peer_id = ?`).run(roomId, peerId);
     db.prepare(`DELETE FROM waiting_peers WHERE room_id = ? AND peer_id = ?`).run(roomId, peerId);
     db.prepare(`DELETE FROM kicked_peers WHERE room_id = ? AND peer_id = ?`).run(roomId, peerId);
-    return NextResponse.json({
+    return Response.json({
       users: readActiveUsers(db, roomId),
       waitingPeers: readWaitingPeers(db, roomId),
       hostPeerId: getRoomHostPeerId(db, roomId),
     });
   } catch (e) {
-    return NextResponse.json(
+    return Response.json(
       { error: e instanceof Error ? e.message : 'Failed to leave presence' },
       { status: 500 }
     );

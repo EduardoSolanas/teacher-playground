@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
+import { newAuthenticatedContext } from './helpers';
 
 function appUrl(path: string) {
   return new URL(path, process.env.PLAYWRIGHT_BASE_URL).toString();
@@ -23,10 +24,17 @@ async function createRoomWithMaxUsers(page: Page, name: string, maxUsers: number
 
 async function joinExistingRoom(page: Page, roomId: string, name = 'Peer') {
   await page.goto(`/whiteboard/${roomId}`);
+  // Wait for the prompt rather than sampling isVisible() immediately after
+  // navigation: the page has not rendered yet at that point, so the check
+  // returned false and the peer silently never joined the room.
+  const usernameInput = page.getByTestId('whiteboard-username-input');
+  const arrived = await Promise.race([
+    usernameInput.waitFor({ state: 'visible', timeout: 15000 }).then(() => 'prompt' as const).catch(() => null),
+    page.getByTestId('whiteboard-canvas-area').waitFor({ state: 'visible', timeout: 15000 }).then(() => 'canvas' as const).catch(() => null),
+  ]);
 
-  const isPromptVisible = await page.getByTestId('whiteboard-username-input').isVisible().catch(() => false);
-  if (isPromptVisible) {
-    await page.getByTestId('whiteboard-username-input').fill(name);
+  if (arrived === 'prompt') {
+    await usernameInput.fill(name);
     await page.getByTestId('whiteboard-join-room-btn').click();
   }
 }
@@ -82,8 +90,8 @@ async function approveFirstWaitingPeer(hostPage: Page) {
 
 test.describe('Waiting Room', () => {
   test('peer always starts in waiting room even when room has spare capacity', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
@@ -103,8 +111,8 @@ test.describe('Waiting Room', () => {
   });
 
   test('peer goes to waiting room when room is full, host can approve them', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
@@ -124,8 +132,8 @@ test.describe('Waiting Room', () => {
   });
 
   test('host can reject a waiting peer', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
@@ -150,8 +158,8 @@ test.describe('Waiting Room', () => {
   });
 
   test('waiting peer can leave the waiting room themselves', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
@@ -175,8 +183,8 @@ test.describe('Waiting Room', () => {
   });
 
   test('host can kick an accepted peer', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
@@ -209,8 +217,8 @@ test.describe('Waiting Room', () => {
   });
 
   test('host can send an accepted peer back to waiting room', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
@@ -241,8 +249,8 @@ test.describe('Waiting Room', () => {
   });
 
   test('host can approve, kick, and re-approve a peer', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
@@ -282,9 +290,9 @@ test.describe('Waiting Room', () => {
   });
 
   test('approved non-host cannot approve or moderate another waiting peer', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
-    const context3 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
+    const context3 = await newAuthenticatedContext(browser);
 
     const hostPage = await context1.newPage();
     const approvedPeerPage = await context2.newPage();
@@ -318,7 +326,7 @@ test.describe('Waiting Room', () => {
   });
 
   test('presence panel collapses and expands from the top toggle', async ({ browser }) => {
-    const context = await browser.newContext();
+    const context = await newAuthenticatedContext(browser);
     const page = await context.newPage();
 
     await createRoomWithMaxUsers(page, 'CollapseHost', 3);
@@ -336,8 +344,8 @@ test.describe('Waiting Room', () => {
   });
 
   test('host can open peer moderation menu with left click', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const hostPage = await context1.newPage();
     const peerPage = await context2.newPage();
@@ -360,8 +368,8 @@ test.describe('Waiting Room', () => {
   });
 
   test('host can open peer moderation menu from the visible options button', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const hostPage = await context1.newPage();
     const peerPage = await context2.newPage();
@@ -383,8 +391,8 @@ test.describe('Waiting Room', () => {
   });
 
   test('host only sees moderation actions through the context menu for an approved peer', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const hostPage = await context1.newPage();
     const peerPage = await context2.newPage();
@@ -412,8 +420,8 @@ test.describe('Waiting Room', () => {
   });
 
   test('host only sees let in and reject actions for a waiting peer context menu', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const hostPage = await context1.newPage();
     const peerPage = await context2.newPage();
@@ -433,8 +441,8 @@ test.describe('Waiting Room', () => {
   });
 
   test('host can see an approved peer cursor on the whiteboard', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const hostPage = await context1.newPage();
     const peerPage = await context2.newPage();
@@ -477,8 +485,8 @@ test.describe('Waiting Room', () => {
   });
 
   test('only host can open library and help containers', async ({ browser }) => {
-    const context1 = await browser.newContext();
-    const context2 = await browser.newContext();
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
 
     const hostPage = await context1.newPage();
     const peerPage = await context2.newPage();
