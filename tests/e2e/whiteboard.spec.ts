@@ -718,49 +718,6 @@ test.describe('Reconnection & Resilience', () => {
     }
   });
 
-  // NOT IMPLEMENTED: viewport is deliberately per-peer. `onViewportChange` is a
-  // no-op and nothing broadcasts pan/zoom, so each participant navigates the
-  // board independently. Sharing it would drag every peer's view around when
-  // one person zooms; Excalidraw treats that as an opt-in "follow" mode rather
-  // than default behaviour. Unskip this only if shared viewport is built.
-  test.fixme('viewport changes sync between peers', async ({ page, browser }) => {
-    await cleanContextAndJoin(page, 'VPAlice');
-    const roomUrl = page.url();
-
-    const bobContext = await newAuthenticatedContext(browser);
-    const bobPage = await bobContext.newPage();
-    try {
-      await bobContext.addInitScript(() => {
-        localStorage.removeItem('whiteboard_username');
-        localStorage.removeItem('whiteboard_user_color');
-      });
-      await bobPage.goto(roomUrl);
-      await bobPage.getByTestId('whiteboard-username-input').fill('VPBob');
-      await bobPage.getByTestId('whiteboard-join-room-btn').click();
-      await approveWaitingPeerIfPresent(page);
-      await expect(bobPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
-
-      await waitForProviderConnected(page);
-      await waitForProviderConnected(bobPage);
-      await page.waitForTimeout(2000);
-
-      // Alice zooms in
-      const initialZoom = (await getStoreState(page)).viewport?.zoom || 1;
-      await page.evaluate((z) => {
-        // @ts-ignore
-        const store = window.__whiteboardStore;
-        if (store) store.setViewport({ x: 0, y: 0, zoom: z + 0.5 });
-      }, initialZoom);
-
-      await page.waitForTimeout(1000);
-
-      // Bob should see the zoom change
-      const bobState = await getStoreState(bobPage);
-      expect(bobState.viewport?.zoom).toBeGreaterThan(initialZoom);
-    } finally {
-      await bobContext.close();
-    }
-  });
 });
 
 test.describe('Edge Cases', () => {

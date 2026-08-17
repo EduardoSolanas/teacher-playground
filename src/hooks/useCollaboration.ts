@@ -42,6 +42,9 @@ export function useCollaboration(roomId: string) {
   const [maxUsers, setMaxUsers] = useState(DEFAULT_MAX_USERS);
   const [waitingPeers, setWaitingPeers] = useState<WhiteboardUser[]>([]);
   const [isWaiting, setIsWaiting] = useState(false);
+  // Bumped when the room must be re-read, e.g. after the host admits this peer.
+  const [roomReloadKey, setRoomReloadKey] = useState(0);
+  const wasWaitingRef = useRef(false);
   const [wasKicked, setWasKicked] = useState(false);
   const elementsRef = useRef<CanvasElement[]>([]);
   const viewportRef = useRef<Viewport>({ x: 0, y: 0, zoom: 1 });
@@ -112,6 +115,17 @@ export function useCollaboration(roomId: string) {
     }, 'api-fallback');
   }, []);
 
+  /** Elements loaded from the room that still need publishing to the document. */
+  const pendingPublishRef = useRef<CanvasElement[] | null>(null);
+
+  // A queued peer is not yet a member, so its first read of the room is
+  // refused. Re-read once the host admits it, otherwise it sits on an empty
+  // board while everyone else sees the existing drawing.
+  useEffect(() => {
+    if (wasWaitingRef.current && !isWaiting) setRoomReloadKey((key) => key + 1);
+    wasWaitingRef.current = isWaiting;
+  }, [isWaiting]);
+
   const applyViewport = useCallback((nextViewport: Viewport) => {
     viewportRef.current = nextViewport;
     setViewport(nextViewport);
@@ -135,6 +149,11 @@ export function useCollaboration(roomId: string) {
           setMaxUsers(data.maxUsers || DEFAULT_MAX_USERS);
           applyHostFromApi(hostPeerIdRef, data.hostPeerId, setHostPeerId);
           applyElements(loadedElements);
+          // Also publish what the room already contains, so a board reopened
+          // after a reload shows it. The scene is driven by the shared
+          // document, so state that only reaches React never reaches the
+          // canvas. Retried because collaboration may still be starting up.
+          pendingPublishRef.current = loadedElements;
           applyViewport(loadedViewport);
           setStatus('connected');
           setIsConnected(true);
@@ -161,7 +180,7 @@ export function useCollaboration(roomId: string) {
 
     loadRoom();
     return () => { cancelled = true; };
-  }, [roomId, applyElements, publishToSharedDoc, applyViewport]);
+  }, [roomId, roomReloadKey, applyElements, publishToSharedDoc, applyViewport]);
 
   // Set up collaboration event listeners
   useEffect(() => {
@@ -280,10 +299,23 @@ export function useCollaboration(roomId: string) {
       }
     }
 
+    // Drain the initial load once the shared document exists.
+    function publishPending() {
+      const pending = pendingPublishRef.current;
+      if (!pending || pending.length === 0) return;
+      if (!collaborationRef.current?.elementsArray) return;
+      pendingPublishRef.current = null;
+      publishToSharedDoc(
+        reconcileElements(pending, []) as unknown as CanvasElement[],
+      );
+    }
+
+    const publishTimer = window.setInterval(publishPending, 250);
     const interval = window.setInterval(pollRoomState, 2_000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
+      window.clearInterval(publishTimer);
     };
   }, [roomId, applyElements, applyViewport]);
 

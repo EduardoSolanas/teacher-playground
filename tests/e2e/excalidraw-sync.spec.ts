@@ -5,6 +5,7 @@ import {
   expectWaiting,
   approveFirstWaitingPeer,
   newAuthenticatedContext,
+  expectPersistedElement,
 } from './helpers';
 
 // These tests exercise the app as it is actually built today: the board is an
@@ -98,11 +99,15 @@ test.describe('Excalidraw scene sync', () => {
   // empty scene — it gets live updates from that point on, but no history. The
   // 'disconnected peer catches up from API fallback' case in collaboration.spec.ts
   // fails for what looks like the same reason. Unfixed; this test documents it.
-  test.fixme('a peer sees elements that already existed before it was approved', async ({ page, browser }) => {
+  test('a peer sees elements that already existed before it was approved', async ({ page, browser }) => {
     const roomId = await createRoomWithMaxUsers(page, 'BacklogHost', 3);
 
     await appendElement(page, rectangle('backlog-rect-1', 120, 120));
     await expect.poll(async () => sceneElementIds(page), { timeout: 10000 }).toContain('backlog-rect-1');
+
+    // The peer loads the board from the room API, and that save is debounced,
+    // so let it land before the peer joins.
+    await expectPersistedElement(page, roomId, 'backlog-rect-1');
 
     const peerContext = await newAuthenticatedContext(browser);
     const peerPage = await peerContext.newPage();

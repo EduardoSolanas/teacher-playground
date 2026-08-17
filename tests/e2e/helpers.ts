@@ -84,6 +84,21 @@ async function joinExistingRoom(page: Page, roomId: string, name = 'Peer') {
   }
 }
 
+/** Waits until the room API actually holds `elementId`, past the save debounce. */
+async function expectPersistedElement(page: Page, roomId: string, elementId: string) {
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(appUrl(`/api/whiteboard/room/${roomId}`));
+        if (!response.ok()) return [];
+        const body = await response.json();
+        return (body.elements ?? []).map((element: { id: string }) => element.id);
+      },
+      { timeout: 20000, message: 'room state was never persisted' },
+    )
+    .toContain(elementId);
+}
+
 // ── Waiting Room State Helpers ───────────────────────────────────────────────
 
 async function getCollabState(page: Page) {
@@ -171,6 +186,7 @@ export {
   joinExistingRoom,
   getCollabState,
   expectWaiting,
+  expectPersistedElement,
   expectNotWaiting,
   getFirstWaitingPeerId,
   approveFirstWaitingPeer,

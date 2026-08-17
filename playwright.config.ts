@@ -20,10 +20,12 @@ export default defineConfig({
   expect: {
     timeout: 10000,
   },
-  fullyParallel: false,
+  // Tests are independent: each creates its own room id and authenticates as
+  // its own Access subject, and rooms are separate Durable Objects.
+  fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: 1,
+  workers: process.env.CI ? 2 : 4,
   reporter: "html",
   use: {
     ...devices["Desktop Chrome"],

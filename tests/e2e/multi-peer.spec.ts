@@ -128,7 +128,7 @@ test.describe('Multi-peer collaboration', () => {
   // element. Note that ui-controls.spec.ts has a passing 'clear board removes all elements
   // from the store' test — it asserts on the orphaned window.__whiteboardStore, so it
   // clears the dead store and reports success while the real scene is untouched.
-  test.fixme('clearing the board on the host empties the peers scene too', async ({ page, browser }) => {
+  test('clearing the board on the host empties the peers scene too', async ({ page, browser }) => {
     const roomId = await createRoomWithMaxUsers(page, 'ClearHost', 2);
     const clearTestElemId = 'clear-test-rect-1';
 

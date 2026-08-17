@@ -5,6 +5,7 @@ import {
   joinExistingRoom,
   approveFirstWaitingPeer,
   expectWaiting,
+  expectPersistedElement,
   newAuthenticatedContext,
 } from './helpers';
 
@@ -98,12 +99,7 @@ test.describe('Room lifecycle', () => {
     }
   });
 
-  test.fixme('a scene element survives a page reload', async ({ page }) => {
-    // KNOWN DEFECT: Elements added to the scene are not persisted to the database
-    // and do not reappear after a page reload. Live updates work fine within the
-    // same session, but persistence across browser refreshes is not implemented.
-    // This test documents the expected behavior once that feature is added.
-
+  test('a scene element survives a page reload', async ({ page }) => {
     // Create a room
     const roomId = await createRoomWithMaxUsers(page, 'ReloadHost', 2);
 
@@ -112,11 +108,14 @@ test.describe('Room lifecycle', () => {
     await appendElement(page, rectangle(testElemId, 100, 100));
     await expect.poll(async () => sceneElementIds(page), { timeout: 10000 }).toContain(testElemId);
 
+    // Saving the room is debounced, so reloading immediately would race it.
+    await expectPersistedElement(page, roomId, testElemId);
+
     // Reload the page
     await page.reload();
     await waitForExcalidrawApi(page);
 
-    // Verify the element is still there (currently fails - element not persisted)
+    // Verify the element is still there
     await expect.poll(async () => sceneElementIds(page), { timeout: 10000 }).toContain(testElemId);
   });
 
