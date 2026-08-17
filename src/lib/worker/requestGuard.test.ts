@@ -1,0 +1,112 @@
+import { describe, it, expect } from 'vitest';
+import {
+  isValidRoomId,
+  bodyTooLarge,
+  isJsonContentType,
+  withSecurityHeaders,
+  MAX_BODY_BYTES,
+} from './requestGuard';
+
+describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
+  describe('isValidRoomId', () => {
+    it('accepts room codes', () => {
+      expect(isValidRoomId('ABCDEFG1')).toBe(true);
+      expect(isValidRoomId('room_a-b')).toBe(true);
+    });
+
+    it('rejects out-of-grammar identifiers', () => {
+      expect(isValidRoomId('../etc/passwd')).toBe(false);
+      expect(isValidRoomId('has spaces')).toBe(false);
+      expect(isValidRoomId('')).toBe(false);
+      expect(isValidRoomId('a'.repeat(65))).toBe(false);
+    });
+  });
+
+  describe('bodyTooLarge', () => {
+    it('rejects declared bodies over the cap', () => {
+      expect(bodyTooLarge(String(MAX_BODY_BYTES + 1))).toBe(true);
+    });
+
+    it('accepts bodies at or under the cap', () => {
+      expect(bodyTooLarge(String(MAX_BODY_BYTES))).toBe(false);
+      expect(bodyTooLarge('123')).toBe(false);
+    });
+
+    it('ignores absent or unparseable content lengths', () => {
+      expect(bodyTooLarge(null)).toBe(false);
+      expect(bodyTooLarge('not-a-number')).toBe(false);
+    });
+  });
+
+  describe('isJsonContentType', () => {
+    it('accepts application/json', () => {
+      expect(isJsonContentType('application/json')).toBe(true);
+      expect(isJsonContentType('application/json; charset=utf-8')).toBe(true);
+    });
+
+    it('rejects other content types', () => {
+      expect(isJsonContentType('text/plain')).toBe(false);
+      expect(isJsonContentType('application/x-www-form-urlencoded')).toBe(false);
+      expect(isJsonContentType(null)).toBe(false);
+    });
+  });
+
+  describe('withSecurityHeaders', () => {
+    it('adds the baseline headers to every response', () => {
+      const wrapped = withSecurityHeaders(new Response('ok', { status: 200 }));
+      expect(wrapped.headers.get('X-Content-Type-Options')).toBe('nosniff');
+      expect(wrapped.headers.get('Referrer-Policy')).toBe('no-referrer');
+      expect(wrapped.headers.get('X-Frame-Options')).toBe('DENY');
+    });
+
+    it('marks HTML responses noindex and announces a report-only CSP', () => {
+      const wrapped = withSecurityHeaders(
+        new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
+      );
+      expect(wrapped.headers.get('X-Robots-Tag')).toBe('noindex');
+      expect(wrapped.headers.get('Content-Security-Policy-Report-Only')).toContain("frame-ancestors 'none'");
+    });
+
+    it('marks non-HTML responses no-store', () => {
+      const wrapped = withSecurityHeaders(
+        new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } }),
+      );
+      expect(wrapped.headers.get('Cache-Control')).toBe('no-store');
+    });
+
+    it('sends a minimal Permissions Policy that denies unused capabilities', () => {
+      const wrapped = withSecurityHeaders(new Response('ok'));
+      const policy = wrapped.headers.get('Permissions-Policy') ?? '';
+      for (const feature of ['camera', 'microphone', 'geolocation', 'payment', 'usb']) {
+        expect(policy).toContain(`${feature}=()`);
+      }
+    });
+
+    it('varies cached non-HTML responses on the credentials that select them', () => {
+      const wrapped = withSecurityHeaders(
+        new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } }),
+      );
+      const vary = wrapped.headers.get('Vary') ?? '';
+      expect(vary).toContain('Cookie');
+      expect(vary).toContain('Origin');
+    });
+
+    it('preserves an existing Vary rather than dropping it', () => {
+      const wrapped = withSecurityHeaders(
+        new Response('{"ok":true}', {
+          headers: { 'content-type': 'application/json', vary: 'Accept-Encoding' },
+        }),
+      );
+      const vary = wrapped.headers.get('Vary') ?? '';
+      expect(vary).toContain('Accept-Encoding');
+      expect(vary).toContain('Cookie');
+    });
+
+    it('preserves the original status and body', async () => {
+      const original = new Response('hello', { status: 404 });
+      const wrapped = withSecurityHeaders(original);
+      expect(wrapped.status).toBe(404);
+      expect(await wrapped.text()).toBe('hello');
+    });
+  });
+});

@@ -118,7 +118,9 @@ function RoomContent({ roomId }: { roomId: string }) {
     ? waitingPeers.findIndex((p) => p.peerId === localPeerId) + 1
     : 0;
   const localUser = users.find((user) => user.peerId === localPeerId);
-  const isLocalHost = Boolean(isHost || localUser?.isHost || users[0]?.peerId === localPeerId);
+  // Host status comes only from the recorded host. A first-in-list fallback
+  // would let whoever happens to be listed first silently become host.
+  const isLocalHost = Boolean(isHost || localUser?.isHost);
 
   if (!userName) return <UserNamePrompt onJoin={handleJoin} roomId={roomId} />;
 

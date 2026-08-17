@@ -1,44 +1,64 @@
 import { z } from 'zod';
 
-export function parseBody<T>(
-  schema: z.ZodType<T>,
-  body: unknown
-): { ok: true; data: T } | { ok: false; error: string } {
-  const result = schema.safeParse(body);
-  if (result.success) {
-    return { ok: true, data: result.data };
-  }
-  const firstIssue = result.error.issues[0];
-  const message = firstIssue?.message || 'Invalid request body';
-  return { ok: false, error: message };
-}
+/**
+ * Request body schemas (SEC-005): every field is validated and bounded at the
+ * boundary so malformed or oversized payloads are rejected before persistence.
+ */
+
+export const PEER_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+export const COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
+export const MAX_NAME_LENGTH = 100;
+export const MAX_ELEMENTS = 10_000;
+export const MAX_MAX_USERS = 10;
 
 export const roomPostSchema = z.object({
-  elements: z.unknown().optional(),
-  viewport: z.unknown().optional(),
-  maxUsers: z.unknown().optional(),
-  hostPeerId: z.string().optional(),
-  name: z.string().optional(),
+  elements: z.array(z.unknown()).max(MAX_ELEMENTS).optional(),
+  viewport: z.object({
+    x: z.number().finite(),
+    y: z.number().finite(),
+    zoom: z.number().finite(),
+  }).optional(),
+  maxUsers: z.number().int().min(1).max(MAX_MAX_USERS).optional(),
+  hostPeerId: z.string().regex(PEER_ID_RE).optional(),
+  name: z.string().max(MAX_NAME_LENGTH).optional(),
+  allowFirstUserHost: z.boolean().optional(),
 });
 
 export const presencePostSchema = z.object({
   action: z.enum(['kick', 'suspend']).optional(),
-  peerId: z.string().optional(),
-  userName: z.string().optional(),
-  color: z.string().optional(),
+  peerId: z.string().regex(PEER_ID_RE),
+  userName: z.string().max(MAX_NAME_LENGTH).optional(),
+  color: z.string().regex(COLOR_RE).optional(),
 });
 
 export const waitingPostSchema = z.object({
-  peerId: z.string().min(1, 'peerId is required'),
+  peerId: z.string().regex(PEER_ID_RE),
   action: z.enum(['approve', 'reject']),
 });
 
 export const requestsPostSchema = z.object({
-  userName: z.string().min(1, 'userName is required'),
-  email: z.string().optional(),
+  userName: z.string().min(1).max(MAX_NAME_LENGTH),
+  email: z.email().optional(),
 });
 
 export const requestActionPostSchema = z.object({
   action: z.enum(['approve', 'deny']),
   role: z.enum(['peer', 'viewer']).optional(),
 });
+
+/**
+ * Parses a request body through a schema, adapting Zod's v4 result to the
+ * `{ ok, data | error }` shape the request handlers consume.
+ */
+export type ParseOutcome<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: string };
+
+export function parseBody<S extends z.ZodTypeAny>(
+  schema: S,
+  body: unknown,
+): ParseOutcome<z.output<S>> {
+  const result = schema.safeParse(body);
+  if (result.success) return { ok: true, data: result.data };
+  return { ok: false, error: result.error.issues.map((issue) => issue.message).join('; ') };
+}

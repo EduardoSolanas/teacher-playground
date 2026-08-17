@@ -60,7 +60,9 @@ describe('room presence API', () => {
       expect.objectContaining({
         peerId: 'peer-alice',
         userName: 'Anonymous',
-        isHost: true,
+        // No host is recorded for this room, so nobody is host — no
+        // first-in-list fallback.
+        isHost: false,
         isWaiting: false,
       }),
     ]);
@@ -120,7 +122,7 @@ describe('room presence API', () => {
     await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-joiner'));
   });
 
-  it('falls back to first-seen host and queues later peers when room has no stored creator', async () => {
+  it('grants no host and still queues later peers when room has no stored creator', async () => {
     const roomId = `presence-order-${crypto.randomUUID()}`;
 
     const aliceResponse = await handlePresencePost(
@@ -145,7 +147,7 @@ describe('room presence API', () => {
     const data = await response.json();
 
     expect(data.users).toEqual([
-      { peerId: 'peer-alice', userName: 'Alice', color: '#3498db', isHost: true, isWaiting: false },
+      { peerId: 'peer-alice', userName: 'Alice', color: '#3498db', isHost: false, isWaiting: false },
     ]);
     expect(data.waitingPeers).toEqual([
       expect.objectContaining({
@@ -183,7 +185,7 @@ describe('room presence API', () => {
 
     expect(deleteResponse.status).toBe(200);
     expect(deleteData.users).toEqual([
-      { peerId: 'peer-alice', userName: 'Alice', color: '#3498db', isHost: true, isWaiting: false },
+      { peerId: 'peer-alice', userName: 'Alice', color: '#3498db', isHost: false, isWaiting: false },
     ]);
 
     await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-alice'));

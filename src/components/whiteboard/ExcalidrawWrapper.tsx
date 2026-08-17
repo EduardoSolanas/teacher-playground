@@ -140,8 +140,45 @@ export default function ExcalidrawWrapper({
     };
   }, [yDoc, yElementsArray, yCursorsMap, roomId, applyRemoteElements]);
 
+  /** Snapshot of the shared document as plain Excalidraw elements. */
+  const readSharedElements = useCallback((): Record<string, unknown>[] => {
+    if (!yElementsArray) return [];
+    return yElementsArray.toArray().map((yMap) => {
+      const element: Record<string, unknown> = {};
+      (yMap as Y.Map<unknown>).forEach((value: unknown, key: string) => {
+        element[key] = value;
+      });
+      return element;
+    });
+  }, [yElementsArray]);
+
   const handleAPI = useCallback((api: any) => {
     apiRef.current = api;
+
+    // The document may already hold the room's contents — restored from the
+    // API after a reload, or synced before the board mounted. Read it directly
+    // rather than relying on anything queued earlier, since whether that
+    // arrived before or after this callback is a race.
+    //
+    // Deferred, not applied inline: Excalidraw is still finishing its own
+    // initialisation when this callback fires and would overwrite a scene
+    // written synchronously here. The tool handling below defers for the same
+    // reason.
+    setTimeout(() => {
+      if (apiRef.current !== api) return;
+      const shared = readSharedElements();
+      if (shared.length === 0) return;
+      if (excalidrawElementsEqual(shared, lastSyncedElementsRef.current)) return;
+      lastSyncedElementsRef.current = shared;
+      isRemoteUpdateRef.current = true;
+      try {
+        api.updateScene({ elements: serializeExcalidrawElements(shared) as any });
+      } catch {
+        // A malformed stored scene must not stop the board from opening.
+      }
+      finishRemoteUpdateSoon();
+    }, 100);
+
     // E2E runs against a production build, so the handle is also exposed when
     // the build is explicitly flagged for testing. Real deploys leave it off.
     const exposeDebugApi =
@@ -178,7 +215,7 @@ export default function ExcalidrawWrapper({
         }
       }
     }, 100);
-  }, [finishRemoteUpdateSoon]);
+  }, [finishRemoteUpdateSoon, readSharedElements]);
 
   useEffect(() => {
     if (!apiRef.current || !activeTool) return;

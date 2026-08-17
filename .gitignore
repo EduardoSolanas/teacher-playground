@@ -45,3 +45,9 @@ test-results.txt
 
 # Local scratch output
 tmp/
+
+# IDE module files (the .idea/ directory is already ignored above)
+*.iml
+
+# Agent scratch state
+.omo/

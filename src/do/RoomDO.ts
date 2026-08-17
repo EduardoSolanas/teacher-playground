@@ -148,7 +148,10 @@ export class RoomDO extends DurableObject {
     const promoting = section === 'waiting' && method === 'POST'
       ? this.accountAwaitingApproval(roomId, body)
       : null;
-    const joiningPeerId = section === 'presence' && method === 'POST'
+    // Only a plain join/heartbeat binds the peer to the caller's account. A
+    // host's kick/suspend POST names a *different* peer as its target, and
+    // must not rebind that peer's ownership to the host's own account.
+    const joiningPeerId = section === 'presence' && method === 'POST' && stringField(body, 'action') == null
       ? stringField(body, 'peerId')
       : null;
 
@@ -220,9 +223,40 @@ export class RoomDO extends DurableObject {
       if (action === 'kick' || action === 'suspend') {
         return isOwner ? null : forbidden();
       }
+
+      // Joining/heartbeat: a caller may not claim a peerId another account
+      // already bound to itself, or it could hijack that peer's identity.
+      const peerId = stringField(body, 'peerId');
+      if (peerId) {
+        const owner = this.peerAccountId(roomId, peerId);
+        if (owner && owner !== accountId) return forbidden();
+      }
       return null;
     }
 
+    if (section === 'presence' && method === 'DELETE') {
+      // Leaving/heartbeat-timeout is self-service; a caller may only remove a
+      // peer bound to its own account. A peer with no recorded owner (or that
+      // doesn't exist) is harmless to remove, so let that through unchanged.
+      const peerId = url.searchParams.get('peerId');
+      if (peerId) {
+        const owner = this.peerAccountId(roomId, peerId);
+        if (owner && owner !== accountId) return forbidden();
+      }
+      return null;
+    }
+
+    return null;
+  }
+
+  /** The account bound to a peer row in presence or the waiting queue, if any. */
+  private peerAccountId(roomId: string, peerId: string): string | null {
+    for (const table of ['room_presence', 'waiting_peers']) {
+      const row = this.db
+        .prepare(`SELECT account_id AS accountId FROM ${table} WHERE room_id = ? AND peer_id = ?`)
+        .get(roomId, peerId) as { accountId: string | null } | undefined;
+      if (row?.accountId) return row.accountId;
+    }
     return null;
   }
 

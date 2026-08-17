@@ -10,6 +10,12 @@ import {
   parseSessionCookie,
   type ValidatedSession,
 } from './lib/identity/sessionStore';
+import {
+  bodyTooLarge,
+  isJsonContentType,
+  isValidRoomId,
+  withSecurityHeaders,
+} from './lib/worker/requestGuard';
 
 export interface Env {
   ROOMS: DurableObjectNamespace;
@@ -32,10 +38,10 @@ const SESSION_CURRENT = '/auth/session/current';
 const SESSION_LOGOUT = '/auth/session/logout';
 
 function unauthorized(): Response {
-  return Response.json(
+  return withSecurityHeaders(Response.json(
     { error: 'Unauthorized' },
     { status: 401, headers: { 'Cache-Control': 'no-store' } },
-  );
+  ));
 }
 
 function hasExactOrigin(request: Request): boolean {
@@ -52,10 +58,10 @@ function originGuard(request: Request, pathname: string): Response | null {
       || pathname.startsWith('/api/')
     ));
   if (!guarded || hasExactOrigin(request)) return null;
-  return Response.json(
+  return withSecurityHeaders(Response.json(
     { error: 'Origin required' },
     { status: 403, headers: { 'Cache-Control': 'no-store' } },
-  );
+  ));
 }
 
 function internalJson(body: unknown): RequestInit {
@@ -92,7 +98,7 @@ async function sessionAuthorized(
   }
   const headers = new Headers(result.headers);
   headers.set('Cache-Control', 'no-store');
-  return { denied: new Response(result.body, { status: 401, headers }) };
+  return { denied: withSecurityHeaders(new Response(result.body, { status: 401, headers })) };
 }
 
 async function issueSession(
@@ -104,13 +110,13 @@ async function issueSession(
   // expose an empty POST as a readable stream, so `request.body === null` is
   // not a reliable empty-body check here.
   if (request.method !== 'POST') {
-    return Response.json({ error: 'Method not allowed' }, { status: 405, headers: { Allow: 'POST' } });
+    return withSecurityHeaders(Response.json({ error: 'Method not allowed' }, { status: 405, headers: { Allow: 'POST' } }));
   }
   const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
   const result = await identity.fetch(
     new Request('https://identity/sessions/issue', internalJson(principal)),
   );
-  return new Response(result.body, { status: result.status, headers: result.headers });
+  return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
 }
 
 async function sessionCurrent(
@@ -118,7 +124,7 @@ async function sessionCurrent(
   request: Request,
   principal: VerifiedAccessPrincipal,
 ): Promise<Response> {
-  if (request.method !== 'GET') return Response.json({ error: 'Method not allowed' }, { status: 405, headers: { Allow: 'GET' } });
+  if (request.method !== 'GET') return withSecurityHeaders(Response.json({ error: 'Method not allowed' }, { status: 405, headers: { Allow: 'GET' } }));
   const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
   const result = await identity.fetch(
     new Request('https://identity/sessions/authorize', {
@@ -126,20 +132,20 @@ async function sessionCurrent(
       headers: { 'content-type': 'application/json', cookie: request.headers.get('cookie') ?? '' },
     }),
   );
-  return new Response(result.body, { status: result.status, headers: result.headers });
+  return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
 }
 
 async function sessionLogout(env: Env, request: Request): Promise<Response> {
   // See issueSession: an empty browser POST may still have a body stream.
   if (request.method !== 'POST') {
-    return Response.json({ error: 'Method not allowed' }, { status: 405, headers: { Allow: 'POST' } });
+    return withSecurityHeaders(Response.json({ error: 'Method not allowed' }, { status: 405, headers: { Allow: 'POST' } }));
   }
   const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
   const result = await identity.fetch(new Request('https://identity/sessions/logout', {
     method: 'POST',
     headers: { cookie: request.headers.get('cookie') ?? '' },
   }));
-  return new Response(result.body, { status: result.status, headers: result.headers });
+  return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
 }
 
 /** Forwards to the room's Durable Object, preserving the original query. */
@@ -165,7 +171,12 @@ function forward(
   }
 
   const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
-  return stub.fetch(new Request(target, request));
+  return stub.fetch(new Request(target, request)).then((response) => {
+    // A 101 Switching Protocols upgrade carries a WebSocket pair that
+    // reconstructing the Response would drop, so pass it through untouched.
+    if (response.status === 101 && response.webSocket) return response;
+    return withSecurityHeaders(response);
+  });
 }
 
 export default {
@@ -210,8 +221,8 @@ export default {
     // can be routed before any protocol message arrives.
     if (url.pathname === '/signaling') {
       const roomId = url.searchParams.get('room');
-      if (!roomId) {
-        return new Response('Missing room', { status: 400 });
+      if (!roomId || !isValidRoomId(roomId)) {
+        return withSecurityHeaders(new Response('Missing or invalid room', { status: 400 }));
       }
       // The account travels with the upgrade so the room can re-check it for
       // the life of the socket, not just at connect time.
@@ -221,6 +232,23 @@ export default {
     const match = url.pathname.match(ROOM_API);
     if (match) {
       const roomId = decodeURIComponent(match[1]);
+      if (!isValidRoomId(roomId)) {
+        return withSecurityHeaders(new Response('Invalid room id', { status: 400 }));
+      }
+      // Mutations must be JSON and bounded in size; the body cap also stops
+      // unbounded reads before they reach the room Durable Object. A request
+      // that declares a body must declare it as JSON; bodyless mutations
+      // (e.g. DELETE) need no content type.
+      const readOnly = request.method === 'GET' || request.method === 'HEAD';
+      if (!readOnly) {
+        const contentLength = request.headers.get('content-length');
+        if (bodyTooLarge(contentLength)) {
+          return withSecurityHeaders(new Response('Body too large', { status: 413 }));
+        }
+        if (contentLength !== null && contentLength !== '0' && !isJsonContentType(request.headers.get('content-type'))) {
+          return withSecurityHeaders(new Response('Content type must be application/json', { status: 415 }));
+        }
+      }
       // The verified account decides which rooms this caller may touch.
       return forward(env, roomId, `/room${match[2] ?? ''}`, request, url, session);
     }
@@ -230,9 +258,9 @@ export default {
     if (ROOM_PAGE.test(url.pathname) && url.pathname !== ROOM_PLACEHOLDER) {
       const rewritten = new URL(request.url);
       rewritten.pathname = ROOM_PLACEHOLDER;
-      return env.ASSETS.fetch(new Request(rewritten, request));
+      return withSecurityHeaders(await env.ASSETS.fetch(new Request(rewritten, request)));
     }
 
-    return env.ASSETS.fetch(request);
+    return withSecurityHeaders(await env.ASSETS.fetch(request));
   },
 };

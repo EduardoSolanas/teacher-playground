@@ -1,145 +1,115 @@
 import { describe, it, expect } from 'vitest';
-import { parseBody, roomPostSchema, presencePostSchema, waitingPostSchema, requestsPostSchema, requestActionPostSchema } from './requestSchemas';
+import {
+  roomPostSchema,
+  presencePostSchema,
+  waitingPostSchema,
+  requestsPostSchema,
+  requestActionPostSchema,
+  PEER_ID_RE,
+  COLOR_RE,
+  MAX_ELEMENTS,
+  MAX_MAX_USERS,
+} from './requestSchemas';
 
-describe('requestSchemas', () => {
-  describe('parseBody', () => {
-    it('returns ok:true with typed data for a valid body', () => {
-      const result = parseBody(roomPostSchema, {
+describe('requestSchemas hardening (SEC-005)', () => {
+  describe('roomPostSchema', () => {
+    it('parses a valid room body', () => {
+      const result = roomPostSchema.safeParse({
         elements: [],
         viewport: { x: 0, y: 0, zoom: 1 },
-        maxUsers: 5,
+        maxUsers: 3,
+        hostPeerId: 'abcdefg1',
+        name: 'Algebra',
       });
-
-      expect(result.ok).toBe(true);
-      if (result.ok) {
-        expect(result.data.elements).toEqual([]);
-        expect(result.data.viewport).toEqual({ x: 0, y: 0, zoom: 1 });
-        expect(result.data.maxUsers).toBe(5);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.maxUsers).toBe(3);
+        expect(result.data.name).toBe('Algebra');
       }
     });
 
-    it('returns ok:false with a message for an invalid body', () => {
-      const result = parseBody(waitingPostSchema, {
-        peerId: '',
-        action: 'approve',
+    it('rejects malformed viewport', () => {
+      const result = roomPostSchema.safeParse({
+        viewport: { x: 'zero', y: 0, zoom: 1 },
       });
-
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(typeof result.error).toBe('string');
-        expect(result.error.length).toBeGreaterThan(0);
-      }
+      expect(result.success).toBe(false);
     });
 
-    it('does not throw when parsing invalid data', () => {
-      expect(() => {
-        parseBody(requestsPostSchema, { userName: '' });
-      }).not.toThrow();
+    it('rejects maxUsers outside the allowed range', () => {
+      expect(roomPostSchema.safeParse({ maxUsers: 0 }).success).toBe(false);
+      expect(roomPostSchema.safeParse({ maxUsers: 11 }).success).toBe(false);
+      expect(roomPostSchema.safeParse({ maxUsers: MAX_MAX_USERS }).success).toBe(true);
     });
 
-    it('uses the first issue message for the error', () => {
-      const result = parseBody(requestsPostSchema, { userName: '' });
-
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error).toBe('userName is required');
-      }
-    });
-  });
-
-  describe('roomPostSchema', () => {
-    it('allows all fields optional', () => {
-      const result = parseBody(roomPostSchema, {});
-      expect(result.ok).toBe(true);
-    });
-
-    it('allows unknown for elements and viewport', () => {
-      const result = parseBody(roomPostSchema, {
-        elements: { anything: 'goes' },
-        viewport: [1, 2, 3],
+    it('rejects oversized element lists', () => {
+      const result = roomPostSchema.safeParse({
+        elements: new Array(MAX_ELEMENTS + 1).fill({ type: 'rectangle' }),
       });
-      expect(result.ok).toBe(true);
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects non-array elements', () => {
+      expect(roomPostSchema.safeParse({ elements: { not: 'an array' } }).success).toBe(false);
+    });
+
+    it('rejects oversized room names', () => {
+      expect(roomPostSchema.safeParse({ name: 'a'.repeat(101) }).success).toBe(false);
+    });
+
+    it('rejects non-conforming hostPeerId', () => {
+      expect(roomPostSchema.safeParse({ hostPeerId: 'bad peer id!' }).success).toBe(false);
     });
   });
 
   describe('presencePostSchema', () => {
-    it('allows all fields optional', () => {
-      const result = parseBody(presencePostSchema, {});
-      expect(result.ok).toBe(true);
+    it('accepts a conforming peerId', () => {
+      expect(PEER_ID_RE.test('user-abc123')).toBe(true);
+      const result = presencePostSchema.safeParse({ peerId: 'user-abc123' });
+      expect(result.success).toBe(true);
     });
 
-    it('accepts action kick or suspend', () => {
-      const result1 = parseBody(presencePostSchema, { action: 'kick' });
-      const result2 = parseBody(presencePostSchema, { action: 'suspend' });
-      expect(result1.ok).toBe(true);
-      expect(result2.ok).toBe(true);
+    it('rejects an out-of-grammar peerId', () => {
+      expect(presencePostSchema.safeParse({ peerId: 'has spaces' }).success).toBe(false);
     });
 
-    it('rejects invalid action', () => {
-      const result = parseBody(presencePostSchema, { action: 'invalid' });
-      expect(result.ok).toBe(false);
+    it('rejects oversized user names', () => {
+      expect(presencePostSchema.safeParse({ peerId: 'user-1', userName: 'a'.repeat(101) }).success).toBe(false);
+    });
+
+    it('accepts a 6-digit hex color', () => {
+      expect(COLOR_RE.test('#3498db')).toBe(true);
+      expect(presencePostSchema.safeParse({ peerId: 'user-1', color: '#3498db' }).success).toBe(true);
+    });
+
+    it('rejects malformed colors', () => {
+      expect(presencePostSchema.safeParse({ peerId: 'user-1', color: 'red' }).success).toBe(false);
     });
   });
 
   describe('waitingPostSchema', () => {
-    it('requires peerId and action', () => {
-      const result = parseBody(waitingPostSchema, {});
-      expect(result.ok).toBe(false);
-    });
-
-    it('requires non-empty peerId', () => {
-      const result = parseBody(waitingPostSchema, { peerId: '', action: 'approve' });
-      expect(result.ok).toBe(false);
-    });
-
-    it('accepts approve or reject action', () => {
-      const result1 = parseBody(waitingPostSchema, { peerId: 'peer-1', action: 'approve' });
-      const result2 = parseBody(waitingPostSchema, { peerId: 'peer-1', action: 'reject' });
-      expect(result1.ok).toBe(true);
-      expect(result2.ok).toBe(true);
+    it('rejects an out-of-grammar peerId', () => {
+      expect(waitingPostSchema.safeParse({ peerId: '../evil', action: 'approve' }).success).toBe(false);
     });
   });
 
   describe('requestsPostSchema', () => {
-    it('requires non-empty userName', () => {
-      const result = parseBody(requestsPostSchema, { userName: '' });
-      expect(result.ok).toBe(false);
+    it('accepts a valid email', () => {
+      expect(requestsPostSchema.safeParse({ userName: 'Alice', email: 'alice@example.com' }).success).toBe(true);
     });
 
-    it('accepts userName with optional email', () => {
-      const result = parseBody(requestsPostSchema, { userName: 'Alice', email: 'alice@example.com' });
-      expect(result.ok).toBe(true);
+    it('rejects an invalid email', () => {
+      expect(requestsPostSchema.safeParse({ userName: 'Alice', email: 'not-an-email' }).success).toBe(false);
     });
 
-    it('accepts userName without email', () => {
-      const result = parseBody(requestsPostSchema, { userName: 'Bob' });
-      expect(result.ok).toBe(true);
+    it('rejects an oversized user name', () => {
+      expect(requestsPostSchema.safeParse({ userName: 'a'.repeat(101) }).success).toBe(false);
     });
   });
 
   describe('requestActionPostSchema', () => {
-    it('requires action', () => {
-      const result = parseBody(requestActionPostSchema, {});
-      expect(result.ok).toBe(false);
-    });
-
-    it('accepts approve or deny action', () => {
-      const result1 = parseBody(requestActionPostSchema, { action: 'approve' });
-      const result2 = parseBody(requestActionPostSchema, { action: 'deny' });
-      expect(result1.ok).toBe(true);
-      expect(result2.ok).toBe(true);
-    });
-
-    it('accepts optional role peer or viewer', () => {
-      const result1 = parseBody(requestActionPostSchema, { action: 'approve', role: 'peer' });
-      const result2 = parseBody(requestActionPostSchema, { action: 'approve', role: 'viewer' });
-      expect(result1.ok).toBe(true);
-      expect(result2.ok).toBe(true);
-    });
-
-    it('rejects invalid role', () => {
-      const result = parseBody(requestActionPostSchema, { action: 'approve', role: 'admin' });
-      expect(result.ok).toBe(false);
+    it('parses an action and an optional role', () => {
+      expect(requestActionPostSchema.safeParse({ action: 'approve', role: 'peer' }).success).toBe(true);
+      expect(requestActionPostSchema.safeParse({ action: 'deny' }).success).toBe(true);
     });
   });
 });

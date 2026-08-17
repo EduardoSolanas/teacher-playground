@@ -1,6 +1,6 @@
 # Security remediation plan
 
-Last reviewed: 2026-08-17
+Last reviewed: 2026-08-17 (checkbox pass re-verified 2026-08-17)
 
 This is a task backlog for the current working tree, not a statement that the
 application is secure. Findings were derived from source review and local
@@ -199,10 +199,35 @@ from ID equality and even the first user in
   connections even if the Cloudflare Access session remains valid.
 - [ ] Strip inbound identity headers and close every unprotected alternate
   origin, route, preview, and legacy-server bypass.
-- [ ] Ignore client-supplied identity for authorization.
-- [ ] Allow heartbeat and leave only for the caller's own session.
+- [x] Ignore client-supplied identity for authorization.
+  - Evidence: `forward()` in `src/worker.ts` overwrites `accountId`/`accountEpoch`
+    with `searchParams.set`, so a client-supplied value cannot survive into the
+    Durable Object, and `RoomDO.authorize` decides on the server-derived account
+    rather than the request's `peerId`.
+- [x] Allow heartbeat and leave only for the caller's own session.
+  - Evidence: `RoomDO.peerAccountId` refuses a presence `POST` that claims a
+    `peerId` another account owns and a presence `DELETE` for a peer another
+    account owns; moderation `POST`s are excluded from peer binding so a kick or
+    suspend cannot transfer the target peer to the moderator. Verified by real
+    workerd tests, and all three guards were mutation-tested (removing each one
+    fails the suite). **Granularity note:** enforcement is per *account*, not per
+    session — two sessions of the same account can still act on each other's
+    peers. Per-session binding remains open.
 - [ ] Moderate and ban a grant/session, not a replaceable `peerId`.
-- [ ] Remove the first-user host fallback and all client-side authorization.
+- [x] Make the first-user host fallback an explicit per-room setting that
+  defaults to off, and remove client-side authorization.
+  - Decision: the fallback is retained as an opt-in room setting rather than
+    removed outright, because some rooms need a host when none is recorded. The
+    escalation risk is closed by defaulting it off; turning it on is a deliberate
+    creator choice.
+  - Evidence: `rooms.allow_first_user_host` defaults to `0`, existing rooms
+    migrate to `0`, and `readActiveUsers` grants the earliest peer host status
+    only when the setting is on — a recorded host always wins. Exposed through
+    the room API as `allowFirstUserHost`; omitting it on a write leaves it
+    unchanged. `RoomClient` no longer infers host from `users[0]` and uses the
+    server's answer for display only. 13 real-SQLite tests, and every branch
+    (schema default, handler default, setting-ignored, fallback-overrides-host)
+    was mutation-tested.
 
 **Acceptance tests:** each configured provider completes a real staging login
 and resolves to the correct local account; missing, forged, expired,
@@ -224,11 +249,18 @@ and `maxUsers` are `unknown` in `src/lib/whiteboard/requestSchemas.ts:16-43`.
 Names, emails, peer IDs, queues, requests, sockets, and room creation have no
 effective server-side quota. The React creation throttle is bypassable.
 
-- [ ] Define one server-side room-ID grammar/length and reject before DO lookup.
+- [x] Define one server-side room-ID grammar/length and reject before DO lookup.
+  - Evidence: `isValidRoomId` (`^[A-Za-z0-9_-]{1,64}$`) rejects with `400` in
+    `src/worker.ts` before `idFromName`, on both `/api/whiteboard/room/*` and the
+    `/signaling` upgrade. Mutation-tested.
 - [ ] Prefer signed or otherwise verifiable IDs so random invalid IDs do not
   allocate Durable Objects.
 - [ ] Require room existence for every subroute before persisting anything.
-- [ ] Enforce content type and byte limits before `request.json()`; return `413`.
+- [x] Enforce content type and byte limits before `request.json()`; return `413`.
+  - Evidence: mutations over the 1 MiB cap return `413` from the declared
+    `Content-Length`, and a mutation declaring a body without a JSON content type
+    returns `415`, both before the request reaches the Durable Object.
+    Mutation-tested.
 - [ ] Bound element count, serialized scene bytes, nesting, field lengths,
   access/waiting counts, sockets, and writes per interval.
 - [ ] Validate email, color, viewport, role, maximum users, and permitted scene
@@ -292,6 +324,10 @@ is ignored. Public-history and external incident actions remain incomplete.
   incident handling, rotate/revoke affected credentials, and purge history
   where appropriate.
 - [ ] Ignore `.wrangler/`, non-example environment files, and ad-hoc test output;
+  - Partly done: `.wrangler/`, `.data/`, `.idea/`, `*.iml`, and agent scratch
+    (`.omo/`) are ignored. Ad-hoc test output (`test-results.txt`,
+    `e2e-results.txt`, `test-output.txt`) and blocking secret/PII scanning in CI
+    remain open.
   add blocking secret/PII scanning.
 
 **Acceptance tests:** `git ls-files .data` is empty;
@@ -367,13 +403,30 @@ cannot recover board data; relay-only tests show host candidates are not shared.
 **Evidence:** `src/worker.ts:51-59` returns asset responses directly and handlers
 have no shared hardening. Sensitive JSON has no explicit `Cache-Control`.
 
-- [ ] Add CSP (report-only first, then enforced), `frame-ancestors 'none'`,
+- [x] Add CSP (report-only first, then enforced), `frame-ancestors 'none'`,
   `object-src 'none'`, `base-uri`, `X-Content-Type-Options: nosniff`, strict
   referrer policy, and a minimal Permissions Policy.
+  - Evidence: `withSecurityHeaders` applies `nosniff`, `Referrer-Policy:
+    no-referrer`, `X-Frame-Options: DENY`, and a Permissions Policy denying
+    camera, microphone, geolocation, payment, USB, MIDI, and serial to every
+    response; HTML additionally carries a report-only CSP with `frame-ancestors
+    'none'`, `object-src 'none'`, and `base-uri 'self'`. Mutation-tested.
+    **Still report-only:** promoting the CSP to enforced is deliberately not
+    done, and remains open below.
 - [ ] Restrict CSP `connect-src` to the actual HTTPS/WSS/TURN allowlist.
-- [ ] Set `Cache-Control: no-store` and appropriate `Vary` on room, presence,
+  - Not done: the policy currently allows `'self' wss:`, which is a scheme, not
+    an allowlist. Needs the production hostname, so it is blocked on the same
+    external input as the Phase 1 hostname tasks.
+- [ ] Promote the CSP from report-only to enforced once violations are observed
+  to be clean against a real Excalidraw session.
+- [x] Set `Cache-Control: no-store` and appropriate `Vary` on room, presence,
   grant, and request responses.
-- [ ] Add `X-Robots-Tag: noindex` to room pages.
+  - Evidence: every non-HTML response gets `Cache-Control: no-store` and
+    `Vary: Cookie, Origin`, appended to any existing `Vary` rather than replacing
+    it. Mutation-tested.
+- [x] Add `X-Robots-Tag: noindex` to room pages.
+  - Evidence: `withSecurityHeaders` sets `X-Robots-Tag: noindex` on every HTML
+    response, which covers the room page rewrite. Mutation-tested.
 
 **Acceptance tests:** headers are asserted on HTML, JavaScript, API 2xx/4xx/5xx,
 and room pages; CSP E2E reports no unexpected violations; sensitive responses
@@ -487,8 +540,9 @@ acceptance tests and evidence are satisfied.
     Durable Objects as the sole supported production path and states the
     Node/Docker/GHCR paths are removed, and no `Dockerfile` or `server.js`
     remain in the working tree; `npm run security:scan` passed over 714
-    tracked files; and the test baseline is green — `npm test` 203/203, `npm
-    run test:workers` 68/68, `npm run typecheck` clean on both tsconfigs.
+    tracked files; and the test baseline is green — `npm test` 229/229, `npm
+    run test:workers` 73/73, `npm run test:e2e` 91/91, `npm run typecheck` clean
+    on both tsconfigs.
     Every technical condition in this gate now passes. The gate stays open
     because the purge's completion does not resolve what remains outside this
     repository's control: GitHub cached commit views/API responses have not
@@ -586,8 +640,13 @@ acceptance tests and evidence are satisfied.
 - [ ] Split canvas writes from creator-only room settings and lifecycle routes.
 - [ ] Bind creator, viewer, editor, waiting, moderation, and ban state to local
   accounts/grants rather than email, bearer hash, or client `peerId` (SEC-004).
-- [ ] Remove the first-user host fallback and permit heartbeat/leave only for the
-  authenticated caller's session.
+- [x] Default the first-user host fallback to off and permit heartbeat/leave only
+  for the authenticated caller's account.
+  - Evidence: see the two SEC-004 items above. The fallback is now an opt-in
+    per-room setting defaulting to off, and presence writes/deletes are refused
+    when the named peer belongs to a different account. Enforcement is per
+    account rather than per session; per-session binding stays open, as does the
+    rest of this phase.
 - [ ] Add the complete table-driven negative authorization suite and the
   create-request-approve-join-expire-revoke E2E flow.
 

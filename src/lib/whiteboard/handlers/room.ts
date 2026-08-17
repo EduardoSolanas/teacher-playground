@@ -40,11 +40,11 @@ export async function handleRoomPost(
       return Response.json({ error: parseResult.error }, { status: 400 });
     }
 
-    const { elements, viewport, maxUsers, hostPeerId, name } = parseResult.data;
+    const { elements, viewport, maxUsers, hostPeerId, name, allowFirstUserHost } = parseResult.data;
 
     const now = Date.now();
-    const existing = db.prepare(`SELECT created_at, max_users, name FROM rooms WHERE room_id = ?`).get(roomId) as
-      | { created_at: number; max_users: number; name: string | null }
+    const existing = db.prepare(`SELECT created_at, max_users, name, allow_first_user_host FROM rooms WHERE room_id = ?`).get(roomId) as
+      | { created_at: number; max_users: number; name: string | null; allow_first_user_host: number }
       | undefined;
     const normalizedMaxUsers = maxUsers === undefined
       ? existing?.max_users ?? DEFAULT_MAX_USERS
@@ -52,6 +52,11 @@ export async function handleRoomPost(
     const normalizedName = name === undefined
       ? existing?.name ?? null
       : normalizeName(name);
+    // Omitting the setting leaves it as it was; new rooms default to off so
+    // nobody becomes host merely by arriving first.
+    const normalizedAllowFirstUserHost = allowFirstUserHost === undefined
+      ? existing?.allow_first_user_host === 1
+      : allowFirstUserHost;
     const elementsJson = JSON.stringify(elements || []);
     const viewportJson = JSON.stringify(viewport || { x: 0, y: 0, zoom: 1 });
     const hostId =
@@ -65,13 +70,23 @@ export async function handleRoomPost(
     if (existing) {
       db.prepare(
         `UPDATE rooms
-         SET elements = ?, viewport = ?, max_users = ?, name = ?, updated_at = ?
+         SET elements = ?, viewport = ?, max_users = ?, name = ?,
+             allow_first_user_host = ?, updated_at = ?
          WHERE room_id = ?`
-      ).run(elementsJson, viewportJson, normalizedMaxUsers, normalizedName, now, roomId);
+      ).run(
+        elementsJson,
+        viewportJson,
+        normalizedMaxUsers,
+        normalizedName,
+        normalizedAllowFirstUserHost ? 1 : 0,
+        now,
+        roomId,
+      );
     } else {
       db.prepare(
-        `INSERT INTO rooms (room_id, elements, viewport, max_users, host_peer_id, name, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO rooms (room_id, elements, viewport, max_users, host_peer_id, name,
+                            allow_first_user_host, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         roomId,
         elementsJson,
@@ -79,6 +94,7 @@ export async function handleRoomPost(
         normalizedMaxUsers,
         hostId,
         normalizedName,
+        normalizedAllowFirstUserHost ? 1 : 0,
         now,
         now,
       );
@@ -110,6 +126,7 @@ export async function handleRoomPost(
       maxUsers: normalizedMaxUsers,
       hostPeerId: hostId,
       name: normalizedName,
+      allowFirstUserHost: normalizedAllowFirstUserHost,
       hasCreatorGrant,
     });
   } catch (e) {
@@ -128,11 +145,12 @@ export async function handleRoomGet(
 ): Promise<Response> {
   try {
     const row = db.prepare(
-      `SELECT elements, viewport, max_users, host_peer_id, name, created_at, updated_at FROM rooms WHERE room_id = ?`
+      `SELECT elements, viewport, max_users, host_peer_id, name, allow_first_user_host, created_at, updated_at FROM rooms WHERE room_id = ?`
     ).get(roomId) as {
       elements: string;
       viewport: string;
       max_users: number;
+      allow_first_user_host: number;
       host_peer_id: string | null;
       name: string | null;
       created_at: number;
@@ -148,6 +166,7 @@ export async function handleRoomGet(
       elements: JSON.parse(row.elements),
       viewport: JSON.parse(row.viewport),
       maxUsers: row.max_users,
+      allowFirstUserHost: row.allow_first_user_host === 1,
       hostPeerId: row.host_peer_id,
       name: row.name,
       created_at: row.created_at,

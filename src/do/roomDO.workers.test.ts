@@ -404,6 +404,108 @@ describe('room authorization matrix', () => {
     }
   });
 
+  it('refuses removing a peer bound to another account, leaving it in place', async () => {
+    const roomId = 'matrix-presence-delete';
+    await createRoomAs(owner, roomId);
+    await joinAs(owner, roomId, 'host-peer');
+    await joinAs(outsider, roomId, 'guest-peer');
+
+    const del = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/presence?peerId=guest-peer`,
+      owner,
+      { method: 'DELETE' },
+    );
+    expect(del.status).toBe(403);
+
+    // guest-peer is a non-host peer, so it's queued in the waiting list rather
+    // than admitted straight into room_presence — the refused delete must
+    // leave it there either way.
+    const presence = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner);
+    const data = (await presence.json()) as { waitingPeers: Array<{ peerId: string }> };
+    expect(data.waitingPeers.map((p) => p.peerId)).toContain('guest-peer');
+  });
+
+  it('refuses claiming a peerId already bound to another account', async () => {
+    const roomId = 'matrix-presence-claim';
+    await createRoomAs(owner, roomId);
+    await joinAs(owner, roomId, 'host-peer');
+    await joinAs(outsider, roomId, 'guest-peer');
+
+    const hijack = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'guest-peer', userName: 'Hijacker', color: '#000000' }),
+    });
+    expect(hijack.status).toBe(403);
+
+    // Untouched: the peer's original name from joinAs, not the hijack attempt.
+    // guest-peer is a non-host peer, so it's in the waiting list, not
+    // room_presence.
+    const presence = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner);
+    const data = (await presence.json()) as { waitingPeers: Array<{ peerId: string; userName: string }> };
+    expect(data.waitingPeers.find((p) => p.peerId === 'guest-peer')?.userName).toBe('guest-peer');
+  });
+
+  it('does not transfer a peer to the moderator when the owner suspends it', async () => {
+    const roomId = 'matrix-presence-moderate-binding';
+    await createRoomAs(owner, roomId);
+    await joinAs(owner, roomId, 'host-peer');
+    await joinAs(outsider, roomId, 'guest-peer');
+    await authenticatedFetch(`/api/whiteboard/room/${roomId}/waiting`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'guest-peer', action: 'approve' }),
+    });
+    // Re-join so the admitted presence row is bound to the guest's account.
+    await joinAs(outsider, roomId, 'guest-peer');
+
+    const suspend = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'suspend', peerId: 'guest-peer' }),
+    });
+    expect(suspend.status).toBe(200);
+
+    // Moderating a peer names someone else's peer. It must not rebind that
+    // peer to the moderator's account, or the real owner would be locked out
+    // of its own leave and heartbeat.
+    const selfDelete = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/presence?peerId=guest-peer`,
+      outsider,
+      { method: 'DELETE' },
+    );
+    expect(selfDelete.status).toBe(200);
+  });
+
+  it('lets a caller remove its own peer', async () => {
+    const roomId = 'matrix-presence-self-delete';
+    await createRoomAs(owner, roomId);
+    await joinAs(owner, roomId, 'host-peer');
+
+    const del = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/presence?peerId=host-peer`,
+      owner,
+      { method: 'DELETE' },
+    );
+    expect(del.status).toBe(200);
+
+    const presence = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner);
+    const data = (await presence.json()) as { users: Array<{ peerId: string }> };
+    expect(data.users.map((u) => u.peerId)).not.toContain('host-peer');
+  });
+
+  it('does not grant host status to the first peer when no host is recorded', async () => {
+    const roomId = 'matrix-no-host-fallback';
+    await createRoomAs(owner, roomId);
+    await joinAs(owner, roomId, 'solo-peer');
+
+    const presence = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner);
+    const data = (await presence.json()) as { users: Array<{ peerId: string; isHost: boolean }> };
+    expect(data.users).toEqual([
+      expect.objectContaining({ peerId: 'solo-peer', isHost: false }),
+    ]);
+  });
+
   it('grants membership when the owner approves a waiting peer', async () => {
     const roomId = 'matrix-approval';
     await createRoomAs(owner, roomId);

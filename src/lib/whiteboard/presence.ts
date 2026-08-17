@@ -1,5 +1,5 @@
 import type { RoomDatabase } from './db';
-import { getRoomHostPeerId } from './roomSchema';
+import { getRoomAllowFirstUserHost, getRoomHostPeerId } from './roomSchema';
 
 const ACTIVE_WINDOW_MS = 10_000;
 
@@ -8,6 +8,7 @@ export function readActiveUsers(db: RoomDatabase, roomId: string) {
   db.prepare(`DELETE FROM room_presence WHERE last_seen < ?`).run(cutoff);
 
   const hostPeerId = getRoomHostPeerId(db, roomId);
+  const allowFirstUserHost = getRoomAllowFirstUserHost(db, roomId);
 
   const rows = db.prepare(
     `SELECT peer_id, user_name, color, first_seen
@@ -25,7 +26,12 @@ export function readActiveUsers(db: RoomDatabase, roomId: string) {
     peerId: row.peer_id,
     userName: row.user_name,
     color: row.color,
-    isHost: hostPeerId != null ? row.peer_id === hostPeerId : index === 0,
+    // A recorded host always wins. Falling back to the earliest peer hands
+    // moderation power to whoever arrived first, so it happens only when the
+    // room's creator opted in; the setting defaults to off.
+    isHost: hostPeerId != null
+      ? row.peer_id === hostPeerId
+      : allowFirstUserHost && index === 0,
     isWaiting: false,
   }));
 }

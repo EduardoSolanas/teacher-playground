@@ -9,6 +9,7 @@ export function applySchema(db: RoomDatabase): void {
       max_users INTEGER NOT NULL DEFAULT 3,
       host_peer_id TEXT,
       name TEXT,
+      allow_first_user_host INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     )
@@ -25,6 +26,12 @@ export function applySchema(db: RoomDatabase): void {
   }
   if (!columns.some((column) => column.name === 'name')) {
     db.exec(`ALTER TABLE rooms ADD COLUMN name TEXT`);
+    columns = db.prepare(`PRAGMA table_info(rooms)`).all() as Array<{ name: string }>;
+  }
+  if (!columns.some((column) => column.name === 'allow_first_user_host')) {
+    // Existing rooms migrate to the secure default: the fallback stays off
+    // unless a creator turns it on.
+    db.exec(`ALTER TABLE rooms ADD COLUMN allow_first_user_host INTEGER NOT NULL DEFAULT 0`);
   }
 
   db.exec(`
@@ -144,6 +151,31 @@ export function getRoomRole(
 
 export function roomExists(db: RoomDatabase, roomId: string): boolean {
   return db.prepare(`SELECT 1 FROM rooms WHERE room_id = ?`).get(roomId) !== undefined;
+}
+
+/**
+ * Whether this room lets the earliest present peer act as host when no host is
+ * recorded. Off unless a creator opts in: with it on, whoever happens to be
+ * first in the room gains moderation power, so it is a deliberate per-room
+ * choice rather than a default.
+ */
+export function getRoomAllowFirstUserHost(
+  db: RoomDatabase,
+  roomId: string,
+): boolean {
+  const row = db
+    .prepare(`SELECT allow_first_user_host FROM rooms WHERE room_id = ?`)
+    .get(roomId) as { allow_first_user_host: number | null } | undefined;
+  return row?.allow_first_user_host === 1;
+}
+
+export function setRoomAllowFirstUserHost(
+  db: RoomDatabase,
+  roomId: string,
+  allow: boolean,
+): void {
+  db.prepare(`UPDATE rooms SET allow_first_user_host = ? WHERE room_id = ?`)
+    .run(allow ? 1 : 0, roomId);
 }
 
 export function getRoomHostPeerId(
