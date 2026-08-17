@@ -19,6 +19,9 @@ export interface Env {
   ACCESS_AUDIENCE?: string;
   ACCESS_JWKS_URL?: string;
   ENVIRONMENT?: string;
+  LIVEKIT_URL?: string;
+  LIVEKIT_API_KEY?: string;
+  LIVEKIT_API_SECRET?: string;
 }
 
 // Room ids cannot be enumerated at build time, so the static export contains a
@@ -27,6 +30,7 @@ const ROOM_PAGE = /^\/whiteboard\/[^/]+\/?$/;
 const ROOM_PLACEHOLDER = '/whiteboard/_room';
 
 const ROOM_API = /^\/api\/whiteboard\/room\/([^/]+)(\/.*)?$/;
+const AV_TOKEN = '/api/av/token';
 const SESSION_ISSUE = '/auth/session';
 const SESSION_CURRENT = '/auth/session/current';
 const SESSION_LOGOUT = '/auth/session/logout';
@@ -216,6 +220,19 @@ export default {
       // The account travels with the upgrade so the room can re-check it for
       // the life of the socket, not just at connect time.
       return forward(env, roomId, '/signaling', request, url, session);
+    }
+
+    // Short-lived LiveKit join token. RoomDO enforces admission (owner/member
+    // only; waiting peers get 403) and mints the JWT when LIVEKIT_* is set.
+    if (url.pathname === AV_TOKEN) {
+      if (request.method !== 'POST' && request.method !== 'GET') {
+        return Response.json({ error: 'Method not allowed' }, { status: 405, headers: { Allow: 'GET, POST' } });
+      }
+      const roomId = url.searchParams.get('roomId');
+      if (!roomId) {
+        return Response.json({ error: 'Missing roomId' }, { status: 400 });
+      }
+      return forward(env, roomId, '/room/av', request, url, session);
     }
 
     const match = url.pathname.match(ROOM_API);
