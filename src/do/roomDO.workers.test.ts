@@ -43,8 +43,29 @@ describe('Worker routing into RoomDO', () => {
     });
   });
 
-  it('returns 404 for a room that does not exist', async () => {
-    const res = await authenticatedFetch('/api/whiteboard/room/nope', session);
+  it('answers 403 for a room the caller does not belong to, existing or not', async () => {
+    // Deliberately identical for an absent room and someone else's room, so the
+    // response cannot be used to enumerate which room ids exist.
+    const absent = await authenticatedFetch('/api/whiteboard/room/nope', session);
+    expect(absent.status).toBe(403);
+
+    const other = await bootstrapLocalSession('room-owner-elsewhere');
+    await authenticatedFetch('/api/whiteboard/room/someone-elses', other, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    });
+    const existing = await authenticatedFetch('/api/whiteboard/room/someone-elses', session);
+    expect(existing.status).toBe(403);
+  });
+
+  it('still reports 404 to a member whose room has been deleted', async () => {
+    await createRoom('deleted-but-member');
+    expect((await authenticatedFetch('/api/whiteboard/room/deleted-but-member', session, {
+      method: 'DELETE',
+    })).status).toBe(200);
+
+    const res = await authenticatedFetch('/api/whiteboard/room/deleted-but-member', session);
     expect(res.status).toBe(404);
   });
 
@@ -265,5 +286,159 @@ describe('revocation closes live signaling sockets', () => {
 
     expect(revoked.closed).toBe(true);
     expect(survivor.closed).toBe(false);
+  });
+});
+
+describe('revocation check runs without being triggered by hand', () => {
+  it('closes a revoked socket on its own scheduled alarm', async () => {
+    const roomId = 'revoke-room-selfscheduled';
+    const subject = await bootstrapLocalSession('revoke-self-scheduled');
+
+    const res = await authenticatedFetch(`/signaling?room=${roomId}`, subject, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(res.status).toBe(101);
+    const ws = res.webSocket!;
+    ws.accept();
+
+    const closed = new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error('socket was not closed by the scheduled alarm')),
+        5_000,
+      );
+      ws.addEventListener('close', (event: CloseEvent) => {
+        clearTimeout(timer);
+        resolve(event.code);
+      }, { once: true });
+    });
+
+    await getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>)
+      .fetch('https://identity/accounts/revoke-all', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ accountId: subject.accountId }),
+      });
+
+    // Deliberately no runDurableObjectAlarm(): this proves the object
+    // re-schedules and fires its own check.
+    expect(await closed).toBe(4401);
+  });
+});
+
+describe('room authorization matrix', () => {
+  let owner: LocalAuthSession;
+  let outsider: LocalAuthSession;
+
+  beforeEach(async () => {
+    owner = await bootstrapLocalSession('matrix-owner');
+    outsider = await bootstrapLocalSession('matrix-outsider');
+  });
+
+  async function createRoomAs(who: LocalAuthSession, roomId: string, body: Record<string, unknown> = {}) {
+    return authenticatedFetch(`/api/whiteboard/room/${roomId}`, who, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [], ...body }),
+    });
+  }
+
+  function joinAs(who: LocalAuthSession, roomId: string, peerId: string) {
+    return authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, who, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId, userName: peerId, color: '#3498db' }),
+    });
+  }
+
+  it('makes the creator the owner and lets it read its own board', async () => {
+    expect((await createRoomAs(owner, 'matrix-basic', { name: 'Mine' })).status).toBe(200);
+
+    const read = await authenticatedFetch('/api/whiteboard/room/matrix-basic', owner);
+    expect(read.status).toBe(200);
+    expect(await read.json()).toMatchObject({ name: 'Mine' });
+  });
+
+  it('refuses an outsider reading, writing, or deleting the board', async () => {
+    await createRoomAs(owner, 'matrix-closed', { name: 'Private' });
+
+    expect((await authenticatedFetch('/api/whiteboard/room/matrix-closed', outsider)).status).toBe(403);
+    expect((await createRoomAs(outsider, 'matrix-closed', { name: 'Hijacked' })).status).toBe(403);
+    expect((await authenticatedFetch('/api/whiteboard/room/matrix-closed', outsider, {
+      method: 'DELETE',
+    })).status).toBe(403);
+
+    // The board is unchanged after every refusal.
+    const read = await authenticatedFetch('/api/whiteboard/room/matrix-closed', owner);
+    expect(await read.json()).toMatchObject({ name: 'Private' });
+  });
+
+  it('refuses an outsider moderating the waiting queue', async () => {
+    await createRoomAs(owner, 'matrix-moderation');
+    await joinAs(owner, 'matrix-moderation', 'host-peer');
+    await joinAs(outsider, 'matrix-moderation', 'guest-peer');
+
+    expect((await authenticatedFetch('/api/whiteboard/room/matrix-moderation/waiting', outsider)).status).toBe(403);
+
+    const selfApprove = await authenticatedFetch('/api/whiteboard/room/matrix-moderation/waiting', outsider, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'guest-peer', action: 'approve' }),
+    });
+    expect(selfApprove.status).toBe(403);
+
+    // Still refused the board after trying to admit itself.
+    expect((await authenticatedFetch('/api/whiteboard/room/matrix-moderation', outsider)).status).toBe(403);
+  });
+
+  it('refuses a non-owner kicking or suspending a peer', async () => {
+    await createRoomAs(owner, 'matrix-kick');
+    await joinAs(owner, 'matrix-kick', 'host-peer');
+
+    for (const action of ['kick', 'suspend']) {
+      const response = await authenticatedFetch('/api/whiteboard/room/matrix-kick/presence', outsider, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action, peerId: 'host-peer' }),
+      });
+      expect(response.status, action).toBe(403);
+    }
+  });
+
+  it('grants membership when the owner approves a waiting peer', async () => {
+    const roomId = 'matrix-approval';
+    await createRoomAs(owner, roomId);
+    await joinAs(owner, roomId, 'host-peer');
+
+    // The guest is queued, and cannot read the board yet.
+    await joinAs(outsider, roomId, 'guest-peer');
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, outsider)).status).toBe(403);
+
+    const approve = await authenticatedFetch(`/api/whiteboard/room/${roomId}/waiting`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'guest-peer', action: 'approve' }),
+    });
+    expect(approve.status).toBe(200);
+
+    // Admission is what grants the board, and it survives the peer going idle.
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, outsider)).status).toBe(200);
+  });
+
+  it('does not let an approved member delete the room', async () => {
+    const roomId = 'matrix-member-delete';
+    await createRoomAs(owner, roomId);
+    await joinAs(owner, roomId, 'host-peer');
+    await joinAs(outsider, roomId, 'guest-peer');
+    await authenticatedFetch(`/api/whiteboard/room/${roomId}/waiting`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'guest-peer', action: 'approve' }),
+    });
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, outsider)).status).toBe(200);
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, outsider, {
+      method: 'DELETE',
+    })).status).toBe(403);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner)).status).toBe(200);
   });
 });

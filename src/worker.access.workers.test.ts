@@ -23,8 +23,10 @@ describe('real local Access boundary through workerd', () => {
     const current = await authenticatedFetch('/auth/session/current', session);
     expect(current.status).toBe(200);
     expect(current.headers.get('cache-control')).toBe('no-store');
+    // 403, not 401: the caller passed Access and the local session, and was
+    // then stopped by room authorization because it is not a member.
     const response = await authenticatedFetch('/api/whiteboard/room/boundary-valid', session);
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(403);
     const logout = await authenticatedFetch('/auth/session/logout', session, {
       method: 'POST',
       headers: { Origin: 'https://example.com' },
@@ -149,17 +151,25 @@ describe('real local Access boundary through workerd', () => {
       }
     }
 
+    // Room reads now answer 403 for any non-member, so they cannot prove a room
+    // is absent. Creating it instead can: only the first writer of a room that
+    // does not yet exist becomes its owner, so a 200 here proves the rejected
+    // cross-origin POSTs never created anything.
     const session = await bootstrapLocalSession(subject);
     for (let index = 0; index < origins.length; index += 1) {
-      const untouched = await authenticatedFetch(`/api/whiteboard/room/origin-post-${index}`, session);
-      expect(untouched.status, `room ${index} was mutated`).toBe(404);
+      const claimed = await authenticatedFetch(`/api/whiteboard/room/origin-post-${index}`, session, {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ elements: [] }),
+      });
+      expect(claimed.status, `room ${index} was mutated`).toBe(200);
     }
   });
 
   it('allows originless API reads but requires exact same-origin Origin on mutations', async () => {
     const session = await bootstrapLocalSession('boundary-origin-positive');
     const read = await authenticatedFetch('/api/whiteboard/room/origin-positive', session);
-    expect(read.status).toBe(404);
+    expect(read.status).toBe(403);
 
     const create = await authenticatedFetch('/api/whiteboard/room/origin-positive', session, {
       method: 'POST',
@@ -211,7 +221,7 @@ describe('real local Access boundary through workerd', () => {
     expect(wrongPrincipal.status).toBe(401);
     expect(wrongPrincipal.headers.get('set-cookie')).toContain('Max-Age=0');
     const valid = await authenticatedFetch('/api/whiteboard/room/boundary-owner', session);
-    expect(valid.status).toBe(404);
+    expect(valid.status).toBe(403);
   });
 
   it('denies a locally disabled account while its signed Access assertion remains valid', async () => {

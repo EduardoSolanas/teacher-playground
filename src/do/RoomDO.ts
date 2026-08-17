@@ -1,6 +1,11 @@
 import { DurableObject } from 'cloudflare:workers';
 import { DODatabase } from '../lib/whiteboard/doDatabase';
-import { applySchema } from '../lib/whiteboard/roomSchema';
+import {
+  addRoomMember,
+  applySchema,
+  getRoomRole,
+  roomExists,
+} from '../lib/whiteboard/roomSchema';
 import type { RoomDatabase } from '../lib/whiteboard/db';
 import { GLOBAL_IDENTITY_OBJECT_NAME } from './IdentityDO';
 import {
@@ -32,8 +37,48 @@ import { handleRequestsIdPost } from '../lib/whiteboard/handlers/requestsId';
  */
 export const REVOCATION_CHECK_INTERVAL_MS = 30_000;
 
+/**
+ * Lower bound so a misconfigured binding cannot turn the check into a busy
+ * loop against the identity object, and cannot silently disable it either.
+ */
+const MIN_REVOCATION_CHECK_INTERVAL_MS = 50;
+
 /** Close code sent to a socket whose account is no longer authorized. */
 export const SOCKET_REVOKED_CLOSE_CODE = 4401;
+
+/** Reads the override, ignoring anything unparseable or below the floor. */
+function resolveCheckInterval(env: RoomEnv): number {
+  const configured = Number(env.REVOCATION_CHECK_INTERVAL_MS);
+  if (!Number.isFinite(configured) || configured < MIN_REVOCATION_CHECK_INTERVAL_MS) {
+    return REVOCATION_CHECK_INTERVAL_MS;
+  }
+  return configured;
+}
+
+function forbidden(message = 'Forbidden'): Response {
+  return Response.json(
+    { error: message },
+    { status: 403, headers: { 'Cache-Control': 'no-store' } },
+  );
+}
+
+/** Parses a JSON object body, or null when it is absent or not an object. */
+function parseJsonObject(bodyText: string | null): Record<string, unknown> | null {
+  if (!bodyText) return null;
+  try {
+    const parsed = JSON.parse(bodyText);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function stringField(body: Record<string, unknown> | null, field: string): string | null {
+  const value = body?.[field];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
 
 interface SocketIdentity {
   accountId: string;
@@ -42,6 +87,8 @@ interface SocketIdentity {
 
 export interface RoomEnv {
   IDENTITY: DurableObjectNamespace;
+  /** Test-only override; production uses REVOCATION_CHECK_INTERVAL_MS. */
+  REVOCATION_CHECK_INTERVAL_MS?: string;
 }
 
 /**
@@ -51,10 +98,12 @@ export interface RoomEnv {
 export class RoomDO extends DurableObject {
   readonly db: RoomDatabase;
   private readonly roomEnv: RoomEnv;
+  private readonly checkIntervalMs: number;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
     this.roomEnv = env as RoomEnv;
+    this.checkIntervalMs = resolveCheckInterval(this.roomEnv);
     this.db = new DODatabase(ctx.storage.sql, ctx.storage);
     applySchema(this.db);
 
@@ -79,7 +128,149 @@ export class RoomDO extends DurableObject {
       return Response.json({ error: 'Missing roomId' }, { status: 400 });
     }
 
-    return this.route(request, url, roomId);
+    const segments = url.pathname.split('/').filter(Boolean);
+    const section = segments[1] ?? '';
+    const method = request.method;
+
+    // Read the body exactly once, up front. Authorization and membership both
+    // need to inspect it, and cloning a request whose body is never fully
+    // consumed leaves a dangling stream across the Durable Object boundary
+    // ("can't read from request stream after response has been sent").
+    const hasBody = method !== 'GET' && method !== 'HEAD';
+    const bodyText = hasBody ? await request.text() : null;
+    const body = parseJsonObject(bodyText);
+
+    const denied = this.authorize(request, url, roomId, section, body);
+    if (denied) return denied;
+
+    const accountId = url.searchParams.get('accountId');
+    // Approving deletes the queue row naming the account, so read it first.
+    const promoting = section === 'waiting' && method === 'POST'
+      ? this.accountAwaitingApproval(roomId, body)
+      : null;
+    const joiningPeerId = section === 'presence' && method === 'POST'
+      ? stringField(body, 'peerId')
+      : null;
+
+    // Handlers read the body themselves, so hand them one that still has it.
+    const forwarded = new Request(request.url, {
+      method,
+      headers: request.headers,
+      body: bodyText,
+    });
+    const response = await this.route(forwarded, url, roomId);
+
+    if (response.ok && accountId) {
+      this.recordMembership(roomId, accountId, promoting, joiningPeerId);
+    }
+
+    return response;
+  }
+
+  /**
+   * Decides whether the verified account may perform this room operation.
+   *
+   * Enforced here rather than inside each handler so there is a single place
+   * that answers "may this account touch this room", and so handler signatures
+   * (and their tests) stay independent of the identity layer.
+   *
+   * - creating a room: any authenticated account, which becomes the owner
+   * - reading or writing an existing board: members only
+   * - deleting a room, or moderating peers: the owner only
+   * - joining, leaving, and reading presence: any authenticated account, since
+   *   that is how a peer asks to be let in and follows its place in the queue
+   */
+  private authorize(
+    request: Request,
+    url: URL,
+    roomId: string,
+    section: string,
+    body: Record<string, unknown> | null,
+  ): Response | null {
+    const accountId = url.searchParams.get('accountId');
+    if (!accountId) return forbidden('Account required');
+
+    const role = getRoomRole(this.db, roomId, accountId);
+    const isOwner = role === 'owner';
+    const isMember = role !== null;
+    const method = request.method;
+
+    if (section === '') {
+      if (method === 'DELETE') return isOwner ? null : forbidden();
+      if (method === 'POST') {
+        // First writer of a new room becomes its owner.
+        if (!roomExists(this.db, roomId)) {
+          addRoomMember(this.db, roomId, accountId, 'owner');
+          return null;
+        }
+        return isMember ? null : forbidden();
+      }
+      if (method === 'GET') return isMember ? null : forbidden();
+      return null;
+    }
+
+    if (section === 'waiting') {
+      // Leaving the queue is self-service; moderating it is not.
+      if (method === 'DELETE') return null;
+      return isOwner ? null : forbidden();
+    }
+
+    if (section === 'presence' && method === 'POST') {
+      const action = stringField(body, 'action');
+      if (action === 'kick' || action === 'suspend') {
+        return isOwner ? null : forbidden();
+      }
+      return null;
+    }
+
+    return null;
+  }
+
+  /** The account queued behind the peer an approve request names, if any. */
+  private accountAwaitingApproval(
+    roomId: string,
+    body: Record<string, unknown> | null,
+  ): string | null {
+    const peerId = stringField(body, 'peerId');
+    if (stringField(body, 'action') !== 'approve' || !peerId) return null;
+
+    const row = this.db
+      .prepare(
+        `SELECT account_id AS accountId FROM waiting_peers
+         WHERE room_id = ? AND peer_id = ?`,
+      )
+      .get(roomId, peerId) as { accountId: string | null } | undefined;
+    return row?.accountId ?? null;
+  }
+
+  /**
+   * Binds the verified account to the peer row the request just created, and
+   * grants membership once that account is actually in the room. Membership is
+   * what later authorizes reading the board, so it is derived from admission
+   * rather than from anything the client asserts.
+   */
+  private recordMembership(
+    roomId: string,
+    accountId: string,
+    promoting: string | null,
+    peerId: string | null,
+  ): void {
+    if (promoting) {
+      addRoomMember(this.db, roomId, promoting, 'member');
+    }
+
+    if (!peerId) return;
+
+    for (const table of ['room_presence', 'waiting_peers']) {
+      this.db
+        .prepare(`UPDATE ${table} SET account_id = ? WHERE room_id = ? AND peer_id = ?`)
+        .run(accountId, roomId, peerId);
+    }
+
+    const admitted = this.db
+      .prepare(`SELECT 1 FROM room_presence WHERE room_id = ? AND peer_id = ?`)
+      .get(roomId, peerId);
+    if (admitted) addRoomMember(this.db, roomId, accountId, 'member');
   }
 
   private route(request: Request, url: URL, roomId: string): Promise<Response> {
@@ -159,7 +350,7 @@ export class RoomDO extends DurableObject {
   /** Keeps exactly one pending alarm while any socket is open. */
   private async scheduleRevocationCheck(): Promise<void> {
     if (await this.ctx.storage.getAlarm() !== null) return;
-    await this.ctx.storage.setAlarm(Date.now() + REVOCATION_CHECK_INTERVAL_MS);
+    await this.ctx.storage.setAlarm(Date.now() + this.checkIntervalMs);
   }
 
   /**
@@ -204,7 +395,7 @@ export class RoomDO extends DurableObject {
     } catch {
       // Leave sockets open and retry: a transient identity failure must not
       // disconnect an entire classroom.
-      await this.ctx.storage.setAlarm(Date.now() + REVOCATION_CHECK_INTERVAL_MS);
+      await this.ctx.storage.setAlarm(Date.now() + this.checkIntervalMs);
       return;
     }
 
@@ -217,7 +408,7 @@ export class RoomDO extends DurableObject {
     }
 
     if (this.ctx.getWebSockets().length > 0) {
-      await this.ctx.storage.setAlarm(Date.now() + REVOCATION_CHECK_INTERVAL_MS);
+      await this.ctx.storage.setAlarm(Date.now() + this.checkIntervalMs);
     }
   }
 

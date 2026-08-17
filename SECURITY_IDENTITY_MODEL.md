@@ -91,8 +91,38 @@ verified against a real Cloudflare Access deployment; see
 | Revocation advances the epoch and revokes every session | Covered | `src/lib/identity/sessionStore.test.ts` |
 | Revocation closes live room sockets | Covered | `src/do/roomDO.workers.test.ts` |
 | Forged email, provider label, or client header cannot select an account | Covered | `src/lib/access/accessVerifier.test.ts`, `src/do/identityDO.workers.test.ts` |
+| Room authorization is keyed to the local account | Covered | `src/do/roomDO.workers.test.ts`, `tests/e2e/room-authorization.spec.ts` |
 | Recovery leaves an audit record | **Not implemented** | — |
 | Audited operator recovery workflow | **Not implemented** | — |
+
+## Room authorization
+
+A verified session decides whether a request is accepted at all; membership
+decides which room it may touch. Membership lives in `room_members`, keyed by
+the local account id, and is enforced in one place — `RoomDO.authorize` — so
+handler code cannot accidentally skip it.
+
+| Operation | Requires |
+| --- | --- |
+| Create a room | any authenticated account; it becomes the owner |
+| Read or write an existing board | membership |
+| Delete the room | owner |
+| Moderate the waiting queue, kick, suspend | owner |
+| Join, leave, read presence, leave the queue | any authenticated account |
+
+Membership is granted by admission, never by client assertion: the room's
+creator becomes owner, and a queued peer becomes a member when the owner
+approves it. `room_presence` is a liveness view pruned on a short timer, so it
+is deliberately not used to answer "may this account open this board" — an
+idle member keeps access.
+
+Two consequences worth knowing:
+
+- A non-member receives `403` whether or not the room exists, so the API cannot
+  be used to discover room ids.
+- Peer ids are client-supplied and are never trusted for authorization. They are
+  bound to the verified account on join so an approval can promote the right
+  account.
 
 ### Outstanding
 
@@ -103,7 +133,7 @@ durable record of who performed it, when, or why. Until that exists, subject
 recovery must continue to mean creating a new account, and any epoch change
 should be recorded outside the application.
 
-Room authorization is still a separate bearer-token grant matrix
-(`src/lib/whiteboard/access.ts`) that is not keyed to the local account. A local
-session gates whether a request or socket is accepted at all; it does not yet
-decide which room role the account holds.
+The older bearer-token grant matrix (`src/lib/whiteboard/access.ts`) still backs
+the `/requests` endpoints and now sits alongside account-keyed membership.
+Collapsing the two, so there is a single authorization source per room, is
+worthwhile follow-up work.

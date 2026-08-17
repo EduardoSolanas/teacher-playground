@@ -221,7 +221,8 @@ export default {
     const match = url.pathname.match(ROOM_API);
     if (match) {
       const roomId = decodeURIComponent(match[1]);
-      return forward(env, roomId, `/room${match[2] ?? ''}`, request, url);
+      // The verified account decides which rooms this caller may touch.
+      return forward(env, roomId, `/room${match[2] ?? ''}`, request, url, session);
     }
 
     // Serve the placeholder room page for any /whiteboard/<roomId> URL. The
