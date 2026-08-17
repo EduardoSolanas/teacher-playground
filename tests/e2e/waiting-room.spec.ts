@@ -24,10 +24,17 @@ async function createRoomWithMaxUsers(page: Page, name: string, maxUsers: number
 
 async function joinExistingRoom(page: Page, roomId: string, name = 'Peer') {
   await page.goto(`/whiteboard/${roomId}`);
+  // Wait for the prompt rather than sampling isVisible() immediately after
+  // navigation: the page has not rendered yet at that point, so the check
+  // returned false and the peer silently never joined the room.
+  const usernameInput = page.getByTestId('whiteboard-username-input');
+  const arrived = await Promise.race([
+    usernameInput.waitFor({ state: 'visible', timeout: 15000 }).then(() => 'prompt' as const).catch(() => null),
+    page.getByTestId('whiteboard-canvas-area').waitFor({ state: 'visible', timeout: 15000 }).then(() => 'canvas' as const).catch(() => null),
+  ]);
 
-  const isPromptVisible = await page.getByTestId('whiteboard-username-input').isVisible().catch(() => false);
-  if (isPromptVisible) {
-    await page.getByTestId('whiteboard-username-input').fill(name);
+  if (arrived === 'prompt') {
+    await usernameInput.fill(name);
     await page.getByTestId('whiteboard-join-room-btn').click();
   }
 }

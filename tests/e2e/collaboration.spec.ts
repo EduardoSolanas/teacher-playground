@@ -23,9 +23,12 @@ async function joinRoom(page: Page, name: string) {
     canvasArea.waitFor({ state: 'visible', timeout: 15000 }).then(() => 'canvas' as const).catch(() => null),
     usernameInput.waitFor({ state: 'visible', timeout: 15000 }).then(() => 'prompt' as const).catch(() => null),
   ]);
+  // The username is pre-seeded in localStorage, so the app may auto-join and
+  // unmount the prompt between the race resolving and the fill. Reaching the
+  // canvas is what matters, so a vanished prompt is not a failure.
   if (nextView === 'prompt') {
-    await page.getByTestId('whiteboard-username-input').fill(name);
-    await page.getByTestId('whiteboard-join-room-btn').click();
+    await usernameInput.fill(name).catch(() => {});
+    await page.getByTestId('whiteboard-join-room-btn').click().catch(() => {});
   }
   await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
 }

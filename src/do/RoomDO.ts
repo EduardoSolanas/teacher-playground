@@ -323,7 +323,7 @@ export class RoomDO extends DurableObject {
   // is the room, every socket held here is subscribed to the same topic, so a
   // publish fans out to the other sockets on this object.
 
-  private handleSignalingUpgrade(request: Request, url: URL): Response {
+  private async handleSignalingUpgrade(request: Request, url: URL): Promise<Response> {
     if (request.headers.get('Upgrade') !== 'websocket') {
       return new Response('Expected websocket', { status: 426 });
     }
@@ -342,7 +342,9 @@ export class RoomDO extends DurableObject {
     this.ctx.acceptWebSocket(server);
     const identity: SocketIdentity = { accountId, authorizationEpoch: epoch };
     server.serializeAttachment(identity);
-    void this.scheduleRevocationCheck();
+    // Awaited, not floating: a storage write racing the returned response
+    // shows up as "database is locked: SQLITE_BUSY".
+    await this.scheduleRevocationCheck();
 
     return new Response(null, { status: 101, webSocket: client });
   }
