@@ -300,8 +300,11 @@ test.describe('Room Connection Lifecycle', () => {
     await page.getByTestId('whiteboard-tool-rectangle').click();
     await dragOnCanvas(page, { x: 200, y: 200 }, { x: 350, y: 300 });
 
-    const stateBefore = await getStoreState(page);
-    expect(stateBefore.elements?.length).toBeGreaterThanOrEqual(1);
+    // Poll rather than sample: the room is polled in the background, so an
+    // immediate read can land between the draw and the resulting re-render.
+    await expect
+      .poll(async () => (await getStoreState(page)).elements?.length ?? 0, { timeout: 10000 })
+      .toBeGreaterThanOrEqual(1);
 
     // Saving to the room API is debounced; wait until the server actually has
     // the element rather than guessing at the delay.
@@ -319,7 +322,9 @@ test.describe('Room Connection Lifecycle', () => {
       .toBeGreaterThanOrEqual(1);
 
     // Refresh the page
-    await page.reload({ waitUntil: 'networkidle' });
+    // Not networkidle: the room is polled on an interval, so the network is
+    // never idle and the reload would never resolve.
+    await page.reload({ waitUntil: 'load' });
     await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
 
     // After refresh, the prompt should show pre-filled name
@@ -330,8 +335,9 @@ test.describe('Room Connection Lifecycle', () => {
     }
 
     // Elements should be loaded from API
-    const stateAfter = await getStoreState(page);
-    expect(stateAfter.elements?.length).toBeGreaterThanOrEqual(1);
+    await expect
+      .poll(async () => (await getStoreState(page)).elements?.length ?? 0, { timeout: 15000 })
+      .toBeGreaterThanOrEqual(1);
   });
 
   test('connection status transitions from connecting to connected', async ({ page }) => {

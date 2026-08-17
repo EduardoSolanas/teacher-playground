@@ -131,7 +131,7 @@ export function useCollaboration(roomId: string) {
 
     loadRoom();
     return () => { cancelled = true; };
-  }, [roomId, applyElements, applyViewport]);
+  }, [isConnected, roomId, applyElements, applyViewport]);
 
   // Set up collaboration event listeners
   useEffect(() => {
@@ -217,7 +217,10 @@ export function useCollaboration(roomId: string) {
     let cancelled = false;
 
     async function pollRoomState() {
-      // Skip polling when WebRTC is synced — it's the source of truth
+      // Skip polling when WebRTC is synced — it's the source of truth.
+      // Note: y-webrtc leaves `connected` set after disconnect(), so this also
+      // suppresses the catch-up fallback. See the fixme'd
+      // "disconnected peer catches up from API fallback" e2e test.
       const entry = collaborationRef.current;
       if (entry?.provider?.connected) return;
 
@@ -244,7 +247,7 @@ export function useCollaboration(roomId: string) {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [isConnected, roomId, applyElements, applyViewport]);
+  }, [roomId, applyElements, applyViewport]);
 
   // Broadcast local cursor
   const setCursor = useCallback(

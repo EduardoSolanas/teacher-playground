@@ -28,6 +28,9 @@ export default defineConfig({
   use: {
     ...devices["Desktop Chrome"],
     baseURL,
+    // Defaults to 0, meaning an action waits until the whole test times out.
+    // A prompt that unmounts mid-fill then costs 60s instead of failing fast.
+    actionTimeout: 15000,
     storageState: {
       cookies: [{
         name: "CF_Authorization",
