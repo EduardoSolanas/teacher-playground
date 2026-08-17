@@ -1,0 +1,18 @@
+name = "teacher-playground"
+main = "src/worker.ts"
+compatibility_date = "2024-12-10"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./out"
+binding = "ASSETS"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "RoomDO"
+
+# new_sqlite_classes (not new_classes) gives the Durable Object a
+# SQLite-backed storage backend, which is what DODatabase requires.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoomDO"]

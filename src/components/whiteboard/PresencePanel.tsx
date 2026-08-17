@@ -183,7 +183,7 @@ export default function PresencePanel({
       {!collapsed && (
         <div className="border-b border-slate-200 px-3 py-2">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-500">
+            <span data-testid="whiteboard-presence-count" className="text-xs text-slate-500">
               {users.length}/{3} users online
             </span>
             {waitingPeers.length > 0 && (

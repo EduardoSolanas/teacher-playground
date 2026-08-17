@@ -1,13 +1,11 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const appPort = Number(process.env.E2E_PORT);
-const signalingPort = Number(process.env.E2E_SIGNALING_PORT);
-if (!Number.isInteger(appPort) || !Number.isInteger(signalingPort)) {
+if (!Number.isInteger(appPort)) {
   throw new Error("Run E2E tests through `npm run test:e2e` so dynamic ports are allocated.");
 }
 
 const baseURL = `http://127.0.0.1:${appPort}`;
-const signalingURL = `ws://127.0.0.1:${signalingPort}`;
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -32,15 +30,13 @@ export default defineConfig({
       name: "chromium",
     },
   ],
+  // Serves the built static export through the real workerd runtime, so E2E
+  // exercises the deployed code path: Durable Object rooms and same-origin
+  // /signaling. `npm run test:e2e` builds `out/` before starting Playwright.
   webServer: {
-    command: "npm run dev",
+    command: `npx wrangler dev --ip 127.0.0.1 --port ${appPort}`,
     url: baseURL,
     reuseExistingServer: false,
-    env: {
-      PORT: String(appPort),
-      SIGNALING_PORT: String(signalingPort),
-      NEXT_PUBLIC_YWEBRTC_SIGNALING_URL: signalingURL,
-    },
     stdout: "pipe",
     stderr: "pipe",
     timeout: 120000,

@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.github
+.data
+test-results
+playwright-report
+.idea
+*.log
+.env
+.env*.local
+tsconfig.tsbuildinfo
+tests

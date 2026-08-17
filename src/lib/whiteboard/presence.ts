@@ -1,9 +1,9 @@
-import Database from 'better-sqlite3';
-import { getRoomDb, getRoomHostPeerId } from './roomDb';
+import type { RoomDatabase } from './db';
+import { getRoomHostPeerId } from './roomSchema';
 
 const ACTIVE_WINDOW_MS = 10_000;
 
-export function readActiveUsers(db: Database.Database, roomId: string) {
+export function readActiveUsers(db: RoomDatabase, roomId: string) {
   const cutoff = Date.now() - ACTIVE_WINDOW_MS;
   db.prepare(`DELETE FROM room_presence WHERE last_seen < ?`).run(cutoff);
 
@@ -30,7 +30,7 @@ export function readActiveUsers(db: Database.Database, roomId: string) {
   }));
 }
 
-export function readWaitingPeers(db: Database.Database, roomId: string) {
+export function readWaitingPeers(db: RoomDatabase, roomId: string) {
   const rows = db.prepare(
     `SELECT peer_id, user_name, color, requested_at
      FROM waiting_peers

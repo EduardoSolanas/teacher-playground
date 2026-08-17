@@ -242,8 +242,11 @@ export function useKeyboardShortcuts() {
       }
     }
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    // Capture phase: once the Excalidraw canvas has focus (i.e. after drawing)
+    // it consumes keys it recognises, which silently killed these shortcuts.
+    // Text entry is still respected via the INPUT/TEXTAREA guard above.
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, [undo, redo]);
 
   return { activeShortcuts: SHORTCUTS, showShortcutsHelp, setShowShortcutsHelp };

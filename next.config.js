@@ -2,9 +2,10 @@
 const path = require('path');
 
 const nextConfig = {
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
+  output: 'export',
+  images: { unoptimized: true },
+  // Next 16 removed the `eslint` config key; linting is run separately
+  // via `npm run lint`, so the build no longer needs to opt out of it.
   webpack: (config, { isServer }) => {
     config.watchOptions = {
       ...config.watchOptions,

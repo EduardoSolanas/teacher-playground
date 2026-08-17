@@ -222,7 +222,7 @@ export default function WhiteboardRoute() {
         </div>
 
         <button
-          data-testid="whiteboard-join-existing-btn"
+          data-testid="whiteboard-join-room-btn"
           onClick={handleJoinRoom}
           disabled={joinCode.trim().length === 0}
           style={{

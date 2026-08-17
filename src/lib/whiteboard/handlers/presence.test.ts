@@ -1,15 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { NextRequest } from 'next/server';
-import { POST as postRoom } from '../route';
-import { POST as postWaiting } from '../waiting/route';
-import { DELETE, GET, POST } from './route';
-
-function params(roomId: string) {
-  return { params: Promise.resolve({ roomId }) };
-}
+import { handlePresencePost, handlePresenceGet, handlePresenceDelete } from './presence';
+import { handleRoomPost } from './room';
+import { handleWaitingPost } from './waiting';
+import { getRoomDb } from '../roomDb';
 
 function postRequest(body: Record<string, unknown>) {
-  return new NextRequest('http://localhost/api/whiteboard/room/test/presence', {
+  return new Request('http://localhost/api/whiteboard/room/test/presence', {
     method: 'POST',
     body: JSON.stringify(body),
     headers: { 'Content-Type': 'application/json' },
@@ -17,26 +13,68 @@ function postRequest(body: Record<string, unknown>) {
 }
 
 function deleteRequest(roomId: string, peerId: string) {
-  return new NextRequest(
+  return new Request(
     `http://localhost/api/whiteboard/room/${roomId}/presence?peerId=${peerId}`,
     { method: 'DELETE' }
   );
 }
 
 describe('room presence API', () => {
-  it('requires a peerId when joining presence', async () => {
-    const roomId = `presence-missing-${crypto.randomUUID()}`;
-    const response = await POST(postRequest({ userName: 'Alice' }), params(roomId));
+  it('returns 400 for malformed JSON body', async () => {
+    const roomId = `presence-malformed-${crypto.randomUUID()}`;
+    const response = await handlePresencePost(
+      getRoomDb(),
+      roomId,
+      new Request('http://localhost/api/whiteboard/room/test/presence', {
+        method: 'POST',
+        body: '{invalid json',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
 
     expect(response.status).toBe(400);
-    await DELETE(deleteRequest(roomId, 'missing'), params(roomId));
+    const data = await response.json();
+    expect(data.error).toBeDefined();
+  });
+
+  it('requires a peerId when joining presence', async () => {
+    const roomId = `presence-missing-${crypto.randomUUID()}`;
+    const response = await handlePresencePost(getRoomDb(), roomId, postRequest({ userName: 'Alice' }));
+
+    expect(response.status).toBe(400);
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'missing'));
+  });
+
+  it('defaults to Anonymous userName when not provided', async () => {
+    const roomId = `presence-default-name-${crypto.randomUUID()}`;
+
+    const response = await handlePresencePost(
+      getRoomDb(),
+      roomId,
+      postRequest({ peerId: 'peer-alice' }),
+    );
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.users).toEqual([
+      expect.objectContaining({
+        peerId: 'peer-alice',
+        userName: 'Anonymous',
+        isHost: true,
+        isWaiting: false,
+      }),
+    ]);
+
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-alice'));
   });
 
   it('marks room creator as host even if they join presence after others', async () => {
     const roomId = `presence-creator-${crypto.randomUUID()}`;
 
-    await postRoom(
-      new NextRequest(`http://localhost/api/whiteboard/room/${roomId}`, {
+    await handleRoomPost(
+      getRoomDb(),
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -45,21 +83,23 @@ describe('room presence API', () => {
           hostPeerId: 'peer-creator',
         }),
       }),
-      params(roomId),
     );
 
-    await POST(
+    await handlePresencePost(
+      getRoomDb(),
+      roomId,
       postRequest({ peerId: 'peer-joiner', userName: 'Joiner', color: '#e74c3c' }),
-      params(roomId),
     );
-    await POST(
+    await handlePresencePost(
+      getRoomDb(),
+      roomId,
       postRequest({ peerId: 'peer-creator', userName: 'Creator', color: '#3498db' }),
-      params(roomId),
     );
 
-    const response = await GET(
-      new NextRequest(`http://localhost/api/whiteboard/room/${roomId}/presence`),
-      params(roomId),
+    const response = await handlePresenceGet(
+      getRoomDb(),
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}/presence`),
     );
     const data = await response.json();
 
@@ -76,26 +116,32 @@ describe('room presence API', () => {
       }),
     ]);
 
-    await DELETE(deleteRequest(roomId, 'peer-creator'), params(roomId));
-    await DELETE(deleteRequest(roomId, 'peer-joiner'), params(roomId));
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-creator'));
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-joiner'));
   });
 
   it('falls back to first-seen host and queues later peers when room has no stored creator', async () => {
     const roomId = `presence-order-${crypto.randomUUID()}`;
 
-    const aliceResponse = await POST(
+    const aliceResponse = await handlePresencePost(
+      getRoomDb(),
+      roomId,
       postRequest({ peerId: 'peer-alice', userName: 'Alice', color: '#3498db' }),
-      params(roomId)
     );
-    const bobResponse = await POST(
+    const bobResponse = await handlePresencePost(
+      getRoomDb(),
+      roomId,
       postRequest({ peerId: 'peer-bob', userName: 'Bob', color: '#e74c3c' }),
-      params(roomId)
     );
 
     expect(aliceResponse.status).toBe(200);
     expect(bobResponse.status).toBe(200);
 
-    const response = await GET(new NextRequest(`http://localhost/api/whiteboard/room/${roomId}/presence`), params(roomId));
+    const response = await handlePresenceGet(
+      getRoomDb(),
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}/presence`),
+    );
     const data = await response.json();
 
     expect(data.users).toEqual([
@@ -110,17 +156,29 @@ describe('room presence API', () => {
       }),
     ]);
 
-    await DELETE(deleteRequest(roomId, 'peer-alice'), params(roomId));
-    await DELETE(deleteRequest(roomId, 'peer-bob'), params(roomId));
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-alice'));
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-bob'));
   });
 
   it('removes a user when they leave presence', async () => {
     const roomId = `presence-leave-${crypto.randomUUID()}`;
 
-    await POST(postRequest({ peerId: 'peer-alice', userName: 'Alice' }), params(roomId));
-    await POST(postRequest({ peerId: 'peer-bob', userName: 'Bob' }), params(roomId));
+    await handlePresencePost(
+      getRoomDb(),
+      roomId,
+      postRequest({ peerId: 'peer-alice', userName: 'Alice' }),
+    );
+    await handlePresencePost(
+      getRoomDb(),
+      roomId,
+      postRequest({ peerId: 'peer-bob', userName: 'Bob' }),
+    );
 
-    const deleteResponse = await DELETE(deleteRequest(roomId, 'peer-bob'), params(roomId));
+    const deleteResponse = await handlePresenceDelete(
+      getRoomDb(),
+      roomId,
+      deleteRequest(roomId, 'peer-bob'),
+    );
     const deleteData = await deleteResponse.json();
 
     expect(deleteResponse.status).toBe(200);
@@ -128,14 +186,16 @@ describe('room presence API', () => {
       { peerId: 'peer-alice', userName: 'Alice', color: '#3498db', isHost: true, isWaiting: false },
     ]);
 
-    await DELETE(deleteRequest(roomId, 'peer-alice'), params(roomId));
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-alice'));
   });
 
   it('puts non-host peers in waiting even when room capacity remains', async () => {
     const roomId = `presence-waiting-${crypto.randomUUID()}`;
 
-    await postRoom(
-      new NextRequest(`http://localhost/api/whiteboard/room/${roomId}`, {
+    await handleRoomPost(
+      getRoomDb(),
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -145,12 +205,12 @@ describe('room presence API', () => {
           hostPeerId: 'peer-host',
         }),
       }),
-      params(roomId),
     );
 
-    const joinResponse = await POST(
+    const joinResponse = await handlePresencePost(
+      getRoomDb(),
+      roomId,
       postRequest({ peerId: 'peer-student', userName: 'Student', color: '#e74c3c' }),
-      params(roomId),
     );
     const joinData = await joinResponse.json();
 
@@ -168,9 +228,10 @@ describe('room presence API', () => {
       }),
     ]);
 
-    const getResponse = await GET(
-      new NextRequest(`http://localhost/api/whiteboard/room/${roomId}/presence`),
-      params(roomId),
+    const getResponse = await handlePresenceGet(
+      getRoomDb(),
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}/presence`),
     );
     const getData = await getResponse.json();
 
@@ -178,15 +239,17 @@ describe('room presence API', () => {
       expect.objectContaining({ peerId: 'peer-student', isWaiting: true }),
     ]);
 
-    await DELETE(deleteRequest(roomId, 'peer-host'), params(roomId));
-    await DELETE(deleteRequest(roomId, 'peer-student'), params(roomId));
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-host'));
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-student'));
   });
 
   it('keeps an approved peer active on later heartbeat checks', async () => {
     const roomId = `presence-approved-${crypto.randomUUID()}`;
 
-    await postRoom(
-      new NextRequest(`http://localhost/api/whiteboard/room/${roomId}`, {
+    await handleRoomPost(
+      getRoomDb(),
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -196,26 +259,28 @@ describe('room presence API', () => {
           hostPeerId: 'peer-host',
         }),
       }),
-      params(roomId),
     );
 
-    await POST(
+    await handlePresencePost(
+      getRoomDb(),
+      roomId,
       postRequest({ peerId: 'peer-student', userName: 'Student', color: '#e74c3c' }),
-      params(roomId),
     );
 
-    await postWaiting(
-      new NextRequest(`http://localhost/api/whiteboard/room/${roomId}/waiting`, {
+    await handleWaitingPost(
+      getRoomDb(),
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}/waiting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ peerId: 'peer-student', action: 'approve' }),
       }),
-      params(roomId),
     );
 
-    const heartbeatResponse = await POST(
+    const heartbeatResponse = await handlePresencePost(
+      getRoomDb(),
+      roomId,
       postRequest({ peerId: 'peer-student', userName: 'Student', color: '#e74c3c' }),
-      params(roomId),
     );
     const heartbeatData = await heartbeatResponse.json();
 
@@ -227,15 +292,17 @@ describe('room presence API', () => {
     );
     expect(heartbeatData.waitingPeers).toEqual([]);
 
-    await DELETE(deleteRequest(roomId, 'peer-host'), params(roomId));
-    await DELETE(deleteRequest(roomId, 'peer-student'), params(roomId));
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-host'));
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-student'));
   });
 
   it('marks a kicked peer as kicked instead of moving them back to waiting', async () => {
     const roomId = `presence-kicked-${crypto.randomUUID()}`;
 
-    await postRoom(
-      new NextRequest(`http://localhost/api/whiteboard/room/${roomId}`, {
+    await handleRoomPost(
+      getRoomDb(),
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -245,30 +312,33 @@ describe('room presence API', () => {
           hostPeerId: 'peer-host',
         }),
       }),
-      params(roomId),
     );
 
-    await POST(
+    await handlePresencePost(
+      getRoomDb(),
+      roomId,
       postRequest({ peerId: 'peer-student', userName: 'Student', color: '#e74c3c' }),
-      params(roomId),
     );
-    await postWaiting(
-      new NextRequest(`http://localhost/api/whiteboard/room/${roomId}/waiting`, {
+    await handleWaitingPost(
+      getRoomDb(),
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}/waiting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ peerId: 'peer-student', action: 'approve' }),
       }),
-      params(roomId),
     );
 
-    await POST(
+    await handlePresencePost(
+      getRoomDb(),
+      roomId,
       postRequest({ action: 'kick', peerId: 'peer-student' }),
-      params(roomId),
     );
 
-    const heartbeatResponse = await POST(
+    const heartbeatResponse = await handlePresencePost(
+      getRoomDb(),
+      roomId,
       postRequest({ peerId: 'peer-student', userName: 'Student', color: '#e74c3c' }),
-      params(roomId),
     );
     const heartbeatData = await heartbeatResponse.json();
 
@@ -276,9 +346,10 @@ describe('room presence API', () => {
     expect(heartbeatData.isWaiting).toBe(false);
     expect(heartbeatData.waitingPeers).toEqual([]);
 
-    const rejoinResponse = await POST(
+    const rejoinResponse = await handlePresencePost(
+      getRoomDb(),
+      roomId,
       postRequest({ peerId: 'peer-student', userName: 'Student', color: '#e74c3c' }),
-      params(roomId),
     );
     const rejoinData = await rejoinResponse.json();
 
@@ -287,15 +358,17 @@ describe('room presence API', () => {
       expect.objectContaining({ peerId: 'peer-student', isWaiting: true }),
     ]);
 
-    await DELETE(deleteRequest(roomId, 'peer-host'), params(roomId));
-    await DELETE(deleteRequest(roomId, 'peer-student'), params(roomId));
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-host'));
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-student'));
   });
 
   it('marks a rejected waiting peer as kicked on their next heartbeat', async () => {
     const roomId = `presence-rejected-${crypto.randomUUID()}`;
 
-    await postRoom(
-      new NextRequest(`http://localhost/api/whiteboard/room/${roomId}`, {
+    await handleRoomPost(
+      getRoomDb(),
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -305,25 +378,27 @@ describe('room presence API', () => {
           hostPeerId: 'peer-host',
         }),
       }),
-      params(roomId),
     );
 
-    await POST(
+    await handlePresencePost(
+      getRoomDb(),
+      roomId,
       postRequest({ peerId: 'peer-student', userName: 'Student', color: '#e74c3c' }),
-      params(roomId),
     );
-    await postWaiting(
-      new NextRequest(`http://localhost/api/whiteboard/room/${roomId}/waiting`, {
+    await handleWaitingPost(
+      getRoomDb(),
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}/waiting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ peerId: 'peer-student', action: 'reject' }),
       }),
-      params(roomId),
     );
 
-    const heartbeatResponse = await POST(
+    const heartbeatResponse = await handlePresencePost(
+      getRoomDb(),
+      roomId,
       postRequest({ peerId: 'peer-student', userName: 'Student', color: '#e74c3c' }),
-      params(roomId),
     );
     const heartbeatData = await heartbeatResponse.json();
 
@@ -331,15 +406,17 @@ describe('room presence API', () => {
     expect(heartbeatData.isWaiting).toBe(false);
     expect(heartbeatData.waitingPeers).toEqual([]);
 
-    await DELETE(deleteRequest(roomId, 'peer-host'), params(roomId));
-    await DELETE(deleteRequest(roomId, 'peer-student'), params(roomId));
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-host'));
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-student'));
   });
 
   it('moves a suspended approved peer back to waiting on heartbeat', async () => {
     const roomId = `presence-suspended-${crypto.randomUUID()}`;
 
-    await postRoom(
-      new NextRequest(`http://localhost/api/whiteboard/room/${roomId}`, {
+    await handleRoomPost(
+      getRoomDb(),
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -349,29 +426,32 @@ describe('room presence API', () => {
           hostPeerId: 'peer-host',
         }),
       }),
-      params(roomId),
     );
 
-    await POST(
+    await handlePresencePost(
+      getRoomDb(),
+      roomId,
       postRequest({ peerId: 'peer-student', userName: 'Student', color: '#e74c3c' }),
-      params(roomId),
     );
-    await postWaiting(
-      new NextRequest(`http://localhost/api/whiteboard/room/${roomId}/waiting`, {
+    await handleWaitingPost(
+      getRoomDb(),
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}/waiting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ peerId: 'peer-student', action: 'approve' }),
       }),
-      params(roomId),
     );
-    await POST(
+    await handlePresencePost(
+      getRoomDb(),
+      roomId,
       postRequest({ action: 'suspend', peerId: 'peer-student' }),
-      params(roomId),
     );
 
-    const heartbeatResponse = await POST(
+    const heartbeatResponse = await handlePresencePost(
+      getRoomDb(),
+      roomId,
       postRequest({ peerId: 'peer-student', userName: 'Student', color: '#e74c3c' }),
-      params(roomId),
     );
     const heartbeatData = await heartbeatResponse.json();
 
@@ -380,7 +460,7 @@ describe('room presence API', () => {
       expect.objectContaining({ peerId: 'peer-student', isWaiting: true }),
     ]);
 
-    await DELETE(deleteRequest(roomId, 'peer-host'), params(roomId));
-    await DELETE(deleteRequest(roomId, 'peer-student'), params(roomId));
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-host'));
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, 'peer-student'));
   });
 });
