@@ -142,6 +142,10 @@ peer removal are unconditional in
 requests in `src/hooks/useCollaboration.ts` send no bearer credential.
 
 - [ ] Replace the parallel waiting/grant flows with one admission state machine.
+  Draft evidence (unverified): `room_members.role` is the only grant state
+  (`owner`/`editor`/`viewer`/`pending`/`banned`); `/access`, `/requests`, and
+  `/waiting` read and write it; bearer tokens do not authorize. See
+  `src/lib/whiteboard/membership.ts` and `src/do/roomDO.workers.test.ts`.
 - [ ] Require a cryptographically verified Access principal and enabled local
   account to create a room. Bind the creator grant to that local account; do not
   infer ownership from provider, email, room code, or peer ID.
@@ -173,6 +177,12 @@ message-size, connection-count, or publish-rate check exists.
 - [ ] Enforce protocol schemas, expected topic, frame size, sockets per room and
   principal, message rate, and bounded fan-out.
 - [ ] Redact credentials/tickets from logs and metrics.
+- [ ] Revalidate on hibernation wake: a WebSocket attachment written at accept
+  time is a snapshot, not a session. On wake (message or alarm after
+  hibernation), re-check the attachment's grant version, account epoch, and
+  expiry against current state before acting on any frame, so a revocation that
+  happened while the socket slept is enforced at the first byte, not at the
+  next reconnect.
 
 **Acceptance tests:** missing, revoked, expired, wrong-room, and foreign-origin
 upgrade credentials fail; if tickets are retained, replay also fails; topic
@@ -213,7 +223,19 @@ from ID equality and even the first user in
     fails the suite). **Granularity note:** enforcement is per *account*, not per
     session — two sessions of the same account can still act on each other's
     peers. Per-session binding remains open.
-- [ ] Moderate and ban a grant/session, not a replaceable `peerId`.
+- [x] Moderate and ban a grant/session, not a replaceable `peerId`.
+  - Evidence: independent verifier APPROVE. Kick/reject ban the
+    `account_id` and clear that account's presence/waiting rows; a new
+    `peerId` stays `403`. Optional body `peerId` must match the bound
+    account (`409` mismatch). Forging creator `peerId`/`hostPeerId` grants
+    no owner power. Re-verified: `npm test` 222/222, `npm run test:workers`
+    88/88, typecheck clean. Residual: per-account not per-session; e2e for
+    this slice did not run (locked `out/` on Windows).
+- [ ] Require fresh proof for destructive owner actions: room deletion and
+  revoke-all must not ride a long-idle session cookie alone. A recent-activity
+  threshold or an explicit re-confirmation bound to the session (not a UI-only
+  dialog) is enough; a stolen cookie should not be able to erase a class's
+  boards silently.
 - [x] Make the first-user host fallback an explicit per-room setting that
   defaults to off, and remove client-side authorization.
   - Decision: the fallback is retained as an opt-in room setting rather than
@@ -267,6 +289,13 @@ effective server-side quota. The React creation throttle is bypassable.
   element types/URL schemes. Disable `iframe`, `embeddable`, image, or external
   link behavior unless explicitly required and safely allowlisted.
 - [ ] Add per-principal/IP creation and request limits with `429` responses.
+- [ ] Configure edge-level protection in front of the Worker: Cloudflare custom
+  WAF rules and rate limiting on the production zone, so floods are dropped
+  before they bill Worker invocations. Free-plan budget: 5 custom WAF rules and
+  exactly 1 rate-limiting rule (plus basic Bot Fight Mode; managed rulesets are
+  paid) — spend the single rate-limit rule on the most abusable route
+  (room creation or session issue) and treat app-level quotas above as the
+  primary mechanism, not the backup.
 
 **Acceptance tests:** malformed/oversized IDs never instantiate a DO;
 nonexistent-room subroutes persist nothing; just-over-limit bodies return
@@ -275,12 +304,23 @@ loads or crash clients.
 
 ### SEC-006 — use cryptographic room and capability creation
 
-**Evidence:** room and peer identifiers use `Math.random` in
-`src/app/whiteboard/page.tsx:14-20` and `src/lib/whiteboard/peerId.ts:1-3`.
-Anonymous callers can pre-create a chosen room and optionally claim its creator
-grant in `src/lib/whiteboard/handlers/room.ts:71-104`.
+**Evidence (updated):** room identifiers are still 8 characters of
+`Math.random` in `src/app/whiteboard/page.tsx` (~41 bits, guessable), so this
+section stays open. The `peerId` half has narrowed: it is still `Math.random`,
+but it is now a display/cursor label only — authorization comes from
+`room_members.account_id`, so forging a peer id no longer grants anything
+(SEC-004). Room creation now requires an authenticated account and the creator
+grant is bound to that account, closing the anonymous pre-claim path; creation
+is still not one transaction.
 
-- [ ] Generate at least 128 bits of randomness with a cryptographic RNG.
+- [x] Generate at least 128 bits of randomness with a cryptographic RNG.
+  - Evidence: independent verifier APPROVE. `randomHexId()` uses 16 bytes
+    from `crypto.getRandomValues` (32-char lowercase hex). Create page
+    calls `generateRoomId()`; minted peer labels are `user-` plus that
+    hex. Focused tests 13/13; `Math.random` spy unused. Residual: join
+    input still `{1,20}` so paste-join cannot take a 32-char create id;
+    `collaboration.ts` still has a `Math.random` fallback if peerId is
+    omitted.
 - [ ] Keep display/share codes separate from authorization capabilities.
 - [ ] Make room, host session, and creator grant creation one transaction.
 - [ ] Reject duplicate/preclaimed creation without changing ownership.
@@ -299,12 +339,26 @@ owner; injected transaction failure leaves no partial room or grant.
 presence, waiting, kicked rows, and live sockets survive. Expired grant cleanup
 exists but is not scheduled.
 
-- [ ] Make creator-only deletion atomic across every room-scoped table.
+- [x] Make creator-only deletion atomic across every room-scoped table.
+  - Evidence: independent verifier APPROVE. `deleteRoomScopedData` deletes
+    all seven `applySchema` room tables in one SQLite transaction.
+    `handleRoomDelete` is the only caller. Re-verified: `room.test.ts` 12,
+    `roomDelete.workers.test.ts` 1, `npm test` 234, typecheck clean.
 - [ ] Close all room sockets and call the appropriate Durable Object storage
   deletion mechanism after responding safely.
+  - Evidence: sockets close with 4404 after a successful DELETE
+    (`deleteSockets`). This line stays open until `storage.deleteAll` (or
+    equivalent) lands.
 - [ ] Tombstone IDs or prove old grants cannot authorize a recreated room.
 - [ ] Set TTLs for rooms, requests, kicks, sessions, grants, and PII; purge with
   Durable Object alarms and record the retention policy.
+- [ ] Add backup/restore for Durable Object SQLite state (rooms and identity)
+  with a tested restore path and a recovery-point objective, so a bad deploy or
+  storage incident cannot silently destroy classroom data. Verified: SQLite
+  Durable Objects and their 30-day point-in-time-recovery API are included on
+  the Workers Free plan (5 GB total account storage), so the restore path costs
+  nothing extra — what this task adds is exercising it and recording the
+  procedure.
 
 **Acceptance tests:** seed every table plus live sockets, delete, and assert all
 data is gone and sockets close; recreation rejects every old token; expiry
@@ -325,9 +379,10 @@ is ignored. Public-history and external incident actions remain incomplete.
   where appropriate.
 - [ ] Ignore `.wrangler/`, non-example environment files, and ad-hoc test output;
   - Partly done: `.wrangler/`, `.data/`, `.idea/`, `*.iml`, and agent scratch
-    (`.omo/`) are ignored. Ad-hoc test output (`test-results.txt`,
-    `e2e-results.txt`, `test-output.txt`) and blocking secret/PII scanning in CI
-    remain open.
+    (`.omo/`) are ignored. Still untracked and unignored: `.cursor/` and
+    editor/agent config (`AGENTS.md`) — decide tracked-or-ignored for each.
+    Ad-hoc test output (`test-results.txt`, `e2e-results.txt`,
+    `test-output.txt`) and blocking secret/PII scanning in CI remain open.
   add blocking secret/PII scanning.
 
 **Acceptance tests:** `git ls-files .data` is empty;
@@ -358,23 +413,41 @@ health and authorized collaboration continue after hostile input.
 **Original evidence (partly remediated):** full `npm audit` was not clean;
 `.github/workflows/ci.yml` made audit non-blocking; and `Dockerfile:18,48`
 shipped dev dependencies. The current audits are clean and the Docker path is
-removed, while workflow/runtime hardening tasks below remain open. Workflows
-use Node 20, which reached EOL on 2026-03-24 according to the
-[official Node.js release schedule](https://nodejs.org/en/about/previous-releases).
-Secret-bearing Actions use mutable major tags; GitHub states a
+removed. Remaining open: production-only install/image scan (no image remains),
+GitHub environment protection, Cloudflare token scoping, and a required
+deploy gate that waits on CI. CI Node and Action pins below are verified
+locally. GitHub states a
 [full commit SHA is the immutable form](https://docs.github.com/en/actions/reference/security/secure-use).
 
-- [ ] Remediate the complete dependency graph and make high/critical audit
+- [x] Remediate the complete dependency graph and make high/critical audit
   failures blocking; exceptions require an owner and expiry.
+  - Evidence: independent verifier APPROVE for this slice; `npm audit
+    --audit-level=high` in `.github/workflows/ci.yml` has no
+    `continue-on-error`; dependency-review uses `fail-on-severity: high`;
+    8 deployment policy tests pass; no exception is required.
 - [ ] Build a production-only dependency stage (`npm ci --omit=dev`) and scan
   the final image, not only the lockfile.
 - [ ] Move CI/build/runtime to a maintained LTS Node line and pin exact image
   digests/versions.
-- [ ] Pin every GitHub Action to a verified full commit SHA.
+  - Evidence: independent verifier APPROVE for the CI Node pin only.
+    Workflows use `node-version: 22.23.2` on `ubuntu-24.04`. Runner images
+    are not digest-pinned; there is no production container image.
+- [x] Pin every GitHub Action to a verified full commit SHA.
+  - Evidence: independent verifier APPROVE; every `uses:` in `ci.yml` and
+    `deploy-cloudflare.yml` is a 40-character SHA whose GitHub tag object
+    matches the version comment (`actions/checkout` v4.4.0,
+    `actions/setup-node` v4.4.0, `actions/upload-artifact` v4.6.2,
+    `actions/dependency-review-action` v4.9.0, `cloudflare/wrangler-action`
+    v3.15.0). Policy tests reject mutable `@vN` tags.
 - [ ] Scope `packages: write` to the publish job; protect production environments
   and minimize Cloudflare token permissions.
 - [ ] Make both deployments depend on one required lint, typecheck, unit,
   Worker, audit, and relevant E2E/smoke gate.
+- [ ] Contain dependency install scripts: run CI installs with
+  `--ignore-scripts` where the build allows it, and record an explicit
+  allowlist for packages that genuinely need lifecycle scripts (for example
+  `better-sqlite3`, dev-only), so a compromised transitive package cannot run
+  arbitrary code on install.
 
 **Acceptance tests:** both audit commands exit zero at `--audit-level=high`;
 runtime image contains no Vite, Vitest, ESLint, Playwright, Wrangler, or
@@ -385,13 +458,21 @@ Actions and prevents deploy when any required check fails.
 
 ### SEC-011 — reduce browser and WebRTC privacy exposure
 
-**Evidence:** board content is stored in origin-wide plaintext `localStorage`
-for 24 hours in `src/lib/whiteboard/persistence.ts:16-91`; kick clears only the
-username. Direct WebRTC can disclose participant network metadata to peers.
+**Evidence:** Direct WebRTC can still disclose participant network metadata to
+peers. Offline board cache and kick/waiting-leave clearing are verified locally
+below; server revoke still has no client persistence hook.
 
-- [ ] Default shared/classroom rooms to no offline board cache, or require
+- [x] Default shared/classroom rooms to no offline board cache, or require
   explicit informed opt-in.
+  - Evidence: independent verifier APPROVE. `saveBoardState` does not
+    `setItem` unless `setOfflineBoardCacheEnabled(roomId, true)` wrote the
+    opt-in flag; nothing in the UI calls that setter. Leftover keys without
+    opt-in are purged on load. 9 persistence tests passed.
 - [ ] Clear room, peer, and session material on leave, kick, revoke, and expiry.
+  - Evidence: independent verifier APPROVE for kick and waiting-room leave
+    (`clearSession` → `clearRoomSessionMaterial`) and 24h expiry of
+    room-scoped keys. Still open: in-room leave UI, reject/suspend, and
+    server-revoke client hook. Tab close does not clear peer id / username.
 - [ ] Document WebRTC IP/ICE privacy. If peer IP privacy is required, use an
   authoritative relay or managed TURN with relay-only ICE.
 
@@ -439,9 +520,20 @@ are never cacheable.
 `src/lib/whiteboard/handlers/waiting.ts:5-30`; handlers return raw exception
 messages, for example `src/lib/whiteboard/handlers/room.ts:115-119`.
 
-- [ ] Return only self status and the minimum approved-user fields by default;
+- [x] Return only self status and the minimum approved-user fields by default;
   expose queue/request PII only to the creator.
-- [ ] Return generic 5xx bodies and log structured, redacted server details.
+  - Evidence: presence GET requires a granted role, so anonymous and pending
+    callers get `403` and no user list; the waiting queue is attached to the
+    payload only for the owner (`callerSeesWaitingQueue`); the requests list
+    with emails is owner-only (`handleRequestsGet`); the active-user list
+    carries display fields only (peer label, name, color, host flag) — no
+    email or account id.
+- [x] Return generic 5xx bodies and log structured, redacted server details.
+  - Evidence: independent verifier APPROVE. Handler catches use
+    `internalErrorResponse`; clients get `{ error: "Internal server error" }`;
+    logs are one JSON line with email/JWT/Bearer/`elements` redaction.
+    Re-verified `npm test` 234/234, typecheck clean. Residual: JWT regex
+    needs `eyJ`; nested board arrays can leak later ids in logs.
 - [ ] Add security-event logging for auth failures, grant changes, revocation,
   rate limiting, and abnormal socket closure with retention/alert thresholds.
 
@@ -451,20 +543,252 @@ never reveal internals; logs contain no raw credentials or board content.
 
 ### SEC-014 — remove configuration and debug escape hatches
 
-**Evidence:** `src/lib/whiteboard/ywebrtcProvider.ts:37-44` accepts arbitrary
-configured signaling URLs; `src/app/whiteboard/[roomId]/RoomClient.tsx:85-92`
-always exposes store/provider/cursor state on `window` in production.
+**Evidence:** signaling URL policy and debug globals are verified locally
+below. y-webrtc P2P sync itself is unchanged (Phase 3).
 
-- [ ] In production allow only same-origin or explicitly allowlisted `wss:`
+- [x] In production allow only same-origin or explicitly allowlisted `wss:`
   signaling endpoints; reject credentials, fragments, insecure schemes, and
   unexpected paths.
-- [ ] Expose debug globals only behind an explicit development/E2E build flag.
-- [ ] Keep Cloudflare and any retained Node deployment configuration/security
+  - Evidence: independent verifier APPROVE. Configured
+    `NEXT_PUBLIC_YWEBRTC_SIGNALING_URL` entries are sanitized; if all are
+    unsafe the list is empty (no fallback). Production requires `wss:` and
+    page host or `NEXT_PUBLIC_YWEBRTC_SIGNALING_ALLOWED_HOSTS`. 16
+    `ywebrtcProvider` tests passed.
+- [x] Expose debug globals only behind an explicit development/E2E build flag.
+  - Evidence: independent verifier APPROVE. `__whiteboardStore` /
+    `__whiteboardCollab` attach only when `NODE_ENV !== 'production'` or
+    `NEXT_PUBLIC_WHITEBOARD_DEBUG=1` or `NEXT_PUBLIC_E2E=1`. Residual:
+    a production E2E build still exposes them.
+- [x] Keep Cloudflare and any retained Node deployment configuration/security
   behavior identical or remove the unsupported path.
+  - Evidence: the Node/Docker path was already removed (Phase 0 / SEC-009);
+    Cloudflare Worker plus Durable Objects is the only supported deployment.
 
 **Acceptance tests:** unsafe/misconfigured signaling URLs fail closed; production
 builds contain no debug globals; parity tests exercise the same authorization,
 headers, limits, and error behavior on every supported deployment.
+
+
+### SEC-016 — account lifecycle, erasure, and data-subject rights
+
+**Status:** not covered anywhere outside the payments section, yet the
+application stores identity PII (names, emails, provider subjects), board
+content, and audit trails for teachers and students — a population that in most
+jurisdictions carries data-subject rights (GDPR-style erasure/export) and
+heightened duties for minors (FERPA/COPPA-like rules depending on market).
+Retention TTLs (SEC-007) bound how long data lives; this section is about what
+happens when a *person* asks for their data or its removal, or stops being a
+user.
+
+- [ ] Record the lawful-basis and data-inventory decision: what personal data is
+  held, where (identity store, room tables, audit log, logs), for whom
+  (teacher vs student), and who the controller is. This decides every item
+  below and belongs to the product owner.
+- [ ] Implement account deletion: a verified request removes or anonymizes the
+  account row, its provider subjects, sessions, grants, presence/waiting rows,
+  and display names embedded in other accounts' rooms, within a documented
+  deadline.
+- [ ] Resolve the audit-trail tension explicitly: security audit records may be
+  retained on legitimate-interest grounds, but then must be pseudonymized on
+  erasure (keep the event, drop the direct identifiers) — decide and document,
+  do not leave it implicit.
+- [ ] Implement data export for an account's own data in a portable format.
+- [ ] Decide and document the minors policy: what identity data students may
+  enter at all (a display name may be enough — email is already optional),
+  whether student emails should be refused rather than stored, and who consents
+  on a student's behalf.
+- [ ] Propagate erasure to operational stores: logs, error reports, analytics,
+  and backups (document the backup-erasure window rather than pretending
+  backups can be rewritten instantly).
+
+**Acceptance tests:** after erasure, no table, log fixture, or export contains
+the account's identifiers; an export contains the account's own data and nobody
+else's; a deleted account's sessions and live sockets are closed; audit rows
+survive erasure only in pseudonymized form.
+
+### SEC-017 — impersonation and classroom abuse resistance
+
+**Status:** not covered. Display names are client-chosen free text
+(`userName`), rendered to every participant in the presence panel, waiting
+queue, and cursors. Authorization no longer trusts them (SEC-004), but humans
+do: in a classroom, a student naming themselves after the teacher — or after
+another student — is a working social-engineering attack on the *owner's
+moderation decisions* (approve/kick target selection), and abusive names or
+board content are a duty-of-care problem, not just a UX one.
+
+- [ ] Visually distinguish the room owner in every participant list and cursor
+  by server-verified role, never by display name, so a name collision cannot
+  imitate the teacher's authority.
+- [ ] Disambiguate duplicate display names in owner-facing moderation UI (queue
+  and kick targets) with a stable server-side discriminator, so the owner
+  always acts on the account they intend.
+- [ ] Bound and normalize display names and room names: strip control and
+  zero-width characters, collapse confusable whitespace, and enforce the
+  existing length caps at the server (SEC-005 covers length; this adds
+  normalization so "Teacher" and "Teacher\u200b" are not two identities).
+- [ ] Give the owner a low-friction abuse response: kick/ban already exists;
+  add clearing another participant's strokes and, if boards can be shared
+  beyond the live room, a report path with an accountable recipient.
+- [ ] Rate-limit join/name-change churn per account so cycling names cannot
+  flood the queue or the presence panel (shares the SEC-005 quota mechanism).
+
+**Acceptance tests:** a participant with the owner's exact display name is
+never rendered with owner affordances; moderation actions resolve to the
+intended `account_id` under duplicate names; control/zero-width characters are
+gone from stored names; name-churn beyond the limit returns `429` and leaves
+the queue stable.
+
+### SEC-015 — keep paid membership and payments outside the trust boundary
+
+**Status:** not started. No billing, plan, or payment code exists in the tree
+today; `src/lib/whiteboard/membership.ts` models *room* roles (owner, editor,
+viewer, pending, banned), which is a different concept from a paid plan. This
+section is the security contract for the feature when it is built, so the design
+constraints are agreed before any processor is chosen.
+
+**Why it is last:** payments add a new external trust boundary (the processor),
+a new class of privileged state (entitlements), and a new category of PII
+(billing identity). None of that is safe to add while room authorization,
+revocation, and the real-time boundary are still open, because an entitlement is
+only as trustworthy as the account it hangs off.
+
+**Threats specific to this surface:** paying nothing and being entitled anyway
+(client-declared plan, tampered price, forged or replayed webhook, checkout
+redirect treated as proof of payment); entitlement outliving payment (cancel,
+refund, chargeback, or failed renewal that never reaches live sessions); one
+account's billing data reachable by another; and a classroom application
+accidentally collecting payment or billing identity from minors.
+
+- [ ] Never let card data touch this application. Use the processor's hosted
+  checkout or hosted fields so the deployment stays in the lowest PCI DSS
+  self-assessment scope, and record which SAQ level that is.
+- [ ] Treat entitlement as server-owned state keyed by local `account_id`, in the
+  identity store next to `accounts`. Never accept plan, tier, seat count, price,
+  amount, currency, coupon, or trial eligibility from the client; the server
+  selects the price identifier.
+- [ ] Never grant entitlement from a checkout success redirect, a client callback,
+  or a `session_id` in a URL. Grant only from server-side verification: a
+  signature-verified webhook or an authoritative read back from the processor.
+- [ ] Verify every webhook: exact signature over the raw body, freshness window,
+  and per-event-ID deduplication so a replayed or retried delivery cannot apply
+  twice. Handle out-of-order delivery by reconciling against processor state
+  rather than trusting event order.
+- [ ] Make entitlement changes idempotent and audited. Reuse the existing
+  `authorization_audit` pattern: actor, reason, before/after, written in the same
+  transaction as the change.
+- [ ] Propagate downgrade, cancellation, non-payment, refund, and chargeback the
+  same way revocation propagates — bump the account authorization epoch so HTTP
+  and already-open real-time connections lose the entitlement within the
+  documented bound. An expiring plan must not depend on a client asking.
+- [ ] Enforce plan limits (rooms, seats, participants, retention) server-side at
+  the same boundary as the authorization matrix, not in the UI.
+- [ ] Scope billing routes to the owning account only. Reading or changing another
+  account's plan, invoices, or payment method must fail closed, and admin
+  overrides must be audited.
+- [ ] Bill teachers only. Students must never reach a payment flow or have billing
+  identity stored, and the design must state how it keeps minors out of that
+  path.
+- [ ] Store only processor identifiers (customer, subscription, invoice) plus
+  what is legally required. No PAN, no full billing address unless tax rules
+  demand it. Document the conflict between invoice retention duties and erasure
+  requests, and which wins.
+- [ ] Rate-limit and bound abuse of free tiers: one trial per account, coupon
+  redemption limits, and creation limits that survive account churn.
+- [ ] Keep processor secrets (API key, webhook signing secret) in Worker secrets,
+  never in code, client bundles, logs, or `wrangler.toml`; document rotation.
+- [ ] Add a reconciliation job that compares local entitlement against processor
+  state and alerts on drift, so a missed webhook is detected rather than silently
+  granting or denying access.
+
+**Acceptance tests:** a forged, replayed, stale, or wrong-signature webhook
+changes nothing; a client-declared plan, tampered price, or self-granted
+entitlement is ignored; a checkout redirect alone entitles nobody; cancel,
+refund, chargeback, and failed renewal each remove access from HTTP and from an
+already-open socket within the documented bound; one account cannot read or
+modify another's billing state; plan limits are enforced server-side against a
+raw client; duplicate webhook delivery applies once; and induced processor
+errors or timeouts never leave entitlement and payment in disagreement.
+
+#### Proposed membership structure (Phase 7 input — awaiting owner sign-off)
+
+A concrete default so Phase 7 starts from a reviewable model instead of a blank
+page. The product owner can amend any number here; the *shape* (server-owned
+catalog, account-keyed entitlement, grace-then-downgrade, students never
+billable) is the part SEC-015 depends on.
+
+**Who is billable.** Only teachers — the accounts that create and own rooms.
+Students authenticate and join rooms but are never billable, never see payment
+UI, and never have billing identity stored (SEC-016 minors policy). A room's
+capabilities are decided by its *owner's* plan, so a student's experience
+changes with the teacher's tier without the student ever touching billing.
+
+**Tiers (proposed).**
+
+| | Free | Teacher Pro | School (later) |
+| --- | --- | --- | --- |
+| Active rooms per account | 2 | 20 | pooled per seat |
+| Participants per room | 3 (current default) | 10 (current schema cap) | 10 |
+| Room retention after last activity | 7 days | 90 days | policy-set |
+| Billing | — | monthly/annual, one price each | per teacher seat, central invoice |
+
+School/district is deliberately deferred: seats, rosters, and admin consoles
+multiply the authorization surface, and nothing in the individual model blocks
+adding it later. Ship Free + Pro first.
+
+**Plan catalog lives in code, not the database.** A static, versioned map of
+`plan_id -> limits` (max rooms, max participants, retention days) deployed with
+the Worker. The database stores only which plan an account has. This keeps the
+price/limit definition out of reach of SQL tampering and makes limit changes an
+auditable code review.
+
+**Entitlement data model (identity store, beside `accounts`).**
+
+- `entitlements`: `account_id` (PK, FK accounts), `plan_id`, `status`
+  (`free` / `trialing` / `active` / `past_due` / `canceled`),
+  `current_period_end`, `processor_customer_id`, `processor_subscription_id`,
+  `updated_at`. One row per account; absence of a row means Free. Every write
+  bumps the account's authorization epoch (SEC-015 revocation binding) and
+  lands an `authorization_audit` row in the same transaction.
+- `billing_events`: `event_id` (PK — the processor's event id, which is the
+  dedupe key), `type`, `payload_hash`, `processed_at`. Webhook handling
+  inserts-or-ignores here first; a duplicate insert means a replay and is
+  dropped before any entitlement read.
+
+**Entitlement state machine.**
+
+`free -> trialing -> active` on server-verified checkout;
+`active -> past_due` on `invoice.payment_failed` (grace: 7 days, full access,
+dunning emails are the processor's job); `past_due -> active` on recovery, or
+`past_due -> canceled` when grace lapses; `active|past_due -> canceled` on
+subscription deletion; chargeback (`charge.dispute.created`) skips grace and
+goes straight to `canceled` plus a review flag. Every transition is
+webhook-driven or reconciliation-driven — never client-driven.
+
+**Downgrade semantics — never destroy data on a billing event.** Dropping to
+Free with more rooms than the Free quota archives the excess (owner-readable,
+not writable, not joinable) rather than deleting it; retention deletion follows
+the SEC-007 TTL machinery on the *Free* schedule from the downgrade timestamp,
+so a lapsed card never silently erases a class's boards. Over-quota actions
+return the distinct "over plan limit" status from Phase 7, which must not leak
+whether other rooms exist.
+
+**Processor (proposed): Stripe, hosted surfaces only.** Stripe Checkout for
+purchase, Stripe Customer Portal for card changes/cancellation — the
+application renders links and never a card field, keeping SAQ-A scope
+(SEC-015). Webhooks consumed: `checkout.session.completed`,
+`customer.subscription.updated`, `customer.subscription.deleted`,
+`invoice.payment_failed`, `charge.dispute.created`. Reconciliation reads
+`subscriptions.list` per stored customer id on a daily alarm and alerts on
+drift. Any processor with equivalent hosted checkout + signed webhooks
+satisfies the contract; the choice is the owner's.
+
+**Acceptance criteria for the structure itself:** a student session can never
+reach a billing route (server-enforced, not hidden UI); an account with no
+entitlement row behaves exactly as Free everywhere; archive-on-downgrade is
+provably reversible by re-upgrading; the plan catalog is immutable at runtime;
+and every entitlement transition appears exactly once in `authorization_audit`
+with the processor event id as its reason.
+
 
 ## Implementation phases
 
@@ -633,13 +957,38 @@ acceptance tests and evidence are satisfied.
 
 ### Phase 2 — enforce HTTP authorization and one admission state
 
-- [ ] Replace the parallel waiting-room and access-grant flows with one state
+- [x] Replace the parallel waiting-room and access-grant flows with one state
   machine keyed by local `account_id` (SEC-002).
-- [ ] Implement the authorization matrix for every HTTP method before body
+  - Evidence: independent verifier APPROVE. `room_members` is the single
+    grant machine (none / pending / viewer / editor / owner / banned).
+    `/access`, `/requests`, and `/waiting` read and write that table; bearer
+    tokens and `peerId` cannot obtain membership. `RoomDO.authorize` fails
+    closed for unknown sections. Re-verified: `npm test` 214/214, `npm run
+    test:workers` 79/79, typecheck clean. Residual: the legacy `room_access` /
+    `access_requests` tables are still created by `roomSchema.ts` (the code
+    paths that read them are gone — drop the tables or mark them tombstoned);
+    y-webrtc remains P2P (Phase 3).
+- [x] Implement the authorization matrix for every HTTP method before body
   parsing or sensitive reads; use consistent `401`, `403`, and `404` behavior.
-- [ ] Split canvas writes from creator-only room settings and lifecycle routes.
-- [ ] Bind creator, viewer, editor, waiting, moderation, and ban state to local
+  - Evidence: independent verifier APPROVE. `RoomDO.authorize` maps every
+    room HTTP route; grant role is loaded before board/queue/PII reads;
+    missing account is `401`, wrong role `403`, non-members `403` even if
+    the room is missing. Re-verified: `npm test` 219/219, `npm run
+    test:workers` 83/83, typecheck clean. Residual: scene and settings still
+    share `POST /room` (next task); y-webrtc remains P2P.
+- [x] Split canvas writes from creator-only room settings and lifecycle routes.
+  - Evidence: independent verifier APPROVE. `POST /room/:id` is scene-only;
+    `POST`/`PATCH /room/:id/settings` is owner-only; mixing fields on the
+    wrong route is `400` with tables unchanged. Re-verified: `npm test`
+    223/223, `npm run test:workers` 84/84, typecheck clean. Residual:
+    create is two requests; delete is not yet atomic (later phase).
+- [x] Bind creator, viewer, editor, waiting, moderation, and ban state to local
   accounts/grants rather than email, bearer hash, or client `peerId` (SEC-004).
+  - Evidence: independent verifier APPROVE. Membership, waiting, kick, and
+    join use Worker-stamped `accountId`; Bearer and email cannot select a
+    grant; `hostPeerId` is a cursor label. Server-issued peer identity and
+    Access staging remain open SEC-004 items. Per-session binding remains
+    open.
 - [x] Default the first-user host fallback to off and permit heartbeat/leave only
   for the authenticated caller's account.
   - Evidence: see the two SEC-004 items above. The fallback is now an opt-in
@@ -647,13 +996,25 @@ acceptance tests and evidence are satisfied.
     when the named peer belongs to a different account. Enforcement is per
     account rather than per session; per-session binding stays open, as does the
     rest of this phase.
-- [ ] Add the complete table-driven negative authorization suite and the
+- [x] Add the complete table-driven negative authorization suite and the
   create-request-approve-join-expire-revoke E2E flow.
+  - Evidence: independent verifier APPROVE for this item (not the gate).
+    19-route missing/malformed/expired Access → 401 with tables unchanged;
+    wrong-role/wrong-room → 403 including `/settings`; pending/anon leak no
+    board/queue/email. New Playwright lifecycle spec passed (5/5).
+    Re-verified: `npm test` 234, `npm run test:workers` 93, typecheck
+    clean, `npm run test:e2e` 89 passed / 3 failed (stale UI specs).
+    Residual: e2e TTL is `expiresAt` assertion only; real expiry is
+    workers-only.
 
 **Phase gate**
 
 - [ ] Every HTTP route is mapped to the matrix; rejected operations leave all
   tables unchanged; no anonymous or pending caller receives room data or PII.
+  - Evidence: independent verifier said do not check. Full e2e is not
+    green: `room-lifecycle` never-created room, `waiting-room` self-leave
+    prompt, and kick-then-re-approve (kick is a ban). `GET /settings` is
+    always 403 including for the owner.
 
 ### Phase 3 — replace the peer-to-peer security boundary
 
@@ -668,6 +1029,8 @@ acceptance tests and evidence are satisfied.
   message size, connection count, rate, and bounded fan-out.
 - [ ] Implement room kick/revoke by incrementing the grant version and closing
   matching live and hibernating sockets.
+- [ ] Revalidate hibernated-socket attachments on wake against current grant
+  version, epoch, and expiry (SEC-003).
 - [ ] Choose and document account-wide revocation: reliable active-room fan-out,
   or a measurable maximum delay enforced by authorization-epoch revalidation,
   short socket expiry, and forced reconnect.
@@ -688,8 +1051,16 @@ acceptance tests and evidence are satisfied.
   (SEC-005).
 - [ ] Replace security-sensitive `Math.random` values with at least 128 bits from
   a cryptographic RNG and make room creation transactional (SEC-006).
+  - Evidence: independent verifier APPROVE for the CSPRNG slice only.
+    Transactional create-with-owner already exists in RoomDO; capability
+    vs display codes and client storage/rotation stay open. This Phase 4
+    task stays unchecked.
 - [ ] Implement creator-only atomic deletion across every room table, close all
   sockets, and prevent old grants from authorizing recreated rooms (SEC-007).
+  - Evidence: independent verifier APPROVE for the atomic SQL slice and
+    socket close 4404. This Phase 4 task stays open because
+    `storage.deleteAll`, tombstones, and recreate-vs-old-grant proof are
+    not done.
 - [ ] Add TTLs and scheduled cleanup for rooms, sessions, grants, requests,
   waiting entries, kicks, PII, and tombstones.
 - [ ] Add boundary, quota, concurrent-create, injected-failure, expiry, deletion,
@@ -705,14 +1076,34 @@ acceptance tests and evidence are satisfied.
 - [ ] Remove or fully harden the legacy Node signaling deployment (SEC-009).
 - [ ] Ship production-only dependencies on a maintained Node LTS and pin images
   and GitHub Actions immutably (SEC-010).
+  - Evidence: independent verifier APPROVE for the local CI slice only
+    (Node 22.23.2, SHA-pinned Actions, blocking high audit). The Phase 5
+    task stays open because production-only install/image scan, digest-pinned
+    runtime images, Cloudflare token scoping, and a deploy job gated on CI
+    are not done. Do not treat the full SEC-010 section as complete.
 - [ ] Remove plaintext shared-room persistence by default and clear all local
   room/session material on leave, kick, revoke, or expiry (SEC-011).
+  - Evidence: independent verifier APPROVE for default-off cache and
+    kick/waiting-leave/expiry clearing. The Phase 5 task stays open because
+    revoke, in-room leave, reject/suspend, and TURN/relay are not done.
 - [ ] Add CSP, framing, content-type, referrer, permissions, cache, and indexing
   protections across assets and API responses (SEC-012).
 - [ ] Minimize PII responses, replace internal error disclosure, and add
   structured redacted security-event logs and alert thresholds (SEC-013).
-- [ ] Remove production debug globals, restrict signaling configuration, and
+  - Evidence: independent verifier APPROVE for generic 5xx + log redaction
+    and (earlier) owner-only queue PII. This Phase 5 task stays open
+    because security-event logging for auth failures, grants, revocation,
+    rate limits, and socket closure is not done.
+- [x] Remove production debug globals, restrict signaling configuration, and
   prove parity across every retained deployment (SEC-014).
+  - Evidence: independent verifier APPROVE. Production signaling is
+    fail-closed; debug globals are gated; the unsupported Node path is
+    already gone so there is no second deployment to parity-test. Residual:
+    `NEXT_PUBLIC_E2E=1` production builds still attach debug globals.
+- [ ] Implement account erasure, data export, and the recorded minors policy
+  (SEC-016).
+- [ ] Add owner-role display integrity, name normalization, and moderation
+  disambiguation (SEC-017).
 
 **Phase gate**
 
@@ -736,6 +1127,251 @@ acceptance tests and evidence are satisfied.
 - [ ] Every P0/P1 task and adversarial test is complete, no high/critical finding
   is unowned, and the release owner signs off before public deployment.
 
+
+### Phase 7 — paid membership and payments
+
+Last by design. This phase must not start until the Phase 6 gate passes: an
+entitlement is only as trustworthy as the account and revocation path it hangs
+off, so billing built on an unfinished authorization boundary would be a way to
+pay for access that the boundary cannot actually enforce.
+
+- [ ] Decide and record the commercial model before writing code: what a plan
+  entitles, who pays (teacher, school, or district), how seats are counted, what
+  happens at the limit, and what the free tier is. The answer changes the data
+  model, so it is a prerequisite rather than a detail. A concrete proposal
+  (tiers, entitlement tables, state machine, downgrade semantics, Stripe hosted
+  surfaces) is recorded under SEC-015 — sign-off or amendment of that proposal
+  completes this task.
+- [ ] Choose a payment processor with hosted checkout and record the resulting
+  PCI DSS scope and the compliance obligations the deployment accepts.
+- [ ] Add entitlement tables to the identity store keyed by `account_id`, with
+  plan, status, current period, seat allocation, and an audit trail (SEC-015).
+- [ ] Implement server-side checkout session creation with a server-selected
+  price, an idempotency key, and no client-supplied amounts.
+- [ ] Implement the signature-verified, deduplicated, replay-resistant webhook
+  endpoint and the reconciliation job that detects missed events.
+- [ ] Bind entitlement to the authorization epoch so downgrade, cancellation,
+  non-payment, refund, and chargeback revoke access on HTTP and on already-open
+  real-time connections.
+- [ ] Enforce plan limits at the authorization boundary and return a distinct,
+  non-leaking status for "over plan limit" versus "not permitted".
+- [ ] Add the billing account-isolation, entitlement-tampering, webhook-forgery,
+  replay, and revocation-propagation test suites against the processor's test
+  mode.
+- [ ] Record billing operations: refund and dispute handling, dunning, invoice
+  retention versus erasure requests, secret rotation, and who is on call when
+  payment state and access state disagree.
+
+**Phase gate**
+
+- [ ] No entitlement can be obtained without a server-verified payment event; no
+  cancelled, refunded, or unpaid account retains access beyond the documented
+  bound; billing state is isolated per account; card data never reaches this
+  application; and the reconciliation job proves local entitlement matches the
+  processor.
+
+### Product phases 8-10 — feature parity with security gates
+
+Sourced from `MISSING_FEATURES.md` (Pencil Spaces gap analysis): of its full
+Phase 0-7 feature ladder, these are the three highest-value layers by its own
+priority table. They live in this file because each one opens a new attack or
+PII surface, and the security work is part of the feature, not a follow-up.
+They may proceed in parallel with Phase 7 (payments); they must not start
+before the Phase 3 gate (server-authoritative sync), because every one of them
+assumes the server can enforce who sees what.
+
+**Status update (2026-08-18):** LiveKit voice and video calling landed ahead
+of plan (merge `362a3e9`): server-minted join tokens for admitted accounts
+only, identity forced to the verified account, waiting/suspended denied,
+secrets in Worker bindings. This changes the build order — the feature doc's
+P0 layer ("A/V + chat") is half done, so finishing and hardening what shipped
+now outranks starting new surface.
+
+#### Build order (milestones, most important first)
+
+Each milestone is a shippable slice; its checkboxes live in the phases below.
+Order rationale: harden what exists, then complete the classroom P0 (chat),
+then the persistence foundation everything later assumes, then structure,
+then recording last because it is gated on the SEC-016 minors policy.
+
+| # | Milestone | Why now | Checkboxes |
+| --- | --- | --- | --- |
+| M1 | A/V hardening: live eviction on kick/ban, host-gated screen share | The gap shipped with the feature; every day it stands, a kicked student can stay on the call | Phase 10, first three items |
+| M2 | In-space chat (group first) | Completes the feature doc's P0 layer; first stored student content, so it drags SEC-016/017 into practice | Phase 9, chat items |
+| M3 | Cloud Spaces + real library | The foundation layer the feature doc says unblocks everything; boards stop being ephemeral | Phase 8, all items |
+| M4 | Private per-student boards + breakouts | Highest-value classroom structure; child rooms reuse the room grant model | Phase 9, private-board items |
+| M5 | Host controls: raise hand, timer, follow-me, per-student permissions | Session-management polish on top of M2-M4 primitives | Phase 9, remaining items |
+| M6 | Recording + transcripts | Hard privacy surface; blocked on the SEC-016 minors policy being recorded first | Phase 10, recording items |
+| M7 | Teaching content: Drive/OneDrive import, PDF annotation, vetted embeds | Needs the M3 library to land imports into; the OAuth and embed surface must follow the Phase 11 contract, not ad-hoc scopes | Phase 11, all items |
+
+Not scheduled (tracked in `MISSING_FEATURES.md` only): scheduling/rostering,
+education SSO, LMS/SIS, admin consoles, AI layer — high effort, later market
+stage, and the AI items depend on M6 existing first. In-board Google Docs
+*editing* is also deferred: unlike import, it requires broad write scopes and
+a live third-party editing surface inside the board, which multiplies the
+Phase 11 contract for one feature.
+
+### Phase 8 — cloud Spaces and real persistence
+
+The foundation layer: named persistent Spaces, cloud board history/restore,
+and a real content library replacing the `LibraryPanel` stub. Security-wise
+this turns boards from ephemeral rooms into long-lived stored records.
+
+- [ ] Named persistent Spaces (create / open / list) owned by the creator's
+  `account_id`; the Space list route returns only the caller's own Spaces.
+- [ ] Extend the authorization matrix to Spaces, board history, and library
+  items before any of them ship — same `401`/`403` discipline as rooms
+  (SEC-002), same account-keyed grants (SEC-004).
+- [ ] Cloud board history / restore with bounded depth; restore is
+  owner-gated and audited, and history inherits the room's retention clock
+  rather than living forever (SEC-007).
+- [ ] Real content library: per-account saved items, size- and count-bounded
+  (SEC-005), never shared across accounts without an explicit grant.
+- [ ] Cross-device sync of library items rides the existing session, not a new
+  token or storage channel.
+- [ ] Fold all new tables into deletion, retention, erasure, and backup:
+  SEC-007 TTLs, SEC-016 account erasure, and the tested restore path.
+
+**Phase gate**
+
+- [ ] A teacher can close a Space and reopen the same board on another device;
+  no route leaks another account's Spaces, history, or library items; erasing
+  an account removes its Spaces, history, and library within the documented
+  deadline.
+
+### Phase 9 — classroom session UX
+
+Chat, raise hand, session timer, follow-me, per-student edit permissions, and
+private boards / breakouts. This is the phase where *student-generated
+content* (messages) is stored for the first time, so SEC-016/SEC-017 stop
+being abstract.
+
+- [ ] In-space chat, group first: messages bound to `account_id`, rendered
+  with the SEC-017 name normalization and owner-role display integrity, with
+  server-side length/rate bounds (SEC-005) and owner delete.
+- [ ] Chat retention is short by default and recorded in the SEC-007 policy;
+  student messages are PII and join the SEC-016 erasure and export paths
+  before launch, not after.
+- [ ] Raise hand, session timer, and connection indicators as presence-channel
+  events — schema-validated, rate-bounded, carrying no free text.
+- [ ] Follow-me / view lock is a host-issued hint enforced client-side only;
+  document explicitly that it is a UX affordance, not a security control, so
+  no later claim treats it as one. Per-person viewport stays the default.
+- [ ] Granular per-student edit permissions extend `room_members.role` rather
+  than adding a parallel store; the authorization matrix gains the new role
+  column before the UI does.
+- [ ] Private per-student boards and breakout rooms are child rooms with their
+  own grant rows: the owner sees all, a student sees only their own; the
+  Phase 3 socket boundary enforces it for live sync, not the client.
+- [ ] Idle / distraction alerts are aggregate and ephemeral (no per-student
+  browsing surveillance is stored) — record this as a deliberate privacy
+  decision.
+
+**Phase gate**
+
+- [ ] A student cannot read another student's private board or 1:1 chat by any
+  raw-client request; moderation and permission changes resolve to accounts;
+  chat erasure works; a forged follow-me event moves nobody's authorization.
+
+### Phase 10 — live A/V and recording
+
+Audio, video, screen share, then session recording with transcripts. The
+heaviest privacy surface in the entire roadmap: live media from minors, and
+stored recordings of them. Recording items must not start before the SEC-016
+minors policy is recorded. Voice and video landed 2026-08-18 (merge
+`362a3e9`); the unchecked A/V items below are the hardening that must follow
+it (milestone M1).
+
+- [x] Choose the media path deliberately: SFU or managed service with
+  per-session, server-issued join tokens bound to the room grant — never P2P
+  mesh for classroom A/V, or SEC-001 returns as an unfixable media problem
+  (peer IP exposure between students).
+  - Evidence: LiveKit SFU. HS256 join tokens are minted in RoomDO only for
+    admitted accounts (waiting/suspended/outsiders get 403), the token
+    identity is forced to the server-verified account id (a client-chosen
+    identity could bump another participant's live session), and secrets live
+    in Worker bindings with a 503 graceful-degrade when unset. 276 unit, 76
+    workers, and 92 e2e tests passed on the merge.
+- [ ] A/V join/leave rides room authorization: kick, suspend, ban, and epoch
+  revocation must drop live media within the same documented bound as sockets.
+  - Partially landed ahead of phase (Phase 3 A/V merge, 2026-08-18): LiveKit
+    join tokens are minted server-side for admitted accounts only, the token
+    identity is forced to the verified account (a client-chosen identity could
+    bump another participant's session), waiting/suspended accounts are denied,
+    and secrets stay in Worker bindings. **Open gap:** a kick or ban revokes
+    future joins but does not evict an already-connected media participant —
+    wire server-side eviction through LiveKit's room service API
+    (`RemoveParticipant`) into the same paths that close room sockets.
+- [ ] Screen share is host-approved per instance for students, on by right
+  only for the owner.
+- [ ] Recording requires explicit, visible, per-session consent; a recording
+  indicator every participant can see; and a recorded decision on who may
+  start it (owner only by default).
+- [ ] Recordings and transcripts are stored encrypted, owner-scoped, join the
+  SEC-007 retention schedule and SEC-016 erasure/export, and never leave the
+  declared storage region.
+- [ ] Transcripts of minors are the most sensitive data this product would
+  hold: default them off; enabling is a per-Space owner decision recorded with
+  the consent trail.
+- [ ] Extend the abuse story (SEC-017) to media: report path, and owner mute /
+  camera-off controls that act on accounts.
+
+**Phase gate**
+
+- [ ] Media join is impossible without a current room grant and dies on
+  revocation within the bound; no recording exists without its consent trail;
+  recordings honor retention, erasure, and export; a student cannot screen
+  share without host approval.
+
+### Phase 11 — teaching content and third-party integrations
+
+Drive/OneDrive import, PDF/document annotation, and embedded third-party
+tools (Desmos, Kahoot, and similar). This is the layer most often built
+dangerously: broad OAuth scopes "to be safe", refresh tokens in the browser,
+and unsandboxed iframes. The contract below is what keeps a whiteboard from
+becoming a bridge into a teacher's entire Drive.
+
+- [ ] Import uses the narrowest possible OAuth scope: Google `drive.file` via
+  the Picker (access only to files the user explicitly picks, not the Drive),
+  and the OneDrive file-picker equivalent. Broad `drive.readonly` or full
+  Drive scopes are prohibited; adding any scope is a reviewed change to this
+  file.
+- [ ] Provider tokens never reach the client or persistent storage in
+  plaintext: short-lived access tokens are used server-side and discarded;
+  if offline refresh tokens are ever genuinely needed, they are encrypted at
+  rest, scoped per account, revocable from the account page, and covered by
+  SEC-016 erasure. Prefer designs that need no refresh token at all —
+  import-as-copy, then forget the source.
+- [ ] Imported files become *our* stored objects: content-type allowlist
+  (PDF, images, and the office formats actually supported), size caps
+  (SEC-005), server-side re-encoding or sanitization for anything rendered
+  (SVG and PDF are script-capable), and storage that joins retention
+  (SEC-007), erasure/export (SEC-016), plan quotas (SEC-015), and backup.
+- [ ] A student's view of imported content is served from our origin, never a
+  proxied provider URL, so a revoked import cannot keep leaking through a
+  long-lived third-party link and provider cookies never mix into board
+  traffic.
+- [ ] Embeds run in sandboxed iframes with an explicit per-tool allowlist:
+  `sandbox` without `allow-same-origin` toward us, a CSP `frame-src` listing
+  exactly the vetted tool origins (the enforced-CSP work in SEC-012 gains
+  this list), no postMessage handling without origin checks, and no tool
+  added outside a reviewed allowlist change. Embedded tools never receive
+  the session cookie, account ids, or roster data.
+- [ ] The embed allowlist is owner-controlled per room and off by default, so
+  a compromised or policy-violating tool can be cut off by config, and a
+  room's students only ever load third-party origins its teacher chose.
+- [ ] Each integration records what data flows *to* the provider (usually
+  nothing beyond the user's own OAuth consent) and is added to the SEC-016
+  data inventory before launch.
+
+**Phase gate**
+
+- [ ] Import works with only picked-file scope and no stored plaintext
+  provider tokens; a hostile SVG/PDF cannot execute in a viewer's session;
+  embedded tools load only from the allowlist, sandboxed, with no session or
+  roster data; revoking an import or an embed stops student access; imported
+  objects honor quotas, retention, erasure, and export.
+
 ## Definition of done
 
 - Every P0 task and its adversarial tests pass.
@@ -747,3 +1383,12 @@ acceptance tests and evidence are satisfied.
   has been removed.
 - Operational owners, deadlines, retention, incident response, backup, restore,
   and credential-rotation procedures are recorded.
+- If paid membership ships, no entitlement exists without a server-verified
+  payment event, revocation propagates to live connections, and card data never
+  reaches this application (SEC-015).
+- If Phases 8-10 ship, every new object type (Space, history, library item,
+  chat message, private board, recording) is in the authorization matrix, the
+  retention schedule, and the erasure path before its UI ships.
+- If Phase 11 ships, no integration holds a broader scope than picked-file
+  access, no plaintext provider token is stored, and no third-party origin
+  loads in a room outside the owner-controlled allowlist (Phase 11 gate).
