@@ -36,18 +36,18 @@ function jsonObject(body: unknown): Record<string, unknown> | null {
 }
 
 function roomSettingsResponse(
-  now: number,
   row: {
     max_users: number;
     name: string | null;
     host_peer_id: string | null;
     allow_first_user_host: number;
+    updated_at: number;
   },
   extra: Record<string, unknown> = {},
 ): Response {
   return Response.json({
     success: true,
-    updated_at: now,
+    updated_at: row.updated_at,
     maxUsers: row.max_users,
     hostPeerId: row.host_peer_id,
     name: row.name,
@@ -58,13 +58,16 @@ function roomSettingsResponse(
 
 function readRoomSettings(db: RoomDatabase, roomId: string) {
   return db.prepare(
-    `SELECT max_users, name, host_peer_id, allow_first_user_host FROM rooms WHERE room_id = ?`,
+    `SELECT max_users, name, host_peer_id, allow_first_user_host, created_at, updated_at
+     FROM rooms WHERE room_id = ?`,
   ).get(roomId) as
     | {
       max_users: number;
       name: string | null;
       host_peer_id: string | null;
       allow_first_user_host: number;
+      created_at: number;
+      updated_at: number;
     }
     | undefined;
 }
@@ -144,7 +147,7 @@ export async function handleRoomPost(
     if (!settings) {
       return Response.json({ error: 'Failed to save' }, { status: 500 });
     }
-    return roomSettingsResponse(now, settings, { hasCreatorGrant });
+    return roomSettingsResponse(settings, { hasCreatorGrant });
   } catch (e) {
     return internalErrorResponse(e, 'handleRoomPost');
   }
@@ -223,9 +226,26 @@ export async function handleRoomSettings(
     if (!settings) {
       return Response.json({ error: 'Failed to save' }, { status: 500 });
     }
-    return roomSettingsResponse(now, settings);
+    return roomSettingsResponse(settings);
   } catch (e) {
     return internalErrorResponse(e, 'handleRoomSettings');
+  }
+}
+
+// GET|HEAD /api/whiteboard/room/[roomId]/settings - owner-only read
+export async function handleRoomSettingsGet(
+  db: RoomDatabase,
+  roomId: string,
+  _request: Request,
+): Promise<Response> {
+  try {
+    const settings = readRoomSettings(db, roomId);
+    if (!settings) {
+      return Response.json({ error: 'Room not found' }, { status: 404 });
+    }
+    return roomSettingsResponse(settings, { created_at: settings.created_at });
+  } catch (e) {
+    return internalErrorResponse(e, 'handleRoomSettingsGet');
   }
 }
 

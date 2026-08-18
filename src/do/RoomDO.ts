@@ -15,6 +15,7 @@ import {
   handleRoomGet,
   handleRoomPost,
   handleRoomSettings,
+  handleRoomSettingsGet,
   handleRoomDelete,
 } from '../lib/whiteboard/handlers/room';
 import {
@@ -191,6 +192,7 @@ export class RoomDO extends DurableObject {
  *   GET    /room                     granted (viewer/editor/owner)
  *   POST   /room (create)            any authenticated
  *   POST   /room (scene)             editor/owner
+ *   GET    /settings                  owner
  *   POST|PATCH /settings             owner
  *   DELETE /room                     owner
    *   GET    /presence                 granted (payload redacted for non-owners)
@@ -229,6 +231,7 @@ export class RoomDO extends DurableObject {
     }
 
     if (section === 'settings') {
+      if (method === 'GET' || method === 'HEAD') return owner ? null : forbidden();
       if (method === 'POST' || method === 'PATCH') return owner ? null : forbidden();
       return forbidden();
     }
@@ -313,6 +316,14 @@ export class RoomDO extends DurableObject {
         }
         break;
       case 'settings':
+        if (method === 'GET' || method === 'HEAD') {
+          return handleRoomSettingsGet(this.db, roomId, request).then((response) => {
+            if (method === 'HEAD') {
+              return new Response(null, { status: response.status, headers: response.headers });
+            }
+            return response;
+          });
+        }
         if (method === 'POST' || method === 'PATCH') {
           return handleRoomSettings(this.db, roomId, request);
         }

@@ -1015,6 +1015,31 @@ describe('room authorization matrix', () => {
     })).status).toBe(200);
   });
 
+  it('lets the owner read settings without scene fields', async () => {
+    const roomId = 'matrix-owner-get-settings';
+    await createRoomAs(owner, roomId, { name: 'Readable', maxUsers: 6, allowFirstUserHost: true });
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [{ id: 'hidden-dot' }] }),
+    })).status).toBe(200);
+
+    const response = await authenticatedFetch(`/api/whiteboard/room/${roomId}/settings`, owner);
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body).toMatchObject({
+      success: true,
+      name: 'Readable',
+      maxUsers: 6,
+      allowFirstUserHost: true,
+    });
+    expect(body).toHaveProperty('updated_at');
+    expect(body).toHaveProperty('created_at');
+    expect(body).not.toHaveProperty('elements');
+    expect(body).not.toHaveProperty('viewport');
+    expect(JSON.stringify(body)).not.toContain('hidden-dot');
+  });
+
   it('lets the owner change settings and rejects mixed scene/settings bodies', async () => {
     const roomId = 'matrix-settings-split';
     const editor = await bootstrapLocalSession('matrix-settings-editor');
@@ -1221,7 +1246,7 @@ describe('room authorization matrix', () => {
         name: 'GET /settings',
         method: 'GET',
         path: `/api/whiteboard/room/${roomId}/settings`,
-        callers: [outsider, pending, foreign, viewer, editor, owner],
+        callers: [outsider, pending, foreign, viewer, editor],
       },
       {
         name: 'POST /settings',

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { handleRoomPost, handleRoomGet, handleRoomSettings, handleRoomDelete } from './room';
+import {
+  handleRoomPost,
+  handleRoomGet,
+  handleRoomSettings,
+  handleRoomSettingsGet,
+  handleRoomDelete,
+} from './room';
 import { getRoomDb } from '../roomDb';
 import { getRoomAllowFirstUserHost, deleteRoomScopedData } from '../roomSchema';
 import { approveAccount, requestAccess } from '../membership';
@@ -10,8 +16,6 @@ const ROOM_SCOPED_TABLES = [
   'room_presence',
   'waiting_peers',
   'kicked_peers',
-  'room_access',
-  'access_requests',
 ] as const;
 
 function scopedCounts(db: ReturnType<typeof getRoomDb>, roomId: string) {
@@ -49,14 +53,6 @@ function seedEveryRoomScopedTable(
   db.prepare(
     `INSERT INTO kicked_peers (room_id, peer_id, kicked_at) VALUES (?, ?, ?)`,
   ).run(roomId, `kick-${roomId}`, now);
-  db.prepare(
-    `INSERT INTO room_access (room_id, token_hash, role, user_name, email, created_at, expires_at)
-     VALUES (?, ?, 'creator', 'Ada', 'ada@example.com', ?, NULL)`,
-  ).run(roomId, `hash-${roomId}`, now);
-  db.prepare(
-    `INSERT INTO access_requests (room_id, request_id, token_hash, user_name, email, requested_at)
-     VALUES (?, ?, ?, 'Eve', 'eve@example.com', ?)`,
-  ).run(roomId, `req-${roomId}`, `reqhash-${roomId}`, now);
 }
 
 function postRequest(path: string, body: Record<string, unknown>, accountId?: string) {
@@ -67,6 +63,12 @@ function postRequest(path: string, body: Record<string, unknown>, accountId?: st
     body: JSON.stringify(body),
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+function getSettingsRequest(roomId: string, accountId?: string) {
+  const url = new URL(`http://localhost/api/whiteboard/room/${roomId}/settings`);
+  if (accountId) url.searchParams.set('accountId', accountId);
+  return new Request(url, { method: 'GET' });
 }
 
 describe('room allowFirstUserHost setting', () => {
@@ -245,6 +247,49 @@ describe('room allowFirstUserHost setting', () => {
   });
 });
 
+describe('GET room settings', () => {
+  it('returns settings fields without scene data and does not mutate storage', async () => {
+    const db = getRoomDb();
+    const roomId = `room-settings-get-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    await handleRoomPost(db, roomId, postRequest('', { elements: [{ id: 'secret' }] }, owner));
+    await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { name: 'Lesson', maxUsers: 4, allowFirstUserHost: true }, owner),
+    );
+
+    const before = scopedCounts(db, roomId);
+    const response = await handleRoomSettingsGet(db, roomId, getSettingsRequest(roomId, owner));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      success: true,
+      name: 'Lesson',
+      maxUsers: 4,
+      allowFirstUserHost: true,
+    });
+    expect(body).toHaveProperty('updated_at');
+    expect(body).toHaveProperty('created_at');
+    expect(body).not.toHaveProperty('elements');
+    expect(body).not.toHaveProperty('viewport');
+    expect(JSON.stringify(body)).not.toContain('secret');
+    expect(scopedCounts(db, roomId)).toEqual(before);
+  });
+
+  it('returns 404 when the room is missing', async () => {
+    const db = getRoomDb();
+    const response = await handleRoomSettingsGet(
+      db,
+      'missing-room',
+      getSettingsRequest('missing-room'),
+    );
+    expect(response.status).toBe(404);
+  });
+});
+
 describe('atomic room deletion', () => {
   it('removes every room-scoped table in one call and leaves other rooms intact', async () => {
     const db = getRoomDb();
@@ -259,8 +304,6 @@ describe('atomic room deletion', () => {
       room_presence: 1,
       waiting_peers: 1,
       kicked_peers: 1,
-      room_access: 1,
-      access_requests: 1,
     });
 
     const response = await handleRoomDelete(
@@ -277,8 +320,6 @@ describe('atomic room deletion', () => {
       room_presence: 0,
       waiting_peers: 0,
       kicked_peers: 0,
-      room_access: 0,
-      access_requests: 0,
     });
     expect(scopedCounts(db, keep)).toEqual({
       rooms: 1,
@@ -286,8 +327,6 @@ describe('atomic room deletion', () => {
       room_presence: 1,
       waiting_peers: 1,
       kicked_peers: 1,
-      room_access: 1,
-      access_requests: 1,
     });
   });
 
@@ -320,8 +359,6 @@ describe('atomic room deletion', () => {
       room_presence: 1,
       waiting_peers: 1,
       kicked_peers: 1,
-      room_access: 1,
-      access_requests: 1,
     });
   });
 });
