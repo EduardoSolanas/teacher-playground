@@ -4,10 +4,12 @@ import {
   bodyTooLarge,
   isJsonContentType,
   withSecurityHeaders,
+  withNonceHtmlSecurityHeaders,
   MAX_BODY_BYTES,
   isPublicPath,
   MARKETING_PAGES,
   stripForwardedIdentityHeaders,
+  readBoundedJsonBody,
 } from './requestGuard';
 
 describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
@@ -38,6 +40,44 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
     it('ignores absent or unparseable content lengths', () => {
       expect(bodyTooLarge(null)).toBe(false);
       expect(bodyTooLarge('not-a-number')).toBe(false);
+    });
+  });
+
+  describe('readBoundedJsonBody', () => {
+    function postWithoutContentLength(body: string): Request {
+      const bytes = new TextEncoder().encode(body);
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      });
+      const request = new Request('https://example.com/api', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: stream,
+        duplex: 'half',
+      } as RequestInit);
+      expect(request.headers.get('content-length')).toBeNull();
+      return request;
+    }
+
+    it('rejects a missing Content-Length when the actual body exceeds the cap', async () => {
+      const oversized = 'x'.repeat(MAX_BODY_BYTES + 1);
+      const result = await readBoundedJsonBody(postWithoutContentLength(oversized));
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.tooLarge).toBe(true);
+    });
+
+    it('accepts a missing Content-Length when the JSON body is under the cap and leaves the body readable', async () => {
+      const result = await readBoundedJsonBody(postWithoutContentLength('{"ok":true}'));
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('expected a bounded body');
+      expect(JSON.parse(new TextDecoder().decode(result.buffer))).toEqual({ ok: true });
+    });
+
+    it('still treats a declared Content-Length over the cap as too large via bodyTooLarge', () => {
+      expect(bodyTooLarge(String(MAX_BODY_BYTES + 1))).toBe(true);
     });
   });
 
@@ -86,9 +126,38 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(wrapped.headers.get('Content-Security-Policy-Report-Only')).toBeNull();
     });
 
+    it('stamps HTML script tags with a CSP nonce so Next inline bootstraps can run', async () => {
+      const html = [
+        '<html><head>',
+        '<script>self.__next_f.push([])</script>',
+        '<script src="/_next/static/chunks/app.js"></script>',
+        '</head></html>',
+      ].join('');
+      const wrapped = await withNonceHtmlSecurityHeaders(
+        new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } }),
+      );
+      const csp = wrapped.headers.get('Content-Security-Policy') ?? '';
+      const nonce = /script-src 'self' 'nonce-([a-f0-9]+)'/.exec(csp)?.[1];
+      expect(nonce).toBeTruthy();
+      expect(csp).toContain("'strict-dynamic'");
+      expect(csp).not.toMatch(/script-src[^;]*'unsafe-inline'/);
+      const body = await wrapped.text();
+      expect(body).toContain(`<script nonce="${nonce}">self.__next_f.push([])</script>`);
+      expect(body).toContain(`<script nonce="${nonce}" src="/_next/static/chunks/app.js">`);
+    });
+
     it('marks non-HTML responses no-store', () => {
       const wrapped = withSecurityHeaders(
         new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } }),
+      );
+      expect(wrapped.headers.get('Cache-Control')).toBe('no-store');
+    });
+
+    it('marks HTML responses no-store so CDN cannot cache a stale nonce', async () => {
+      const wrapped = await withNonceHtmlSecurityHeaders(
+        new Response('<html><script>boot()</script></html>', {
+          headers: { 'content-type': 'text/html', 'cache-control': 'public, max-age=0' },
+        }),
       );
       expect(wrapped.headers.get('Cache-Control')).toBe('no-store');
     });
