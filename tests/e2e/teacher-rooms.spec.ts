@@ -25,6 +25,10 @@ test.describe('teacher room list on landing', () => {
     await item.click();
     await expect(page).toHaveURL(new RegExp(`/whiteboard/${roomId}`));
     await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+
+    await page.getByTestId('whiteboard-back-to-rooms').click();
+    await expect(page).toHaveURL(/\/whiteboard\/?$/);
+    await expect(page.getByRole('heading', { name: 'Your rooms' })).toBeVisible();
   });
 
   test('renames a listed room from the landing list', async ({ page }) => {

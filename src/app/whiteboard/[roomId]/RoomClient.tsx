@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, Suspense } from 'react';
+import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { useCollaboration } from '@/hooks/useCollaboration';
 import { usePersistence } from '@/hooks/usePersistence';
@@ -14,6 +15,7 @@ import RemoteCursorOverlay from '@/components/whiteboard/RemoteCursorOverlay';
 import EmptyState from '@/components/whiteboard/EmptyState';
 import ClearBoardModal from '@/components/whiteboard/ClearBoardModal';
 import ToolSidebar from '@/components/whiteboard/ToolSidebar';
+import BackToRoomsLink from '@/components/whiteboard/BackToRoomsLink';
 import { LibraryPanel } from '@/components/whiteboard/LibraryPanel';
 import { ShortcutsHelp } from '@/components/whiteboard/ShortcutsHelp';
 import { UndoRedoBar } from '@/components/whiteboard/UndoRedoBar';
@@ -32,6 +34,7 @@ const ExcalidrawWrapper = dynamic(
 );
 
 function RoomContent({ roomId }: { roomId: string }) {
+  const router = useRouter();
   const [userName, setUserName] = useState<string | null>(null);
   const [clearModalOpen, setClearModalOpen] = useState(false);
   // The store is the single source of truth for the active tool: keyboard
@@ -151,6 +154,17 @@ function RoomContent({ roomId }: { roomId: string }) {
     setUserName(null);
   }, [av, clearSession, leaveRoom]);
 
+  const handleBackToRooms = useCallback(() => {
+    clearSession();
+    av.leave();
+    if (isWaiting) {
+      void leaveWaitingRoom();
+    } else if (userName) {
+      void leaveRoom();
+    }
+    router.push('/whiteboard');
+  }, [av, clearSession, isWaiting, leaveRoom, leaveWaitingRoom, router, userName]);
+
   // Calculate this user's position in the waiting queue
   const waitingPosition = isWaiting
     ? waitingPeers.findIndex((p) => p.peerId === localPeerId) + 1
@@ -160,21 +174,31 @@ function RoomContent({ roomId }: { roomId: string }) {
   // would let whoever happens to be listed first silently become host.
   const isLocalHost = Boolean(isHost || localUser?.isHost);
 
-  if (!userName) return <UserNamePrompt onJoin={handleJoin} roomId={roomId} />;
+  if (!userName) {
+    return (
+      <>
+        <BackToRoomsLink onNavigate={handleBackToRooms} />
+        <UserNamePrompt onJoin={handleJoin} roomId={roomId} />
+      </>
+    );
+  }
 
   if (isWaiting) {
     return (
-      <WaitingRoom
-        userName={userName}
-        roomCode={roomId}
-        waitingPosition={waitingPosition || waitingPeers.length + 1}
-        onWait={reloadPresence}
-        onLeave={() => {
-          clearSession();
-          leaveWaitingRoom();
-          setUserName(null);
-        }}
-      />
+      <>
+        <BackToRoomsLink onNavigate={handleBackToRooms} />
+        <WaitingRoom
+          userName={userName}
+          roomCode={roomId}
+          waitingPosition={waitingPosition || waitingPeers.length + 1}
+          onWait={reloadPresence}
+          onLeave={() => {
+            clearSession();
+            leaveWaitingRoom();
+            setUserName(null);
+          }}
+        />
+      </>
     );
   }
 
@@ -183,7 +207,12 @@ function RoomContent({ roomId }: { roomId: string }) {
   // still draw on, unmounts the collaboration listeners, and means a
   // reconnecting peer has nowhere to apply the state it catches up on.
   if (!boardEverShown && status !== 'synced' && status !== 'connected' && status !== 'connecting') {
-    return <LoadingScreen error={error} />;
+    return (
+      <>
+        <BackToRoomsLink onNavigate={handleBackToRooms} />
+        <LoadingScreen error={error} />
+      </>
+    );
   }
 
   return (
@@ -191,6 +220,7 @@ function RoomContent({ roomId }: { roomId: string }) {
       className="w-screen h-screen overflow-hidden relative bg-slate-50"
       onPointerMove={(event) => setCursor(event.clientX, event.clientY)}
     >
+      <BackToRoomsLink onNavigate={handleBackToRooms} />
       <ToolSidebar
         activeTool={activeTool}
         onToolChange={handleToolChange}
