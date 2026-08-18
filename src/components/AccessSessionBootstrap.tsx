@@ -3,24 +3,30 @@
 import { useEffect, useState } from 'react';
 import { ajaxFetch, SESSION_EXPIRED_EVENT } from '@/lib/http/ajaxFetch';
 
+const BOOTSTRAP_TIMEOUT_MS = 10_000;
+
 export function AccessSessionBootstrap({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<'loading' | 'ready' | 'unavailable'>('loading');
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     const expire = () => {
       if (!cancelled) setState('unavailable');
     };
     window.addEventListener(SESSION_EXPIRED_EVENT, expire);
 
-    const timeout = setTimeout(() => {
-      if (!cancelled && state === 'loading') setState('unavailable');
-    }, 15_000);
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, BOOTSTRAP_TIMEOUT_MS);
 
     const headers = { Accept: 'application/json' };
     void (async () => {
       try {
-        const current = await ajaxFetch('/auth/session/current', { headers });
+        const current = await ajaxFetch('/auth/session/current', {
+          headers,
+          signal: controller.signal,
+        });
         if (current.ok) {
           if (!cancelled) setState('ready');
           return;
@@ -29,6 +35,7 @@ export function AccessSessionBootstrap({ children }: { children: React.ReactNode
         const issued = await ajaxFetch('/auth/session', {
           method: 'POST',
           headers,
+          signal: controller.signal,
         });
         if (!issued.ok) throw new Error('session bootstrap failed');
         if (!cancelled) setState('ready');
@@ -38,10 +45,10 @@ export function AccessSessionBootstrap({ children }: { children: React.ReactNode
     })();
     return () => {
       cancelled = true;
-      clearTimeout(timeout);
+      controller.abort();
+      clearTimeout(timer);
       window.removeEventListener(SESSION_EXPIRED_EVENT, expire);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (state === 'loading') {
