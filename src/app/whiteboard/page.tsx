@@ -8,6 +8,7 @@ import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import TeacherRoomList, {
   type TeacherRoomSummary,
 } from '@/components/whiteboard/TeacherRoomList';
+import { completeSignOut } from '@/lib/identity/completeSignOut';
 
 const ADJECTIVES = [
   'Bright', 'Calm', 'Swift', 'Warm', 'Bold',
@@ -169,10 +170,12 @@ export default function WhiteboardRoute() {
   );
 
   const handleSignOut = useCallback(async () => {
-    try {
-      await ajaxFetch('/auth/session/logout', { method: 'POST' });
-    } catch {}
-    window.location.href = 'https://ha-smart-home.cloudflareaccess.com/cdn-cgi/access/logout';
+    await completeSignOut({
+      logout: () => ajaxFetch('/auth/session/logout', { method: 'POST' }),
+      navigate: (path) => {
+        window.location.assign(path);
+      },
+    });
   }, []);
 
   const stepUsers = (delta: number) =>

@@ -98,8 +98,8 @@ export function AccessSessionBootstrap({ children }: { children: React.ReactNode
           Retry
         </button>
         <a
-          href="https://ha-smart-home.cloudflareaccess.com/cdn-cgi/access/logout"
-          style={{ color: '#667eea', fontSize: 14 }}
+          href="/"
+          style={{ color: '#1e4d3a', fontSize: 14 }}
         >
           Sign out and try again
         </a>

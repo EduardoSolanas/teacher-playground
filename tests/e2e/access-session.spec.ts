@@ -222,4 +222,16 @@ test.describe('local Access edge and session bootstrap', () => {
       }
     }
   });
+
+  test('Sign out returns to the marketing landing, not the Access team logout URL', async ({ page }) => {
+    await page.goto(appUrl('/whiteboard'));
+    await expectSessionCookie(page);
+    await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
+
+    await page.getByTestId('whiteboard-logout-btn').click();
+
+    await expect(page).toHaveURL(appUrl('/'));
+    expect(page.url()).not.toContain('cloudflareaccess.com');
+    await expect(page.locator('h1')).toContainText('board remembers');
+  });
 });
