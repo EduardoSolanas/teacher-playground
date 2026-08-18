@@ -1298,7 +1298,11 @@ it (milestone M1).
     join tokens are minted server-side for admitted accounts only, the token
     identity is forced to the verified account (a client-chosen identity could
     bump another participant's session), waiting/suspended accounts are denied,
-    and secrets stay in Worker bindings. **Open gap:** a kick or ban revokes
+    and secrets stay in Worker bindings. Review round 2 (`15e994e`): the token
+    route is POST-only — GET minting sat in the intersection of the
+    SameSite=Lax cookie (sent on top-level GET navigations) and the origin
+    guard's GET exemption — with roomId grammar validation and the shared
+    security headers; mutation-tested. **Open gap:** a kick or ban revokes
     future joins but does not evict an already-connected media participant —
     wire server-side eviction through LiveKit's room service API
     (`RemoveParticipant`) into the same paths that close room sockets.
