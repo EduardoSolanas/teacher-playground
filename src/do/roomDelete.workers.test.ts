@@ -14,8 +14,6 @@ const ROOM_SCOPED_TABLES = [
   'room_presence',
   'waiting_peers',
   'kicked_peers',
-  'room_access',
-  'access_requests',
 ] as const;
 
 function roomStub(roomId: string) {
@@ -45,14 +43,6 @@ function seedLeftoverTables(instance: RoomDO, roomId: string, now = Date.now()) 
   instance.db.prepare(
     `INSERT INTO kicked_peers (room_id, peer_id, kicked_at) VALUES (?, 'kick-1', ?)`,
   ).run(roomId, now);
-  instance.db.prepare(
-    `INSERT INTO room_access (room_id, token_hash, role, user_name, email, created_at, expires_at)
-     VALUES (?, 'hash-1', 'creator', 'Ada', 'ada@example.com', ?, NULL)`,
-  ).run(roomId, now);
-  instance.db.prepare(
-    `INSERT INTO access_requests (room_id, request_id, token_hash, user_name, email, requested_at)
-     VALUES (?, 'req-1', 'reqhash-1', 'Eve', 'eve@example.com', ?)`,
-  ).run(roomId, now);
 }
 
 describe('atomic room deletion in RoomDO', () => {
@@ -79,8 +69,6 @@ describe('atomic room deletion in RoomDO', () => {
         room_presence: 1,
         waiting_peers: 1,
         kicked_peers: 1,
-        room_access: 1,
-        access_requests: 1,
       });
     });
 
@@ -109,8 +97,6 @@ describe('atomic room deletion in RoomDO', () => {
         room_presence: 0,
         waiting_peers: 0,
         kicked_peers: 0,
-        room_access: 0,
-        access_requests: 0,
       });
     });
 

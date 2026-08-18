@@ -9,6 +9,7 @@ import {
   insertOwner,
   requestAccess,
 } from './membership';
+import { applySchema } from './roomSchema';
 
 declare global {
   namespace Cloudflare {
@@ -28,7 +29,7 @@ async function withDb<T>(fn: (db: RoomDatabase) => T): Promise<T> {
 }
 
 describe('RoomDatabase contract on real Durable Object SQLite', () => {
-  it('applySchema creates the room tables', async () => {
+  it('applySchema creates the room tables without legacy bearer-grant tables', async () => {
     const tables = await withDb((db) =>
       (db
         .prepare(
@@ -38,9 +39,7 @@ describe('RoomDatabase contract on real Durable Object SQLite', () => {
     );
 
     for (const table of [
-      'access_requests',
       'kicked_peers',
-      'room_access',
       'room_members',
       'room_presence',
       'rooms',
@@ -48,6 +47,48 @@ describe('RoomDatabase contract on real Durable Object SQLite', () => {
     ]) {
       expect(tables).toContain(table);
     }
+    expect(tables).not.toContain('room_access');
+    expect(tables).not.toContain('access_requests');
+  });
+
+  it('applySchema drops leftover room_access and access_requests tables', async () => {
+    const tables = await withDb((db) => {
+      db.exec(`DROP TABLE IF EXISTS room_access`);
+      db.exec(`DROP TABLE IF EXISTS access_requests`);
+      db.exec(`
+        CREATE TABLE room_access (
+          room_id TEXT NOT NULL,
+          token_hash TEXT NOT NULL,
+          role TEXT NOT NULL,
+          user_name TEXT NOT NULL,
+          email TEXT,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER,
+          PRIMARY KEY (room_id, token_hash)
+        )
+      `);
+      db.exec(`
+        CREATE TABLE access_requests (
+          room_id TEXT NOT NULL,
+          request_id TEXT NOT NULL,
+          token_hash TEXT NOT NULL,
+          user_name TEXT NOT NULL,
+          email TEXT,
+          requested_at INTEGER NOT NULL,
+          PRIMARY KEY (room_id, request_id)
+        )
+      `);
+      applySchema(db);
+      return (db
+        .prepare(
+          `SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`,
+        )
+        .all() as Array<{ name: string }>).map((r) => r.name);
+    });
+
+    expect(tables).toContain('room_members');
+    expect(tables).not.toContain('room_access');
+    expect(tables).not.toContain('access_requests');
   });
 
   it('supports PRAGMA table_info, which applySchema depends on', async () => {

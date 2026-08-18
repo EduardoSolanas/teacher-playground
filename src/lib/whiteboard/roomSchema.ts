@@ -66,38 +66,10 @@ export function applySchema(db: RoomDatabase): void {
     )
   `);
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS room_access (
-      room_id TEXT NOT NULL,
-      token_hash TEXT NOT NULL,
-      role TEXT NOT NULL CHECK (role IN ('creator','peer','viewer')),
-      user_name TEXT NOT NULL,
-      email TEXT,
-      created_at INTEGER NOT NULL,
-      expires_at INTEGER,
-      PRIMARY KEY (room_id, token_hash)
-    )
-  `);
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS access_requests (
-      room_id TEXT NOT NULL,
-      request_id TEXT NOT NULL,
-      token_hash TEXT NOT NULL,
-      user_name TEXT NOT NULL,
-      email TEXT,
-      requested_at INTEGER NOT NULL,
-      PRIMARY KEY (room_id, request_id)
-    )
-  `);
-
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_room_access_room ON room_access(room_id)
-  `);
-
-  // One grant per local account. waiting_peers / room_access are not
-  // authorization; presence is liveness only.
   migrateRoomMembers(db);
+
+  db.exec(`DROP TABLE IF EXISTS room_access`);
+  db.exec(`DROP TABLE IF EXISTS access_requests`);
 
   for (const table of ['room_presence', 'waiting_peers']) {
     const peerColumns = db
@@ -158,13 +130,11 @@ export function roomExists(db: RoomDatabase, roomId: string): boolean {
   return db.prepare(`SELECT 1 FROM rooms WHERE room_id = ?`).get(roomId) !== undefined;
 }
 
-/** Every table that stores a `room_id`. Leftover token tables are included. */
+/** Every table that stores a `room_id`. */
 export const ROOM_SCOPED_TABLES = [
   'room_presence',
   'waiting_peers',
   'kicked_peers',
-  'room_access',
-  'access_requests',
   'room_members',
   'rooms',
 ] as const;
