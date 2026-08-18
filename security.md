@@ -748,24 +748,44 @@ page. The product owner can amend any number here; the *shape* (server-owned
 catalog, account-keyed entitlement, grace-then-downgrade, students never
 billable) is the part SEC-015 depends on.
 
-**Who is billable.** Only teachers — the accounts that create and own rooms.
+**Target market (owner decision, 2026-08-18).** Private tutors doing 1-to-1
+or small-group tuition (typically 1-3 students, rarely up to a small class),
+with few sessions active at once. This is *not* a school product: no seat
+pools, no rosters, no district billing, no admin consoles. That decision
+resolves the "who pays" question — the tutor pays — and permanently deprives
+the School tier of a reason to exist here. It also means the Cloudflare
+Access free tier (50 users) stretches further than a school product would
+allow: one tutor plus their students is a handful of users, so roughly a
+dozen active tutors fit before the Access plan becomes a cost question.
+
+**Who is billable.** Only tutors — the accounts that create and own rooms.
 Students authenticate and join rooms but are never billable, never see payment
 UI, and never have billing identity stored (SEC-016 minors policy). A room's
 capabilities are decided by its *owner's* plan, so a student's experience
-changes with the teacher's tier without the student ever touching billing.
+changes with the tutor's tier without the student ever touching billing.
+One-to-one tuition with minors also sharpens the safeguarding duties: the
+SEC-016 minors policy and the SEC-017 abuse items apply with more force in a
+private 1:1 setting, not less.
 
-**Tiers (proposed).**
+**Tiers (proposed).** Sized for tutoring: a room per student (or per small
+group), few concurrent sessions, value concentrated in retention, A/V, and —
+later — recording and the content library, not in seat counts. The primary
+meter is distinct admitted students (see the Free-tier metering item below),
+which room churn or board reuse cannot evade; the room cap is a secondary
+bound.
 
-| | Free | Teacher Pro | School (later) |
-| --- | --- | --- | --- |
-| Active rooms per account | 2 | 20 | pooled per seat |
-| Participants per room | 3 (current default) | 10 (current schema cap) | 10 |
-| Room retention after last activity | 7 days | 90 days | policy-set |
-| Billing | — | monthly/annual, one price each | per teacher seat, central invoice |
+| | Free | Tutor Pro |
+| --- | --- | --- |
+| Distinct students admitted (rolling 30 days) | 2 | 20 |
+| Active rooms (one per student/group) | 2 | 20 |
+| Participants per room | 3 (tutor + 2 — covers 1:1 and pairs) | 10 (small group classes) |
+| Room retention after last activity | 7 days | 90 days |
+| Voice & video calling | yes | yes |
+| Billing | — | monthly/annual, one price each |
 
-School/district is deliberately deferred: seats, rosters, and admin consoles
-multiply the authorization surface, and nothing in the individual model blocks
-adding it later. Ship Free + Pro first.
+No School tier. The school market (seats, rosters, SSO, LMS, admin) is out of
+scope for this product by owner decision, which also confirms the low
+priority of the scheduling/SSO/LMS block in `MISSING_FEATURES.md`.
 
 **Plan catalog lives in code, not the database.** A static, versioned map of
 `plan_id -> limits` (max rooms, max participants, retention days) deployed with
@@ -1210,12 +1230,13 @@ off, so billing built on an unfinished authorization boundary would be a way to
 pay for access that the boundary cannot actually enforce.
 
 - [ ] Decide and record the commercial model before writing code: what a plan
-  entitles, who pays (teacher, school, or district), how seats are counted, what
-  happens at the limit, and what the free tier is. The answer changes the data
-  model, so it is a prerequisite rather than a detail. A concrete proposal
-  (tiers, entitlement tables, state machine, downgrade semantics, Stripe hosted
-  surfaces) is recorded under SEC-015 — sign-off or amendment of that proposal
-  completes this task.
+  entitles, what happens at the limit, and what the free tier is. Partly
+  decided by the owner (2026-08-18): the market is private 1:1/small-group
+  tutors, the tutor pays, and there is no school/seat model — which removes
+  seat counting from the data model entirely. A concrete proposal (tiers,
+  entitlement tables, state machine, downgrade semantics, Stripe hosted
+  surfaces) is recorded under SEC-015; what remains open is prices, trial
+  length, and final tier limits — sign-off on those completes this task.
 - [ ] Choose a payment processor with hosted checkout and record the resulting
   PCI DSS scope and the compliance obligations the deployment accepts.
 - [ ] Add entitlement tables to the identity store keyed by `account_id`, with
@@ -1288,8 +1309,10 @@ then recording last because it is gated on the SEC-016 minors policy.
 | M7 | Teaching content: Drive/OneDrive import, PDF annotation, vetted embeds | Needs the M3 library to land imports into; the OAuth and embed surface must follow the Phase 11 contract, not ad-hoc scopes | Phase 11, all items |
 
 Not scheduled (tracked in `MISSING_FEATURES.md` only): scheduling/rostering,
-education SSO, LMS/SIS, admin consoles, AI layer — high effort, later market
-stage, and the AI items depend on M6 existing first. In-board Google Docs
+education SSO, LMS/SIS, admin consoles, AI layer — the owner's 2026-08-18
+target-market decision (private tutors, not schools) moves the school-ops
+block from "later" to "out of scope"; the AI items additionally depend on M6
+existing first. In-board Google Docs
 *editing* is also deferred: unlike import, it requires broad write scopes and
 a live third-party editing surface inside the board, which multiplies the
 Phase 11 contract for one feature.
