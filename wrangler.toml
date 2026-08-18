@@ -2,7 +2,7 @@ name = "teacher-playground"
 main = "src/worker.ts"
 compatibility_date = "2024-12-10"
 compatibility_flags = ["nodejs_compat"]
-workers_dev = false
+workers_dev = true  # TODO: set false once a custom domain is configured
 preview_urls = false
 
 [assets]
