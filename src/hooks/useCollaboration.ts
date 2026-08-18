@@ -7,6 +7,11 @@ import type {
   RemoteCursor,
 } from '@/types/whiteboard';
 import { createCollaboration } from '@/lib/whiteboard/collaboration';
+import {
+  shouldStartCollaboration,
+  type GrantedPublicRole,
+  type RoomAccessStatus,
+} from '@/lib/whiteboard/collaborationGate';
 import { getStablePeerId } from '@/lib/whiteboard/peerId';
 import * as store from '@/lib/whiteboard/store';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
@@ -32,6 +37,7 @@ function applyHostFromApi(
 
 export function useCollaboration(roomId: string) {
   const [isConnected, setIsConnected] = useState(false);
+  const [roomLoaded, setRoomLoaded] = useState(false);
   const [isSynced, setIsSynced] = useState(false);
   const [users, setUsers] = useState<WhiteboardUser[]>([]);
   const [cursors, setCursors] = useState<RemoteCursor[]>([]);
@@ -46,6 +52,10 @@ export function useCollaboration(roomId: string) {
   const [roomReloadKey, setRoomReloadKey] = useState(0);
   const wasWaitingRef = useRef(false);
   const [wasKicked, setWasKicked] = useState(false);
+  const [roomGranted, setRoomGranted] = useState(false);
+  const [accessStatus, setAccessStatus] = useState<RoomAccessStatus | null>(null);
+  const [grantRole, setGrantRole] = useState<GrantedPublicRole | null>(null);
+  const [collaborationEpoch, setCollaborationEpoch] = useState(0);
   const elementsRef = useRef<CanvasElement[]>([]);
   const viewportRef = useRef<Viewport>({ x: 0, y: 0, zoom: 1 });
   const lastRoomUpdatedAtRef = useRef(0);
@@ -70,11 +80,34 @@ export function useCollaboration(roomId: string) {
       localPeerIdRef.current = peerId;
       setLocalPeerId(peerId);
       collaborationRef.current = createCollaboration(roomId, peerId);
+      if (pendingUserNameRef.current) {
+        collaborationRef.current.setLocalUserName(pendingUserNameRef.current);
+      }
+      if (localUserColorRef.current) {
+        collaborationRef.current.setLocalUserColor(localUserColorRef.current);
+      }
+      if (hasJoinedRef.current) {
+        collaborationRef.current.setLocalCursor(0, 0);
+      }
+      setCollaborationEpoch((epoch) => epoch + 1);
     }
     return collaborationRef.current;
   }
 
-  ensureCollaboration();
+  function destroyCollaboration() {
+    if (!collaborationRef.current) return;
+    collaborationRef.current.destroy();
+    collaborationRef.current = null;
+    setCollaborationEpoch((epoch) => epoch + 1);
+  }
+
+  const mayStartCollaboration = shouldStartCollaboration({
+    roomGranted,
+    accessStatus,
+    grantRole,
+    isWaiting,
+    wasKicked,
+  });
 
   const applyElements = useCallback((nextElements: CanvasElement[]) => {
     if (isRemoteUpdateRef.current) return;
@@ -135,11 +168,24 @@ export function useCollaboration(roomId: string) {
   // Load room state from API on mount
   useEffect(() => {
     let cancelled = false;
+    setRoomLoaded(false);
+    setRoomGranted(false);
 
     async function loadRoom() {
       try {
-        const res = await ajaxFetch(`/api/whiteboard/room/${roomId}`);
+        const [res, accessRes] = await Promise.all([
+          ajaxFetch(`/api/whiteboard/room/${roomId}`),
+          ajaxFetch(`/api/whiteboard/room/${roomId}/access`),
+        ]);
         if (cancelled) return;
+
+        if (accessRes.ok) {
+          const access = await accessRes.json();
+          setAccessStatus(access.status ?? null);
+          setGrantRole(access.role ?? null);
+        }
+
+        setRoomGranted(res.ok);
 
         if (res.ok) {
           const data = await res.json();
@@ -175,6 +221,8 @@ export function useCollaboration(roomId: string) {
         setStatus('connected');
         setIsConnected(true);
         setIsSynced(true);
+      } finally {
+        if (!cancelled) setRoomLoaded(true);
       }
     }
 
@@ -182,8 +230,13 @@ export function useCollaboration(roomId: string) {
     return () => { cancelled = true; };
   }, [roomId, roomReloadKey, applyElements, publishToSharedDoc, applyViewport]);
 
-  // Set up collaboration event listeners
+  // Set up collaboration only after admission; tear down on kick or waiting.
   useEffect(() => {
+    if (!mayStartCollaboration) {
+      destroyCollaboration();
+      return;
+    }
+
     const collaboration = ensureCollaboration();
 
     collaboration.onChange((type, data) => {
@@ -221,10 +274,9 @@ export function useCollaboration(roomId: string) {
     });
 
     return () => {
-      collaboration.destroy();
-      collaborationRef.current = null;
+      destroyCollaboration();
     };
-  }, [roomId]);
+  }, [roomId, mayStartCollaboration]);
 
   // Excalidraw is the source of truth for elements — no store-to-Yjs sync needed
   // Yjs sync is handled entirely by ExcalidrawWrapper via onChange/onPointerUpdate
@@ -335,7 +387,7 @@ export function useCollaboration(roomId: string) {
   }, []);
 
   useEffect(() => {
-    if (!isConnected || !hasJoined) return;
+    if (!roomLoaded || !hasJoined) return;
 
     let cancelled = false;
 
@@ -412,11 +464,11 @@ export function useCollaboration(roomId: string) {
         ajaxFetch(url, { method: 'DELETE', keepalive: true }).catch(() => {});
       }
     };
-  }, [isConnected, hasJoined, roomId, localUserName]);
+  }, [roomLoaded, hasJoined, roomId, localUserName]);
 
   // Fallback presence while the collaboration provider is still initializing.
   useEffect(() => {
-    if (isConnected && hasJoined && users.length === 0) {
+    if (roomLoaded && hasJoined && users.length === 0) {
       setUsers([
         {
           peerId: localPeerIdRef.current,
@@ -427,7 +479,7 @@ export function useCollaboration(roomId: string) {
       ]);
       setCursors([]);
     }
-  }, [isConnected, hasJoined, localUserName, users.length]);
+  }, [roomLoaded, hasJoined, localUserName, users.length]);
 
   const reloadPresence = useCallback(async () => {
     try {
@@ -549,14 +601,14 @@ export function useCollaboration(roomId: string) {
     setUserName,
     localPeerId,
     isHost: users.some((user) => user.peerId === localPeerId && user.isHost),
-    provider: collaborationRef.current?.provider ?? null,
+    provider: collaborationEpoch >= 0 ? collaborationRef.current?.provider ?? null : null,
     elementsArray: elements,
     status,
     maxUsers,
     elements,
-    yDoc: collaborationRef.current?.doc ?? null,
-    yElementsArray: collaborationRef.current?.elementsArray ?? null,
-    yCursorsMap: collaborationRef.current?.cursorsMap ?? null,
+    yDoc: collaborationEpoch >= 0 ? collaborationRef.current?.doc ?? null : null,
+    yElementsArray: collaborationEpoch >= 0 ? collaborationRef.current?.elementsArray ?? null : null,
+    yCursorsMap: collaborationEpoch >= 0 ? collaborationRef.current?.cursorsMap ?? null : null,
     setElements: (newElements: CanvasElement[]) => {
       const sameElements = elementsEqual(elementsRef.current, newElements);
       elementsRef.current = newElements;
@@ -572,7 +624,7 @@ export function useCollaboration(roomId: string) {
       store.setViewport(newViewport);
       saveState(elementsRef.current, newViewport);
     },
-    collaboration: collaborationRef.current,
+    collaboration: collaborationEpoch >= 0 ? collaborationRef.current : null,
     waitingPeers,
     isWaiting,
     wasKicked,

@@ -1061,6 +1061,14 @@ acceptance tests and evidence are satisfied.
 - [ ] Move Yjs synchronization from direct `y-webrtc` peers to authenticated,
   server-authoritative Durable Object WebSockets (SEC-001).
 - [ ] Do not create a collaboration provider before approval and authorization.
+  - Evidence: independent verifier APPROVE-AS-BLOCKED (do not check).
+    `shouldStartCollaboration` blocks pending/waiting/kicked; the hook
+    creates y-webrtc only after GET /room 200 or approved access, and
+    destroys it on kick/waiting. Mutation-tested (dropped `isWaiting`;
+    unit test failed; reverted). `npm test` 289, workers 99, typecheck
+    clean. E2E 91/93: two `waitForPresence` failures are waiting-queue
+    isolation (join-via-code / never-created URL), not a canvas grant.
+    Residual: after grant, sync is still y-webrtc P2P (SEC-001).
 - [ ] Use a same-origin, hostname-protected WebSocket upgrade carrying the local
   session unless a documented cross-origin requirement proves that a separate
   one-time ticket is necessary (SEC-003).
