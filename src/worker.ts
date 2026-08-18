@@ -238,10 +238,10 @@ export default {
           const parts = token.split('.');
           const headerJson = JSON.parse(atob(parts[0].replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - parts[0].length % 4) % 4)));
           const jwksResp = await fetch(env.ACCESS_JWKS_URL!, { headers: { Accept: 'application/json' } });
-          const jwksData = await jwksResp.json() as { keys: Array<Record<string, unknown>> };
-          const jwk = jwksData.keys.find((k: Record<string, unknown>) => k.kid === headerJson.kid);
+          const jwksData = await jwksResp.json() as { keys: JsonWebKey[] };
+          const jwk = jwksData.keys.find((k) => (k as unknown as Record<string, unknown>).kid === headerJson.kid);
           if (jwk) {
-            const key = await crypto.subtle.importKey('jwk', jwk as JsonWebKey, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+            const key = await crypto.subtle.importKey('jwk', jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
             const sig = Uint8Array.from(atob(parts[2].replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - parts[2].length % 4) % 4)), c => c.charCodeAt(0));
             const valid = await crypto.subtle.verify({ name: 'RSASSA-PKCS1-v1_5' }, key, sig, new TextEncoder().encode(`${parts[0]}.${parts[1]}`));
             debugSteps.push(`sigValid:${valid}`);
