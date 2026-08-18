@@ -787,6 +787,35 @@ application renders links and never a card field, keeping SAQ-A scope
 drift. Any processor with equivalent hosted checkout + signed webhooks
 satisfies the contract; the choice is the owner's.
 
+**Public sales surface (landing page, pricing, checkout funnel).** Selling
+the service needs public pages, and public pages invert two rules the app
+relies on, so the inversions must be explicit and scoped:
+
+- The landing/pricing pages must be reachable *without* Cloudflare Access
+  while every app and API route stays behind it. That exemption is defined by
+  path/hostname allowlist (for example a `/` marketing shell or a separate
+  `www` hostname), reviewed like a firewall rule: nothing under `/api/`,
+  `/auth/`, `/whiteboard/`, or `/signaling` may ever fall inside it.
+- Marketing HTML must be indexable, unlike app HTML which is `noindex` by
+  design (SEC-012). The `X-Robots-Tag` exception is scoped to the exact
+  marketing routes, never applied by content-type or wildcard.
+- The funnel is: landing -> pricing -> sign in (Access) -> server-created
+  Stripe Checkout session. The public pages contain no card fields, no
+  amount/price parameters on any link (the server selects the price by plan
+  id), and no logic that grants anything — the funnel's only power is to
+  redirect an authenticated teacher to a checkout session the server built.
+- Public pages still carry the security-header baseline and a strict CSP;
+  being public is not a reason to relax framing or script policy — a
+  lookalike or injected script on the sales page is a credential-phishing
+  surface for the app behind it.
+- Email capture (waitlist/contact), if added, stores the minimum, states its
+  purpose, joins SEC-016 erasure, and is never presented to student-facing
+  flows. Prefer cookieless, self-hosted analytics on marketing pages; no
+  third-party trackers that would demand a consent banner on a checkout path.
+- Terms of service and a privacy policy are prerequisites for charging anyone
+  (Stripe requires them, SEC-016 depends on them); they are content tasks but
+  they gate the funnel going live.
+
 **Acceptance criteria for the structure itself:** a student session can never
 reach a billing route (server-enforced, not hidden UI); an account with no
 entitlement row behaves exactly as Free everywhere; archive-on-downgrade is
@@ -1072,6 +1101,13 @@ acceptance tests and evidence are satisfied.
     not done.
 - [ ] Add TTLs and scheduled cleanup for rooms, sessions, grants, requests,
   waiting entries, kicks, PII, and tombstones.
+  - Evidence: independent verifier APPROVE for editor-row purge only.
+    `purgeExpiredGrants` deletes expired `role='editor'` rows for one room;
+    owner/viewer/pending/banned and other rooms stay. Mutation-tested
+    (dropped `role = 'editor'`; membership test failed; reverted).
+    `npm test` 284/284. Residual: not wired into RoomDO or alarms;
+    `effectiveRole` already treats expired editors as absent. Sessions,
+    rooms, waiting, kicks, PII, and tombstone TTLs are not done.
 - [ ] Add boundary, quota, concurrent-create, injected-failure, expiry, deletion,
   and recreation tests.
 
@@ -1167,6 +1203,14 @@ pay for access that the boundary cannot actually enforce.
 - [ ] Add the billing account-isolation, entitlement-tampering, webhook-forgery,
   replay, and revocation-propagation test suites against the processor's test
   mode.
+- [ ] Build the public landing and pricing pages under the scoped Access
+  exemption: marketing routes public and indexable, every app/API route still
+  Access-protected and `noindex`, with a test that walks the exemption list
+  and asserts nothing sensitive is inside it (SEC-015 sales surface).
+- [ ] Publish terms of service and privacy policy pages and link them from the
+  checkout flow; treat their absence as a release blocker for charging.
+- [ ] Implement the sign-in -> server-created Checkout redirect funnel with no
+  price/amount input from the client anywhere in the funnel.
 - [ ] Record billing operations: refund and dispute handling, dunning, invoice
   retention versus erasure requests, secret rotation, and who is on call when
   payment state and access state disagree.
@@ -1176,8 +1220,9 @@ pay for access that the boundary cannot actually enforce.
 - [ ] No entitlement can be obtained without a server-verified payment event; no
   cancelled, refunded, or unpaid account retains access beyond the documented
   bound; billing state is isolated per account; card data never reaches this
-  application; and the reconciliation job proves local entitlement matches the
-  processor.
+  application; the reconciliation job proves local entitlement matches the
+  processor; and the public-page Access exemption contains only marketing
+  routes, verified by test.
 
 ### Product phases 8-10 — feature parity with security gates
 
