@@ -1137,7 +1137,11 @@ acceptance tests and evidence are satisfied.
     a conforming id, caps strings at 4KiB, keys at 64, depth at 10, and
     `MAX_ELEMENTS` 10_000. Mutation `z.array(z.unknown())` killed 4 tests.
     Rate limiter: per-key sliding window; max-guard mutant killed 4 tests.
-    Residual: limiter not on HTTP routes; URL/quota/429 not done.
+    Residual: Worker create-room rate limit is independently APPROVE
+    (429 + Retry-After when `/room/access` is `none`; skip-429 mutant
+    got 200). Local-test uses `x-test-strict-rate-limit`. Residual:
+    in-memory isolate limiter; URL/quota still open; scene POST not
+    counted by design.
 - [ ] Replace security-sensitive `Math.random` values with at least 128 bits from
   a cryptographic RNG and make room creation transactional (SEC-006).
   - Evidence: independent verifier APPROVE for the CSPRNG slice only.
@@ -1198,9 +1202,11 @@ acceptance tests and evidence are satisfied.
   structured redacted security-event logs and alert thresholds (SEC-013).
   - Evidence: independent verifier APPROVE for generic 5xx + log redaction
     and (earlier) owner-only queue PII. This Phase 5 task stays open
-    because a structured `logAuthEvent` helper is APPROVE-AS-BLOCKED: unit
-    tests prove email/JWT/bearer/cookie redaction (email-redact mutant
-    killed 2 tests) but it is not imported from RoomDO or the Worker yet.
+    because a structured `logAuthEvent` helper is APPROVE-AS-BLOCKED for
+    RoomDO (not imported there). Worker 401/403 now emit
+    `auth_failure` via `emitAuthEvent` (verifier: skip-log mutant killed
+    both auth-log tests). Residual: no alert thresholds; no RoomDO
+    grant/revocation events.
 - [x] Remove production debug globals, restrict signaling configuration, and
   prove parity across every retained deployment (SEC-014).
   - Evidence: independent verifier APPROVE. Production signaling is

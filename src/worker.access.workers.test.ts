@@ -1,12 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { SELF } from 'cloudflare:test';
 import { getIdentityObject, type IdentityDO } from './do/IdentityDO';
 import { accessFetch, authenticatedFetch, bootstrapLocalSession, localAccessToken } from './test/workerAuth';
+import { resetAuthEventWriterForTests, setAuthEventWriterForTests } from './worker';
 
 const BASE = 'https://example.com';
+const ROOM_CREATE_RATE_MAX = 10;
 
 describe('real local Access boundary through workerd', () => {
+  afterEach(() => {
+    resetAuthEventWriterForTests();
+  });
   it('rejects malformed, expired, wrong issuer, wrong audience, and service assertions as JSON 401', async () => {
     for (const variant of ['malformed', 'expired', 'wrong-issuer', 'wrong-audience', 'service-token']) {
       const response = await accessFetch('/api/whiteboard/room/no-access', `boundary-${variant}`, variant, {
@@ -227,6 +232,89 @@ describe('real local Access boundary through workerd', () => {
     expect(wrongPrincipal.headers.get('set-cookie')).toContain('Max-Age=0');
     const valid = await authenticatedFetch('/api/whiteboard/room/boundary-owner', session);
     expect(valid.status).toBe(403);
+  });
+
+  it('rate-limits room creation per account with 429 and Retry-After', async () => {
+    const session = await bootstrapLocalSession('boundary-create-rate');
+    const createRoom = (index: number) => authenticatedFetch(
+      `/api/whiteboard/room/rate-create-${index}`,
+      session,
+      {
+        method: 'POST',
+        headers: {
+          Origin: BASE,
+          'content-type': 'application/json',
+          'x-test-strict-rate-limit': '1',
+        },
+        body: JSON.stringify({ elements: [] }),
+      },
+    );
+
+    for (let index = 0; index < ROOM_CREATE_RATE_MAX; index += 1) {
+      const response = await createRoom(index);
+      expect(response.status, `create ${index}`).toBe(200);
+    }
+
+    const limited = await createRoom(ROOM_CREATE_RATE_MAX);
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('cache-control')).toBe('no-store');
+    const retryAfter = limited.headers.get('retry-after');
+    expect(retryAfter).not.toBeNull();
+    expect(Number(retryAfter)).toBeGreaterThan(0);
+    expect(await limited.json()).toEqual({ error: 'Too many requests' });
+
+    const read = await authenticatedFetch('/api/whiteboard/room/rate-create-0', session);
+    expect(read.status).toBe(200);
+  });
+
+  it('logs auth_failure without tokens when the local session is missing', async () => {
+    const lines: string[] = [];
+    setAuthEventWriterForTests((line) => lines.push(line));
+    const token = await localAccessToken('boundary-auth-log-missing');
+
+    const api = await SELF.fetch(`${BASE}/api/whiteboard/room/auth-log-missing`, {
+      method: 'GET',
+      headers: { 'Cf-Access-Jwt-Assertion': token },
+    });
+    expect(api.status).toBe(401);
+
+    const signaling = await SELF.fetch(`${BASE}/signaling?room=auth-log-missing`, {
+      headers: { Upgrade: 'websocket', Origin: BASE, 'Cf-Access-Jwt-Assertion': token },
+    });
+    expect(signaling.status).toBe(401);
+
+    expect(lines.length).toBeGreaterThanOrEqual(2);
+    for (const line of lines) {
+      const logged = JSON.parse(line);
+      expect(logged).toMatchObject({ event: 'auth_event', type: 'auth_failure', outcome: 'denied' });
+      expect(line).not.toContain(token);
+      expect(line).not.toMatch(/Bearer\s+eyJ/i);
+      expect(line).not.toMatch(/__Host-teacher-session=/);
+    }
+  });
+
+  it('logs auth_failure on origin-guard 403 without sensitive request values', async () => {
+    const lines: string[] = [];
+    setAuthEventWriterForTests((line) => lines.push(line));
+    const session = await bootstrapLocalSession('boundary-auth-log-origin');
+    const token = session.token;
+
+    const response = await SELF.fetch(`${BASE}/api/whiteboard/room/auth-log-origin`, {
+      method: 'POST',
+      headers: {
+        'Cf-Access-Jwt-Assertion': token,
+        Cookie: session.cookie,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ elements: [] }),
+    });
+    expect(response.status).toBe(403);
+
+    expect(lines).toHaveLength(1);
+    const logged = JSON.parse(lines[0]!);
+    expect(logged).toMatchObject({ event: 'auth_event', type: 'auth_failure', outcome: 'denied' });
+    expect(lines[0]).not.toContain(token);
+    expect(lines[0]).not.toContain(session.cookie);
   });
 
   it('denies a locally disabled account while its signed Access assertion remains valid', async () => {

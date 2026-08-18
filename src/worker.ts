@@ -1,4 +1,4 @@
-export { RoomDO } from './do/RoomDO';
+﻿export { RoomDO } from './do/RoomDO';
 export { IdentityDO } from './do/IdentityDO';
 import {
   AccessVerificationError,
@@ -6,10 +6,12 @@ import {
   type VerifiedAccessPrincipal,
 } from './lib/access/accessVerifier';
 import { IdentityDO, getIdentityObject } from './do/IdentityDO';
+import { createRateLimiter } from './lib/http/rateLimit';
 import {
   parseSessionCookie,
   type ValidatedSession,
 } from './lib/identity/sessionStore';
+import { logAuthEvent, type AuthEventInput } from './lib/security/authEvents';
 import {
   bodyTooLarge,
   isJsonContentType,
@@ -43,10 +45,68 @@ const SESSION_ISSUE = '/auth/session';
 const SESSION_CURRENT = '/auth/session/current';
 const SESSION_LOGOUT = '/auth/session/logout';
 
-function unauthorized(): Response {
+/** Room-creation POSTs per verified account within a one-minute window (SEC-005). */
+const ROOM_CREATE_RATE_WINDOW_MS = 60_000;
+const ROOM_CREATE_RATE_MAX = 10;
+const productionRoomCreateLimiter = createRateLimiter({
+  windowMs: ROOM_CREATE_RATE_WINDOW_MS,
+  max: ROOM_CREATE_RATE_MAX,
+});
+const strictLocalTestRoomCreateLimiter = createRateLimiter({
+  windowMs: ROOM_CREATE_RATE_WINDOW_MS,
+  max: ROOM_CREATE_RATE_MAX,
+});
+
+function roomCreateLimiterFor(env: Env) {
+  return env.ENVIRONMENT === 'local-test'
+    ? strictLocalTestRoomCreateLimiter
+    : productionRoomCreateLimiter;
+}
+
+function shouldRateLimitRoomCreate(env: Env, request: Request): boolean {
+  if (env.ENVIRONMENT !== 'local-test') return true;
+  return request.headers.get('x-test-strict-rate-limit') === '1';
+}
+
+type AuthEventWriter = (line: string) => void;
+const defaultAuthEventWriter: AuthEventWriter = (line) => console.info(line);
+let authEventWriter: AuthEventWriter = defaultAuthEventWriter;
+let authEventWriterInstalledForTests = false;
+
+export function setAuthEventWriterForTests(write: AuthEventWriter): void {
+  authEventWriter = write;
+  authEventWriterInstalledForTests = true;
+}
+
+export function resetAuthEventWriterForTests(): void {
+  authEventWriter = defaultAuthEventWriter;
+  authEventWriterInstalledForTests = false;
+}
+
+function emitAuthEvent(input: AuthEventInput, env: Env): void {
+  if (env.ENVIRONMENT === 'local-test' && !authEventWriterInstalledForTests) return;
+  logAuthEvent(input, authEventWriter);
+}
+
+function unauthorized(env: Env, reason = 'unauthorized'): Response {
+  emitAuthEvent({ type: 'auth_failure', outcome: 'denied', reason }, env);
   return withSecurityHeaders(Response.json(
     { error: 'Unauthorized' },
     { status: 401, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+function rateLimited(retryAfterMs: number): Response {
+  const retryAfterSec = Math.ceil(retryAfterMs / 1000);
+  return withSecurityHeaders(Response.json(
+    { error: 'Too many requests' },
+    {
+      status: 429,
+      headers: {
+        'Cache-Control': 'no-store',
+        'Retry-After': String(retryAfterSec),
+      },
+    },
   ));
 }
 
@@ -55,7 +115,7 @@ function hasExactOrigin(request: Request): boolean {
   return origin !== null && origin === new URL(request.url).origin;
 }
 
-function originGuard(request: Request, pathname: string): Response | null {
+function originGuard(env: Env, request: Request, pathname: string): Response | null {
   const readOnly = request.method === 'GET' || request.method === 'HEAD';
   const guarded = pathname === '/signaling'
     || (!readOnly && (
@@ -64,6 +124,7 @@ function originGuard(request: Request, pathname: string): Response | null {
       || pathname.startsWith('/api/')
     ));
   if (!guarded || hasExactOrigin(request)) return null;
+  emitAuthEvent({ type: 'auth_failure', outcome: 'denied', reason: 'origin' }, env);
   return withSecurityHeaders(Response.json(
     { error: 'Origin required' },
     { status: 403, headers: { 'Cache-Control': 'no-store' } },
@@ -88,7 +149,7 @@ async function sessionAuthorized(
   principal: VerifiedAccessPrincipal,
 ): Promise<SessionOutcome> {
   const cookie = request.headers.get('cookie');
-  if (!parseSessionCookie(cookie)) return { denied: unauthorized() };
+  if (!parseSessionCookie(cookie)) return { denied: unauthorized(env, 'missing_session') };
   const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
   const result = await identity.fetch(
     new Request('https://identity/sessions/authorize', {
@@ -185,6 +246,29 @@ function forward(
   });
 }
 
+async function probeRoomAccessStatus(
+  env: Env,
+  roomId: string,
+  url: URL,
+  session: ValidatedSession,
+): Promise<string | null> {
+  const response = await forward(
+    env,
+    roomId,
+    '/room/access',
+    new Request('https://room/room/access', { method: 'GET' }),
+    url,
+    session,
+  );
+  if (!response.ok) return null;
+  try {
+    const body = (await response.json()) as { status?: string };
+    return typeof body.status === 'string' ? body.status : null;
+  } catch {
+    return null;
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -209,14 +293,14 @@ export default {
     try {
       principal = await verifyAccessRequest(request, ctx.access, env);
     } catch (error) {
-      if (error instanceof AccessVerificationError) return unauthorized();
+      if (error instanceof AccessVerificationError) return unauthorized(env, 'access_verification_failed');
       throw error;
     }
 
     // Run before local-session authorization and before any Durable Object or
     // body access. Origin is an exact serialized-origin comparison: missing,
     // null, alternate scheme/port/subdomain, and combined values fail closed.
-    const originDenied = originGuard(request, url.pathname);
+    const originDenied = originGuard(env, request, url.pathname);
     if (originDenied) return originDenied;
 
     if (url.pathname === SESSION_ISSUE) {
@@ -287,8 +371,16 @@ export default {
           return withSecurityHeaders(new Response('Content type must be application/json', { status: 415 }));
         }
       }
+      const subpath = match[2] ?? '';
+      if (request.method === 'POST' && subpath === '' && session && shouldRateLimitRoomCreate(env, request)) {
+        const accessStatus = await probeRoomAccessStatus(env, roomId, url, session);
+        if (accessStatus === 'none') {
+          const limit = roomCreateLimiterFor(env).take(session.accountId);
+          if (!limit.ok) return rateLimited(limit.retryAfterMs);
+        }
+      }
       // The verified account decides which rooms this caller may touch.
-      return forward(env, roomId, `/room${match[2] ?? ''}`, request, url, session);
+      return forward(env, roomId, `/room${subpath}`, request, url, session);
     }
 
     // Serve the placeholder room page for any /whiteboard/<roomId> URL. The
