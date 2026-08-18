@@ -1067,9 +1067,13 @@ acceptance tests and evidence are satisfied.
     dropping the ArrayBuffer branch timed out the workers test (reverted).
     Browser collaboration uses `y-websocket` `SignalingWebsocketProvider`
     against `/signaling?room=` (`url` getter is live in y-websocket 3).
-    Residual: no Playwright proof of Y.Doc convergence on this path;
-    JSON y-webrtc `publish` remains. Viewer binary is separately APPROVE
-    (live `canWriteBoard` on each frame).
+    Residual: JSON y-webrtc `publish` remains. Independent verifier
+    APPROVE-AS-BLOCKED for host→peer e2e over `/signaling` with no
+    RTCPeerConnection. Follow-up: typecheck TS2352 fixed; mock honors
+    `connect: false` so restoring that option fails
+    `connects the websocket provider in the browser` (reverted). Late-joiner
+    e2e uses API persist, not Yjs history. Viewer binary is separately
+    APPROVE.
 - [ ] Do not create a collaboration provider before approval and authorization.
   - Evidence: independent verifier APPROVE-AS-BLOCKED (do not check).
     `shouldStartCollaboration` blocks pending/waiting/kicked; the hook

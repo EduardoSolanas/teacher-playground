@@ -29,7 +29,7 @@ class SignalingWebsocketProvider extends WebsocketProvider {
   private readonly signalingUrl: string;
 
   constructor(doc: Y.Doc, roomId: string) {
-    super('ws://unused', '_', doc, { connect: false, disableBc: true });
+    super('ws://unused', '_', doc, { disableBc: true });
     const urls = getSignalingUrls(roomId);
     this.signalingUrl = urls[0] ?? 'ws://localhost:3001/signaling';
   }

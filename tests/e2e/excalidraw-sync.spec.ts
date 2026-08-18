@@ -8,6 +8,41 @@ import {
   expectPersistedElement,
 } from './helpers';
 
+async function installWebRtcSentinel(page: Page) {
+  await page.addInitScript(() => {
+    (window as any).__e2ePeerConnectionCount = 0;
+    const Original = window.RTCPeerConnection;
+    if (!Original) return;
+    (window as any).RTCPeerConnection = function (...args: ConstructorParameters<typeof RTCPeerConnection>) {
+      (window as any).__e2ePeerConnectionCount += 1;
+      return new Original(...args);
+    };
+    Object.assign((window as any).RTCPeerConnection, Original);
+    (window as any).RTCPeerConnection.prototype = Original.prototype;
+  });
+}
+
+function trackWebsocketUrls(page: Page) {
+  const urls: string[] = [];
+  page.on('websocket', (ws) => urls.push(ws.url()));
+  return urls;
+}
+
+async function expectYWebsocketTransport(page: Page, websocketUrls: string[]) {
+  const collab = await page.evaluate(() => {
+    const provider = (window as any).__whiteboardCollab?.provider;
+    return {
+      providerName: provider?.constructor?.name ?? null,
+      peerConnectionCount: (window as any).__e2ePeerConnectionCount ?? 0,
+    };
+  });
+
+  expect(websocketUrls.some((url) => url.includes('/signaling'))).toBe(true);
+  expect(websocketUrls.some((url) => /stun:|turn:/i.test(url))).toBe(false);
+  expect(collab.providerName).not.toBe('WebrtcProvider');
+  expect(collab.peerConnectionCount).toBe(0);
+}
+
 // These tests exercise the app as it is actually built today: the board is an
 // Excalidraw scene reached through window.__debugExcalidrawApi, and every
 // non-host peer is admitted only after the host approves it.
@@ -75,15 +110,35 @@ test.describe('Excalidraw scene sync', () => {
   });
 
   test('an element added by the host reaches an approved peer', async ({ page, browser }) => {
+    await installWebRtcSentinel(page);
+    const hostSockets = trackWebsocketUrls(page);
+
     const roomId = await createRoomWithMaxUsers(page, 'SyncHost', 3);
 
     const peerContext = await newAuthenticatedContext(browser);
     const peerPage = await peerContext.newPage();
+    await installWebRtcSentinel(peerPage);
+    const peerSockets = trackWebsocketUrls(peerPage);
     try {
       await joinExistingRoom(peerPage, roomId, 'SyncPeer');
       await expectWaiting(peerPage);
       await approveFirstWaitingPeer(page);
       await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+
+      await expect
+        .poll(async () => (await page.evaluate(() => (window as any).__whiteboardCollab?.isSynced)), { timeout: 20000 })
+        .toBe(true);
+      await expect
+        .poll(async () => (await peerPage.evaluate(() => (window as any).__whiteboardCollab?.isConnected)), { timeout: 20000 })
+        .toBe(true);
+      await expect
+        .poll(() => hostSockets.some((url) => url.includes('/signaling')), { timeout: 20000 })
+        .toBe(true);
+      await expect
+        .poll(() => peerSockets.some((url) => url.includes('/signaling')), { timeout: 20000 })
+        .toBe(true);
+      await expectYWebsocketTransport(page, hostSockets);
+      await expectYWebsocketTransport(peerPage, peerSockets);
 
       await appendElement(page, rectangle('sync-rect-1', 200, 150));
 
@@ -95,10 +150,8 @@ test.describe('Excalidraw scene sync', () => {
     }
   });
 
-  // KNOWN DEFECT: a peer approved after the board already has content receives an
-  // empty scene — it gets live updates from that point on, but no history. The
-  // 'disconnected peer catches up from API fallback' case in collaboration.spec.ts
-  // fails for what looks like the same reason. Unfixed; this test documents it.
+  // Late joiners catch up from the room API after persist (expectPersistedElement),
+  // not from Yjs history replay on the signaling socket.
   test('a peer sees elements that already existed before it was approved', async ({ page, browser }) => {
     const roomId = await createRoomWithMaxUsers(page, 'BacklogHost', 3);
 

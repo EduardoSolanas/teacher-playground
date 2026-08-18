@@ -14,9 +14,10 @@ const { webrtcCtor, websocketCtor } = vi.hoisted(() => {
     _serverUrl: string,
     _roomname: string,
     _doc: Y.Doc,
+    options?: { connect?: boolean },
   ) {
     this.connected = false;
-    this.shouldConnect = true;
+    this.shouldConnect = options?.connect !== false;
     this.connect = vi.fn();
     this.destroy = vi.fn();
     this.on = vi.fn();
@@ -56,5 +57,24 @@ describe('createYWebsocketProvider', () => {
     expect(websocketCtor).toHaveBeenCalled();
 
     destroyProvider('browser-room');
+  });
+
+  it('connects the websocket provider in the browser', () => {
+    vi.stubGlobal('window', {
+      location: {
+        protocol: 'https:',
+        hostname: 'whiteboard.example.com',
+        host: 'whiteboard.example.com',
+      },
+    });
+
+    createYWebsocketProvider(new Y.Doc(), 'connect-room');
+    const instance = websocketCtor.mock.instances.at(-1) as unknown as {
+      connect: ReturnType<typeof vi.fn>;
+    };
+
+    expect(instance?.connect).toHaveBeenCalled();
+
+    destroyProvider('connect-room');
   });
 });

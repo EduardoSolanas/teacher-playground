@@ -11,11 +11,17 @@ import type { CanvasElement, WhiteboardUser, RemoteCursor } from '@/types/whiteb
 
 type ChangeCallback = (type: string, data: any) => void;
 
+function isProviderConnected(provider: ReturnType<typeof createYWebsocketProvider>['provider']) {
+  const state = provider as { connected?: boolean; wsconnected?: boolean };
+  return Boolean(state.wsconnected ?? state.connected);
+}
+
 function readProviderStatus(provider: ReturnType<typeof createYWebsocketProvider>['provider']) {
   const shouldConnect = (provider as any).shouldConnect !== false;
+  const connected = isProviderConnected(provider);
   return {
-    status: provider.connected ? 'connected' : shouldConnect ? 'connecting' : 'disconnected',
-    connected: Boolean(provider.connected),
+    status: connected ? 'connected' : shouldConnect ? 'connecting' : 'disconnected',
+    connected,
   };
 }
 
@@ -28,7 +34,7 @@ export function createCollaboration(roomId: string, peerId?: string) {
   let localUserColor = '#3498db';
   const changeCallbacks: ChangeCallback[] = [];
   const reconnectInterval = setInterval(() => {
-    if ((provider as any).shouldConnect !== false && !provider.connected) {
+    if ((provider as any).shouldConnect !== false && !isProviderConnected(provider)) {
       provider.connect();
       changeCallbacks.forEach((cb) => cb('status', readProviderStatus(provider)));
     }
@@ -115,19 +121,21 @@ export function createCollaboration(roomId: string, peerId?: string) {
     callback('status', readProviderStatus(provider));
   }
 
-  provider.on('status', (event: { connected: boolean }) => {
+  provider.on('status', (event: { status?: string; connected?: boolean }) => {
+    const connected = event.status === 'connected' || event.connected === true;
     const shouldConnect = (provider as any).shouldConnect !== false;
     changeCallbacks.forEach((cb) => cb('status', {
-      status: event.connected ? 'connected' : shouldConnect ? 'connecting' : 'disconnected',
-      connected: event.connected,
+      status: connected ? 'connected' : shouldConnect ? 'connecting' : 'disconnected',
+      connected,
     }));
   });
 
-  provider.on('synced', (event: { synced: boolean }) => {
+  provider.on('synced', (event: boolean | { synced: boolean }) => {
+    const synced = typeof event === 'boolean' ? event : event.synced;
     changeCallbacks.forEach((cb) => cb('status', {
-      status: event.synced ? 'synced' : readProviderStatus(provider).status,
-      connected: Boolean(provider.connected),
-      synced: event.synced,
+      status: synced ? 'synced' : readProviderStatus(provider).status,
+      connected: isProviderConnected(provider),
+      synced,
     }));
   });
 
