@@ -12,7 +12,8 @@ import {
   type GrantedPublicRole,
   type RoomAccessStatus,
 } from '@/lib/whiteboard/collaborationGate';
-import { getStablePeerId } from '@/lib/whiteboard/peerId';
+import { getStablePeerId, peerIdWhenJoined } from '@/lib/whiteboard/peerId';
+import { randomHexId } from '@/lib/crypto/randomId';
 import * as store from '@/lib/whiteboard/store';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import { reconcileElements } from '@/lib/whiteboard/excalidrawSync';
@@ -59,7 +60,7 @@ export function useCollaboration(roomId: string) {
   const elementsRef = useRef<CanvasElement[]>([]);
   const viewportRef = useRef<Viewport>({ x: 0, y: 0, zoom: 1 });
   const lastRoomUpdatedAtRef = useRef(0);
-  const localPeerIdRef = useRef(getStablePeerId(roomId));
+  const localPeerIdRef = useRef(`user-${randomHexId()}`);
   const [localPeerId, setLocalPeerId] = useState(localPeerIdRef.current);
   /** First user to join the room (from presence API), not "this browser". */
   const hostPeerIdRef = useRef<string | null>(null);
@@ -76,7 +77,8 @@ export function useCollaboration(roomId: string) {
 
   function ensureCollaboration() {
     if (!collaborationRef.current) {
-      const peerId = getStablePeerId(roomId);
+      const peerId = peerIdWhenJoined(hasJoinedRef.current, roomId);
+      if (!peerId) return null;
       localPeerIdRef.current = peerId;
       setLocalPeerId(peerId);
       collaborationRef.current = createCollaboration(roomId, peerId);
@@ -101,13 +103,14 @@ export function useCollaboration(roomId: string) {
     setCollaborationEpoch((epoch) => epoch + 1);
   }
 
-  const mayStartCollaboration = shouldStartCollaboration({
-    roomGranted,
-    accessStatus,
-    grantRole,
-    isWaiting,
-    wasKicked,
-  });
+  const mayStartCollaboration =
+    shouldStartCollaboration({
+      roomGranted,
+      accessStatus,
+      grantRole,
+      isWaiting,
+      wasKicked,
+    }) && hasJoined;
 
   const applyElements = useCallback((nextElements: CanvasElement[]) => {
     if (isRemoteUpdateRef.current) return;
@@ -238,6 +241,10 @@ export function useCollaboration(roomId: string) {
     }
 
     const collaboration = ensureCollaboration();
+    if (!collaboration) {
+      destroyCollaboration();
+      return;
+    }
 
     collaboration.onChange((type, data) => {
       if (type === 'status') {
@@ -376,6 +383,9 @@ export function useCollaboration(roomId: string) {
   );
 
   const setUserName = useCallback((name: string) => {
+    const peerId = getStablePeerId(roomId);
+    localPeerIdRef.current = peerId;
+    setLocalPeerId(peerId);
     localUserNameRef.current = name;
     pendingUserNameRef.current = name;
     hasJoinedRef.current = true;
@@ -384,7 +394,7 @@ export function useCollaboration(roomId: string) {
     setLocalUserName(name);
     collaborationRef.current?.setLocalUserName(name);
     collaborationRef.current?.setLocalCursor(0, 0);
-  }, []);
+  }, [roomId]);
 
   useEffect(() => {
     if (!roomLoaded || !hasJoined) return;
@@ -544,6 +554,9 @@ export function useCollaboration(roomId: string) {
   }, [roomId, reloadPresence]);
 
   const leaveWaitingRoom = useCallback(async () => {
+    hasJoinedRef.current = false;
+    setHasJoined(false);
+    setIsWaiting(false);
     try {
       await ajaxFetch(
         `/api/whiteboard/room/${roomId}/waiting?peerId=${encodeURIComponent(localPeerIdRef.current)}`,
@@ -552,12 +565,12 @@ export function useCollaboration(roomId: string) {
     } catch {
       // still drop local waiting/join so the prompt can return
     }
-    hasJoinedRef.current = false;
-    setHasJoined(false);
-    setIsWaiting(false);
   }, [roomId, localPeerId]);
 
   const leaveRoom = useCallback(async () => {
+    destroyCollaboration();
+    hasJoinedRef.current = false;
+    setHasJoined(false);
     try {
       await ajaxFetch(
         `/api/whiteboard/room/${roomId}/presence?peerId=${encodeURIComponent(localPeerIdRef.current)}`,
@@ -566,9 +579,6 @@ export function useCollaboration(roomId: string) {
     } catch {
       // still drop local join state so the prompt can return
     }
-    destroyCollaboration();
-    hasJoinedRef.current = false;
-    setHasJoined(false);
   }, [roomId]);
 
   const kickPeer = useCallback(async (peerId: string, accountId?: string | null) => {

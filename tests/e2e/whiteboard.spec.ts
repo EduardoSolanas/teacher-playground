@@ -1,5 +1,5 @@
 import { test, expect, Page, Browser } from '@playwright/test';
-import { newAuthenticatedContext } from './helpers';
+import { createRoomWithMaxUsers, newAuthenticatedContext } from './helpers';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -270,6 +270,50 @@ test.describe('Room Connection Lifecycle', () => {
     await cleanContextAndJoin(page, 'Joiner', roomId);
     await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible();
     await waitForPresence(page, 'Joiner');
+  });
+
+  test('in-room leave clears localStorage room and session keys', async ({ page }) => {
+    const roomId = await createRoomWithMaxUsers(page, 'LeaveStorageHost', 2);
+    await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible();
+    await expect(page.getByTestId('whiteboard-leave-room-btn')).toBeVisible();
+
+    // Seed board cache keys; peer id and username are set during join.
+    await page.evaluate((rid) => {
+      localStorage.setItem(
+        `whiteboard:${rid}:state`,
+        JSON.stringify({ elements: [], viewport: { x: 0, y: 0, zoom: 1 } }),
+      );
+      localStorage.setItem(`whiteboard:${rid}:timestamp`, String(Date.now()));
+      localStorage.setItem(`whiteboard:${rid}:offline_cache`, '1');
+    }, roomId);
+
+    const beforeLeave = await page.evaluate((rid) => ({
+      state: localStorage.getItem(`whiteboard:${rid}:state`),
+      peerId: localStorage.getItem(`whiteboard:${rid}:peer_id`),
+      username: localStorage.getItem('whiteboard_username'),
+    }), roomId);
+    expect(beforeLeave.state).not.toBeNull();
+    expect(beforeLeave.peerId).not.toBeNull();
+    expect(beforeLeave.username).toBe('LeaveStorageHost');
+
+    await page.getByTestId('whiteboard-leave-room-btn').click();
+    await expect(page.getByTestId('whiteboard-username-input')).toBeVisible({ timeout: 10000 });
+
+    const afterLeave = await page.evaluate((rid) => ({
+      state: localStorage.getItem(`whiteboard:${rid}:state`),
+      timestamp: localStorage.getItem(`whiteboard:${rid}:timestamp`),
+      offlineCache: localStorage.getItem(`whiteboard:${rid}:offline_cache`),
+      peerId: localStorage.getItem(`whiteboard:${rid}:peer_id`),
+      username: localStorage.getItem('whiteboard_username'),
+      userColor: localStorage.getItem('whiteboard_user_color'),
+    }), roomId);
+
+    expect(afterLeave.state).toBeNull();
+    expect(afterLeave.timestamp).toBeNull();
+    expect(afterLeave.offlineCache).toBeNull();
+    expect(afterLeave.peerId).toBeNull();
+    expect(afterLeave.username).toBeNull();
+    expect(afterLeave.userColor).toBeNull();
   });
 
   test('user name persists across page navigation', async ({ page }) => {

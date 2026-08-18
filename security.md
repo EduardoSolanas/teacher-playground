@@ -1185,10 +1185,13 @@ acceptance tests and evidence are satisfied.
 - [ ] Remove plaintext shared-room persistence by default and clear all local
   room/session material on leave, kick, revoke, or expiry (SEC-011).
   - Evidence: independent verifier APPROVE for default-off cache and
-    kick/waiting-leave/expiry clearing. In-room leave `clearOnLeave` is
-    APPROVE-AS-BLOCKED: unit mutant killed peer-id clear; no Playwright
-    spec asserts localStorage wipe on `whiteboard-leave-room-btn`. Residual:
-    revoke/reject/suspend paths and TURN/relay.
+    kick/waiting-leave/expiry clearing. In-room leave is
+    APPROVE-AS-BLOCKED for the full SEC-011 item (revoke/reject/suspend
+    still have no e2e). Playwright
+    `in-room leave clears localStorage room and session keys` passes.
+    Follow-up: `peerIdWhenJoined(false)` must not mint; skipping that
+    guard failed `does not mint a peer id after leave when not joined`.
+    Residual: revoke/reject/suspend paths and TURN/relay.
 - [ ] Add CSP, framing, content-type, referrer, permissions, cache, and indexing
   protections across assets and API responses (SEC-012).
 - [ ] Minimize PII responses, replace internal error disclosure, and add

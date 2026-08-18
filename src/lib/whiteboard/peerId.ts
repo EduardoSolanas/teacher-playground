@@ -27,6 +27,12 @@ export function getStablePeerId(roomId: string) {
   }
 }
 
+/** Cursor labels are minted only after join so leave/clearOnLeave is not undone. */
+export function peerIdWhenJoined(hasJoined: boolean, roomId: string): string | null {
+  if (!hasJoined) return null;
+  return getStablePeerId(roomId);
+}
+
 export function clearStoredPeerId(roomId: string): void {
   if (typeof window === 'undefined') return;
   try {
