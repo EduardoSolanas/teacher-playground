@@ -225,6 +225,8 @@ export default {
           debugSteps.push(`audMatch:${audMatch}`);
           debugSteps.push(`nbf:${claims.nbf},iat:${claims.iat},exp:${claims.exp},now:${Math.floor(Date.now() / 1000)}`);
           debugSteps.push(`type:${claims.type}`);
+          debugSteps.push(`stid:${claims.service_token_id},tt:${claims.token_type}`);
+          debugSteps.push(`keys:${Object.keys(claims).join(',')}`);
         } catch { debugSteps.push('claims:parse-err'); }
       }
       principal = await verifyAccessRequest(request, ctx.access, env);
