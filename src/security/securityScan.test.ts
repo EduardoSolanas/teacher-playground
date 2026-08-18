@@ -37,7 +37,8 @@ describe('tracked-tree security scan', () => {
   it('accepts example environment files and reserved email domains', () => {
     const root = createRepository({
       '.env.local.example': 'CONTACT=teacher@example.com\n',
-      'notes.txt': 'Tests use helper@school.test and nobody@example.org.\n',
+      'notes.txt':
+        'Tests use helper@school.test, nobody@example.org, and docs@whiteboard.example.com.\n',
     });
 
     const result = scan(root);

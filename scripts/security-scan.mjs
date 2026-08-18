@@ -61,13 +61,19 @@ const reservedEmailDomains = new Set(['example.com', 'example.net', 'example.org
 
 function isReservedEmailDomain(domain) {
   const normalized = domain.toLowerCase();
-  return (
+  if (
     reservedEmailDomains.has(normalized) ||
     normalized.endsWith('.example') ||
     normalized.endsWith('.test') ||
     normalized.endsWith('.invalid') ||
     normalized.endsWith('.localhost')
-  );
+  ) {
+    return true;
+  }
+  for (const reserved of reservedEmailDomains) {
+    if (normalized.endsWith(`.${reserved}`)) return true;
+  }
+  return false;
 }
 
 function containsNonReservedEmail(text) {

@@ -69,7 +69,7 @@ describe('logAuthEvent', () => {
         reason: [
           'Authorization: Bearer ' + JWT,
           'Cookie: CF_Authorization=' + JWT,
-          'contact teacher@school.edu',
+          'contact teacher@example.com',
         ].join('; '),
       },
       (line) => lines.push(line),
@@ -77,13 +77,13 @@ describe('logAuthEvent', () => {
 
     const serialized = lines[0]!;
     expect(serialized).not.toContain(JWT);
-    expect(serialized).not.toContain('teacher@school.edu');
+    expect(serialized).not.toContain('teacher@example.com');
     expect(serialized).not.toMatch(/Bearer\s+eyJ/i);
 
     const logged = JSON.parse(serialized);
     expect(logged.type).toBe('grant_change');
     expect(logged.outcome).toBe('granted');
-    expect(JSON.stringify(logged)).not.toContain('teacher@school.edu');
+    expect(JSON.stringify(logged)).not.toContain('teacher@example.com');
     expect(JSON.stringify(logged)).not.toMatch(/Bearer\s+eyJ/i);
   });
 
@@ -92,16 +92,16 @@ describe('logAuthEvent', () => {
     logAuthEvent(
       {
         type: 'revocation',
-        accountId: 'teacher@school.edu',
+        accountId: 'teacher@example.com',
         outcome: 'revoked',
       },
       (line) => lines.push(line),
     );
 
     const serialized = lines[0]!;
-    expect(serialized).not.toContain('teacher@school.edu');
+    expect(serialized).not.toContain('teacher@example.com');
     const logged = JSON.parse(serialized);
-    expect(logged.accountId).not.toBe('teacher@school.edu');
+    expect(logged.accountId).not.toBe('teacher@example.com');
     expect(logged.type).toBe('revocation');
     expect(logged.outcome).toBe('revoked');
   });

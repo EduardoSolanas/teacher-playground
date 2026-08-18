@@ -227,7 +227,7 @@ describe('room allowFirstUserHost setting', () => {
     const db = {
       prepare() {
         throw new Error(
-          'SQLITE_ERROR teacher@school.edu token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig {"elements":[{"id":"el-1"}]}',
+          'SQLITE_ERROR teacher@example.com token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig {"elements":[{"id":"el-1"}]}',
         );
       },
     };
@@ -242,7 +242,7 @@ describe('room allowFirstUserHost setting', () => {
     const body = await response.json();
     expect(body).toEqual({ error: 'Internal server error' });
     expect(JSON.stringify(body)).not.toContain('SQLITE_ERROR');
-    expect(JSON.stringify(body)).not.toContain('teacher@school.edu');
+    expect(JSON.stringify(body)).not.toContain('teacher@example.com');
     expect(JSON.stringify(body)).not.toContain('el-1');
   });
 });

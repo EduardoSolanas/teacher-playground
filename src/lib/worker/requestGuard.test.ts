@@ -153,7 +153,7 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
         Cookie: '__Host-teacher-session=session-secret',
         Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig',
         'Cf-Access-Jwt-Assertion': 'access-jwt-value',
-        'Cf-Access-Authenticated-User-Email': 'teacher@school.edu',
+        'Cf-Access-Authenticated-User-Email': 'teacher@example.com',
         'X-Account-Id': 'acct-forged',
         'X-User-Id': 'user-forged',
         'X-Forwarded-User': 'forwarded-forged',

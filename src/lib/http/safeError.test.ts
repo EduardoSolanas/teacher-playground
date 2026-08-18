@@ -18,7 +18,7 @@ afterEach(() => {
 describe('redactForLog', () => {
   it('redacts emails, bearer tokens, JWTs, and board JSON', () => {
     const raw = [
-      'failed for teacher@school.edu',
+      'failed for teacher@example.com',
       `Authorization: Bearer ${JWT}`,
       `token=${JWT}`,
       `board=${BOARD_JSON}`,
@@ -26,7 +26,7 @@ describe('redactForLog', () => {
 
     const redacted = redactForLog(raw);
 
-    expect(redacted).not.toContain('teacher@school.edu');
+    expect(redacted).not.toContain('teacher@example.com');
     expect(redacted).not.toContain(JWT);
     expect(redacted).not.toContain('el-1');
     expect(redacted).toContain('[REDACTED_EMAIL]');
@@ -38,7 +38,7 @@ describe('redactForLog', () => {
 describe('serializeInternalError', () => {
   it('emits a structured log object with a redacted message', () => {
     const entry = serializeInternalError(
-      new Error(`SQLITE_ERROR for teacher@school.edu Bearer ${JWT} ${BOARD_JSON}`),
+      new Error(`SQLITE_ERROR for teacher@example.com Bearer ${JWT} ${BOARD_JSON}`),
       'handleRoomGet',
     );
 
@@ -49,7 +49,7 @@ describe('serializeInternalError', () => {
       message: expect.any(String),
     });
     expect(entry.message).toContain('SQLITE_ERROR');
-    expect(JSON.stringify(entry)).not.toContain('teacher@school.edu');
+    expect(JSON.stringify(entry)).not.toContain('teacher@example.com');
     expect(JSON.stringify(entry)).not.toContain(JWT);
     expect(JSON.stringify(entry)).not.toContain('el-1');
   });
@@ -59,7 +59,7 @@ describe('internalErrorResponse', () => {
   it('returns a generic 500 body and logs redacted JSON', async () => {
     const lines: string[] = [];
     const response = internalErrorResponse(
-      new Error(`password=super-secret token=${JWT} teacher@school.edu ${BOARD_JSON}`),
+      new Error(`password=super-secret token=${JWT} teacher@example.com ${BOARD_JSON}`),
       'handleRoomPost',
       (line) => lines.push(line),
     );
@@ -69,7 +69,7 @@ describe('internalErrorResponse', () => {
     expect(body).toEqual({ error: GENERIC_INTERNAL_ERROR });
     expect(JSON.stringify(body)).not.toContain('super-secret');
     expect(JSON.stringify(body)).not.toContain(JWT);
-    expect(JSON.stringify(body)).not.toContain('teacher@school.edu');
+    expect(JSON.stringify(body)).not.toContain('teacher@example.com');
 
     expect(lines).toHaveLength(1);
     const logged = JSON.parse(lines[0]!);
@@ -77,7 +77,7 @@ describe('internalErrorResponse', () => {
     expect(logged.op).toBe('handleRoomPost');
     expect(JSON.stringify(logged)).not.toContain('super-secret');
     expect(JSON.stringify(logged)).not.toContain(JWT);
-    expect(JSON.stringify(logged)).not.toContain('teacher@school.edu');
+    expect(JSON.stringify(logged)).not.toContain('teacher@example.com');
     expect(JSON.stringify(logged)).not.toContain('el-1');
   });
 
