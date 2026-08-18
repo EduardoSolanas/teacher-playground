@@ -1097,6 +1097,12 @@ acceptance tests and evidence are satisfied.
 - [ ] Enforce room-ID, content-type, body-size, scene, field, URL, quota, and
   creation-rate limits before Durable Object allocation or JSON parsing
   (SEC-005).
+  - Evidence: independent verifier APPROVE for scene-element bounds and
+    an unwired in-memory `createRateLimiter`. `sceneElementSchema` requires
+    a conforming id, caps strings at 4KiB, keys at 64, depth at 10, and
+    `MAX_ELEMENTS` 10_000. Mutation `z.array(z.unknown())` killed 4 tests.
+    Rate limiter: per-key sliding window; max-guard mutant killed 4 tests.
+    Residual: limiter not on HTTP routes; URL/quota/429 not done.
 - [ ] Replace security-sensitive `Math.random` values with at least 128 bits from
   a cryptographic RNG and make room creation transactional (SEC-006).
   - Evidence: independent verifier APPROVE for the CSPRNG slice only.
@@ -1106,9 +1112,10 @@ acceptance tests and evidence are satisfied.
 - [ ] Implement creator-only atomic deletion across every room table, close all
   sockets, and prevent old grants from authorizing recreated rooms (SEC-007).
   - Evidence: independent verifier APPROVE for the atomic SQL slice and
-    socket close 4404. This Phase 4 task stays open because
-    `storage.deleteAll`, tombstones, and recreate-vs-old-grant proof are
-    not done.
+    socket close 4404. Tombstone helper APPROVE (in-memory
+    `createTombstoneStore` / `assertNotTombstoned`; add-noop mutant killed
+    3 tests). Residual: not wired into RoomDO; `storage.deleteAll` and
+    recreate-vs-old-grant proof are not done.
 - [ ] Add TTLs and scheduled cleanup for rooms, sessions, grants, requests,
   waiting entries, kicks, PII, and tombstones.
   - Evidence: independent verifier APPROVE for editor-row purge only.
@@ -1147,8 +1154,9 @@ acceptance tests and evidence are satisfied.
   structured redacted security-event logs and alert thresholds (SEC-013).
   - Evidence: independent verifier APPROVE for generic 5xx + log redaction
     and (earlier) owner-only queue PII. This Phase 5 task stays open
-    because security-event logging for auth failures, grants, revocation,
-    rate limits, and socket closure is not done.
+    because a structured `logAuthEvent` helper is APPROVE-AS-BLOCKED: unit
+    tests prove email/JWT/bearer/cookie redaction (email-redact mutant
+    killed 2 tests) but it is not imported from RoomDO or the Worker yet.
 - [x] Remove production debug globals, restrict signaling configuration, and
   prove parity across every retained deployment (SEC-014).
   - Evidence: independent verifier APPROVE. Production signaling is
@@ -1159,6 +1167,13 @@ acceptance tests and evidence are satisfied.
   (SEC-016).
 - [ ] Add owner-role display integrity, name normalization, and moderation
   disambiguation (SEC-017).
+  - Evidence: independent verifier APPROVE for ASCII-control stripping
+    only. `stripAsciiControls` + `normalizedNameBase` on room name,
+    presence `userName`, and request `userName`. Mutation-tested (skip
+    `.replace`; 6 tests failed; reverted). `requestSchemas.test.ts` 33/33;
+    full unit 326. Residual: owner-role display and duplicate-name
+    disambiguation are not done. Scene-element bounds live in the same
+    file and were still present at this verify.
 
 **Phase gate**
 

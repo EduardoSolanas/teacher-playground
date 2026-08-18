@@ -6,11 +6,28 @@ import { z } from 'zod';
  */
 
 export const PEER_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+export const ELEMENT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 export const ACCOUNT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 export const COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
 export const MAX_NAME_LENGTH = 100;
 export const MAX_ELEMENTS = 10_000;
+export const MAX_ELEMENT_TYPE_LENGTH = 128;
+export const MAX_ELEMENT_STRING_LENGTH = 4096;
+export const MAX_ELEMENT_KEYS = 64;
+export const MAX_ELEMENT_NEST_DEPTH = 10;
 export const MAX_MAX_USERS = 10;
+
+/** U+0000–U+001F and U+007F — stripped from display and room names (SEC-017). */
+const ASCII_CONTROL_RE = /[\u0000-\u001F\u007F]/g;
+
+export function stripAsciiControls(value: string): string {
+  return value.replace(ASCII_CONTROL_RE, '').trim();
+}
+
+const normalizedNameBase = z.preprocess(
+  (val) => (typeof val === 'string' ? stripAsciiControls(val) : val),
+  z.string().min(1).max(MAX_NAME_LENGTH),
+);
 
 export const ROOM_SCENE_KEYS = ['elements', 'viewport'] as const;
 export const ROOM_SETTINGS_KEYS = ['maxUsers', 'name', 'hostPeerId', 'allowFirstUserHost'] as const;
@@ -30,8 +47,105 @@ export function hasRoomSceneIntent(body: object | null): boolean {
   return hasOwnKeys(body, ROOM_SCENE_KEYS);
 }
 
+function addBoundedSceneValueIssues(
+  value: unknown,
+  depth: number,
+  ctx: z.RefinementCtx,
+): void {
+  if (depth > MAX_ELEMENT_NEST_DEPTH) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'element nesting exceeds maximum depth',
+    });
+    return;
+  }
+
+  if (value === null || typeof value === 'boolean') {
+    return;
+  }
+
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'element number must be finite',
+      });
+    }
+    return;
+  }
+
+  if (typeof value === 'string') {
+    if (value.length > MAX_ELEMENT_STRING_LENGTH) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'element string exceeds maximum length',
+      });
+    }
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      addBoundedSceneValueIssues(item, depth + 1, ctx);
+    }
+    return;
+  }
+
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record);
+    if (keys.length > MAX_ELEMENT_KEYS) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'element object exceeds maximum key count',
+      });
+      return;
+    }
+    for (const key of keys) {
+      if (key.length > MAX_ELEMENT_STRING_LENGTH) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'element key exceeds maximum length',
+        });
+        return;
+      }
+      addBoundedSceneValueIssues(record[key], depth + 1, ctx);
+    }
+    return;
+  }
+
+  ctx.addIssue({
+    code: 'custom',
+    message: 'element contains unsupported value type',
+  });
+}
+
+export const sceneElementSchema = z
+  .object({
+    id: z.string().regex(ELEMENT_ID_RE, 'element id must match the allowed grammar'),
+    type: z.string().max(MAX_ELEMENT_TYPE_LENGTH).optional(),
+  })
+  .passthrough()
+  .superRefine((element, ctx) => {
+    const keys = Object.keys(element);
+    if (keys.length > MAX_ELEMENT_KEYS) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'element object exceeds maximum key count',
+      });
+      return;
+    }
+
+    for (const [key, value] of Object.entries(element)) {
+      if (key === 'id' || key === 'type') {
+        continue;
+      }
+      addBoundedSceneValueIssues(value, 1, ctx);
+    }
+  });
+
 export const roomSceneSchema = z.object({
-  elements: z.array(z.unknown()).max(MAX_ELEMENTS).optional(),
+  elements: z.array(sceneElementSchema).max(MAX_ELEMENTS).optional(),
   viewport: z.object({
     x: z.number().finite(),
     y: z.number().finite(),
@@ -42,7 +156,7 @@ export const roomSceneSchema = z.object({
 export const roomSettingsSchema = z.object({
   maxUsers: z.number().int().min(1).max(MAX_MAX_USERS).optional(),
   hostPeerId: z.string().regex(PEER_ID_RE).optional(),
-  name: z.string().max(MAX_NAME_LENGTH).optional(),
+  name: normalizedNameBase.optional(),
   allowFirstUserHost: z.boolean().optional(),
 });
 
@@ -52,7 +166,7 @@ export const presencePostSchema = z.object({
   action: z.enum(['kick', 'suspend']).optional(),
   peerId: z.string().regex(PEER_ID_RE).optional(),
   accountId: z.string().regex(ACCOUNT_ID_RE).optional(),
-  userName: z.string().max(MAX_NAME_LENGTH).optional(),
+  userName: normalizedNameBase.optional(),
   color: z.string().regex(COLOR_RE).optional(),
 }).superRefine((data, ctx) => {
   const hasTarget = Boolean(data.peerId || data.accountId);
@@ -76,7 +190,7 @@ export const waitingPostSchema = z.object({
 });
 
 export const requestsPostSchema = z.object({
-  userName: z.string().min(1).max(MAX_NAME_LENGTH),
+  userName: normalizedNameBase,
   email: z.email().optional(),
 });
 

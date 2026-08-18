@@ -12,6 +12,7 @@ import {
   PEER_ID_RE,
   COLOR_RE,
   MAX_ELEMENTS,
+  MAX_ELEMENT_STRING_LENGTH,
   MAX_MAX_USERS,
 } from './requestSchemas';
 
@@ -34,13 +35,49 @@ describe('requestSchemas hardening (SEC-005)', () => {
 
     it('rejects oversized element lists', () => {
       const result = roomSceneSchema.safeParse({
-        elements: new Array(MAX_ELEMENTS + 1).fill({ type: 'rectangle' }),
+        elements: new Array(MAX_ELEMENTS + 1).fill({ id: 'el-1' }),
       });
       expect(result.success).toBe(false);
     });
 
     it('rejects non-array elements', () => {
       expect(roomSceneSchema.safeParse({ elements: { not: 'an array' } }).success).toBe(false);
+    });
+
+    it('accepts a minimal valid element object', () => {
+      const result = roomSceneSchema.safeParse({
+        elements: [{ id: 'rect-1', type: 'rectangle', x: 0, y: 0 }],
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects non-object elements in the array', () => {
+      expect(roomSceneSchema.safeParse({ elements: ['not-an-object'] }).success).toBe(false);
+      expect(roomSceneSchema.safeParse({ elements: [42] }).success).toBe(false);
+      expect(roomSceneSchema.safeParse({ elements: [null] }).success).toBe(false);
+    });
+
+    it('rejects elements missing a conforming id', () => {
+      expect(roomSceneSchema.safeParse({ elements: [{ type: 'rectangle' }] }).success).toBe(false);
+      expect(roomSceneSchema.safeParse({ elements: [{ id: 'bad id!' }] }).success).toBe(false);
+    });
+
+    it('rejects elements with oversized string fields', () => {
+      const result = roomSceneSchema.safeParse({
+        elements: [{ id: 'el-1', text: 'x'.repeat(MAX_ELEMENT_STRING_LENGTH + 1) }],
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects deeply nested element payloads', () => {
+      let nested: Record<string, unknown> = { leaf: true };
+      for (let i = 0; i < 20; i += 1) {
+        nested = { child: nested };
+      }
+      const result = roomSceneSchema.safeParse({
+        elements: [{ id: 'el-1', nested }],
+      });
+      expect(result.success).toBe(false);
     });
   });
 
@@ -67,6 +104,19 @@ describe('requestSchemas hardening (SEC-005)', () => {
 
     it('rejects oversized room names', () => {
       expect(roomSettingsSchema.safeParse({ name: 'a'.repeat(101) }).success).toBe(false);
+    });
+
+    it('strips ASCII control characters and trims room names', () => {
+      const result = roomSettingsSchema.safeParse({ name: '\u0000\u0007 Algebra \u007F' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.name).toBe('Algebra');
+      }
+    });
+
+    it('rejects room names that are empty after stripping controls', () => {
+      expect(roomSettingsSchema.safeParse({ name: '\u0000\u0001' }).success).toBe(false);
+      expect(roomSettingsSchema.safeParse({ name: '   \u007F  ' }).success).toBe(false);
     });
 
     it('rejects non-conforming hostPeerId', () => {
@@ -114,6 +164,22 @@ describe('requestSchemas hardening (SEC-005)', () => {
       expect(presencePostSchema.safeParse({ peerId: 'user-1', userName: 'a'.repeat(101) }).success).toBe(false);
     });
 
+    it('strips ASCII control characters and trims display names', () => {
+      const result = presencePostSchema.safeParse({
+        peerId: 'user-1',
+        userName: '\u0000Alice\u007F',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.userName).toBe('Alice');
+      }
+    });
+
+    it('rejects display names that are empty after stripping controls', () => {
+      expect(presencePostSchema.safeParse({ peerId: 'user-1', userName: '\u0007' }).success).toBe(false);
+      expect(presencePostSchema.safeParse({ peerId: 'user-1', userName: '   \u007F  ' }).success).toBe(false);
+    });
+
     it('accepts a 6-digit hex color', () => {
       expect(COLOR_RE.test('#3498db')).toBe(true);
       expect(presencePostSchema.safeParse({ peerId: 'user-1', color: '#3498db' }).success).toBe(true);
@@ -148,6 +214,18 @@ describe('requestSchemas hardening (SEC-005)', () => {
 
     it('rejects an oversized user name', () => {
       expect(requestsPostSchema.safeParse({ userName: 'a'.repeat(101) }).success).toBe(false);
+    });
+
+    it('strips ASCII control characters and trims request display names', () => {
+      const result = requestsPostSchema.safeParse({ userName: '  \u0000Bob\u007F  ' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.userName).toBe('Bob');
+      }
+    });
+
+    it('rejects request display names that are empty after stripping controls', () => {
+      expect(requestsPostSchema.safeParse({ userName: '\u0000\u001F' }).success).toBe(false);
     });
   });
 
