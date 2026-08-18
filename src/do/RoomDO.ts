@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { DODatabase } from '../lib/whiteboard/doDatabase';
-import { applySchema, getGrantVersion, incrementGrantVersion, roomExists } from '../lib/whiteboard/roomSchema';
+import { applySchema, getGrantVersion, incrementGrantVersion, purgeExpiredRoomsAndTombstones, roomExists } from '../lib/whiteboard/roomSchema';
 import {
   assertNotTombstoned,
   createSqlTombstoneStore,
@@ -10,10 +10,12 @@ import {
   bindPeerAccount,
   canWriteBoard,
   getGrantRole,
+  getMembership,
   isGrantedRole,
   isOwnerRole,
   peerAccountId,
   purgeExpiredGrants,
+  purgeExpiredRoomLifecycle,
 } from '../lib/whiteboard/membership';
 import type { RoomDatabase } from '../lib/whiteboard/db';
 import { GLOBAL_IDENTITY_OBJECT_NAME } from './IdentityDO';
@@ -23,6 +25,7 @@ import {
   handleRoomSettings,
   handleRoomSettingsGet,
   handleRoomDelete,
+  handleRoomAccountErasure,
 } from '../lib/whiteboard/handlers/room';
 import {
   handlePresenceGet,
@@ -212,6 +215,12 @@ export class RoomDO extends DurableObject {
     const denied = this.authorize(url, roomId, section, method, body, accountId, role);
     if (denied) return denied;
 
+    if (section !== 'erasure') {
+      const now = Date.now();
+      purgeExpiredGrants(this.db, roomId, now);
+      purgeExpiredRoomLifecycle(this.db, roomId, now);
+    }
+
     const joiningPeerId = section === 'presence' && method === 'POST' && stringField(body, 'action') == null
       ? stringField(body, 'peerId')
       : null;
@@ -257,7 +266,8 @@ export class RoomDO extends DurableObject {
  *   GET    /settings                  owner
  *   POST|PATCH /settings             owner
  *   DELETE /room                     owner
-   *   GET    /presence                 granted (payload redacted for non-owners)
+   *   POST   /erasure                  stamped member or owner row
+ *   GET    /presence                 granted (payload redacted for non-owners)
    *   POST   /presence kick|suspend    owner
    *   POST   /presence heartbeat/join  not banned; self only
    *   DELETE /presence                 granted; self only
@@ -281,6 +291,11 @@ export class RoomDO extends DurableObject {
   ): Response | null {
     const owner = isOwnerRole(role);
     const granted = isGrantedRole(role);
+
+    if (section === 'erasure') {
+      if (method !== 'POST') return forbidden();
+      return getMembership(this.db, roomId, accountId) ? null : forbidden();
+    }
 
     if (section === '') {
       if (method === 'DELETE') return owner ? null : forbidden();
@@ -373,6 +388,20 @@ export class RoomDO extends DurableObject {
         if (method === 'DELETE') {
           return handleRoomDelete(this.db, roomId, request).then((response) => {
             if (response.ok) this.deleteSockets();
+            return response;
+          });
+        }
+        break;
+      case 'erasure':
+        if (method === 'POST') {
+          const accountId = url.searchParams.get('accountId');
+          if (!accountId) return Promise.resolve(forbidden('Account required'));
+          const membership = getMembership(this.db, roomId, accountId);
+          return handleRoomAccountErasure(this.db, roomId, accountId).then((response) => {
+            if (response.ok) {
+              if (membership?.role === 'owner') this.deleteSockets();
+              else this.closeAccountSockets(accountId, roomId);
+            }
             return response;
           });
         }
@@ -563,6 +592,26 @@ export class RoomDO extends DurableObject {
    */
   async alarm(): Promise<void> {
     const sockets = this.ctx.getWebSockets();
+    const now = Date.now();
+    const roomIds = new Set<string>();
+    for (const row of this.db.prepare(
+      `SELECT room_id AS roomId FROM rooms`,
+    ).all() as Array<{ roomId: string }>) {
+      roomIds.add(row.roomId);
+    }
+    for (const socket of sockets) {
+      try {
+        const attachment = socket.deserializeAttachment() as SocketIdentity | null;
+        if (attachment?.roomId) roomIds.add(attachment.roomId);
+      } catch {
+        // Attachment may be missing; room ids still come from the rooms table.
+      }
+    }
+    purgeExpiredRoomsAndTombstones(this.db, now);
+    for (const roomId of roomIds) {
+      purgeExpiredGrants(this.db, roomId, now);
+      purgeExpiredRoomLifecycle(this.db, roomId, now);
+    }
     if (sockets.length === 0) return;
 
     const identities = new Map<WebSocket, SocketIdentity>();
@@ -577,12 +626,6 @@ export class RoomDO extends DurableObject {
       identities.set(socket, attachment);
     }
     if (identities.size === 0) return;
-
-    const roomIds = [...new Set([...identities.values()].map((i) => i.roomId))];
-    const now = Date.now();
-    for (const roomId of roomIds) {
-      purgeExpiredGrants(this.db, roomId, now);
-    }
 
     const accountIds = [...new Set([...identities.values()].map((i) => i.accountId))];
     let statuses: Record<string, { state: string; authorizationEpoch: number }>;

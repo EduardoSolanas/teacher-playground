@@ -60,3 +60,31 @@ describe('createCollaboration y-websocket status', () => {
     collab.destroy();
   });
 });
+
+describe('createCollaboration omitted peerId (SEC-006)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('mints localPeerId from crypto.getRandomValues, not Math.random', () => {
+    const mathValue = 0.123456789;
+    vi.spyOn(Math, 'random').mockReturnValue(mathValue);
+    const mathFragment = mathValue.toString(36).substring(2, 9);
+    const getRandomValues = vi.spyOn(crypto, 'getRandomValues');
+
+    const first = createCollaboration('room');
+    const second = createCollaboration('room');
+
+    expect(first.localPeerId).not.toContain(mathFragment);
+    expect(second.localPeerId).not.toContain(mathFragment);
+    expect(first.localPeerId).toMatch(/^user-[0-9a-f]{32}$/);
+    expect(second.localPeerId).toMatch(/^user-[0-9a-f]{32}$/);
+    expect(getRandomValues).toHaveBeenCalled();
+    const buf = getRandomValues.mock.calls[0][0] as Uint8Array;
+    expect(buf.byteLength).toBeGreaterThanOrEqual(16);
+    expect(first.localPeerId).not.toBe(second.localPeerId);
+
+    first.destroy();
+    second.destroy();
+  });
+});

@@ -135,7 +135,7 @@ export function duplicateSelectedElements(st: StoreActions) {
   for (const el of selectedElements) {
     const newElement: CanvasElement = {
       ...el,
-      id: crypto.randomUUID?.() || Math.random().toString(36).slice(2),
+      id: crypto.randomUUID(),
     };
 
     if ('x' in el && 'y' in el) {

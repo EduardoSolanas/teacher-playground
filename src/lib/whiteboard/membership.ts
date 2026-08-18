@@ -24,6 +24,9 @@ export interface Membership {
 
 const PEER_GRANT_MS = 12 * 60 * 60 * 1000;
 
+export const WAITING_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
+export const KICKED_PEER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
 /** Hard ceiling when a room has no `max_users` row. */
 export const MAX_WAITING = 50;
 
@@ -125,6 +128,30 @@ export function purgeExpiredGrants(
     `DELETE FROM room_members
      WHERE room_id = ? AND role = 'editor' AND expires_at IS NOT NULL AND expires_at <= ?`,
   ).run(roomId, now);
+}
+
+/**
+ * Drop stale wait-queue and kick-list rows. Does not touch tombstones or
+ * granted/banned membership.
+ */
+export function purgeExpiredRoomLifecycle(
+  db: RoomDatabase,
+  roomId: string,
+  now = Date.now(),
+): void {
+  const waitingCutoff = now - WAITING_REQUEST_TTL_MS;
+  const kickedCutoff = now - KICKED_PEER_TTL_MS;
+  db.prepare(
+    `DELETE FROM waiting_peers WHERE room_id = ? AND requested_at <= ?`,
+  ).run(roomId, waitingCutoff);
+  db.prepare(
+    `DELETE FROM kicked_peers WHERE room_id = ? AND kicked_at <= ?`,
+  ).run(roomId, kickedCutoff);
+  db.prepare(
+    `DELETE FROM room_members
+     WHERE room_id = ? AND role = 'pending'
+       AND requested_at IS NOT NULL AND requested_at <= ?`,
+  ).run(roomId, waitingCutoff);
 }
 
 export function isOwnerRole(role: MembershipRole | null): boolean {
@@ -348,6 +375,31 @@ export function suspendAccount(
      SET role = 'pending', requested_at = ?, updated_at = ?, expires_at = NULL
      WHERE room_id = ? AND account_id = ? AND role != 'owner'`,
   ).run(now, now, roomId, accountId);
+}
+
+/**
+ * Remove one account from a room they joined. Leaves other members and rooms
+ * untouched. Leftover display names or emails on this account are nulled.
+ */
+export function eraseAccountFromRoom(
+  db: RoomDatabase,
+  roomId: string,
+  accountId: string,
+): void {
+  db.prepare(
+    `DELETE FROM room_members WHERE room_id = ? AND account_id = ?`,
+  ).run(roomId, accountId);
+  db.prepare(
+    `DELETE FROM room_presence WHERE room_id = ? AND account_id = ?`,
+  ).run(roomId, accountId);
+  db.prepare(
+    `DELETE FROM waiting_peers WHERE room_id = ? AND account_id = ?`,
+  ).run(roomId, accountId);
+  db.prepare(
+    `UPDATE room_members
+     SET display_name = NULL, email = NULL
+     WHERE room_id = ? AND account_id = ?`,
+  ).run(roomId, accountId);
 }
 
 /** Self-service leave from the queue: pending → none. Never bans. */

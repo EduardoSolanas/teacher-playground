@@ -112,12 +112,14 @@ export function isPublicPath(pathname: string): boolean {
 }
 
 /**
- * Applies the shared security-header baseline to every outbound response
- * (SEC-012). HTML responses get an enforced CSP plus noindex; everything
- * else gets `Cache-Control: no-store` so sensitive data is never cached.
- * Pass `indexable: true` (SEC-015 marketing pages) to keep the CSP and every
- * other header but omit `X-Robots-Tag` so search engines may index the page.
+ * Same-origin HTTP and WebSocket only. Never a wildcard `wss:` scheme.
  */
+export function connectSrcForPageOrigin(pageOrigin: string): string {
+  const url = new URL(pageOrigin);
+  const wsProtocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `connect-src 'self' ${url.origin} ${wsProtocol}//${url.host}`;
+}
+
 export function applyCspNonceToHtml(html: string, nonce: string): string {
   return html.replace(/<script\b([^>]*)>/gi, (full, attrs: string) => {
     if (/\bnonce\s*=/i.test(attrs)) return full;
@@ -125,9 +127,16 @@ export function applyCspNonceToHtml(html: string, nonce: string): string {
   });
 }
 
+/**
+ * Applies the shared security-header baseline to every outbound response
+ * (SEC-012). HTML responses get an enforced CSP plus noindex; everything
+ * else gets `Cache-Control: no-store` so sensitive data is never cached.
+ * Pass `indexable: true` (SEC-015 marketing pages) to keep the CSP and every
+ * other header but omit `X-Robots-Tag` so search engines may index the page.
+ */
 export function withSecurityHeaders(
   response: Response,
-  options?: { indexable?: boolean; scriptNonce?: string },
+  options?: { indexable?: boolean; scriptNonce?: string; connectSrc?: string },
 ): Response {
   const headers = new Headers(response.headers);
   const contentType = response.headers.get('content-type') ?? '';
@@ -154,7 +163,7 @@ export function withSecurityHeaders(
         "frame-ancestors 'none'",
         "object-src 'none'",
         "base-uri 'self'",
-        "connect-src 'self' wss:",
+        options?.connectSrc ?? "connect-src 'self'",
         "img-src 'self' data:",
         "style-src 'self' 'unsafe-inline'",
         options?.scriptNonce
@@ -181,7 +190,7 @@ export function withSecurityHeaders(
  */
 export async function withNonceHtmlSecurityHeaders(
   response: Response,
-  options?: { indexable?: boolean },
+  options?: { indexable?: boolean; connectSrc?: string },
 ): Promise<Response> {
   const contentType = response.headers.get('content-type') ?? '';
   if (!contentType.toLowerCase().includes('text/html')) {

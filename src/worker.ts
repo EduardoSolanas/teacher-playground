@@ -21,6 +21,7 @@ import {
   isValidRoomId,
   MARKETING_PAGES,
   stripForwardedIdentityHeaders,
+  connectSrcForPageOrigin,
   withSecurityHeaders,
   withNonceHtmlSecurityHeaders,
 } from './lib/worker/requestGuard';
@@ -351,7 +352,37 @@ async function accountErase(
     method: 'DELETE',
     headers: { cookie: request.headers.get('cookie') ?? '' },
   }));
-  return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
+  if (!result.ok) {
+    return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
+  }
+  let roomIds: string[] = [];
+  try {
+    const body = (await result.json()) as { roomIds?: unknown };
+    if (Array.isArray(body.roomIds)) {
+      roomIds = body.roomIds.filter((id): id is string => typeof id === 'string');
+    }
+  } catch {
+    roomIds = [];
+  }
+  const stamp = outcome.session;
+  await Promise.all(
+    roomIds.map((roomId) => {
+      if (!isValidRoomId(roomId)) return Promise.resolve();
+      return forward(
+        env,
+        roomId,
+        '/room/erasure',
+        new Request('https://room/room/erasure', { method: 'POST' }),
+        new URL(request.url),
+        stamp,
+      );
+    }),
+  );
+  const headers = new Headers();
+  headers.set('Cache-Control', 'no-store');
+  const clearCookie = result.headers.get('set-cookie');
+  if (clearCookie) headers.set('Set-Cookie', clearCookie);
+  return withSecurityHeaders(Response.json({ ok: true }, { headers }));
 }
 
 async function listAccountRooms(
@@ -508,6 +539,7 @@ export default {
       const response = await env.ASSETS.fetch(request);
       return withNonceHtmlSecurityHeaders(response, {
         indexable: (MARKETING_PAGES as readonly string[]).includes(url.pathname),
+        connectSrc: connectSrcForPageOrigin(url.origin),
       });
     }
 
@@ -671,9 +703,13 @@ export default {
     if (ROOM_PAGE.test(url.pathname) && url.pathname !== ROOM_PLACEHOLDER) {
       const rewritten = new URL(request.url);
       rewritten.pathname = ROOM_PLACEHOLDER;
-      return withNonceHtmlSecurityHeaders(await env.ASSETS.fetch(new Request(rewritten, request)));
+      return withNonceHtmlSecurityHeaders(await env.ASSETS.fetch(new Request(rewritten, request)), {
+        connectSrc: connectSrcForPageOrigin(url.origin),
+      });
     }
 
-    return withNonceHtmlSecurityHeaders(await env.ASSETS.fetch(request));
+    return withNonceHtmlSecurityHeaders(await env.ASSETS.fetch(request), {
+      connectSrc: connectSrcForPageOrigin(url.origin),
+    });
   },
 };

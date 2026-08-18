@@ -10,10 +10,12 @@ import {
   enableAccount,
   confirmSession,
   DESTRUCTIVE_FRESH_MS,
+  eraseOwnAccount,
   exportOwnAccountData,
   issueSessionForVerifiedPrincipal,
   logoutSession,
   parseSessionCookie,
+  purgeExpiredSessions,
   revokeAllSessions,
   rotateSession,
   sessionAllowsDestructiveAction,
@@ -23,7 +25,9 @@ import {
 import {
   IdentityInputError,
   applyIdentitySchema,
+  listOwnedRooms,
   readAuthorizationAudit,
+  recordOwnedRoom,
   validateAuditContext,
 } from './identityStore';
 
@@ -349,6 +353,121 @@ describe('opaque application session store', () => {
     expect(exported?.accessSubjects.some((row) => row.subject === 'other-subject')).toBe(
       false,
     );
+  });
+
+  it('erases the caller account from a session token and leaves other accounts intact', async () => {
+    const mine = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+    const secondMine = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0 + 1);
+    const other = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'other-erase-subject' },
+      T0 + 2,
+    );
+    disableAccount(db, mine.accountId, AUDIT, T0 + 3);
+    enableAccount(db, mine.accountId, AUDIT, T0 + 4);
+    const current = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0 + 5);
+
+    expect(await eraseOwnAccount(db, 'a'.repeat(43), T0 + 6)).toBeNull();
+
+    const erased = await eraseOwnAccount(db, current.token, T0 + 6);
+    expect(erased).toMatchObject({
+      accountId: mine.accountId,
+      state: 'disabled',
+    });
+
+    expect(await validateSession(db, mine.token, T0 + 6)).toBeNull();
+    expect(await validateSession(db, secondMine.token, T0 + 6)).toBeNull();
+    expect(await validateSession(db, current.token, T0 + 6)).toBeNull();
+    expect(await validateSession(db, other.token, T0 + 6)).not.toBeNull();
+
+    const mineSubjects = db
+      .prepare(`SELECT COUNT(*) AS count FROM access_subjects WHERE account_id = ?`)
+      .get(mine.accountId) as { count: number };
+    const otherSubjects = db
+      .prepare(`SELECT COUNT(*) AS count FROM access_subjects WHERE account_id = ?`)
+      .get(other.accountId) as { count: number };
+    expect(mineSubjects.count).toBe(0);
+    expect(otherSubjects.count).toBe(1);
+
+    const account = db
+      .prepare(`SELECT state FROM accounts WHERE account_id = ?`)
+      .get(mine.accountId) as { state: string };
+    expect(account.state).toBe('disabled');
+
+    const remainingAudit = readAuthorizationAudit(db, mine.accountId);
+    expect(remainingAudit).toHaveLength(0);
+    const auditRows = db
+      .prepare(
+        `SELECT account_id AS accountId, actor FROM authorization_audit`,
+      )
+      .all() as Array<{ accountId: string; actor: string }>;
+    expect(auditRows.length).toBeGreaterThan(0);
+    expect(auditRows.every((row) => row.accountId.startsWith('erased:'))).toBe(true);
+    expect(auditRows.every((row) => row.actor.startsWith('erased:'))).toBe(true);
+    expect(auditRows.some((row) => row.accountId === mine.accountId)).toBe(false);
+    expect(JSON.stringify(auditRows)).not.toContain(AUDIT.actor);
+    expect(JSON.stringify(auditRows)).not.toContain(other.accountId);
+  });
+
+  it('returns owned room ids and drops account_rooms without touching another account', async () => {
+    const mine = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+    const other = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'other-rooms-erase' },
+      T0 + 1,
+    );
+    recordOwnedRoom(db, {
+      accountId: mine.accountId,
+      roomId: 'owned-a',
+      name: 'A',
+      now: T0,
+    });
+    recordOwnedRoom(db, {
+      accountId: mine.accountId,
+      roomId: 'owned-b',
+      name: 'B',
+      now: T0 + 1,
+    });
+    recordOwnedRoom(db, {
+      accountId: other.accountId,
+      roomId: 'other-owned',
+      name: 'Keep',
+      now: T0 + 2,
+    });
+
+    const erased = await eraseOwnAccount(db, mine.token, T0 + 3);
+    expect(erased?.roomIds.sort()).toEqual(['owned-a', 'owned-b']);
+    expect(listOwnedRooms(db, mine.accountId)).toEqual([]);
+    expect(listOwnedRooms(db, other.accountId)).toEqual([
+      expect.objectContaining({ roomId: 'other-owned' }),
+    ]);
+  });
+
+  it('deletes idle-expired sessions and leaves the caller and other accounts intact', async () => {
+    const expired = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+    const stillValid = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0 + 1);
+    const other = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'other-purge-subject' },
+      T0 + 2,
+    );
+
+    db.prepare(
+      `UPDATE sessions SET idle_expires_at = ? WHERE account_id = ? AND created_at = ?`,
+    ).run(T0 + 10, expired.accountId, T0);
+
+    const now = T0 + 10;
+    expect(purgeExpiredSessions(db, now)).toBe(1);
+
+    const remaining = db
+      .prepare(
+        `SELECT created_at AS createdAt FROM sessions ORDER BY created_at`,
+      )
+      .all() as Array<{ createdAt: number }>;
+    expect(remaining.map((row) => row.createdAt)).toEqual([T0 + 1, T0 + 2]);
+    expect(await validateSession(db, expired.token, now)).toBeNull();
+    expect(await validateSession(db, stillValid.token, now)).not.toBeNull();
+    expect(await validateSession(db, other.token, now)).not.toBeNull();
   });
 
   it('allows destructive actions only while the session or step-up is fresh', async () => {

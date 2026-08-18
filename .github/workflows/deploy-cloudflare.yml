@@ -28,8 +28,15 @@ jobs:
           node-version: 22.23.2
           cache: npm
 
+      # Lifecycle scripts are disabled so a compromised transitive package cannot
+      # run install/postinstall. Allowlist: better-sqlite3 (native addon required
+      # by unit and worker tests). Rebuild that package explicitly after the
+      # ignored install.
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+
+      - name: Rebuild allowlisted native addons
+        run: npm rebuild better-sqlite3
 
       - name: Scan tracked files for secrets and PII
         run: npm run security:scan
@@ -47,7 +54,6 @@ jobs:
         run: npm run build
 
       - name: Worker tests (real workerd)
-        continue-on-error: true # TEMP: flaky socket-revocation test
         run: npm run test:workers
 
       # TEMP: e2e skipped until Phase 2 client changes are pushed

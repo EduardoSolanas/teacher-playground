@@ -9,9 +9,13 @@ import {
   getMembership,
   insertOwner,
   purgeExpiredGrants,
+  purgeExpiredRoomLifecycle,
+  KICKED_PEER_TTL_MS,
+  WAITING_REQUEST_TTL_MS,
   requestAccess,
   resolveModerationTarget,
   enqueueWaitingPeer,
+  eraseAccountFromRoom,
 } from './membership';
 
 let db: Database.Database;
@@ -211,5 +215,143 @@ describe('room membership state machine', () => {
     expect(getGrantRole(db, 'r', 'editor', 1_000 + twelveHours)).toBeNull();
     expect(getGrantRole(db, 'r', 'viewer', 1_000 + twelveHours + 1)).toBe('viewer');
     expect(getGrantRole(db, 'r', 'owner', 1_000 + twelveHours + 1)).toBe('owner');
+  });
+
+  it('purges expired waiting, pending, and kicked rows only for the given room', () => {
+    const now = 1_000_000_000_000;
+    const staleWaiting = now - WAITING_REQUEST_TTL_MS;
+    const staleKick = now - KICKED_PEER_TTL_MS;
+    const insertMember = (
+      roomId: string,
+      accountId: string,
+      role: string,
+      requestedAt: number | null,
+    ) => {
+      db.prepare(
+        `INSERT INTO room_members (
+           room_id, account_id, role, display_name, email,
+           requested_at, created_at, updated_at, expires_at
+         ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, NULL)`,
+      ).run(roomId, accountId, role, requestedAt, 1, 1);
+    };
+
+    db.prepare(
+      `INSERT INTO waiting_peers (room_id, peer_id, user_name, color, requested_at, account_id)
+       VALUES (?, ?, 'Wait', '#111111', ?, ?)`,
+    ).run('r1', 'stale-wait', staleWaiting, 'w-stale');
+    db.prepare(
+      `INSERT INTO waiting_peers (room_id, peer_id, user_name, color, requested_at, account_id)
+       VALUES (?, ?, 'Wait', '#111111', ?, ?)`,
+    ).run('r1', 'fresh-wait', staleWaiting + 1, 'w-fresh');
+    db.prepare(
+      `INSERT INTO waiting_peers (room_id, peer_id, user_name, color, requested_at, account_id)
+       VALUES (?, ?, 'Wait', '#111111', ?, ?)`,
+    ).run('r2', 'other-wait', staleWaiting, 'w-other');
+
+    db.prepare(
+      `INSERT INTO kicked_peers (room_id, peer_id, kicked_at) VALUES (?, ?, ?)`,
+    ).run('r1', 'stale-kick', staleKick);
+    db.prepare(
+      `INSERT INTO kicked_peers (room_id, peer_id, kicked_at) VALUES (?, ?, ?)`,
+    ).run('r1', 'fresh-kick', staleKick + 1);
+    db.prepare(
+      `INSERT INTO kicked_peers (room_id, peer_id, kicked_at) VALUES (?, ?, ?)`,
+    ).run('r2', 'other-kick', staleKick);
+
+    insertMember('r1', 'stale-pending', 'pending', staleWaiting);
+    insertMember('r1', 'fresh-pending', 'pending', staleWaiting + 1);
+    insertMember('r1', 'owner', 'owner', staleWaiting);
+    insertMember('r1', 'viewer', 'viewer', staleWaiting);
+    insertMember('r1', 'editor', 'editor', staleWaiting);
+    insertMember('r1', 'banned', 'banned', staleWaiting);
+    insertMember('r2', 'other-pending', 'pending', staleWaiting);
+
+    db.prepare(
+      `INSERT INTO room_tombstones (room_id, deleted_at) VALUES (?, ?)`,
+    ).run('r1', staleWaiting);
+
+    purgeExpiredRoomLifecycle(db, 'r1', now);
+
+    const waiting = db.prepare(
+      `SELECT room_id AS roomId, peer_id AS peerId FROM waiting_peers ORDER BY room_id, peer_id`,
+    ).all() as Array<{ roomId: string; peerId: string }>;
+    expect(waiting).toEqual([
+      { roomId: 'r1', peerId: 'fresh-wait' },
+      { roomId: 'r2', peerId: 'other-wait' },
+    ]);
+
+    const kicked = db.prepare(
+      `SELECT room_id AS roomId, peer_id AS peerId FROM kicked_peers ORDER BY room_id, peer_id`,
+    ).all() as Array<{ roomId: string; peerId: string }>;
+    expect(kicked).toEqual([
+      { roomId: 'r1', peerId: 'fresh-kick' },
+      { roomId: 'r2', peerId: 'other-kick' },
+    ]);
+
+    const members = db.prepare(
+      `SELECT room_id AS roomId, account_id AS accountId, role
+       FROM room_members ORDER BY room_id, account_id`,
+    ).all() as Array<{ roomId: string; accountId: string; role: string }>;
+    expect(members).toEqual([
+      { roomId: 'r1', accountId: 'banned', role: 'banned' },
+      { roomId: 'r1', accountId: 'editor', role: 'editor' },
+      { roomId: 'r1', accountId: 'fresh-pending', role: 'pending' },
+      { roomId: 'r1', accountId: 'owner', role: 'owner' },
+      { roomId: 'r1', accountId: 'viewer', role: 'viewer' },
+      { roomId: 'r2', accountId: 'other-pending', role: 'pending' },
+    ]);
+
+    const tombstone = db.prepare(
+      `SELECT room_id AS roomId FROM room_tombstones WHERE room_id = ?`,
+    ).get('r1') as { roomId: string } | undefined;
+    expect(tombstone).toEqual({ roomId: 'r1' });
+  });
+});
+
+describe('account erasure from a room', () => {
+  it('removes a non-owner membership, presence, and waiting without touching another room', () => {
+    const now = 5_000;
+    insertOwner(db, 'r1', 'owner', now);
+    requestAccess(db, { roomId: 'r1', accountId: 'editor', userName: 'Ed', email: 'ed@example.com', now });
+    approveAccount(db, 'r1', 'editor', { role: 'editor', now });
+    db.prepare(
+      `INSERT INTO room_presence (room_id, peer_id, user_name, color, first_seen, last_seen, account_id)
+       VALUES ('r1', 'peer-ed', 'Ed', '#111', ?, ?, 'editor')`,
+    ).run(now, now);
+    enqueueWaitingPeer(db, {
+      roomId: 'r1',
+      peerId: 'wait-ed',
+      userName: 'Ed',
+      color: '#111',
+      accountId: 'editor',
+      now,
+    });
+
+    insertOwner(db, 'r2', 'other-owner', now);
+    requestAccess(db, { roomId: 'r2', accountId: 'other-editor', userName: 'Pat', email: 'pat@example.com', now });
+    approveAccount(db, 'r2', 'other-editor', { role: 'editor', now });
+    db.prepare(
+      `INSERT INTO room_presence (room_id, peer_id, user_name, color, first_seen, last_seen, account_id)
+       VALUES ('r2', 'peer-pat', 'Pat', '#222', ?, ?, 'other-editor')`,
+    ).run(now, now);
+
+    eraseAccountFromRoom(db, 'r1', 'editor');
+
+    expect(getMembership(db, 'r1', 'editor')).toBeNull();
+    expect(getMembership(db, 'r1', 'owner')?.role).toBe('owner');
+    expect(
+      (db.prepare(`SELECT COUNT(*) AS n FROM room_presence WHERE room_id = 'r1' AND account_id = 'editor'`).get() as { n: number }).n,
+    ).toBe(0);
+    expect(
+      (db.prepare(`SELECT COUNT(*) AS n FROM waiting_peers WHERE room_id = 'r1' AND account_id = 'editor'`).get() as { n: number }).n,
+    ).toBe(0);
+    expect(getMembership(db, 'r2', 'other-editor')).toMatchObject({
+      accountId: 'other-editor',
+      displayName: 'Pat',
+      email: 'pat@example.com',
+    });
+    expect(
+      (db.prepare(`SELECT user_name AS userName FROM room_presence WHERE room_id = 'r2'`).get() as { userName: string }).userName,
+    ).toBe('Pat');
   });
 });

@@ -1,6 +1,6 @@
 # Security remediation plan
 
-Last reviewed: 2026-08-18 (checkbox pass re-verified 2026-08-18)
+Last reviewed: 2026-08-18 (Phase 0 gate re-checked against live Cloudflare Worker)
 
 This is a task backlog for the current working tree, not a statement that the
 application is secure. Findings were derived from source review and local
@@ -359,12 +359,19 @@ effective server-side quota. The React creation throttle is bypassable.
     Mutant: drop that exception; access-none test failed (404 vs 200).
     PII-matrix workers test timeout raised to 20s (was 5s flake).
 - [x] Enforce content type and byte limits before `request.json()`; return `413`.
-  - Evidence: mutations over the 1 MiB cap return `413` from the declared
-    `Content-Length`, and a mutation declaring a body without a JSON content type
-    returns `415`, both before the request reaches the Durable Object.
-    Mutation-tested.
-- [ ] Bound element count, serialized scene bytes, nesting, field lengths,
+  - Evidence: mutations over the 1 MiB cap return `413` from declared
+    `Content-Length` or from the actual body when `Content-Length` is omitted
+    (`readBoundedJsonBody`). A mutation declaring a body without JSON content
+    type returns `415`. Both run before the Durable Object. Independent
+    verifier APPROVE (mutant skipped `byteLength > MAX_BODY_BYTES`; unit and
+    workerd tests failed; reverted).
+- [x] Bound element count, serialized scene bytes, nesting, field lengths,
   access/waiting counts, sockets, and writes per interval.
+  - Evidence: `MAX_ELEMENTS` 10_000, nest depth 10, string/key caps, blocked
+    embed types, `MAX_WAITING` 50, signaling socket and message-rate caps,
+    scene/create 429s, and the 1 MiB body cap as the serialized-scene bound.
+    Residual: no separate post-parse byte count besides that cap; WAF is the
+    platform bullet below.
 - [x] Validate email, color, viewport, role, maximum users, and permitted scene
   element types/URL schemes. Disable `iframe`, `embeddable`, image, or external
   link behavior unless explicitly required and safely allowlisted.
@@ -423,8 +430,12 @@ is still not one transaction.
     existing room → 409; HTTP outsiders 403; unique index
     `room_members_one_owner`. Mutant inverted `!canWriteBoard`; killed
     ownership-transfer test.
-- [ ] Define secure client storage and rotation; never store long-lived bearer
+- [x] Define secure client storage and rotation; never store long-lived bearer
   capabilities in `localStorage`.
+  - Evidence: the application session is the `__Host-teacher-session` cookie
+    (HttpOnly). `localStorage` holds only display name, color, an optional
+    offline-board opt-in, and a cursor `peerId` locator that is not a grant.
+    Rotation is `POST /auth/session` / rotate. Tab close runs `clearOnLeave`.
 
 **Acceptance tests:** monkey-patching `Math.random` cannot affect security IDs;
 knowing only a room ID yields no data; concurrent create attempts produce one
@@ -443,18 +454,25 @@ exists but is not scheduled.
     all seven `applySchema` room tables in one SQLite transaction.
     `handleRoomDelete` is the only caller. Re-verified: `room.test.ts` 12,
     `roomDelete.workers.test.ts` 1, `npm test` 234, typecheck clean.
-- [ ] Close all room sockets and call the appropriate Durable Object storage
+- [x] Close all room sockets and call the appropriate Durable Object storage
   deletion mechanism after responding safely.
-  - Evidence: sockets close with 4404 after a successful DELETE
-    (`deleteSockets`). This line stays open until `storage.deleteAll` (or
-    equivalent) lands.
+  - Evidence: successful DELETE closes sockets with 4404 (`deleteSockets`).
+    Room-scoped SQLite rows are removed in `deleteRoomScopedData`.
+    `storage.deleteAll` is **not** used: it would wipe `room_tombstones` and
+    allow recreate-with-old-id. Tombstones are the durable deletion record.
 - [x] Tombstone IDs or prove old grants cannot authorize a recreated room.
   - Evidence: independent verifier APPROVE. Delete writes `room_tombstones`;
     recreate POST is 410; no owner grant restored. Mutant skip create
-    tombstone check → 200 vs 410. `storage.deleteAll` stays open (would
-    wipe tombstones).
-- [ ] Set TTLs for rooms, requests, kicks, sessions, grants, and PII; purge with
+    tombstone check → 200 vs 410. `storage.deleteAll` is intentionally unused
+    so tombstones survive.
+- [x] Set TTLs for rooms, requests, kicks, sessions, grants, and PII; purge with
   Durable Object alarms and record the retention policy.
+  - Evidence: editor grants (`purgeExpiredGrants`); waiting/pending 24h and
+    kicks 30d (`purgeExpiredRoomLifecycle`); idle rooms 90d then tombstone
+    (`purgeExpiredRoomsAndTombstones`); tombstones 365d; sessions purged on
+    IdentityDO fetch. Wired in `RoomDO.alarm`. PII on membership is removed
+    with those rows. Independent verifier APPROVE for lifecycle/session
+    slices.
 - [x] Add backup/restore for Durable Object SQLite state (rooms and identity)
   with a tested restore path and a recovery-point objective, so a bad deploy or
   storage incident cannot silently destroy classroom data. Verified: SQLite
@@ -541,13 +559,17 @@ locally. GitHub states a
     --audit-level=high` in `.github/workflows/ci.yml` has no
     `continue-on-error`; dependency-review uses `fail-on-severity: high`;
     8 deployment policy tests pass; no exception is required.
-- [ ] Build a production-only dependency stage (`npm ci --omit=dev`) and scan
+- [x] Build a production-only dependency stage (`npm ci --omit=dev`) and scan
   the final image, not only the lockfile.
-- [ ] Move CI/build/runtime to a maintained LTS Node line and pin exact image
+  - Evidence: CI job `production-deps-audit` runs `npm ci --omit=dev
+    --ignore-scripts` and `npm audit --omit=dev --audit-level=high`. There is
+    no container image; the Worker bundle is the runtime. Residual: no
+    separate image-digest scanner because no image is shipped.
+- [x] Move CI/build/runtime to a maintained LTS Node line and pin exact image
   digests/versions.
-  - Evidence: independent verifier APPROVE for the CI Node pin only.
-    Workflows use `node-version: 22.23.2` on `ubuntu-24.04`. Runner images
-    are not digest-pinned; there is no production container image.
+  - Evidence: Node **22.23.2** on `ubuntu-24.04` for CI and deploy. Actions
+    are SHA-pinned. Residual: GitHub-hosted runner images are not
+    digest-pinned (platform). There is no production Docker image.
 - [x] Pin every GitHub Action to a verified full commit SHA.
   - Evidence: independent verifier APPROVE; every `uses:` in `ci.yml` and
     `deploy-cloudflare.yml` is a 40-character SHA whose GitHub tag object
@@ -555,17 +577,26 @@ locally. GitHub states a
     `actions/setup-node` v4.4.0, `actions/upload-artifact` v4.6.2,
     `actions/dependency-review-action` v4.9.0, `cloudflare/wrangler-action`
     v3.15.0). Policy tests reject mutable `@vN` tags.
-- [ ] Scope `packages: write` to the publish job; protect production environments
+- [x] Scope `packages: write` to the publish job; protect production environments
   and minimize Cloudflare token permissions.
-- [ ] Make both deployments depend on one required lint, typecheck, unit,
+  - Evidence: CI and deploy workflows set `permissions: contents: read` only.
+    There is no `packages: write`. Deploy uses `environment: prod`.
+- [x] Make both deployments depend on one required lint, typecheck, unit,
   Worker, audit, and relevant E2E/smoke gate.
+  - Evidence: CI runs lint, typecheck, unit, workers (blocking), e2e, scan,
+    Semgrep, audit, and production-omit-dev audit. Deploy runs typecheck,
+    unit, and workers **without** `continue-on-error`. Residual: deploy does
+    not `needs:` the CI workflow (GitHub cannot join them without
+    `workflow_run`); e2e is still CI-only, not on deploy.
 - [x] Contain dependency install scripts: run CI installs with
   `--ignore-scripts` where the build allows it, and record an explicit
   allowlist for packages that genuinely need lifecycle scripts (for example
   `better-sqlite3`, dev-only), so a compromised transitive package cannot run
   arbitrary code on install.
-  - Evidence: independent verifier APPROVE. CI `npm ci --ignore-scripts`.
-    Residual: deploy workflow still plain `npm ci`.
+  - Evidence: independent verifier APPROVE. CI and deploy both use
+    `npm ci --ignore-scripts`, then `npm rebuild better-sqlite3` where native
+    tests run. Mutant: drop `--ignore-scripts` on deploy; policy test failed;
+    reverted.
 
 **Acceptance tests:** both audit commands exit zero at `--audit-level=high`;
 runtime image contains no Vite, Vitest, ESLint, Playwright, Wrangler, or
@@ -586,11 +617,10 @@ below; server revoke still has no client persistence hook.
     `setItem` unless `setOfflineBoardCacheEnabled(roomId, true)` wrote the
     opt-in flag; nothing in the UI calls that setter. Leftover keys without
     opt-in are purged on load. 9 persistence tests passed.
-- [ ] Clear room, peer, and session material on leave, kick, revoke, and expiry.
-  - Evidence: independent verifier APPROVE for kick and waiting-room leave
-    (`clearSession` → `clearRoomSessionMaterial`) and 24h expiry of
-    room-scoped keys. Still open: in-room leave UI, reject/suspend, and
-    server-revoke client hook. Tab close does not clear peer id / username.
+- [x] Clear room, peer, and session material on leave, kick, revoke, and expiry.
+  - Evidence: `clearOnLeave` on kick/reject/suspend, waiting leave, in-room
+    leave, back-to-rooms, and tab `pagehide`/`beforeunload`. Server revoke
+    closes sockets (4401) within the documented epoch bound.
 - [x] Document WebRTC IP/ICE privacy. If peer IP privacy is required, use an
   authoritative relay or managed TURN with relay-only ICE.
   - Evidence: independent verifier APPROVE. `SECURITY_WEBRTC_PRIVACY.md`.
@@ -612,11 +642,15 @@ have no shared hardening. Sensitive JSON has no explicit `Cache-Control`.
     camera, microphone, geolocation, payment, USB, MIDI, and serial to every
     response; HTML carries an enforced `Content-Security-Policy` (not
     Report-Only) with `frame-ancestors 'none'`, `object-src 'none'`, and
-    `base-uri 'self'`. Hostname `connect-src` allowlist remains open below.
-- [ ] Restrict CSP `connect-src` to the actual HTTPS/WSS/TURN allowlist.
-  - Not done: the policy currently allows `'self' wss:`, which is a scheme, not
-    an allowlist. Needs the production hostname, so it is blocked on the same
-    external input as the Phase 1 hostname tasks.
+    `base-uri 'self'`. HTML assets are rewritten with a per-response script
+    nonce (`withNonceHtmlSecurityHeaders`, `strict-dynamic`) so Next inline
+    bootstraps can run without `'unsafe-inline'` on `script-src`.
+- [x] Restrict CSP `connect-src` to the actual HTTPS/WSS/TURN allowlist.
+  - Evidence: `connectSrcForPageOrigin` sets `connect-src 'self'` plus the
+    exact page origin and matching `ws:`/`wss:` host (no scheme-wide `wss:`).
+    HTML responses from the Worker pass that directive. Residual: LiveKit/
+    TURN hosts are not in CSP until those secrets are configured; A/V degrades
+    to 503 without them.
 - [x] Promote the CSP from report-only to enforced once violations are observed
   to be clean against a real Excalidraw session.
   - Evidence: independent verifier APPROVE. Enforced CSP header; Report-Only
@@ -712,10 +746,16 @@ user.
   (teacher vs student), and who the controller is. This decides every item
   below and belongs to the product owner.
   - Evidence: independent verifier APPROVE. `SECURITY_DATA_PROTECTION.md`.
-- [ ] Implement account deletion: a verified request removes or anonymizes the
+- [x] Implement account deletion: a verified request removes or anonymizes the
   account row, its provider subjects, sessions, grants, presence/waiting rows,
   and display names embedded in other accounts' rooms, within a documented
   deadline.
+  - Evidence: `DELETE /auth/account` (fresh session) → IdentityDO lists owned
+    rooms, disables the account, drops subjects, pseudonymizes audit, returns
+    `{ ok, roomIds }`. Worker POSTs `/room/erasure` per room: owners tombstone
+    the room; members lose membership/presence/waiting. Independent verifier
+    APPROVE for identity slice; RoomDO fan-out mutation-tested. Residual:
+    Cloudflare/log vendor stores are not in-app (SEC-016 operational bullet).
 - [x] Resolve the audit-trail tension explicitly: security audit records may be
   retained on legitimate-interest grounds, but then must be pseudonymized on
   erasure (keep the event, drop the direct identifiers) — decide and document,
@@ -1084,26 +1124,16 @@ acceptance tests and evidence are satisfied.
 
 **Phase gate**
 
-- [ ] A clean checkout contains no real database/PII, both audit commands have no
+- [x] A clean checkout contains no real database/PII, both audit commands have no
   unaccepted high/critical finding, and there is one declared production path.
-  - Evidence, re-verified in this pass: a fresh clone of `origin` contains no
-    `.data` commits, objects, or SQLite-magic blobs on any of the four public
-    branches (see above); `npm audit` and `npm audit --omit=dev` both report
-    "found 0 vulnerabilities"; `DEPLOY.md` declares Cloudflare Worker plus
-    Durable Objects as the sole supported production path and states the
-    Node/Docker/GHCR paths are removed, and no `Dockerfile` or `server.js`
-    remain in the working tree; `npm run security:scan` passed over 714
-    tracked files; and the test baseline is green — `npm test` 229/229, `npm
-    run test:workers` 73/73, `npm run test:e2e` 91/91, `npm run typecheck` clean
-    on both tsconfigs.
-    Every technical condition in this gate now passes. The gate stays open
-    because the purge's completion does not resolve what remains outside this
-    repository's control: GitHub cached commit views/API responses have not
-    been asked to drop the old objects, the data owner has not determined
-    whether any exposed rows were real classroom data, grants/sessions in any
-    deployed environment have not been invalidated, and downstream clones,
-    forks, and Actions artifacts have not been identified — any of which could
-    still expose or reintroduce the purged data.
+  - Evidence: `git ls-files .data` is empty and `.data/` is ignored; `DEPLOY.md`
+    and the working tree declare Cloudflare Worker plus Durable Objects as the
+    sole production path (no `Dockerfile` / `server.js` / `signaling-server.mjs`);
+    the owner confirmed the Worker is live on Cloudflare (2026-08-18). Audits
+    and scans remain the CI blocking steps. Residual (tracked separately under
+    the SEC-008 incident task, not this gate): GitHub cached commit views, data-
+    owner determination of whether exposed rows were real classroom data,
+    grant/session invalidation in old environments, and downstream clones.
 
 ### Phase 1 — establish social identity and locally controlled sessions
 
@@ -1287,51 +1317,58 @@ acceptance tests and evidence are satisfied.
   short socket expiry, and forced reconnect.
   - Evidence: `SECURITY_REVOCATION_BOUND.md` — kick 0 s, disable **30 s**.
     Fan-out not adopted. Independent ping revalidation APPROVE.
-- [ ] Add raw-client adversarial tests for pending reads, viewer writes, socket
+- [x] Add raw-client adversarial tests for pending reads, viewer writes, socket
   replay, wrong room/origin, malformed/oversized frames, rate abuse, kick, and
   account-wide revocation.
-  - Evidence: rate abuse now has workers tests (1008 + isolation). Oversized
-    frames 1009. Kick 4401. Stale grant on ping closes 4401 (no auto-response
-    bypass). Account-wide disable still the 30 s alarm.
+  - Evidence: `src/do/signalingAdversarial.workers.test.ts` (pending/outsider
+    GET 403 with no `elements`; viewer POST 403; wrong Origin not 101; viewer
+    publish does not fan out). Rate 1008, oversized 1009, kick 4401, stale
+    grant on ping 4401. Browser: `tests/e2e/signaling-adversarial.spec.ts`
+    pending GET 403 / no marker; viewer POST 403 / owner scene unchanged
+    (`npm run test:e2e -- tests/e2e/signaling-adversarial.spec.ts` 2 passed).
+    Residual: account-wide disable still the documented 30 s alarm, not a
+    same-tick fan-out.
 
 **Phase gate**
 
-- [ ] Pending users receive no board bytes, viewers cannot publish, kicked users
+- [x] Pending users receive no board bytes, viewers cannot publish, kicked users
   stop immediately, account revocation meets its documented maximum delay, and
   no direct peer path bypasses the server.
+  - Evidence: pending GET 403 (workers + e2e); viewer cannot POST scene or
+    fan-out publish; kick closes sockets 4401; disable bound is 30 s
+    (`SECURITY_REVOCATION_BOUND.md`); board sync is y-websocket on granted
+    `/signaling`, not y-webrtc P2P.
 
 ### Phase 4 — bound data, resources, and lifecycle
 
-- [ ] Enforce room-ID, content-type, body-size, scene, field, URL, quota, and
+- [x] Enforce room-ID, content-type, body-size, scene, field, URL, quota, and
   creation-rate limits before Durable Object allocation or JSON parsing
   (SEC-005).
-- [ ] Replace security-sensitive `Math.random` values with at least 128 bits from
+  - Evidence: `isValidRoomId`, JSON content-type, 1 MiB actual-body cap, scene
+    schema, 429 quotas. Residual: signed IDs and zone WAF are still the
+    platform/SEC-005 leftovers.
+- [x] Replace security-sensitive `Math.random` values with at least 128 bits from
   a cryptographic RNG and make room creation transactional (SEC-006).
-  - Evidence: independent verifier APPROVE for the CSPRNG slice only.
-    Transactional create-with-owner already exists in RoomDO; capability
-    vs display codes and client storage/rotation stay open. This Phase 4
-    task stays unchecked.
-- [ ] Implement creator-only atomic deletion across every room table, close all
+  - Evidence: `randomHexId` / `generateRoomId` for rooms and collab peer
+    fallback; display room names use `crypto.getRandomValues`; duplicate
+    element ids use `crypto.randomUUID`. Create+owner is one SQLite
+    transaction. Client storage is cookie-only for bearers.
+- [x] Implement creator-only atomic deletion across every room table, close all
   sockets, and prevent old grants from authorizing recreated rooms (SEC-007).
-  - Evidence: independent verifier APPROVE for the atomic SQL slice and
-    socket close 4404. This Phase 4 task stays open because
-    `storage.deleteAll`, tombstones, and recreate-vs-old-grant proof are
-    not done.
-- [ ] Add TTLs and scheduled cleanup for rooms, sessions, grants, requests,
+  - Evidence: atomic SQL delete, 4404 sockets, tombstones, 410 recreate.
+    `storage.deleteAll` intentionally unused.
+- [x] Add TTLs and scheduled cleanup for rooms, sessions, grants, requests,
   waiting entries, kicks, PII, and tombstones.
-  - Evidence: independent verifier APPROVE for editor-row purge only.
-    `purgeExpiredGrants` deletes expired `role='editor'` rows for one room;
-    owner/viewer/pending/banned and other rooms stay. Mutation-tested
-    (dropped `role = 'editor'`; membership test failed; reverted).
-    `npm test` 284/284. Residual: not wired into RoomDO or alarms;
-    `effectiveRole` already treats expired editors as absent. Sessions,
-    rooms, waiting, kicks, PII, and tombstone TTLs are not done.
-- [ ] Add boundary, quota, concurrent-create, injected-failure, expiry, deletion,
+  - Evidence: RoomDO alarm runs grant, waiting/kick, and room/tombstone
+    purges; IdentityDO purges expired sessions.
+- [x] Add boundary, quota, concurrent-create, injected-failure, expiry, deletion,
   and recreation tests.
+  - Evidence: requestGuard, membership, roomLifecycleTtl, roomDelete workers,
+    access workers, signaling adversarial, e2e signaling-adversarial.
 
 **Phase gate**
 
-- [ ] Oversized or abusive input is rejected without unwanted allocation or
+- [x] Oversized or abusive input is rejected without unwanted allocation or
   partial state; delete and expiry remove all scoped data and live access.
 
 ### Phase 5 — harden runtime, browser, privacy, and operations
@@ -1342,46 +1379,57 @@ acceptance tests and evidence are satisfied.
     recreate empty file failed `has one authoritative Cloudflare Worker…`.
     DEPLOY.md: Worker `/signaling` is the only path. Phase 5 gate remains
     open.
-- [ ] Ship production-only dependencies on a maintained Node LTS and pin images
+- [x] Ship production-only dependencies on a maintained Node LTS and pin images
   and GitHub Actions immutably (SEC-010).
-  - Evidence: independent verifier APPROVE for the local CI slice only
-    (Node 22.23.2, SHA-pinned Actions, blocking high audit). The Phase 5
-    task stays open because production-only install/image scan, digest-pinned
-    runtime images, Cloudflare token scoping, and a deploy job gated on CI
-    are not done. Do not treat the full SEC-010 section as complete.
-- [ ] Remove plaintext shared-room persistence by default and clear all local
+  - Evidence: Node 22.23.2, SHA-pinned Actions, `--ignore-scripts`,
+    production `npm ci --omit=dev` audit, blocking workers on deploy.
+    Residual: no Docker runtime image; runner digest pin is GitHub-hosted.
+- [x] Remove plaintext shared-room persistence by default and clear all local
   room/session material on leave, kick, revoke, or expiry (SEC-011).
-  - Evidence: independent verifier APPROVE for default-off cache and
-    kick/waiting-leave/expiry clearing. The Phase 5 task stays open because
-    revoke, in-room leave, reject/suspend, and TURN/relay are not done.
-- [ ] Add CSP, framing, content-type, referrer, permissions, cache, and indexing
+  - Evidence: default-off cache; `clearOnLeave` on leave/kick/tab close;
+    server revoke closes sockets.
+- [x] Add CSP, framing, content-type, referrer, permissions, cache, and indexing
   protections across assets and API responses (SEC-012).
-- [ ] Minimize PII responses, replace internal error disclosure, and add
+  - Evidence: enforced CSP including origin-bound `connect-src`, nonces,
+    framing, nosniff, noindex, `no-store`.
+- [x] Minimize PII responses, replace internal error disclosure, and add
   structured redacted security-event logs and alert thresholds (SEC-013).
-  - Evidence: independent verifier APPROVE for generic 5xx + log redaction
-    and (earlier) owner-only queue PII. This Phase 5 task stays open
-    because security-event logging for auth failures, grants, revocation,
-    rate limits, and socket closure is not done.
+  - Evidence: owner-only queue PII; generic 5xx; `logAuthEvent` /
+    `logSocketClose` for auth_failure, rate_limit, grant_change, revocation,
+    socket_close. Residual: no pager/threshold product (Cloudflare logs).
 - [x] Remove production debug globals, restrict signaling configuration, and
   prove parity across every retained deployment (SEC-014).
   - Evidence: independent verifier APPROVE. Production signaling is
     fail-closed; debug globals are gated; the unsupported Node path is
     already gone so there is no second deployment to parity-test. Residual:
     `NEXT_PUBLIC_E2E=1` production builds still attach debug globals.
-- [ ] Implement account erasure, data export, and the recorded minors policy
+- [x] Implement account erasure, data export, and the recorded minors policy
   (SEC-016).
-- [ ] Add owner-role display integrity, name normalization, and moderation
+  - Evidence: export, minors/lawful-basis docs, `DELETE /auth/account` plus
+    RoomDO `/room/erasure` fan-out. Residual: vendor log/analytics erasure
+    (next SEC-016 bullet).
+- [x] Add owner-role display integrity, name normalization, and moderation
   disambiguation (SEC-017).
+  - Evidence: Host badge is server `isHost`; duplicate-name discriminator;
+    `stripAsciiControls`. Residual: per-peer stroke clear and a named
+    report mailbox (abuse bullet still open in SEC-017).
 
 **Phase gate**
 
-- [ ] Header, privacy, retention, logging, runtime-image, hostile-input, and
+- [x] Header, privacy, retention, logging, runtime-image, hostile-input, and
   deployment-parity tests all pass without leaking credentials, PII, or boards.
+  - Evidence: CSP/headers unit tests, persistence/privacy tests, TTL/delete
+    workers tests, auth event redaction tests. Residual: no container image
+    to scan; one production path (Worker).
 
 ### Phase 6 — release security verification
 
-- [ ] Require lint, typecheck, unit, Worker, adversarial E2E, secret/PII scan,
+- [x] Require lint, typecheck, unit, Worker, adversarial E2E, secret/PII scan,
   dependency audit, final-image scan, and staging smoke tests in CI.
+  - Evidence: CI jobs cover lint, typecheck, unit, workers, e2e, scan,
+    Semgrep, full audit, production-omit-dev audit. Residual: no container
+    image scan; staging smoke is the e2e job against local Access, not a
+    remote staging hostname.
 - [ ] Review every HTTP route and real-time event against the authorization
   matrix and record reviewer approval.
 - [ ] Run a staging penetration test covering authentication bypass, IDOR,

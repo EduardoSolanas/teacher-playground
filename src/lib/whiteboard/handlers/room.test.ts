@@ -5,6 +5,7 @@ import {
   handleRoomSettings,
   handleRoomSettingsGet,
   handleRoomDelete,
+  handleRoomAccountErasure,
 } from './room';
 import { getRoomDb } from '../roomDb';
 import { getRoomAllowFirstUserHost, getRoomHostPeerId, deleteRoomScopedData } from '../roomSchema';
@@ -468,6 +469,69 @@ describe('atomic room deletion', () => {
 
     expect(() => deleteRoomScopedData(db as never, roomId)).toThrow('injected');
     expect(scopedCounts(inner, roomId)).toEqual({
+      rooms: 1,
+      room_members: 1,
+      room_presence: 1,
+      waiting_peers: 1,
+      kicked_peers: 1,
+    });
+  });
+});
+
+describe('account erasure handler', () => {
+  it('deletes the room when the stamped account is the owner', async () => {
+    const db = getRoomDb();
+    const doomed = `erase-owner-${crypto.randomUUID()}`;
+    const keep = `erase-keep-${crypto.randomUUID()}`;
+    seedEveryRoomScopedTable(db, doomed);
+    seedEveryRoomScopedTable(db, keep);
+    const owner = `acc-${doomed}`;
+
+    const response = await handleRoomAccountErasure(db, doomed, owner);
+    expect(response.status).toBe(200);
+    expect(scopedCounts(db, doomed)).toEqual({
+      rooms: 0,
+      room_members: 0,
+      room_presence: 0,
+      waiting_peers: 0,
+      kicked_peers: 0,
+    });
+    expect(scopedCounts(db, keep)).toEqual({
+      rooms: 1,
+      room_members: 1,
+      room_presence: 1,
+      waiting_peers: 1,
+      kicked_peers: 1,
+    });
+  });
+
+  it('drops only the stamped member from a room they joined', async () => {
+    const db = getRoomDb();
+    const roomId = `erase-member-${crypto.randomUUID()}`;
+    const otherRoom = `erase-other-${crypto.randomUUID()}`;
+    seedEveryRoomScopedTable(db, roomId);
+    seedEveryRoomScopedTable(db, otherRoom);
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO room_members (
+         room_id, account_id, role, display_name, email, requested_at, created_at, updated_at, expires_at
+       ) VALUES (?, 'member-acc', 'editor', 'Mo', 'mo@example.com', NULL, ?, ?, NULL)`,
+    ).run(roomId, now, now);
+    db.prepare(
+      `INSERT INTO room_presence (room_id, peer_id, user_name, color, first_seen, last_seen, account_id)
+       VALUES (?, 'peer-mo', 'Mo', '#abc', ?, ?, 'member-acc')`,
+    ).run(roomId, now, now);
+    db.prepare(
+      `INSERT INTO waiting_peers (room_id, peer_id, user_name, color, requested_at, account_id)
+       VALUES (?, 'wait-mo', 'Mo', '#abc', ?, 'member-acc')`,
+    ).run(roomId, now);
+
+    const response = await handleRoomAccountErasure(db, roomId, 'member-acc');
+    expect(response.status).toBe(200);
+    expect(getGrantRole(db, roomId, 'member-acc')).toBeNull();
+    expect(getGrantRole(db, roomId, `acc-${roomId}`)).toBe('owner');
+    expect(scopedCounts(db, roomId).rooms).toBe(1);
+    expect(scopedCounts(db, otherRoom)).toEqual({
       rooms: 1,
       room_members: 1,
       room_presence: 1,

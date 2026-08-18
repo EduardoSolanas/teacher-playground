@@ -168,6 +168,151 @@ describe('atomic room deletion in RoomDO', () => {
   });
 });
 
+describe('RoomDO account erasure', () => {
+  it('tombstones an owned room when the stamped owner posts /room/erasure', async () => {
+    const owner = await bootstrapLocalSession(`erase-do-owner-${crypto.randomUUID()}`);
+    const roomId = `erase-do-owner-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const erased = await roomStub(roomId).fetch(
+      new Request(`https://room/room/erasure?roomId=${encodeURIComponent(roomId)}&accountId=${encodeURIComponent(owner.accountId)}`, {
+        method: 'POST',
+      }),
+    );
+    expect(erased.status).toBe(200);
+
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      expect(scopedCounts(instance, roomId)).toEqual({
+        rooms: 0,
+        room_members: 0,
+        room_presence: 0,
+        waiting_peers: 0,
+        kicked_peers: 0,
+      });
+    });
+  });
+
+  it('removes a non-owner membership and leaves another account in another room', async () => {
+    const owner = await bootstrapLocalSession(`erase-do-host-${crypto.randomUUID()}`);
+    const member = await bootstrapLocalSession(`erase-do-member-${crypto.randomUUID()}`);
+    const otherOwner = await bootstrapLocalSession(`erase-do-other-host-${crypto.randomUUID()}`);
+    const otherMember = await bootstrapLocalSession(`erase-do-other-member-${crypto.randomUUID()}`);
+    const roomId = `erase-do-joined-${crypto.randomUUID()}`;
+    const otherRoomId = `erase-do-other-${crypto.randomUUID()}`;
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${otherRoomId}`, otherOwner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, member, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Member', email: 'member@example.com' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${member.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    )).status).toBe(200);
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${otherRoomId}/requests`, otherMember, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Other', email: 'other@example.com' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${otherRoomId}/requests/${otherMember.accountId}`,
+      otherOwner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    )).status).toBe(200);
+
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      const now = Date.now();
+      instance.db.prepare(
+        `INSERT INTO room_presence (room_id, peer_id, user_name, color, first_seen, last_seen, account_id)
+         VALUES (?, 'peer-member', 'Member', '#111', ?, ?, ?)`,
+      ).run(roomId, now, now, member.accountId);
+      instance.db.prepare(
+        `INSERT INTO waiting_peers (room_id, peer_id, user_name, color, requested_at, account_id)
+         VALUES (?, 'wait-member', 'Member', '#111', ?, ?)`,
+      ).run(roomId, now, member.accountId);
+    });
+
+    const outsider = await bootstrapLocalSession(`erase-do-outsider-${crypto.randomUUID()}`);
+    const denied = await roomStub(roomId).fetch(
+      new Request(`https://room/room/erasure?roomId=${encodeURIComponent(roomId)}&accountId=${encodeURIComponent(outsider.accountId)}`, {
+        method: 'POST',
+      }),
+    );
+    expect(denied.status).toBe(403);
+
+    const erased = await roomStub(roomId).fetch(
+      new Request(`https://room/room/erasure?roomId=${encodeURIComponent(roomId)}&accountId=${encodeURIComponent(member.accountId)}`, {
+        method: 'POST',
+      }),
+    );
+    expect(erased.status).toBe(200);
+
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      expect(
+        (instance.db.prepare(
+          `SELECT COUNT(*) AS n FROM room_members WHERE room_id = ? AND account_id = ?`,
+        ).get(roomId, member.accountId) as { n: number }).n,
+      ).toBe(0);
+      expect(
+        (instance.db.prepare(
+          `SELECT COUNT(*) AS n FROM room_presence WHERE room_id = ? AND account_id = ?`,
+        ).get(roomId, member.accountId) as { n: number }).n,
+      ).toBe(0);
+      expect(
+        (instance.db.prepare(
+          `SELECT COUNT(*) AS n FROM waiting_peers WHERE room_id = ? AND account_id = ?`,
+        ).get(roomId, member.accountId) as { n: number }).n,
+      ).toBe(0);
+      expect(
+        (instance.db.prepare(
+          `SELECT role FROM room_members WHERE room_id = ? AND account_id = ?`,
+        ).get(roomId, owner.accountId) as { role: string }).role,
+      ).toBe('owner');
+    });
+
+    await runInDurableObject(roomStub(otherRoomId), (instance: RoomDO) => {
+      const row = instance.db.prepare(
+        `SELECT display_name AS displayName, email, role
+         FROM room_members WHERE room_id = ? AND account_id = ?`,
+      ).get(otherRoomId, otherMember.accountId) as {
+        displayName: string | null;
+        email: string | null;
+        role: string;
+      };
+      expect(row).toEqual({
+        displayName: 'Other',
+        email: 'other@example.com',
+        role: 'editor',
+      });
+    });
+  });
+});
+
 async function ageSessionCreatedAt(accountId: string, ageMs: number): Promise<void> {
   const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
   await runInDurableObject(identity, (instance: IdentityDO) => {

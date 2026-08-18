@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
-import { SELF } from 'cloudflare:test';
+import { runInDurableObject, SELF } from 'cloudflare:test';
 import { getIdentityObject, type IdentityDO } from './do/IdentityDO';
+import { MAX_BODY_BYTES } from './lib/worker/requestGuard';
+import { DESTRUCTIVE_FRESH_MS } from './lib/identity/sessionStore';
 import { accessFetch, authenticatedFetch, bootstrapLocalSession, localAccessToken } from './test/workerAuth';
 import { resetAuthEventWriterForTests, setAuthEventWriterForTests } from './worker';
 
@@ -77,6 +79,85 @@ describe('real local Access boundary through workerd', () => {
       other.token,
     );
     expect(mixed.status).toBe(401);
+  });
+
+  it('erases the caller account after Access and a fresh local session', async () => {
+    const session = await bootstrapLocalSession('erase-own-account');
+    const other = await bootstrapLocalSession('erase-other-account');
+
+    const getDenied = await authenticatedFetch('/auth/account', session);
+    expect(getDenied.status).toBe(405);
+    expect(getDenied.headers.get('allow')).toBe('DELETE');
+
+    const missingSession = await accessFetch('/auth/account', 'erase-own-account', 'valid', {
+      method: 'DELETE',
+    });
+    expect(missingSession.status).toBe(401);
+
+    await runInDurableObject(
+      getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>),
+      (instance: IdentityDO) => {
+        instance.db
+          .prepare(
+            `UPDATE sessions SET created_at = created_at - ?
+             WHERE account_id = ? AND revoked_at IS NULL`,
+          )
+          .run(DESTRUCTIVE_FRESH_MS + 60_000, session.accountId);
+      },
+    );
+    const stale = await authenticatedFetch('/auth/account', session, { method: 'DELETE' });
+    expect(stale.status).toBe(403);
+    expect(await stale.json()).toEqual({ error: 'Reauthentication required' });
+    expect((await authenticatedFetch('/auth/session/current', session)).status).toBe(200);
+
+    const confirm = await authenticatedFetch('/auth/session/confirm', session, {
+      method: 'POST',
+    });
+    expect(confirm.status).toBe(200);
+
+    const erased = await authenticatedFetch('/auth/account', session, { method: 'DELETE' });
+    expect(erased.status).toBe(200);
+    expect(erased.headers.get('cache-control')).toBe('no-store');
+    expect(erased.headers.get('set-cookie')).toContain('Max-Age=0');
+    expect(await erased.json()).toEqual({ ok: true });
+    expect((await authenticatedFetch('/auth/session/current', session)).status).toBe(401);
+    expect((await authenticatedFetch('/auth/session/current', other)).status).toBe(200);
+  });
+
+  it('purges rooms the caller owned and leaves another account room intact', async () => {
+    const owner = await bootstrapLocalSession('erase-owned-rooms');
+    const other = await bootstrapLocalSession('erase-other-rooms');
+    const ownedRoomId = `erase-owned-${crypto.randomUUID()}`;
+    const otherRoomId = `erase-other-${crypto.randomUUID()}`;
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${ownedRoomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${otherRoomId}`, other, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    let listedIds: string[] = [];
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const listed = await waitForTeacherRooms(owner);
+      listedIds = teacherRoomIds(listed.body);
+      if (listedIds.includes(ownedRoomId)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(listedIds).toContain(ownedRoomId);
+
+    const erased = await authenticatedFetch('/auth/account', owner, { method: 'DELETE' });
+    expect(erased.status).toBe(200);
+    expect(await erased.json()).toEqual({ ok: true });
+
+    const gone = await authenticatedFetch(`/api/whiteboard/room/${ownedRoomId}`, other);
+    expect(gone.status).toBe(410);
+    const kept = await authenticatedFetch(`/api/whiteboard/room/${otherRoomId}`, other);
+    expect(kept.status).toBe(200);
   });
 
   it('accepts an empty browser-style POST body for session bootstrap', async () => {
@@ -631,6 +712,40 @@ describe('real local Access boundary through workerd', () => {
       headers: { 'X-Account-Id': 'acct-injected' },
     });
     expect(read.status).toBe(200);
+  });
+
+  it('rejects an oversized POST without Content-Length as 413 and leaves the scene unchanged', async () => {
+    const owner = await bootstrapLocalSession('boundary-body-cap-owner');
+    const roomId = 'bounded-body-missing-cl';
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [{ id: 'keep' }] }),
+    })).status).toBe(200);
+
+    const oversized = JSON.stringify({
+      elements: [{ id: 'oversized', pad: 'x'.repeat(MAX_BODY_BYTES) }],
+    });
+    const bytes = new TextEncoder().encode(oversized);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    });
+    const oversizedResponse = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: stream,
+      duplex: 'half',
+    } as RequestInit);
+    expect(oversizedResponse.status).toBe(413);
+
+    const still = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner);
+    expect(still.status).toBe(200);
+    expect(await still.json()).toMatchObject({
+      elements: [expect.objectContaining({ id: 'keep' })],
+    });
   });
 
   it('does not let a forged X-Account-Id or Cookie select another account in RoomDO', async () => {

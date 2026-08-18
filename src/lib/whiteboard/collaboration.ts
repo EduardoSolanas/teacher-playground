@@ -7,6 +7,7 @@ import {
   getElementsFromArray,
 } from './yjsDoc';
 import { createYWebsocketProvider, destroyProvider } from './yWebsocketProvider';
+import { randomHexId } from '@/lib/crypto/randomId';
 import type { CanvasElement, WhiteboardUser, RemoteCursor } from '@/types/whiteboard';
 
 type ChangeCallback = (type: string, data: any) => void;
@@ -29,7 +30,7 @@ export function createCollaboration(roomId: string, peerId?: string) {
   const { doc, elementsArray, viewportMap, cursorsMap } = createWhiteboardDoc(roomId);
   const { provider, status } = createYWebsocketProvider(doc, roomId);
 
-  const localPeerId = peerId || `user-${Math.random().toString(36).substring(2, 9)}`;
+  const localPeerId = peerId || `user-${randomHexId()}`;
   let localUserName = 'Anonymous';
   let localUserColor = '#3498db';
   const changeCallbacks: ChangeCallback[] = [];

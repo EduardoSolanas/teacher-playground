@@ -5,6 +5,7 @@ import {
   isJsonContentType,
   withSecurityHeaders,
   withNonceHtmlSecurityHeaders,
+  connectSrcForPageOrigin,
   MAX_BODY_BYTES,
   isPublicPath,
   MARKETING_PAGES,
@@ -119,11 +120,25 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(csp).toContain("frame-ancestors 'none'");
       expect(csp).toContain("object-src 'none'");
       expect(csp).toContain("base-uri 'self'");
-      expect(csp).toContain("connect-src 'self' wss:");
+      expect(csp).toContain("connect-src 'self'");
+      expect(csp).not.toContain('wss:');
       expect(csp).toContain("img-src 'self' data:");
       expect(csp).toContain("style-src 'self' 'unsafe-inline'");
       expect(csp).toContain("script-src 'self'");
       expect(wrapped.headers.get('Content-Security-Policy-Report-Only')).toBeNull();
+    });
+
+    it('restricts connect-src to the page origin and matching websocket origin', () => {
+      expect(connectSrcForPageOrigin('https://app.example:8443')).toBe(
+        "connect-src 'self' https://app.example:8443 wss://app.example:8443",
+      );
+      const wrapped = withSecurityHeaders(
+        new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
+        { connectSrc: connectSrcForPageOrigin('https://app.example') },
+      );
+      const csp = wrapped.headers.get('Content-Security-Policy') ?? '';
+      expect(csp).toContain("connect-src 'self' https://app.example wss://app.example");
+      expect(csp).not.toMatch(/connect-src[^;]*wss:(;|$)/);
     });
 
     it('stamps HTML script tags with a CSP nonce so Next inline bootstraps can run', async () => {

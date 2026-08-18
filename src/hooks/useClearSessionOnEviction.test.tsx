@@ -40,4 +40,16 @@ describe('useClearSessionOnEviction (SEC-011)', () => {
     render(<Probe clearSession={clearSession} />);
     expect(clearSession).not.toHaveBeenCalled();
   });
+
+  it('clears session material once on window pagehide', () => {
+    const clearSession = vi.fn();
+    render(<Probe clearSession={clearSession} />);
+    expect(clearSession).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new Event('pagehide'));
+    expect(clearSession).toHaveBeenCalledTimes(1);
+
+    window.dispatchEvent(new Event('pagehide'));
+    expect(clearSession).toHaveBeenCalledTimes(1);
+  });
 });

@@ -879,7 +879,9 @@ describe('static asset serving', () => {
   it('serves the same page regardless of room id', async () => {
     const a = await (await accessFetch('/whiteboard/room-aaa', 'room-worker-test')).text();
     const b = await (await accessFetch('/whiteboard/room-bbb', 'room-worker-test')).text();
-    expect(a).toBe(b);
+    // Per-response CSP nonces differ; the placeholder document is otherwise identical.
+    const withoutNonce = (html: string) => html.replace(/\snonce="[a-f0-9]+"/g, '');
+    expect(withoutNonce(a)).toBe(withoutNonce(b));
   });
 });
 
@@ -1733,6 +1735,75 @@ describe('alarm purges expired editor grants', () => {
       headers: { Upgrade: 'websocket' },
     });
     expect(reconnect.status).toBe(403);
+  });
+
+  it('purges expired waiting and kicked rows on alarm even with no sockets', async () => {
+    const owner = await bootstrapLocalSession('idle-purge-owner');
+    const roomId = 'idle-purge-room';
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const waitingTtl = 24 * 60 * 60 * 1000;
+    const kickedTtl = 30 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      instance.db.prepare(
+        `INSERT INTO waiting_peers (room_id, peer_id, user_name, color, requested_at, account_id)
+         VALUES (?, 'stale-wait', 'Wait', '#111111', ?, 'w-stale')`,
+      ).run(roomId, now - waitingTtl);
+      instance.db.prepare(
+        `INSERT INTO kicked_peers (room_id, peer_id, kicked_at) VALUES (?, 'stale-kick', ?)`,
+      ).run(roomId, now - kickedTtl);
+      instance.db.prepare(
+        `INSERT INTO room_members (
+           room_id, account_id, role, display_name, email,
+           requested_at, created_at, updated_at, expires_at
+         ) VALUES (?, 'stale-pending', 'pending', NULL, NULL, ?, ?, ?, NULL)`,
+      ).run(roomId, now - waitingTtl, now, now);
+    });
+
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => instance.alarm());
+
+    const leftover = await runInDurableObject(roomStub(roomId), (instance: RoomDO) => ({
+      waiting: instance.db.prepare(
+        `SELECT COUNT(*) AS n FROM waiting_peers WHERE room_id = ?`,
+      ).get(roomId) as { n: number },
+      kicked: instance.db.prepare(
+        `SELECT COUNT(*) AS n FROM kicked_peers WHERE room_id = ?`,
+      ).get(roomId) as { n: number },
+      pending: instance.db.prepare(
+        `SELECT COUNT(*) AS n FROM room_members WHERE room_id = ? AND account_id = 'stale-pending'`,
+      ).get(roomId) as { n: number },
+    }));
+    expect(leftover.waiting.n).toBe(0);
+    expect(leftover.kicked.n).toBe(0);
+    expect(leftover.pending.n).toBe(0);
+  });
+
+  it('purges expired waiting rows on the next successful HTTP request', async () => {
+    const owner = await bootstrapLocalSession('http-purge-owner');
+    const roomId = 'http-purge-room';
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const waitingTtl = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      instance.db.prepare(
+        `INSERT INTO waiting_peers (room_id, peer_id, user_name, color, requested_at, account_id)
+         VALUES (?, 'stale-wait', 'Wait', '#111111', ?, 'w-stale')`,
+      ).run(roomId, now - waitingTtl);
+    });
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner)).status).toBe(200);
+
+    const leftover = await runInDurableObject(
+      roomStub(roomId),
+      (instance: RoomDO) => instance.db.prepare(
+        `SELECT COUNT(*) AS n FROM waiting_peers WHERE room_id = ?`,
+      ).get(roomId) as { n: number },
+    );
+    expect(leftover.n).toBe(0);
   });
 });
 
@@ -2841,9 +2912,13 @@ describe('room authorization matrix', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Expired' }),
     })).status).toBe(403);
+    expect(await roomTables(roomId)).toEqual(before);
     expect(await (await authenticatedFetch(`/api/whiteboard/room/${roomId}/access`, editor)).json())
       .toEqual({ status: 'none' });
-    expect(await roomTables(roomId)).toEqual(before);
+    expect(await roomTables(roomId)).toEqual({
+      ...before,
+      members: before.members.filter((row) => row.accountId !== editor.accountId),
+    });
     expect(await (await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner)).json())
       .toMatchObject({ name: 'TtlBoard', elements: [expect.objectContaining({ id: 'keep' })] });
   });

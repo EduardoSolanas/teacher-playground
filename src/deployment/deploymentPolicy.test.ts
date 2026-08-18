@@ -152,19 +152,58 @@ describe('production deployment policy', () => {
     expect(ciWorkflow).not.toContain('npm run security:scan || true');
   });
 
-  it('installs CI dependencies with ignore-scripts or an explicit lifecycle allowlist', () => {
-    const workflow = readRepositoryFile('.github/workflows/ci.yml');
-    const npmCiCommands = workflow
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith('run: npm ci'));
+  it('runs Durable Object worker tests in CI without continue-on-error', () => {
+    const ciWorkflow = readRepositoryFile('.github/workflows/ci.yml');
+    expect(ciWorkflow).toMatch(/^\s+run:\s+npm run test:workers\s*$/m);
+    const workersStep = ciWorkflow.split(/\r?\n/).findIndex((line) =>
+      /^\s+run:\s+npm run test:workers\s*$/.test(line),
+    );
+    expect(workersStep).toBeGreaterThan(0);
+    const preceding = ciWorkflow.split(/\r?\n/).slice(Math.max(0, workersStep - 6), workersStep).join('\n');
+    expect(preceding).not.toMatch(/continue-on-error:\s*true/);
 
-    expect(npmCiCommands.length).toBeGreaterThan(0);
-    for (const command of npmCiCommands) {
-      expect(command).toBe('run: npm ci --ignore-scripts');
+    const deployWorkflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
+    expect(deployWorkflow).toMatch(/^\s+run:\s+npm run test:workers\s*$/m);
+    const deployWorkers = deployWorkflow.split(/\r?\n/).findIndex((line) =>
+      /^\s+run:\s+npm run test:workers\s*$/.test(line),
+    );
+    const deployPreceding = deployWorkflow.split(/\r?\n/).slice(Math.max(0, deployWorkers - 6), deployWorkers).join('\n');
+    expect(deployPreceding).not.toMatch(/continue-on-error:\s*true/);
+    expect(ciWorkflow).toContain('npm ci --omit=dev --ignore-scripts');
+    expect(ciWorkflow).toContain('npm audit --omit=dev --audit-level=high');
+  });
+
+  it('installs CI and deploy dependencies with ignore-scripts or an explicit lifecycle allowlist', () => {
+    const workflowPaths = [
+      '.github/workflows/ci.yml',
+      '.github/workflows/deploy-cloudflare.yml',
+    ];
+
+    for (const workflowPath of workflowPaths) {
+      const workflow = readRepositoryFile(workflowPath);
+      const npmCiCommands = workflow
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('run: npm ci'));
+
+      expect(npmCiCommands.length, workflowPath).toBeGreaterThan(0);
+      for (const command of npmCiCommands) {
+        expect(
+          command === 'run: npm ci --ignore-scripts'
+            || command === 'run: npm ci --omit=dev --ignore-scripts',
+          `${workflowPath}: ${command}`,
+        ).toBe(true);
+      }
+
+      const runsNativeTests =
+        /^\s+run:\s+npm test\s*$/m.test(workflow) ||
+        /^\s+run:\s+npm run test:workers\s*$/m.test(workflow);
+
+      if (runsNativeTests) {
+        expect(workflow, workflowPath).toMatch(/Allowlist:\s+better-sqlite3/i);
+        expect(workflow, workflowPath).toMatch(/^\s+run:\s+npm rebuild better-sqlite3\s*$/m);
+      }
     }
-
-    expect(workflow).toMatch(/Allowlist:\s+better-sqlite3/i);
   });
 
   it('does not track runtime environment configuration', () => {

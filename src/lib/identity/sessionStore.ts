@@ -2,6 +2,7 @@ import type { RoomDatabase } from '../whiteboard/db';
 import {
   type AccountState,
   type AuditContext,
+  listOwnedRooms,
   recordAuthorizationAudit,
   resolveAccountForSubject,
 } from './identityStore';
@@ -264,6 +265,16 @@ export async function issueSessionForVerifiedPrincipal(
   throw new SessionUnauthorizedError();
 }
 
+/** Deletes rows whose idle or absolute expiry has already passed. */
+export function purgeExpiredSessions(db: RoomDatabase, now = Date.now()): number {
+  return db
+    .prepare(
+      `DELETE FROM sessions
+       WHERE idle_expires_at <= ? OR absolute_expires_at <= ?`,
+    )
+    .run(now, now).changes;
+}
+
 export async function validateSession(
   db: RoomDatabase,
   token: unknown,
@@ -439,6 +450,71 @@ export async function exportOwnAccountData(
     sessions,
     accessSubjects,
   };
+}
+
+async function erasurePseudonym(accountId: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(`erasure:${accountId}`),
+  );
+  const hex = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
+  return `erased:${hex.slice(0, 32)}`;
+}
+
+function tableExists(db: RoomDatabase, name: string): boolean {
+  return (
+    (
+      db
+        .prepare(
+          `SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?`,
+        )
+        .get(name) as { present: number } | undefined
+    )?.present === 1
+  );
+}
+
+/**
+ * Verified self-erasure: the caller is identified only by a valid session
+ * token. Sessions are revoked, Access subject bindings are dropped, the
+ * account is disabled, and remaining audit identifiers are replaced with a
+ * stable pseudonym.
+ */
+export async function eraseOwnAccount(
+  db: RoomDatabase,
+  token: unknown,
+  now = Date.now(),
+): Promise<(AuthorizationChange & { roomIds: string[] }) | null> {
+  const session = await validateSession(db, token, now);
+  if (!session) return null;
+  const accountId = session.accountId;
+  const pseudonym = await erasurePseudonym(accountId);
+
+  return db.transaction(() => {
+    const roomIds = listOwnedRooms(db, accountId).map((room) => room.roomId);
+    db.prepare(`DELETE FROM account_rooms WHERE account_id = ?`).run(accountId);
+
+    const disabled = disableAccount(
+      db,
+      accountId,
+      { actor: pseudonym, reason: 'account erasure' },
+      now,
+    );
+    if (!disabled) return null;
+
+    db.prepare(`DELETE FROM access_subjects WHERE account_id = ?`).run(accountId);
+
+    if (tableExists(db, 'authorization_audit')) {
+      db.prepare(
+        `UPDATE authorization_audit
+         SET account_id = ?, actor = ?
+         WHERE account_id = ?`,
+      ).run(pseudonym, pseudonym, accountId);
+    }
+
+    return { ...disabled, roomIds };
+  })();
 }
 
 export async function logoutSession(

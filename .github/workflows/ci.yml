@@ -49,6 +49,9 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      - name: Worker Durable Object tests
+        run: npm run test:workers
+
       - name: Build
         run: npm run build
 
@@ -131,6 +134,26 @@ jobs:
 
       - name: Audit npm dependencies
         run: npm audit --audit-level=high
+
+  production-deps-audit:
+    name: Production-only dependency audit
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.23.2
+          cache: npm
+
+      - name: Install production dependencies
+        run: npm ci --omit=dev --ignore-scripts
+
+      - name: Audit production npm dependencies
+        run: npm audit --omit=dev --audit-level=high
 
   dependency-review:
     name: Dependency review

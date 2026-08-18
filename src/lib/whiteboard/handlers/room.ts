@@ -1,6 +1,6 @@
 import type { RoomDatabase } from '../db';
 import { verifiedAccountId } from '../authz';
-import { canWriteBoard, getGrantRole, insertOwner, isOwnerRole } from '../membership';
+import { canWriteBoard, eraseAccountFromRoom, getGrantRole, getMembership, insertOwner, isOwnerRole } from '../membership';
 import {
   hasRoomSceneIntent,
   hasRoomSettingsIntent,
@@ -326,5 +326,26 @@ export async function handleRoomDelete(
     return Response.json({ success: true });
   } catch (e) {
     return internalErrorResponse(e, 'handleRoomDelete');
+  }
+}
+
+/** POST /room/erasure — stamped account deletes the room or leaves it. */
+export async function handleRoomAccountErasure(
+  db: RoomDatabase,
+  roomId: string,
+  accountId: string,
+): Promise<Response> {
+  try {
+    const membership = getMembership(db, roomId, accountId);
+    if (!membership) {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+    if (membership.role === 'owner') {
+      return handleRoomDelete(db, roomId, new Request('https://room/room', { method: 'DELETE' }));
+    }
+    eraseAccountFromRoom(db, roomId, accountId);
+    return Response.json({ ok: true });
+  } catch (e) {
+    return internalErrorResponse(e, 'handleRoomAccountErasure');
   }
 }

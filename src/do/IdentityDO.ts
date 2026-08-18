@@ -19,12 +19,15 @@ import {
   confirmSession,
   disableAccount,
   enableAccount,
+  eraseOwnAccount,
   exportOwnAccountData,
   issueSessionForVerifiedPrincipal,
   logoutSession,
   parseSessionCookie,
+  purgeExpiredSessions,
   revokeAllSessions,
   rotateSession,
+  sessionAllowsDestructiveAction,
   sessionCookie,
   validateSession,
 } from '../lib/identity/sessionStore';
@@ -38,6 +41,7 @@ const ROTATE_SESSION_PATH = '/sessions/rotate';
 const LOGOUT_SESSION_PATH = '/sessions/logout';
 const AUTHORIZATIONS_PATH = '/accounts/authorizations';
 const EXPORT_ACCOUNT_PATH = '/accounts/export';
+const ERASE_ACCOUNT_PATH = '/accounts';
 const ACCOUNT_ROOMS_PATH = '/accounts/rooms';
 const REVOKE_ALL_PATH = '/accounts/revoke-all';
 const DISABLE_ACCOUNT_PATH = '/accounts/disable';
@@ -180,6 +184,7 @@ export class IdentityDO extends DurableObject {
   }
 
   async fetch(request: Request): Promise<Response> {
+    purgeExpiredSessions(this.db);
     const url = new URL(request.url);
     if (url.pathname === RESOLVE_PATH) {
       if (request.method !== 'POST') return methodNotAllowed('POST');
@@ -296,6 +301,26 @@ export class IdentityDO extends DurableObject {
       return exported
         ? Response.json(exported, { headers: noStore() })
         : unauthorized(true);
+    }
+
+    if (url.pathname === ERASE_ACCOUNT_PATH) {
+      if (request.method !== 'DELETE') return methodNotAllowed('DELETE');
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      if (!sessionAllowsDestructiveAction(session)) {
+        return Response.json(
+          { error: 'Reauthentication required' },
+          { status: 403, headers: noStore() },
+        );
+      }
+      const roomIds = listOwnedRooms(this.db, session.accountId).map((room) => room.roomId);
+      const erased = token ? await eraseOwnAccount(this.db, token) : null;
+      if (!erased) return unauthorized(true);
+      return Response.json(
+        { ok: true, roomIds },
+        { headers: noStore({ 'Set-Cookie': clearSessionCookie() }) },
+      );
     }
 
     if (url.pathname === ACCOUNT_ROOMS_PATH) {

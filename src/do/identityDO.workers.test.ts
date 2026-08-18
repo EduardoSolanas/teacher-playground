@@ -7,6 +7,7 @@ import {
   type IdentityDO,
 } from './IdentityDO';
 import {
+  DESTRUCTIVE_FRESH_MS,
   SESSION_COOKIE_NAME,
   clearSessionCookie,
 } from '../lib/identity/sessionStore';
@@ -200,7 +201,7 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     ]);
 
     expect(method.status).toBe(405);
-    expect(path.status).toBe(404);
+    expect(path.status).toBe(405);
     expect(mediaType.status).toBe(415);
     expect(extraField.status).toBe(400);
   });
@@ -400,6 +401,28 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     expect(expired.headers.get('set-cookie')).toBe(clearSessionCookie());
   });
 
+  it('purges idle-expired session rows on the next identity fetch', async () => {
+    const issued = await issueSession('do-purge-expired');
+    const body = await issued.clone().json() as { accountId: string };
+    const cookie = cookiePair(issued);
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(
+          `UPDATE sessions SET idle_expires_at = ? WHERE account_id = ?`,
+        )
+        .run(Date.now() - 1, body.accountId);
+    });
+
+    expect((await sessionRequest('/sessions/current', cookie)).status).toBe(401);
+
+    const remaining = await runInDurableObject(identityStub(), (instance) =>
+      instance.db
+        .prepare(`SELECT COUNT(*) AS count FROM sessions WHERE account_id = ?`)
+        .get(body.accountId),
+    );
+    expect(remaining).toEqual({ count: 0 });
+  });
+
   it('fails closed when rotate and revoke-all race', async () => {
     const issued = await issueSession('do-rotate-revoke-race');
     const body = await issued.clone().json() as { accountId: string };
@@ -511,6 +534,114 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     expect(serialized).not.toContain(rawToken);
     expect(serialized).not.toContain(otherBody.accountId);
     expect(body.accessSubjects.some((row) => row.subject === 'do-export-other')).toBe(false);
+  });
+
+  it('erases the caller through DELETE /accounts only with a fresh session cookie', async () => {
+    const mine = await issueSession('do-erase-mine');
+    const mineBody = await mine.json() as { accountId: string };
+    const mineCookie = cookiePair(mine);
+    const other = await issueSession('do-erase-other');
+    const otherCookie = cookiePair(other);
+
+    expect((await identityStub().fetch('https://identity/accounts')).status).toBe(405);
+    expect((await identityStub().fetch('https://identity/accounts', { method: 'DELETE' })).status).toBe(401);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(
+          `UPDATE sessions SET created_at = created_at - ?
+           WHERE account_id = ? AND revoked_at IS NULL`,
+        )
+        .run(DESTRUCTIVE_FRESH_MS + 60_000, mineBody.accountId);
+    });
+    const stale = await sessionRequest('/accounts', mineCookie, 'DELETE');
+    expect(stale.status).toBe(403);
+    expect(await stale.json()).toEqual({ error: 'Reauthentication required' });
+    expect((await sessionRequest('/sessions/current', mineCookie)).status).toBe(200);
+
+    const confirmed = await identityStub().fetch('https://identity/sessions/confirm', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: mineCookie },
+      body: JSON.stringify({
+        issuer: 'https://access.example.com',
+        subject: 'do-erase-mine',
+      }),
+    });
+    expect(confirmed.status).toBe(200);
+
+    const erased = await sessionRequest('/accounts', mineCookie, 'DELETE');
+    expect(erased.status).toBe(200);
+    expect(erased.headers.get('cache-control')).toBe('no-store');
+    expect(erased.headers.get('set-cookie')).toBe(clearSessionCookie());
+    expect(await erased.json()).toEqual({ ok: true, roomIds: [] });
+    expect((await sessionRequest('/sessions/current', mineCookie)).status).toBe(401);
+    expect((await sessionRequest('/sessions/current', otherCookie)).status).toBe(200);
+
+    const leftover = await runInDurableObject(identityStub(), (instance) => ({
+      subjects: (
+        instance.db
+          .prepare(`SELECT COUNT(*) AS count FROM access_subjects WHERE account_id = ?`)
+          .get(mineBody.accountId) as { count: number }
+      ).count,
+      state: (
+        instance.db
+          .prepare(`SELECT state FROM accounts WHERE account_id = ?`)
+          .get(mineBody.accountId) as { state: string }
+      ).state,
+    }));
+    expect(leftover).toEqual({ subjects: 0, state: 'disabled' });
+  });
+
+  it('returns owned room ids and clears account_rooms on erase', async () => {
+    const mine = await issueSession('do-erase-rooms-mine');
+    const mineCookie = cookiePair(mine);
+    const mineBody = await mine.json() as { accountId: string };
+    const other = await issueSession('do-erase-rooms-other');
+    const otherCookie = cookiePair(other);
+    const otherBody = await other.json() as { accountId: string };
+
+    expect((await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: mineCookie },
+      body: JSON.stringify({ roomId: 'erase-room-a' }),
+    })).status).toBe(200);
+    expect((await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: mineCookie },
+      body: JSON.stringify({ roomId: 'erase-room-b' }),
+    })).status).toBe(200);
+    expect((await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: otherCookie },
+      body: JSON.stringify({ roomId: 'erase-room-other' }),
+    })).status).toBe(200);
+
+    const erased = await sessionRequest('/accounts', mineCookie, 'DELETE');
+    expect(erased.status).toBe(200);
+    const body = await erased.json() as { ok: boolean; roomIds: string[] };
+    expect(body.ok).toBe(true);
+    expect(body.roomIds.sort()).toEqual(['erase-room-a', 'erase-room-b']);
+
+    expect(await (await sessionRequest('/accounts/rooms', otherCookie)).json()).toEqual({
+      rooms: [
+        expect.objectContaining({ roomId: 'erase-room-other' }),
+      ],
+    });
+
+    const counts = await runInDurableObject(identityStub(), (instance) => ({
+      mineRooms: (
+        instance.db
+          .prepare(`SELECT COUNT(*) AS count FROM account_rooms WHERE account_id = ?`)
+          .get(mineBody.accountId) as { count: number }
+      ).count,
+      otherRooms: (
+        instance.db
+          .prepare(`SELECT room_id AS roomId FROM account_rooms WHERE account_id = ?`)
+          .all(otherBody.accountId) as Array<{ roomId: string }>
+      ),
+    }));
+    expect(counts.mineRooms).toBe(0);
+    expect(counts.otherRooms).toEqual([{ roomId: 'erase-room-other' }]);
   });
 
   it('authorizes a local session only for its exact Access issuer and subject', async () => {

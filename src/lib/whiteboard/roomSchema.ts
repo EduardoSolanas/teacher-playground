@@ -1,4 +1,8 @@
 import type { RoomDatabase } from './db';
+import { createSqlTombstoneStore } from './tombstone';
+
+export const ROOM_IDLE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+export const TOMBSTONE_TTL_MS = 365 * 24 * 60 * 60 * 1000;
 
 export function applySchema(db: RoomDatabase): void {
   db.exec(`
@@ -161,6 +165,30 @@ export function deleteRoomScopedData(db: RoomDatabase, roomId: string): void {
       db.prepare(`DELETE FROM ${table} WHERE room_id = ?`).run(roomId);
     }
   })();
+}
+
+/**
+ * Drop idle rooms into tombstones and expire old tombstones.
+ * Does not call Durable Object `storage.deleteAll`.
+ */
+export function purgeExpiredRoomsAndTombstones(
+  db: RoomDatabase,
+  now = Date.now(),
+): void {
+  const idleCutoff = now - ROOM_IDLE_TTL_MS;
+  const staleRooms = db
+    .prepare(`SELECT room_id AS roomId FROM rooms WHERE updated_at <= ?`)
+    .all(idleCutoff) as Array<{ roomId: string }>;
+  const store = createSqlTombstoneStore(db);
+  for (const { roomId } of staleRooms) {
+    deleteRoomScopedData(db, roomId);
+    if (!store.has(roomId)) {
+      store.add(roomId);
+    }
+  }
+  db.prepare(`DELETE FROM room_tombstones WHERE deleted_at <= ?`).run(
+    now - TOMBSTONE_TTL_MS,
+  );
 }
 
 /**
