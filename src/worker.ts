@@ -212,12 +212,32 @@ export default {
       if (error instanceof AccessVerificationError) {
         const resp = unauthorized();
         // TEMP: debug header (remove after diagnosis)
+        const token = request.headers.get('Cf-Access-Jwt-Assertion') ?? '';
+        const parts = token.split('.');
+        let claimsDebug = '';
+        try {
+          const decoded = atob(parts[1].replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - parts[1].length % 4) % 4));
+          const claims = JSON.parse(decoded);
+          claimsDebug = JSON.stringify({
+            iss: claims.iss,
+            aud: typeof claims.aud === 'string' ? claims.aud.slice(0, 12) + '...' : 'array',
+            sub: typeof claims.sub === 'string' ? claims.sub.slice(0, 8) + '...' : claims.sub,
+            type: claims.type,
+            exp: claims.exp,
+            nbf: claims.nbf,
+            iat: claims.iat,
+            now: Math.floor(Date.now() / 1000),
+          });
+        } catch { claimsDebug = 'parse-failed'; }
         resp.headers.set('X-Debug-Access', JSON.stringify({
           ca: !!ctx.access,
           jh: !!request.headers.get('Cf-Access-Jwt-Assertion'),
           ea: !!env.ACCESS_AUDIENCE,
           ei: !!env.ACCESS_ISSUER,
           ej: !!env.ACCESS_JWKS_URL,
+          parts: parts.length,
+          kid: parts.length === 3 ? (() => { try { return JSON.parse(atob(parts[0].replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - parts[0].length % 4) % 4))).kid; } catch { return 'err'; } })() : 'n/a',
+          claims: claimsDebug,
         }));
         return resp;
       }
