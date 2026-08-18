@@ -699,6 +699,33 @@ accidentally collecting payment or billing identity from minors.
   requests, and which wins.
 - [ ] Rate-limit and bound abuse of free tiers: one trial per account, coupon
   redemption limits, and creation limits that survive account churn.
+- [ ] Meter the Free tier by distinct students, not rooms. A room count alone
+  is trivially gamed: delete-and-recreate (churn) or wiping one board between
+  students (reuse) serves unlimited students inside a 2-room limit. The
+  enforceable unit is the thing students cannot fake here — their verified
+  account:
+  - Count distinct student `account_id`s *approved into* any of a tutor's
+    rooms over a rolling 30-day window, stored per tutor account in the
+    identity store, so deleting rooms or boards never resets it (pairs with
+    the SEC-007 tombstone work).
+  - Enforce at the admission decision (waiting-room approve / request grant),
+    server-side, with the distinct "over plan limit" status from Phase 7 —
+    admitting a returning student stays free, admitting a third *new* one
+    prompts the upgrade.
+  - Count only owner approvals, never requests: otherwise strangers knocking
+    at a room would burn the tutor's quota (a denial-of-service on the meter).
+  - Do not meter or restrict the student side in any way, and never lock a
+    tutor out of rooms with already-admitted students — the cap gates *new*
+    admissions only, so no lesson in progress ever breaks.
+  - Residual, accepted: several children sharing one student account (bounded
+    by the 3-participants-per-room cap), and tutors making multiple tutor
+    accounts (bounded by one-Access-identity-per-account friction and the
+    per-identity trial limit above; monitored, not blocked, because stronger
+    identity proofing is disproportionate for this product).
+  - Product note: the meter aligns the paid tier with the product's own value
+    rather than fighting the user — churn destroys the "board remembers"
+    retention that is the reason to use the product at all, so honest heavy
+    use naturally lands on Tutor Pro rather than on workarounds.
 - [ ] Keep processor secrets (API key, webhook signing secret) in Worker secrets,
   never in code, client bundles, logs, or `wrangler.toml`; document rotation.
 - [ ] Add a reconciliation job that compares local entitlement against processor
