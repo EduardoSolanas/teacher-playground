@@ -188,13 +188,17 @@ export default function PresencePanel({
   return (
     <>
       <div
-        className="fixed bottom-0 right-0 top-0 z-[100] flex flex-col overflow-hidden border-l border-slate-200 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur transition-[width] duration-200"
-        style={{ width: collapsed ? 40 : 220 }}
+        className={`fixed right-0 z-[190] flex flex-col overflow-hidden border-l border-slate-200 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur transition-[width] duration-200 sm:bottom-0 sm:top-0 sm:rounded-none ${
+          collapsed
+            ? 'top-[max(0.5rem,env(safe-area-inset-top))] bottom-auto rounded-l-xl border-y border-slate-200 sm:border-y-0'
+            : 'bottom-0 top-0'
+        }`}
+        style={{ width: collapsed ? 44 : 'min(220px, 85vw)' }}
       >
         <button
           data-testid="whiteboard-presence-toggle"
           onClick={onToggle}
-          className="flex h-10 cursor-pointer items-center justify-center border-b border-slate-200 bg-slate-50 text-[16px] text-slate-800 hover:bg-slate-100"
+          className="flex h-11 shrink-0 cursor-pointer items-center justify-center border-b border-slate-200 bg-slate-50 text-[16px] text-slate-800 hover:bg-slate-100 sm:h-10"
           title={collapsed ? 'Expand presence panel' : 'Collapse presence panel'}
         >
           {collapsed ? '>' : '<'}

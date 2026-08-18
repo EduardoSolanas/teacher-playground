@@ -124,7 +124,7 @@ export default function AvSessionPanel({
   return (
     <div
       data-testid="av-session-panel"
-      className="fixed bottom-16 left-14 z-[180] w-[min(420px,calc(100vw-300px))] rounded-xl border border-slate-700/80 bg-slate-900/95 p-2 shadow-xl shadow-slate-900/30"
+      className="fixed left-2 right-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+3.5rem)] z-[180] w-auto rounded-xl border border-slate-700/80 bg-slate-900/95 p-2 shadow-xl shadow-slate-900/30 sm:bottom-16 sm:left-14 sm:right-auto sm:top-auto sm:w-[min(420px,calc(100vw-300px))]"
     >
       <div className="mb-2 flex items-center justify-between gap-2 px-1">
         <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400">

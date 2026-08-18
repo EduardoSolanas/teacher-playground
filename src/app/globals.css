@@ -35,3 +35,17 @@ textarea {
     transform: rotate(360deg);
   }
 }
+
+:where(a, button, input, textarea, select):focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 2px;
+}
+
+/* Below sm the app supplies its own bottom tool bar, which carries the same
+   tools. Excalidraw's mobile toolbar duplicates it and lands on top of the
+   "Back to rooms" button, so only one of the two is shown. */
+@media (max-width: 639px) {
+  .excalidraw .App-toolbar--mobile {
+    display: none;
+  }
+}

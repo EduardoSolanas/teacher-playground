@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 export type TeacherRoomSummary = {
   roomId: string;
@@ -31,6 +31,9 @@ function formatDate(timestamp: number): string {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
+const ICON_BUTTON =
+  'grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-100 hover:text-slate-700';
+
 export default function TeacherRoomList({
   rooms,
   loading = false,
@@ -48,72 +51,75 @@ export default function TeacherRoomList({
   const [draftName, setDraftName] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState(false);
 
-  const copyShareLink = (roomId: string) => {
+  useEffect(() => {
+    if (!menuOpenId) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      // Clicks inside the open menu must not close it before they land.
+      if (target instanceof Element && target.closest('[data-room-menu]')) return;
+      setMenuOpenId(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuOpenId(null);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [menuOpenId]);
+
+  const copyShareLink = async (roomId: string) => {
     const url = `${window.location.origin}/whiteboard/${roomId}`;
-    navigator.clipboard.writeText(url).then(() => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopyError(false);
       setCopiedId(roomId);
       setTimeout(() => setCopiedId(null), 2000);
-    });
+    } catch {
+      setCopyError(true);
+      setCopiedId(null);
+    }
   };
 
   return (
-    <section style={{ width: '100%', textAlign: 'left' }}>
-      <h2
-        style={{
-          fontSize: 18,
-          fontWeight: 700,
-          color: '#1a1a2e',
-          margin: '0 0 12px',
-        }}
-      >
-        Your rooms
-      </h2>
+    <section className="w-full text-left">
+      <h2 className="text-base font-bold text-slate-900 sm:text-lg">Your rooms</h2>
+
       {loading ? (
-        <p data-testid="whiteboard-room-list-loading" style={{ color: '#666', margin: 0 }}>
+        <p
+          data-testid="whiteboard-room-list-loading"
+          className="mt-3 text-sm text-slate-500"
+        >
           Loading rooms…
         </p>
       ) : rooms.length === 0 ? (
-        <p data-testid="whiteboard-room-list-empty" style={{ color: '#999', margin: 0, fontSize: 14 }}>
+        <p
+          data-testid="whiteboard-room-list-empty"
+          className="mt-3 rounded-xl border border-dashed border-slate-200 px-4 py-5 text-center text-sm text-slate-400"
+        >
           No rooms yet. Create one below.
         </p>
       ) : (
-        <ul
-          data-testid="whiteboard-room-list"
-          style={{
-            listStyle: 'none',
-            padding: 0,
-            margin: 0,
-            width: '100%',
-          }}
-        >
+        <ul data-testid="whiteboard-room-list" className="mt-3 flex list-none flex-col gap-2 p-0">
           {rooms.map((room) => {
             const label = teacherRoomTitle(room);
             const editing = editingId === room.roomId;
             const menuOpen = menuOpenId === room.roomId;
             const copied = copiedId === room.roomId;
+            const confirmingDelete = confirmDeleteId === room.roomId;
+
             return (
               <li
                 key={room.roomId}
-                style={{
-                  display: 'flex',
-                  gap: 8,
-                  alignItems: 'center',
-                  padding: '12px 14px',
-                  borderRadius: 10,
-                  marginBottom: 4,
-                  background: '#f8f9fa',
-                  position: 'relative',
-                  transition: 'background 0.15s',
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f1f3')}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = '#f8f9fa';
-                  if (!editing) setMenuOpenId(null);
-                }}
+                className="relative rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200/70 transition-colors hover:bg-slate-100/80"
               >
                 {editing ? (
-                  <div style={{ flex: 1, display: 'flex', gap: 8 }}>
+                  <div className="flex flex-col gap-2 p-1 sm:flex-row sm:items-center">
                     <input
                       data-testid={`whiteboard-room-name-input-${room.roomId}`}
                       value={draftName}
@@ -126,53 +132,57 @@ export default function TeacherRoomList({
                         if (e.key === 'Escape') setEditingId(null);
                       }}
                       autoFocus
-                      style={{
-                        flex: 1,
-                        padding: '6px 10px',
-                        border: '2px solid #667eea',
-                        borderRadius: 6,
-                        fontSize: 14,
-                        outline: 'none',
-                      }}
+                      className="h-11 w-full min-w-0 rounded-xl border-2 border-indigo-500 bg-white px-3 text-base text-slate-900 outline-none sm:flex-1"
                     />
-                    <button
-                      type="button"
-                      data-testid={`whiteboard-room-name-save-${room.roomId}`}
-                      onClick={() => {
-                        onRename?.(room.roomId, draftName);
-                        setEditingId(null);
-                      }}
-                      style={{
-                        padding: '6px 14px',
-                        border: 'none',
-                        borderRadius: 6,
-                        background: '#667eea',
-                        color: '#fff',
-                        fontWeight: 600,
-                        fontSize: 13,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      Save
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEditingId(null)}
-                      style={{
-                        padding: '6px 10px',
-                        border: '1px solid #ddd',
-                        borderRadius: 6,
-                        background: '#fff',
-                        color: '#666',
-                        fontSize: 13,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      Cancel
-                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        data-testid={`whiteboard-room-name-save-${room.roomId}`}
+                        onClick={() => {
+                          onRename?.(room.roomId, draftName);
+                          setEditingId(null);
+                        }}
+                        className="h-11 flex-1 rounded-xl bg-indigo-500 px-4 text-sm font-semibold text-white transition-colors hover:bg-indigo-600 sm:flex-none"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingId(null)}
+                        className="h-11 flex-1 rounded-xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100 sm:flex-none"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : confirmingDelete ? (
+                  <div className="flex flex-col gap-2 p-1 sm:flex-row sm:items-center">
+                    <p className="min-w-0 flex-1 truncate text-sm font-medium text-slate-700">
+                      Delete “{label}”?
+                    </p>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        data-testid={`whiteboard-room-delete-confirm-${room.roomId}`}
+                        onClick={() => {
+                          setConfirmDeleteId(null);
+                          onDelete?.(room.roomId);
+                        }}
+                        className="h-11 flex-1 rounded-xl bg-red-600 px-4 text-sm font-semibold text-white transition-colors hover:bg-red-700 sm:flex-none"
+                      >
+                        Delete
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(null)}
+                        className="h-11 flex-1 rounded-xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100 sm:flex-none"
+                      >
+                        Cancel
+                      </button>
+                    </div>
                   </div>
                 ) : (
-                  <>
+                  <div className="flex items-center gap-1.5">
                     <a
                       href={`/whiteboard/${room.roomId}`}
                       data-testid={`whiteboard-room-list-item-${room.roomId}`}
@@ -180,20 +190,13 @@ export default function TeacherRoomList({
                         e.preventDefault();
                         onOpen(room.roomId);
                       }}
-                      style={{
-                        flex: 1,
-                        color: '#1a1a2e',
-                        fontSize: 15,
-                        fontWeight: 600,
-                        textDecoration: 'none',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 2,
-                      }}
+                      className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 rounded-xl px-2.5 py-2 no-underline"
                     >
-                      <span>{label}</span>
+                      <span className="truncate text-[15px] font-semibold text-slate-900">
+                        {label}
+                      </span>
                       {room.createdAt && (
-                        <span style={{ fontSize: 12, color: '#999', fontWeight: 400 }}>
+                        <span className="truncate text-xs font-normal text-slate-400">
                           {formatDate(room.createdAt)}
                         </span>
                       )}
@@ -204,103 +207,94 @@ export default function TeacherRoomList({
                       data-testid={`whiteboard-room-share-${room.roomId}`}
                       onClick={() => copyShareLink(room.roomId)}
                       title="Copy share link"
-                      style={{
-                        padding: '6px 12px',
-                        border: '1px solid #ddd',
-                        borderRadius: 6,
-                        background: copied ? '#e8f5e9' : '#fff',
-                        color: copied ? '#2e7d32' : '#555',
-                        fontSize: 12,
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        transition: 'all 0.15s',
-                        whiteSpace: 'nowrap',
-                      }}
+                      aria-label={copied ? 'Share link copied' : 'Copy share link'}
+                      className={
+                        copied
+                          ? 'inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border border-green-200 bg-green-50 px-3 text-[13px] font-semibold text-green-700 transition-colors'
+                          : 'inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-[13px] font-semibold text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-100'
+                      }
                     >
-                      {copied ? 'Copied!' : 'Share link'}
+                      {copied ? (
+                        <svg
+                          aria-hidden="true"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className="h-4 w-4"
+                        >
+                          <path d="m20 6-11 11-5-5" />
+                        </svg>
+                      ) : (
+                        <svg
+                          aria-hidden="true"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className="h-4 w-4"
+                        >
+                          <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                          <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+                        </svg>
+                      )}
+                      <span className="hidden sm:inline">{copied ? 'Copied!' : 'Share link'}</span>
                     </button>
 
-                    <div style={{ position: 'relative' }}>
+                    <div className="relative shrink-0" data-room-menu>
                       <button
                         type="button"
                         data-testid={`whiteboard-room-menu-${room.roomId}`}
+                        aria-label={`More actions for ${label}`}
+                        aria-haspopup="menu"
+                        aria-expanded={menuOpen}
                         onClick={() => setMenuOpenId(menuOpen ? null : room.roomId)}
-                        style={{
-                          padding: '4px 8px',
-                          border: '1px solid #ddd',
-                          borderRadius: 6,
-                          background: '#fff',
-                          color: '#888',
-                          fontSize: 16,
-                          cursor: 'pointer',
-                          lineHeight: 1,
-                        }}
+                        className={ICON_BUTTON}
                       >
-                        &#8943;
+                        <svg
+                          aria-hidden="true"
+                          viewBox="0 0 24 24"
+                          fill="currentColor"
+                          className="h-5 w-5"
+                        >
+                          <circle cx="5" cy="12" r="1.75" />
+                          <circle cx="12" cy="12" r="1.75" />
+                          <circle cx="19" cy="12" r="1.75" />
+                        </svg>
                       </button>
+
                       {menuOpen && (
                         <div
-                          style={{
-                            position: 'absolute',
-                            top: '100%',
-                            right: 0,
-                            marginTop: 4,
-                            background: '#fff',
-                            border: '1px solid #e0e0e0',
-                            borderRadius: 8,
-                            boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
-                            zIndex: 10,
-                            minWidth: 120,
-                            overflow: 'hidden',
-                          }}
+                          role="menu"
+                          className="absolute right-0 top-full z-10 mt-1.5 min-w-40 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg shadow-slate-900/10"
                         >
                           <button
                             type="button"
+                            role="menuitem"
                             data-testid={`whiteboard-room-rename-${room.roomId}`}
                             onClick={() => {
                               setEditingId(room.roomId);
                               setDraftName(room.name?.trim() ?? '');
                               setMenuOpenId(null);
                             }}
-                            style={{
-                              display: 'block',
-                              width: '100%',
-                              padding: '10px 14px',
-                              border: 'none',
-                              background: 'none',
-                              textAlign: 'left',
-                              fontSize: 13,
-                              color: '#333',
-                              cursor: 'pointer',
-                            }}
-                            onMouseEnter={(e) => (e.currentTarget.style.background = '#f5f5f5')}
-                            onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
+                            className="block h-11 w-full border-none bg-transparent px-4 text-left text-sm text-slate-700 transition-colors hover:bg-slate-100"
                           >
                             Rename
                           </button>
                           {onDelete && (
                             <button
                               type="button"
+                              role="menuitem"
                               data-testid={`whiteboard-room-delete-${room.roomId}`}
                               onClick={() => {
                                 setMenuOpenId(null);
-                                if (confirm(`Delete "${label}"?`)) {
-                                  onDelete(room.roomId);
-                                }
+                                setConfirmDeleteId(room.roomId);
                               }}
-                              style={{
-                                display: 'block',
-                                width: '100%',
-                                padding: '10px 14px',
-                                border: 'none',
-                                background: 'none',
-                                textAlign: 'left',
-                                fontSize: 13,
-                                color: '#dc2626',
-                                cursor: 'pointer',
-                              }}
-                              onMouseEnter={(e) => (e.currentTarget.style.background = '#fef2f2')}
-                              onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
+                              className="block h-11 w-full border-none bg-transparent px-4 text-left text-sm text-red-600 transition-colors hover:bg-red-50"
                             >
                               Delete
                             </button>
@@ -308,12 +302,18 @@ export default function TeacherRoomList({
                         </div>
                       )}
                     </div>
-                  </>
+                  </div>
                 )}
               </li>
             );
           })}
         </ul>
+      )}
+
+      {copyError && (
+        <p role="alert" className="mt-2 text-xs font-medium text-red-600">
+          Could not copy the link. Long-press the room name to copy it manually.
+        </p>
       )}
     </section>
   );

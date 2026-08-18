@@ -102,6 +102,12 @@ function RoomContent({ roomId }: { roomId: string }) {
 
   useEffect(() => { cleanupStaleRooms(); }, []);
 
+  // A 220px roster over a phone screen leaves almost no canvas, so phones start
+  // with it collapsed. Set once on mount: after that it is the user's choice.
+  useEffect(() => {
+    if (window.innerWidth < 640) setPresenceCollapsed(true);
+  }, []);
+
   useEffect(() => {
     if (status === 'connected' || status === 'synced') setBoardEverShown(true);
   }, [status]);
@@ -228,7 +234,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         onOpenHelp={() => setShowShortcutsHelp(true)}
         showHostTools={isLocalHost}
       />
-      <div className="absolute left-14 top-12 overflow-hidden rounded-tl-2xl bg-slate-50" data-testid="whiteboard-canvas-area" style={{ width: 'calc(100vw - 276px)', height: 'calc(100vh - 48px)' }}>
+      <div className="absolute inset-0 overflow-hidden bg-slate-50 sm:inset-auto sm:left-14 sm:top-12 sm:h-[calc(100vh-48px)] sm:w-[calc(100vw-276px)] sm:rounded-tl-2xl" data-testid="whiteboard-canvas-area">
         <ExcalidrawWrapper
           roomId={roomId}
           userName={userName}
@@ -271,12 +277,13 @@ function RoomContent({ roomId }: { roomId: string }) {
         shortcuts={activeShortcuts}
         onClose={() => setShowShortcutsHelp(false)}
       />
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 z-[200] rounded-xl border border-slate-700/80 bg-slate-900 p-1 shadow-xl shadow-slate-900/20" data-testid="whiteboard-bottom-controls">
+      {/* Stacked above the mobile tool bar; centred on its own row from sm: up. */}
+      <div className="fixed bottom-[calc(max(0.5rem,env(safe-area-inset-bottom))+4rem)] left-1/2 -translate-x-1/2 flex items-center gap-2 z-[200] rounded-xl border border-slate-700/80 bg-slate-900 p-1 shadow-xl shadow-slate-900/20 sm:bottom-4" data-testid="whiteboard-bottom-controls">
         <UndoRedoBar canUndo={store.canUndo()} canRedo={store.canRedo()} onUndo={() => store.undo()} onRedo={() => store.redo()} />
         <button
           data-testid="whiteboard-clear-btn"
           onClick={() => setClearModalOpen(true)}
-          className="flex h-7 cursor-pointer items-center justify-center rounded-lg border border-slate-700 px-2 text-[11px] font-medium text-slate-300 transition-colors duration-150 hover:bg-slate-700 hover:text-red-400"
+          className="flex h-9 cursor-pointer items-center justify-center rounded-lg border border-slate-700 px-3 text-[13px] font-medium text-slate-300 transition-colors duration-150 hover:bg-slate-700 hover:text-red-400 sm:h-7 sm:px-2 sm:text-[11px]"
           title="Clear board"
         >
           Clear
@@ -284,7 +291,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         <button
           data-testid="whiteboard-leave-room-btn"
           onClick={handleLeaveRoom}
-          className="flex h-7 cursor-pointer items-center justify-center rounded-lg border border-slate-700 px-2 text-[11px] font-medium text-slate-300 transition-colors duration-150 hover:bg-slate-700 hover:text-slate-100"
+          className="flex h-9 cursor-pointer items-center justify-center rounded-lg border border-slate-700 px-3 text-[13px] font-medium text-slate-300 transition-colors duration-150 hover:bg-slate-700 hover:text-slate-100 sm:h-7 sm:px-2 sm:text-[11px]"
           title="Leave room"
         >
           Leave

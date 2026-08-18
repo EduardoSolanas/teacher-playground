@@ -91,4 +91,37 @@ describe('TeacherRoomList', () => {
     expect(screen.queryByRole('combobox')).toBeNull();
     expect(container.querySelector('select')).toBeNull();
   });
+  it('deletes through an inline confirmation that survives the outside-click handler', () => {
+    const onDelete = vi.fn();
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={vi.fn()}
+        onDelete={onDelete}
+      />,
+    );
+
+    fireEvent.pointerDown(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+
+    const deleteItem = screen.getByTestId('whiteboard-room-delete-room-alpha');
+    fireEvent.pointerDown(deleteItem);
+    fireEvent.click(deleteItem);
+
+    expect(onDelete).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('whiteboard-room-delete-confirm-room-alpha'));
+    expect(onDelete).toHaveBeenCalledWith('room-alpha');
+  });
+
+  it('closes the action menu on an outside pointer press', () => {
+    render(
+      <TeacherRoomList rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]} onOpen={vi.fn()} onRename={vi.fn()} />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+    expect(screen.getByTestId('whiteboard-room-rename-room-alpha')).toBeTruthy();
+
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByTestId('whiteboard-room-rename-room-alpha')).toBeNull();
+  });
 });
