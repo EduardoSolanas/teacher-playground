@@ -13,7 +13,9 @@ import {
 import {
   bodyTooLarge,
   isJsonContentType,
+  isPublicPath,
   isValidRoomId,
+  MARKETING_PAGES,
   withSecurityHeaders,
 } from './lib/worker/requestGuard';
 
@@ -186,6 +188,22 @@ function forward(
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    // SEC-015 sales-surface exemption: marketing pages must be reachable and
+    // indexable by search engines without a Cf-Access-Jwt-Assertion, or the
+    // product has no public sales funnel. `isPublicPath` is a small, explicit
+    // allowlist reviewed like a firewall rule — nothing else is exempted from
+    // Access, and non-GET/HEAD requests to these paths fall through to the
+    // normal Access gate below (public is read-only).
+    if (
+      (request.method === 'GET' || request.method === 'HEAD')
+      && isPublicPath(url.pathname)
+    ) {
+      const response = await env.ASSETS.fetch(request);
+      return withSecurityHeaders(response, {
+        indexable: (MARKETING_PAGES as readonly string[]).includes(url.pathname),
+      });
+    }
 
     let principal: VerifiedAccessPrincipal;
     try {

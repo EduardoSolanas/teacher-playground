@@ -5,6 +5,8 @@ import {
   isJsonContentType,
   withSecurityHeaders,
   MAX_BODY_BYTES,
+  isPublicPath,
+  MARKETING_PAGES,
 } from './requestGuard';
 
 describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
@@ -107,6 +109,54 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       const wrapped = withSecurityHeaders(original);
       expect(wrapped.status).toBe(404);
       expect(await wrapped.text()).toBe('hello');
+    });
+
+    it('drops X-Robots-Tag for indexable HTML but keeps CSP and nosniff', () => {
+      const wrapped = withSecurityHeaders(
+        new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
+        { indexable: true },
+      );
+      expect(wrapped.headers.get('X-Robots-Tag')).toBeNull();
+      expect(wrapped.headers.get('Content-Security-Policy-Report-Only')).toContain("frame-ancestors 'none'");
+      expect(wrapped.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    });
+
+    it('still marks HTML noindex by default (indexable option omitted)', () => {
+      const wrapped = withSecurityHeaders(
+        new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
+      );
+      expect(wrapped.headers.get('X-Robots-Tag')).toBe('noindex');
+    });
+  });
+
+  describe('isPublicPath (SEC-015 marketing exemption)', () => {
+    it('accepts exactly the marketing pages', () => {
+      for (const page of MARKETING_PAGES) {
+        expect(isPublicPath(page)).toBe(true);
+      }
+      expect(MARKETING_PAGES).toEqual(['/', '/pricing', '/terms', '/privacy']);
+    });
+
+    it('accepts /_next/ assets and favicon.ico', () => {
+      expect(isPublicPath('/_next/static/chunk.js')).toBe(true);
+      expect(isPublicPath('/favicon.ico')).toBe(true);
+    });
+
+    it('rejects sensitive path families', () => {
+      expect(isPublicPath('/api/anything')).toBe(false);
+      expect(isPublicPath('/auth/anything')).toBe(false);
+      expect(isPublicPath('/whiteboard/x')).toBe(false);
+      expect(isPublicPath('/whiteboard')).toBe(false);
+      expect(isPublicPath('/signaling')).toBe(false);
+      expect(isPublicPath('/index.html')).toBe(false);
+    });
+
+    it('rejects path traversal shapes', () => {
+      expect(isPublicPath('/_next/../api/x')).toBe(false);
+    });
+
+    it('rejects suffixed marketing paths', () => {
+      expect(isPublicPath('/pricing/extra')).toBe(false);
     });
   });
 });

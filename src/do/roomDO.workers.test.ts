@@ -1,6 +1,6 @@
 import { beforeEach, describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:workers';
-import { runDurableObjectAlarm } from 'cloudflare:test';
+import { runDurableObjectAlarm, SELF } from 'cloudflare:test';
 import { getIdentityObject, type IdentityDO } from './IdentityDO';
 import {
   accessFetch,
@@ -202,6 +202,37 @@ describe('static asset serving', () => {
     const a = await (await accessFetch('/whiteboard/room-aaa', 'room-worker-test')).text();
     const b = await (await accessFetch('/whiteboard/room-bbb', 'room-worker-test')).text();
     expect(a).toBe(b);
+  });
+});
+
+describe('public marketing surface (SEC-015)', () => {
+  const BASE = 'https://example.com';
+
+  it('serves the landing page with no Access credential at all', async () => {
+    const res = await SELF.fetch(`${BASE}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/html');
+  });
+
+  it('serves /pricing with no credential and without X-Robots-Tag', async () => {
+    const res = await SELF.fetch(`${BASE}/pricing`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('X-Robots-Tag')).toBeNull();
+  });
+
+  it('still gates the app: /whiteboard/<room> requires Access', async () => {
+    const res = await SELF.fetch(`${BASE}/whiteboard/some-room`);
+    expect(res.status).toBe(401);
+  });
+
+  it('still gates the API: /api/whiteboard/room/<id> requires Access', async () => {
+    const res = await SELF.fetch(`${BASE}/api/whiteboard/room/x`);
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects a POST to the public root with no credential (public is read-only)', async () => {
+    const res = await SELF.fetch(`${BASE}/`, { method: 'POST' });
+    expect(res.status).toBe(401);
   });
 });
 

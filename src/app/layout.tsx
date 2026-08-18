@@ -1,10 +1,9 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { AccessSessionBootstrap } from "../components/AccessSessionBootstrap";
 
 export const metadata: Metadata = {
-  title: "Whiteboard",
-  description: "Real-time collaborative whiteboard",
+  title: "Teacher Playground",
+  description: "A secure collaborative whiteboard classroom for teachers and students",
 };
 
 export default function RootLayout({
@@ -14,7 +13,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body><AccessSessionBootstrap>{children}</AccessSessionBootstrap></body>
+      <body>{children}</body>
     </html>
   );
 }

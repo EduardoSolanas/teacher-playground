@@ -31,11 +31,37 @@ export function isJsonContentType(contentType: string | null): boolean {
 }
 
 /**
+ * Public marketing pages (SEC-015). Exact-match only, GET/HEAD only — see
+ * `isPublicPath`. Reviewed like a firewall rule: nothing is added here
+ * without deciding it is safe to serve with no Access credential.
+ */
+export const MARKETING_PAGES = ['/', '/pricing', '/terms', '/privacy'] as const;
+
+/**
+ * True only for the exact marketing pages, `/_next/*` build assets, and
+ * `/favicon.ico`. Everything else — including anything under `/api/`,
+ * `/auth/`, `/whiteboard/`, `/signaling`, and suffixed or traversal variants
+ * of the marketing paths — must return false so it stays behind Access.
+ */
+export function isPublicPath(pathname: string): boolean {
+  if (pathname.includes('..')) return false;
+  if ((MARKETING_PAGES as readonly string[]).includes(pathname)) return true;
+  if (pathname === '/favicon.ico') return true;
+  if (pathname.startsWith('/_next/')) return true;
+  return false;
+}
+
+/**
  * Applies the shared security-header baseline to every outbound response
  * (SEC-012). HTML responses get a report-only CSP plus noindex; everything
  * else gets `Cache-Control: no-store` so sensitive data is never cached.
+ * Pass `indexable: true` (SEC-015 marketing pages) to keep the CSP and every
+ * other header but omit `X-Robots-Tag` so search engines may index the page.
  */
-export function withSecurityHeaders(response: Response): Response {
+export function withSecurityHeaders(
+  response: Response,
+  options?: { indexable?: boolean },
+): Response {
   const headers = new Headers(response.headers);
   const contentType = response.headers.get('content-type') ?? '';
   const isHtml = contentType.toLowerCase().includes('text/html');
@@ -51,7 +77,7 @@ export function withSecurityHeaders(response: Response): Response {
   );
 
   if (isHtml) {
-    headers.set('X-Robots-Tag', 'noindex');
+    if (!options?.indexable) headers.set('X-Robots-Tag', 'noindex');
     // Report-only first (SEC-012): enforced CSP must not break Excalidraw, so
     // the policy is announced before it is ever enforced.
     headers.set(

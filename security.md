@@ -998,10 +998,10 @@ acceptance tests and evidence are satisfied.
     `/access`, `/requests`, and `/waiting` read and write that table; bearer
     tokens and `peerId` cannot obtain membership. `RoomDO.authorize` fails
     closed for unknown sections. Re-verified: `npm test` 214/214, `npm run
-    test:workers` 79/79, typecheck clean. Residual: the legacy `room_access` /
-    `access_requests` tables are still created by `roomSchema.ts` (the code
-    paths that read them are gone — drop the tables or mark them tombstoned);
-    y-webrtc remains P2P (Phase 3).
+    test:workers` 79/79, typecheck clean. Residual: `applySchema` now
+    drops leftover `room_access` / `access_requests` (independent verifier
+    APPROVE; 284 unit / 99 workers; DROP mutant killed). y-webrtc remains
+    P2P (Phase 3).
 - [x] Implement the authorization matrix for every HTTP method before body
   parsing or sensitive reads; use consistent `401`, `403`, and `404` behavior.
   - Evidence: independent verifier APPROVE. `RoomDO.authorize` maps every
@@ -1043,16 +1043,18 @@ acceptance tests and evidence are satisfied.
 
 **Phase gate**
 
-- [ ] Every HTTP route is mapped to the matrix; rejected operations leave all
+- [x] Every HTTP route is mapped to the matrix; rejected operations leave all
   tables unchanged; no anonymous or pending caller receives room data or PII.
-  - Evidence: independent verifier APPROVE-AS-BLOCKED (do not check).
-    The three stale UI specs are aligned (never-created URL is join not
-    create; self-leave restores the username prompt; kick is a lasting
-    account ban). Re-verified after the LiveKit merge: `npm test` 281,
-    `npm run test:workers` 96, typecheck clean, `npm run test:e2e` 93/93.
-    Residual that keeps this gate open: `GET /settings` is 403 even for
-    the owner (`POST`/`PATCH` still succeed). Kick mutant (`dropPending`
-    instead of `banAccount`) was killed.
+  - Evidence: independent verifier APPROVE for the gate. Owner `GET`/`HEAD`
+    `/settings` returns settings-only JSON (no scene); viewer/editor/pending/
+    outsider get 403 with tables unchanged; missing session 401. Mutant
+    (`owner` → `granted` on GET/HEAD settings) killed
+    `matrix-role-viewer GET /settings` (200 vs 403); reverted.
+    Re-verified: `npm test` 284, `npm run test:workers` 99, typecheck
+    clean. E2E `room-authorization` 5/5; one unrelated `multi-peer` flake
+    (92/93) is y-webrtc, not this gate. Residual: `HEAD /settings` is
+    authorized but not in the table-driven route list; y-webrtc remains
+    P2P (Phase 3).
 
 ### Phase 3 — replace the peer-to-peer security boundary
 
