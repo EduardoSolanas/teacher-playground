@@ -1068,7 +1068,8 @@ acceptance tests and evidence are satisfied.
     Browser collaboration uses `y-websocket` `SignalingWebsocketProvider`
     against `/signaling?room=` (`url` getter is live in y-websocket 3).
     Residual: no Playwright proof of Y.Doc convergence on this path;
-    viewers can still send binary; JSON y-webrtc `publish` remains.
+    JSON y-webrtc `publish` remains. Viewer binary is separately APPROVE
+    (live `canWriteBoard` on each frame).
 - [ ] Do not create a collaboration provider before approval and authorization.
   - Evidence: independent verifier APPROVE-AS-BLOCKED (do not check).
     `shouldStartCollaboration` blocks pending/waiting/kicked; the hook
@@ -1099,6 +1100,12 @@ acceptance tests and evidence are satisfied.
 - [ ] Add raw-client adversarial tests for pending reads, viewer writes, socket
   replay, wrong room/origin, malformed/oversized frames, rate abuse, kick, and
   account-wide revocation.
+  - Evidence: independent verifier APPROVE for viewer binary drop.
+    Each ArrayBuffer is gated with live `getGrantRole` + `canWriteBoard`;
+    missing attachment fails closed. Mutant (skip the guard) killed
+    `does not relay binary ArrayBuffer frames from a viewer`. Residual:
+    JSON `publish` from viewers still fans out; viewer awareness binary
+    is also dropped.
 
 **Phase gate**
 

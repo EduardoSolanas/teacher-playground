@@ -99,6 +99,7 @@ function stringField(body: Record<string, unknown> | null, field: string): strin
 interface SocketIdentity {
   accountId: string;
   authorizationEpoch: number;
+  roomId: string;
 }
 
 export interface RoomEnv {
@@ -423,7 +424,7 @@ export class RoomDO extends DurableObject {
     const [client, server] = Object.values(pair);
 
     this.ctx.acceptWebSocket(server);
-    const identity: SocketIdentity = { accountId, authorizationEpoch: epoch };
+    const identity: SocketIdentity = { accountId, authorizationEpoch: epoch, roomId };
     server.serializeAttachment(identity);
     // Awaited, not floating: a storage write racing the returned response
     // shows up as "database is locked: SQLITE_BUSY".
@@ -508,6 +509,11 @@ export class RoomDO extends DurableObject {
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
     // y-websocket sends Yjs updates as binary; relay to other peers, not back to sender.
     if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
+      const attachment = ws.deserializeAttachment() as SocketIdentity | null;
+      if (!attachment?.accountId || !attachment.roomId) return;
+      const role = getGrantRole(this.db, attachment.roomId, attachment.accountId);
+      if (!canWriteBoard(role)) return;
+
       const bytes = raw instanceof ArrayBuffer
         ? new Uint8Array(raw)
         : new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);

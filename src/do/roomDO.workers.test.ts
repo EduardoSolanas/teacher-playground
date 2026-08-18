@@ -285,6 +285,27 @@ describe('y-websocket document bytes over RoomDO WebSockets', () => {
     )).status).toBe(200);
   }
 
+  async function grantViewer(
+    owner: LocalAuthSession,
+    viewer: LocalAuthSession,
+    roomId: string,
+  ) {
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, viewer, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Viewer' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${viewer.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'viewer' }),
+      },
+    )).status).toBe(200);
+  }
+
   function nextBinaryMessage(ws: WebSocket): Promise<ArrayBuffer> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('timed out waiting for binary frame')), 2000);
@@ -331,6 +352,32 @@ describe('y-websocket document bytes over RoomDO WebSockets', () => {
     sender.send(payload.buffer);
     await new Promise((r) => setTimeout(r, 200));
     expect(leaked).toBe(false);
+  });
+
+  it('does not relay binary ArrayBuffer frames from a viewer', async () => {
+    const owner = await bootstrapLocalSession('binary-viewer-owner');
+    const viewer = await bootstrapLocalSession('binary-viewer-viewer');
+    const roomId = 'binary-viewer-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantViewer(owner, viewer, roomId);
+
+    const ownerSocket = await connectGranted(owner, roomId);
+    const viewerSocket = await connectGranted(viewer, roomId);
+
+    let received = false;
+    ownerSocket.addEventListener('message', () => { received = true; }, { once: true });
+
+    const payload = new Uint8Array([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+    viewerSocket.send(payload.buffer);
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(received).toBe(false);
+
+    const ownerPayload = new Uint8Array([0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11]);
+    const receivedFromOwner = nextBinaryMessage(viewerSocket);
+    ownerSocket.send(ownerPayload.buffer);
+    expect(Array.from(new Uint8Array(await receivedFromOwner))).toEqual(Array.from(ownerPayload));
   });
 });
 
