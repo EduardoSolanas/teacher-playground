@@ -227,6 +227,9 @@ export default {
           debugSteps.push(`type:${claims.type}`);
           debugSteps.push(`stid:${claims.service_token_id},tt:${claims.token_type}`);
           debugSteps.push(`keys:${Object.keys(claims).join(',')}`);
+          // Also decode header
+          const hdr = JSON.parse(atob(parts[0].replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - parts[0].length % 4) % 4)));
+          debugSteps.push(`hdr:${JSON.stringify(hdr)}`);
         } catch { debugSteps.push('claims:parse-err'); }
       }
       principal = await verifyAccessRequest(request, ctx.access, env);
