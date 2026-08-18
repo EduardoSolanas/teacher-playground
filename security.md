@@ -1096,9 +1096,9 @@ acceptance tests and evidence are satisfied.
     Sockets stamp `grantVersion` at upgrade; stale binary/`publish` is
     dropped (`isStaleGrant` vs current DB). Mutants: skip increment
     (version stayed 0); `isStaleGrant` always false (stale relay tests
-    failed). Residual: suspend does not bump version; identity-wide
-    disable still uses the ~30s alarm; hibernating ping auto-response
-    does not wake the DO.
+    failed). Residual: identity-wide disable still uses the ~30s alarm;
+    hibernating ping auto-response does not wake the DO. Suspend now
+    increments `grant_version` the same way as kick (verifier APPROVE).
 - [ ] Revalidate hibernated-socket attachments on wake against current grant
   version, epoch, and expiry (SEC-003).
 - [ ] Choose and document account-wide revocation: reliable active-room fan-out,

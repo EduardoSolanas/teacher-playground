@@ -192,9 +192,7 @@ export class RoomDO extends DurableObject {
         };
         const targetAccountId = payload.kickedPeer?.accountId ?? payload.suspendedPeer?.accountId;
         if (targetAccountId) {
-          if (action === 'kick') {
-            incrementGrantVersion(this.db, roomId);
-          }
+          incrementGrantVersion(this.db, roomId);
           this.closeAccountSockets(targetAccountId);
         }
       }

@@ -851,6 +851,94 @@ describe('kick increments room grant version', () => {
   });
 });
 
+describe('suspend increments room grant version', () => {
+  async function connectGranted(who: LocalAuthSession, roomId: string): Promise<WebSocket> {
+    const res = await authenticatedFetch(`/signaling?room=${roomId}`, who, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(res.status).toBe(101);
+    const ws = res.webSocket;
+    if (!ws) throw new Error('no webSocket on response');
+    ws.accept();
+    return ws;
+  }
+
+  async function grantEditor(
+    owner: LocalAuthSession,
+    editor: LocalAuthSession,
+    roomId: string,
+  ) {
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Editor' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${editor.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    )).status).toBe(200);
+  }
+
+  function closeSignal(ws: WebSocket): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error('socket was not closed immediately after suspend')),
+        2_000,
+      );
+      ws.addEventListener('close', (event: CloseEvent) => {
+        clearTimeout(timer);
+        resolve(event.code);
+      }, { once: true });
+    });
+  }
+
+  async function readGrantVersion(roomId: string): Promise<number> {
+    return runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      (instance: RoomDO) => {
+        const row = instance.db.prepare(
+          `SELECT grant_version AS grantVersion FROM rooms WHERE room_id = ?`,
+        ).get(roomId) as { grantVersion: number } | undefined;
+        return row?.grantVersion ?? 0;
+      },
+    );
+  }
+
+  it('increments grant_version and closes the suspended signaling socket', async () => {
+    const owner = await bootstrapLocalSession('grant-suspend-owner');
+    const editor = await bootstrapLocalSession('grant-suspend-editor');
+    const roomId = 'grant-suspend-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'editor-peer', userName: 'Editor', color: '#3498db' }),
+    })).status).toBe(200);
+
+    expect(await readGrantVersion(roomId)).toBe(0);
+
+    const editorSocket = await connectGranted(editor, roomId);
+    const editorClosed = closeSignal(editorSocket);
+
+    const suspend = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'suspend', peerId: 'editor-peer' }),
+    });
+    expect(suspend.status).toBe(200);
+
+    expect(await editorClosed).toBe(4401);
+    expect(await readGrantVersion(roomId)).toBe(1);
+  });
+});
+
 describe('stale grant version drops signaling publishes', () => {
   async function grantEditor(
     owner: LocalAuthSession,
