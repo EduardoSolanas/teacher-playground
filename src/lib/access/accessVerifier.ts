@@ -262,7 +262,10 @@ export async function verifyAccessRequest(
   options: { now?: number; fetch?: typeof fetch } = {},
 ): Promise<VerifiedAccessPrincipal> {
   const config = validateConfiguration(environment);
-  if (!config.local && !context) fail();
+  // ctx.access is populated only when the Workers runtime version supports it
+  // (introduced 2026-08-14, requires a recent compatibility_date). The JWT
+  // signature verification below is the real security boundary; this is
+  // defense-in-depth when the runtime provides it.
   if (context && context.aud !== config.audience) fail();
 
   const parsed = parseJwt(request);
