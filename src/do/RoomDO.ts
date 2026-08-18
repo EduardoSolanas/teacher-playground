@@ -1,16 +1,20 @@
 import { DurableObject } from 'cloudflare:workers';
 import { DODatabase } from '../lib/whiteboard/doDatabase';
+import { applySchema, roomExists } from '../lib/whiteboard/roomSchema';
 import {
-  addRoomMember,
-  applySchema,
-  getRoomRole,
-  roomExists,
-} from '../lib/whiteboard/roomSchema';
+  bindPeerAccount,
+  canWriteBoard,
+  getGrantRole,
+  isGrantedRole,
+  isOwnerRole,
+  peerAccountId,
+} from '../lib/whiteboard/membership';
 import type { RoomDatabase } from '../lib/whiteboard/db';
 import { GLOBAL_IDENTITY_OBJECT_NAME } from './IdentityDO';
 import {
   handleRoomGet,
   handleRoomPost,
+  handleRoomSettings,
   handleRoomDelete,
 } from '../lib/whiteboard/handlers/room';
 import {
@@ -30,7 +34,6 @@ import {
 } from '../lib/whiteboard/handlers/requests';
 import { handleRequestsIdPost } from '../lib/whiteboard/handlers/requestsId';
 import { issueAvTokenResponse } from '../lib/av/handleAvToken';
-import { isAdmittedRole } from '../lib/av/avAuthorization';
 
 /**
  * How often live sockets are re-checked against the identity store. This is the
@@ -48,6 +51,9 @@ const MIN_REVOCATION_CHECK_INTERVAL_MS = 50;
 /** Close code sent to a socket whose account is no longer authorized. */
 export const SOCKET_REVOKED_CLOSE_CODE = 4401;
 
+/** Close code sent when the room itself is deleted. */
+export const SOCKET_ROOM_DELETED_CLOSE_CODE = 4404;
+
 /** Reads the override, ignoring anything unparseable or below the floor. */
 function resolveCheckInterval(env: RoomEnv): number {
   const configured = Number(env.REVOCATION_CHECK_INTERVAL_MS);
@@ -61,6 +67,13 @@ function forbidden(message = 'Forbidden'): Response {
   return Response.json(
     { error: message },
     { status: 403, headers: { 'Cache-Control': 'no-store' } },
+  );
+}
+
+function unauthorized(message = 'Unauthorized'): Response {
+  return Response.json(
+    { error: message },
+    { status: 401, headers: { 'Cache-Control': 'no-store' } },
   );
 }
 
@@ -137,26 +150,20 @@ export class RoomDO extends DurableObject {
     const segments = url.pathname.split('/').filter(Boolean);
     const section = segments[1] ?? '';
     const method = request.method;
+    const accountId = url.searchParams.get('accountId');
+    if (!accountId) return unauthorized('Account required');
 
-    // Read the body exactly once, up front. Authorization and membership both
-    // need to inspect it, and cloning a request whose body is never fully
-    // consumed leaves a dangling stream across the Durable Object boundary
-    // ("can't read from request stream after response has been sent").
+    // Grant role only — no board, queue, or request PII. Discriminators that
+    // share a route (kick vs heartbeat) are read from a bounded JSON object
+    // after this identity is known. Scene and settings are separate paths.
+    const role = getGrantRole(this.db, roomId, accountId);
     const hasBody = method !== 'GET' && method !== 'HEAD';
     const bodyText = hasBody ? await request.text() : null;
     const body = parseJsonObject(bodyText);
 
-    const denied = this.authorize(request, url, roomId, section, body);
+    const denied = this.authorize(url, roomId, section, method, body, accountId, role);
     if (denied) return denied;
 
-    const accountId = url.searchParams.get('accountId');
-    // Approving deletes the queue row naming the account, so read it first.
-    const promoting = section === 'waiting' && method === 'POST'
-      ? this.accountAwaitingApproval(roomId, body)
-      : null;
-    // Only a plain join/heartbeat binds the peer to the caller's account. A
-    // host's kick/suspend POST names a *different* peer as its target, and
-    // must not rebind that peer's ownership to the host's own account.
     const joiningPeerId = section === 'presence' && method === 'POST' && stringField(body, 'action') == null
       ? stringField(body, 'peerId')
       : null;
@@ -169,154 +176,123 @@ export class RoomDO extends DurableObject {
     });
     const response = await this.route(forwarded, url, roomId);
 
-    if (response.ok && accountId) {
-      this.recordMembership(roomId, accountId, promoting, joiningPeerId);
+    if (response.ok && accountId && joiningPeerId) {
+      bindPeerAccount(this.db, roomId, joiningPeerId, accountId);
     }
 
     return response;
   }
 
   /**
-   * Decides whether the verified account may perform this room operation.
+   * HTTP authorization matrix. Grant state comes only from room_members keyed
+   * by the Worker-stamped account id. Bearer tokens, emails, and client peer
+   * ids are ignored.
    *
-   * Enforced here rather than inside each handler so there is a single place
-   * that answers "may this account touch this room", and so handler signatures
-   * (and their tests) stay independent of the identity layer.
-   *
-   * - creating a room: any authenticated account, which becomes the owner
-   * - reading or writing an existing board: members only
-   * - deleting a room, or moderating peers: the owner only
-   * - joining, leaving, and reading presence: any authenticated account, since
-   *   that is how a peer asks to be let in and follows its place in the queue
+ *   GET    /room                     granted (viewer/editor/owner)
+ *   POST   /room (create)            any authenticated
+ *   POST   /room (scene)             editor/owner
+ *   POST|PATCH /settings             owner
+ *   DELETE /room                     owner
+   *   GET    /presence                 granted (payload redacted for non-owners)
+   *   POST   /presence kick|suspend    owner
+   *   POST   /presence heartbeat/join  not banned; self only
+   *   DELETE /presence                 granted; self only
+   *   GET    /waiting                  owner
+   *   POST   /waiting                  owner
+   *   DELETE /waiting                  owner, or self withdrawing a request
+   *   GET    /access                   any authenticated
+   *   POST   /requests                 any authenticated except banned
+   *   GET    /requests                 owner
+   *   POST   /requests/:id             owner
+   *   POST   /av                       granted (viewer/editor/owner)
    */
   private authorize(
-    request: Request,
     url: URL,
     roomId: string,
     section: string,
+    method: string,
     body: Record<string, unknown> | null,
+    accountId: string,
+    role: ReturnType<typeof getGrantRole>,
   ): Response | null {
-    const accountId = url.searchParams.get('accountId');
-    if (!accountId) return forbidden('Account required');
-
-    const role = getRoomRole(this.db, roomId, accountId);
-    const isOwner = role === 'owner';
-    const isMember = role !== null;
-    const method = request.method;
+    const owner = isOwnerRole(role);
+    const granted = isGrantedRole(role);
 
     if (section === '') {
-      if (method === 'DELETE') return isOwner ? null : forbidden();
+      if (method === 'DELETE') return owner ? null : forbidden();
       if (method === 'POST') {
-        // First writer of a new room becomes its owner.
-        if (!roomExists(this.db, roomId)) {
-          addRoomMember(this.db, roomId, accountId, 'owner');
-          return null;
-        }
-        return isMember ? null : forbidden();
+        if (!roomExists(this.db, roomId)) return null;
+        return canWriteBoard(role) ? null : forbidden();
       }
-      if (method === 'GET') return isMember ? null : forbidden();
-      return null;
+      if (method === 'GET' || method === 'HEAD') return granted ? null : forbidden();
+      return forbidden();
+    }
+
+    if (section === 'settings') {
+      if (method === 'POST' || method === 'PATCH') return owner ? null : forbidden();
+      return forbidden();
     }
 
     if (section === 'waiting') {
-      // Leaving the queue is self-service; moderating it is not.
-      if (method === 'DELETE') return null;
-      return isOwner ? null : forbidden();
+      if (method === 'DELETE') {
+        const peerId = url.searchParams.get('peerId');
+        if (!peerId) return forbidden();
+        if (owner) return null;
+        const bound = peerAccountId(this.db, roomId, peerId);
+        if (bound === accountId) return null;
+        return forbidden();
+      }
+      if (method === 'GET' || method === 'POST') return owner ? null : forbidden();
+      return forbidden();
     }
 
-    if (section === 'presence' && method === 'POST') {
-      const action = stringField(body, 'action');
-      if (action === 'kick' || action === 'suspend') {
-        return isOwner ? null : forbidden();
+    if (section === 'presence') {
+      if (method === 'GET' || method === 'HEAD') return granted ? null : forbidden();
+      if (method === 'POST') {
+        const action = stringField(body, 'action');
+        if (action === 'kick' || action === 'suspend') {
+          return owner ? null : forbidden();
+        }
+        if (role === 'banned') return forbidden();
+        const peerId = stringField(body, 'peerId');
+        if (peerId) {
+          const bound = peerAccountId(this.db, roomId, peerId);
+          if (bound && bound !== accountId) return forbidden();
+        }
+        return null;
       }
-
-      // Joining/heartbeat: a caller may not claim a peerId another account
-      // already bound to itself, or it could hijack that peer's identity.
-      const peerId = stringField(body, 'peerId');
-      if (peerId) {
-        const owner = this.peerAccountId(roomId, peerId);
-        if (owner && owner !== accountId) return forbidden();
+      if (method === 'DELETE') {
+        if (!granted) return forbidden();
+        const peerId = url.searchParams.get('peerId');
+        if (!peerId) return forbidden();
+        const bound = peerAccountId(this.db, roomId, peerId);
+        if (bound !== accountId) return forbidden();
+        return null;
       }
-      return null;
+      return forbidden();
     }
 
-    if (section === 'presence' && method === 'DELETE') {
-      // Leaving/heartbeat-timeout is self-service; a caller may only remove a
-      // peer bound to its own account. A peer with no recorded owner (or that
-      // doesn't exist) is harmless to remove, so let that through unchanged.
-      const peerId = url.searchParams.get('peerId');
-      if (peerId) {
-        const owner = this.peerAccountId(roomId, peerId);
-        if (owner && owner !== accountId) return forbidden();
-      }
-      return null;
+    if (section === 'access') {
+      return method === 'GET' || method === 'HEAD' ? null : forbidden();
     }
 
-    // A/V tokens are only for admitted participants (owner/member). Waiting
-    // peers and outsiders get the same 403 shape so room membership cannot be
-    // probed through this route.
+    // A/V tokens: granted participants only. Pending, banned, and outsiders
+    // get 403 so this route cannot probe room existence.
     if (section === 'av') {
-      return isAdmittedRole(role) ? null : forbidden();
-    }
-    return null;
-  }
-
-  /** The account bound to a peer row in presence or the waiting queue, if any. */
-  private peerAccountId(roomId: string, peerId: string): string | null {
-    for (const table of ['room_presence', 'waiting_peers']) {
-      const row = this.db
-        .prepare(`SELECT account_id AS accountId FROM ${table} WHERE room_id = ? AND peer_id = ?`)
-        .get(roomId, peerId) as { accountId: string | null } | undefined;
-      if (row?.accountId) return row.accountId;
-    }
-    return null;
-  }
-
-  /** The account queued behind the peer an approve request names, if any. */
-  private accountAwaitingApproval(
-    roomId: string,
-    body: Record<string, unknown> | null,
-  ): string | null {
-    const peerId = stringField(body, 'peerId');
-    if (stringField(body, 'action') !== 'approve' || !peerId) return null;
-
-    const row = this.db
-      .prepare(
-        `SELECT account_id AS accountId FROM waiting_peers
-         WHERE room_id = ? AND peer_id = ?`,
-      )
-      .get(roomId, peerId) as { accountId: string | null } | undefined;
-    return row?.accountId ?? null;
-  }
-
-  /**
-   * Binds the verified account to the peer row the request just created, and
-   * grants membership once that account is actually in the room. Membership is
-   * what later authorizes reading the board, so it is derived from admission
-   * rather than from anything the client asserts.
-   */
-  private recordMembership(
-    roomId: string,
-    accountId: string,
-    promoting: string | null,
-    peerId: string | null,
-  ): void {
-    if (promoting) {
-      addRoomMember(this.db, roomId, promoting, 'member');
+      if (method !== 'POST') return forbidden();
+      return isGrantedRole(role) ? null : forbidden();
     }
 
-    if (!peerId) return;
-
-    for (const table of ['room_presence', 'waiting_peers']) {
-      this.db
-        .prepare(`UPDATE ${table} SET account_id = ? WHERE room_id = ? AND peer_id = ?`)
-        .run(accountId, roomId, peerId);
+    if (section === 'requests') {
+      const requestId = url.pathname.split('/').filter(Boolean)[2];
+      if (method === 'GET' || method === 'HEAD' || (method === 'POST' && requestId)) {
+        return owner ? null : forbidden();
+      }
+      if (method === 'POST') return role === 'banned' ? forbidden() : null;
+      return forbidden();
     }
 
-    const admitted = this.db
-      .prepare(`SELECT 1 FROM room_presence WHERE room_id = ? AND peer_id = ?`)
-      .get(roomId, peerId);
-    if (admitted) addRoomMember(this.db, roomId, accountId, 'member');
+    return forbidden();
   }
 
   private route(request: Request, url: URL, roomId: string): Promise<Response> {
@@ -329,7 +305,17 @@ export class RoomDO extends DurableObject {
       case '':
         if (method === 'GET') return handleRoomGet(this.db, roomId, request);
         if (method === 'POST') return handleRoomPost(this.db, roomId, request);
-        if (method === 'DELETE') return handleRoomDelete(this.db, roomId, request);
+        if (method === 'DELETE') {
+          return handleRoomDelete(this.db, roomId, request).then((response) => {
+            if (response.ok) this.deleteSockets();
+            return response;
+          });
+        }
+        break;
+      case 'settings':
+        if (method === 'POST' || method === 'PATCH') {
+          return handleRoomSettings(this.db, roomId, request);
+        }
         break;
       case 'presence':
         if (method === 'GET') return handlePresenceGet(this.db, roomId, request);
@@ -380,6 +366,17 @@ export class RoomDO extends DurableObject {
     return Promise.resolve(
       Response.json({ error: 'Not found' }, { status: 404 }),
     );
+  }
+
+  /** Drops every signaling socket for this object after a successful delete. */
+  private deleteSockets(): void {
+    for (const socket of this.ctx.getWebSockets()) {
+      try {
+        socket.close(SOCKET_ROOM_DELETED_CLOSE_CODE, 'Room deleted');
+      } catch {
+        // Already gone.
+      }
+    }
   }
 
   // --- y-webrtc signaling ---

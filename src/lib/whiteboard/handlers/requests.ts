@@ -1,20 +1,18 @@
 import type { RoomDatabase } from '../db';
-import { getBearerToken, requireGrant } from '../authz';
-import { findGrant, createRequest, listRequests, hashToken } from '../access';
+import { verifiedAccountId } from '../authz';
+import { getGrantRole, isOwnerRole, listPending, requestAccess } from '../membership';
 import { parseBody, requestsPostSchema } from '../requestSchemas';
-import { randomUUID } from 'node:crypto';
+import { internalErrorResponse } from '../../http/safeError';
 
-// POST /api/whiteboard/room/[roomId]/requests - create access request
 export async function handleRequestsPost(
   db: RoomDatabase,
   roomId: string,
   request: Request,
 ): Promise<Response> {
   try {
-    const token = getBearerToken(request);
-
-    if (!token) {
-      return Response.json({ error: 'Bearer token required' }, { status: 401 });
+    const accountId = verifiedAccountId(request);
+    if (!accountId) {
+      return Response.json({ error: 'Account required' }, { status: 401 });
     }
 
     let body: unknown;
@@ -30,83 +28,52 @@ export async function handleRequestsPost(
     }
 
     const { userName, email } = parseResult.data;
-
-    // Check if token already has a valid grant
-    const grant = findGrant(db, roomId, token);
-    if (grant) {
-      return Response.json({
-        status: 'approved',
-        role: grant.role,
-      });
-    }
-
-    // Check if token already has a pending request
-    const tokenHash = hashToken(token);
-    const existingRequest = db.prepare(`
-      SELECT request_id FROM access_requests
-      WHERE room_id = ? AND token_hash = ?
-      LIMIT 1
-    `).get(roomId, tokenHash) as { request_id: string } | undefined;
-
-    if (existingRequest) {
-      return Response.json(
-        {
-          status: 'pending',
-          requestId: existingRequest.request_id,
-        },
-        { status: 201 }
-      );
-    }
-
-    // Create new request
-    const requestId = randomUUID();
-    createRequest(db, {
+    const result = requestAccess(db, {
       roomId,
-      requestId,
-      token,
+      accountId,
       userName: userName.trim(),
       email,
     });
 
+    if (!result.ok) {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+    if (result.status === 'approved') {
+      return Response.json({
+        status: 'approved',
+        role: result.role,
+      });
+    }
+
     return Response.json(
       {
         status: 'pending',
-        requestId,
+        requestId: result.requestId,
       },
-      { status: 201 }
+      { status: 201 },
     );
   } catch (e) {
-    return Response.json(
-      { error: e instanceof Error ? e.message : 'Failed to create request' },
-      { status: 500 }
-    );
+    return internalErrorResponse(e, 'handleRequestsPost');
   }
 }
 
-// GET /api/whiteboard/room/[roomId]/requests - list access requests (creator only)
 export async function handleRequestsGet(
   db: RoomDatabase,
   roomId: string,
   request: Request,
 ): Promise<Response> {
   try {
-    const token = getBearerToken(request);
-
-    if (!token) {
-      return Response.json({ error: 'Bearer token required' }, { status: 401 });
+    const accountId = verifiedAccountId(request);
+    if (!accountId) {
+      return Response.json({ error: 'Account required' }, { status: 401 });
     }
-
-    const grant = requireGrant(db, roomId, request, ['creator']);
-    if (!grant) {
+    if (!isOwnerRole(getGrantRole(db, roomId, accountId))) {
       return Response.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    const requests = listRequests(db, roomId);
+    const requests = listPending(db, roomId);
     return Response.json({ requests });
   } catch (e) {
-    return Response.json(
-      { error: e instanceof Error ? e.message : 'Failed to list requests' },
-      { status: 500 }
-    );
+    return internalErrorResponse(e, 'handleRequestsGet');
   }
 }

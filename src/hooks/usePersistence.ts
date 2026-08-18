@@ -5,6 +5,8 @@ import {
   debouncedSaveBoardState,
   loadBoardState,
   clearBoardState,
+  clearRoomSessionMaterial,
+  cancelDebouncedSave,
   cleanupStaleRooms,
 } from '@/lib/whiteboard/persistence';
 
@@ -16,7 +18,7 @@ export function usePersistence(roomId: string | null, elements: CanvasElement[],
 
   const hasLoadedRef = useRef(false);
 
-  // Load saved state on mount
+  // Load saved state on mount (no-op unless the room opted into offline cache)
   useEffect(() => {
     if (!roomId || hasLoadedRef.current) return;
     hasLoadedRef.current = true;
@@ -26,10 +28,8 @@ export function usePersistence(roomId: string | null, elements: CanvasElement[],
       setLoadedState(state);
     }
 
-    // Cleanup stale rooms
     cleanupStaleRooms();
 
-    // Save on beforeunload
     const handleBeforeUnload = () => {
       saveBoardState(roomId, elements, viewport);
     };
@@ -37,10 +37,10 @@ export function usePersistence(roomId: string | null, elements: CanvasElement[],
 
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      cancelDebouncedSave();
     };
   }, [roomId, elements, viewport]);
 
-  // Auto-save on state changes (debounced)
   useEffect(() => {
     if (!roomId) return;
     debouncedSaveBoardState(roomId, elements, viewport);
@@ -64,10 +64,16 @@ export function usePersistence(roomId: string | null, elements: CanvasElement[],
     clearBoardState(roomId);
   }, [roomId]);
 
+  const clearSession = useCallback(() => {
+    if (!roomId) return;
+    clearRoomSessionMaterial(roomId);
+  }, [roomId]);
+
   return {
     saveState,
     loadState,
     clearState,
+    clearSession,
     loadedState,
   };
 }

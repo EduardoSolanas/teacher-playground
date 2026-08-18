@@ -202,22 +202,18 @@ export function useCollaboration(roomId: string) {
       if (type === 'cursors') {
         const all = data as RemoteCursor[];
         const selfId = localPeerIdRef.current;
-        const hostId = hostPeerIdRef.current;
         setCursors(all.filter((c) => c.peerId !== selfId));
         setUsers((prev) => {
           const merged = new Map(prev.map((u) => [u.peerId, { ...u }]));
           for (const c of all) {
+            const existing = merged.get(c.peerId);
             merged.set(c.peerId, {
               peerId: c.peerId,
+              accountId: existing?.accountId,
               userName: c.userName,
               color: c.color,
-              isHost: hostId != null && c.peerId === hostId,
+              isHost: Boolean(existing?.isHost),
             });
-          }
-          if (hostId) {
-            for (const u of merged.values()) {
-              u.isHost = u.peerId === hostId;
-            }
           }
           return Array.from(merged.values());
         });
@@ -243,7 +239,6 @@ export function useCollaboration(roomId: string) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              room_id: roomId,
               elements: newElements,
               viewport: newViewport,
             }),
@@ -358,26 +353,29 @@ export function useCollaboration(roomId: string) {
             })
           : await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`);
 
+        if (!cancelled && res.status === 403) {
+          hasJoinedRef.current = false;
+          setHasJoined(false);
+          setIsWaiting(false);
+          setWasKicked(true);
+          setUsers([]);
+          setWaitingPeers([]);
+          return;
+        }
+
         if (!cancelled && res.ok) {
           const data = await res.json();
           if (data.hostPeerId != null) {
             applyHostFromApi(hostPeerIdRef, data.hostPeerId, setHostPeerId);
           }
           if (Array.isArray(data.users) && data.users.length > 0) {
-            const apiUsers = data.users as WhiteboardUser[];
-            const hostId = hostPeerIdRef.current;
-            setUsers(
-              apiUsers.map((u) => ({
-                ...u,
-                isHost: hostId != null ? u.peerId === hostId : u.isHost,
-              })),
-            );
+            setUsers(data.users as WhiteboardUser[]);
           }
           if (Array.isArray(data.waitingPeers)) {
-            const hostId = hostPeerIdRef.current;
             setWaitingPeers(
-              data.waitingPeers.map((p: any) => ({
+              data.waitingPeers.map((p: WhiteboardUser & { accountId?: string }) => ({
                 peerId: p.peerId,
+                accountId: p.accountId,
                 userName: p.userName,
                 color: p.color,
                 isHost: false,
@@ -424,7 +422,7 @@ export function useCollaboration(roomId: string) {
           peerId: localPeerIdRef.current,
           userName: localUserName,
           color: '#3498db',
-          isHost: true,
+          isHost: false,
         },
       ]);
       setCursors([]);
@@ -437,19 +435,13 @@ export function useCollaboration(roomId: string) {
       if (!res.ok) return;
       const data = await res.json();
       if (Array.isArray(data.users)) {
-        applyHostFromApi(hostPeerIdRef, data.hostPeerId, setHostPeerId);
-        const hostId = hostPeerIdRef.current;
-        setUsers(
-          data.users.map((u: any) => ({
-            ...u,
-            isHost: hostId != null ? u.peerId === hostId : u.isHost,
-          })),
-        );
+        setUsers(data.users as WhiteboardUser[]);
       }
       if (Array.isArray(data.waitingPeers)) {
         setWaitingPeers(
-          data.waitingPeers.map((p: any) => ({
+          data.waitingPeers.map((p: WhiteboardUser & { accountId?: string }) => ({
             peerId: p.peerId,
+            accountId: p.accountId,
             userName: p.userName,
             color: p.color,
             isHost: false,
@@ -465,12 +457,16 @@ export function useCollaboration(roomId: string) {
     }
   }, [roomId]);
 
-  const approvePeer = useCallback(async (peerId: string) => {
+  const approvePeer = useCallback(async (peerId: string, accountId?: string | null) => {
     try {
       await ajaxFetch(`/api/whiteboard/room/${roomId}/waiting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ peerId, action: 'approve' }),
+        body: JSON.stringify({
+          peerId,
+          ...(accountId ? { accountId } : {}),
+          action: 'approve',
+        }),
       });
       await reloadPresence();
     } catch {
@@ -478,12 +474,16 @@ export function useCollaboration(roomId: string) {
     }
   }, [roomId, reloadPresence]);
 
-  const rejectPeer = useCallback(async (peerId: string) => {
+  const rejectPeer = useCallback(async (peerId: string, accountId?: string | null) => {
     try {
       await ajaxFetch(`/api/whiteboard/room/${roomId}/waiting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ peerId, action: 'reject' }),
+        body: JSON.stringify({
+          peerId,
+          ...(accountId ? { accountId } : {}),
+          action: 'reject',
+        }),
       });
       await reloadPresence();
     } catch {
@@ -497,18 +497,24 @@ export function useCollaboration(roomId: string) {
         `/api/whiteboard/room/${roomId}/waiting?peerId=${encodeURIComponent(localPeerIdRef.current)}`,
         { method: 'DELETE' }
       );
-      setIsWaiting(false);
     } catch {
-      // silently fail
+      // still drop local waiting/join so the prompt can return
     }
+    hasJoinedRef.current = false;
+    setHasJoined(false);
+    setIsWaiting(false);
   }, [roomId, localPeerId]);
 
-  const kickPeer = useCallback(async (peerId: string) => {
+  const kickPeer = useCallback(async (peerId: string, accountId?: string | null) => {
     try {
       await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'kick', peerId }),
+        body: JSON.stringify({
+          action: 'kick',
+          peerId,
+          ...(accountId ? { accountId } : {}),
+        }),
       });
       await reloadPresence();
     } catch {
@@ -516,12 +522,16 @@ export function useCollaboration(roomId: string) {
     }
   }, [roomId, reloadPresence]);
 
-  const sendToWaitingRoom = useCallback(async (peerId: string) => {
+  const sendToWaitingRoom = useCallback(async (peerId: string, accountId?: string | null) => {
     try {
       await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'suspend', peerId }),
+        body: JSON.stringify({
+          action: 'suspend',
+          peerId,
+          ...(accountId ? { accountId } : {}),
+        }),
       });
       await reloadPresence();
     } catch {
@@ -538,7 +548,7 @@ export function useCollaboration(roomId: string) {
     setCursor,
     setUserName,
     localPeerId,
-    isHost: hostPeerId === localPeerId,
+    isHost: users.some((user) => user.peerId === localPeerId && user.isHost),
     provider: collaborationRef.current?.provider ?? null,
     elementsArray: elements,
     status,

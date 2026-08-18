@@ -105,16 +105,19 @@ handler code cannot accidentally skip it.
 | Operation | Requires |
 | --- | --- |
 | Create a room | any authenticated account; it becomes the owner |
-| Read or write an existing board | membership |
+| Request or check own admission | any authenticated account; banned accounts are refused |
+| Read an existing board | granted viewer, editor, or owner |
+| Write an existing board | editor or owner (not viewer) |
 | Delete the room | owner |
 | Moderate the waiting queue, kick, suspend | owner |
 | Join, leave, read presence, leave the queue | any authenticated account |
 
-Membership is granted by admission, never by client assertion: the room's
-creator becomes owner, and a queued peer becomes a member when the owner
-approves it. `room_presence` is a liveness view pruned on a short timer, so it
-is deliberately not used to answer "may this account open this board" — an
-idle member keeps access.
+Membership is granted by admission, never by client assertion or bearer token.
+The room's creator becomes owner in the same transaction as the room row. A
+queued account becomes `editor` or `viewer` when the owner approves it, and
+`banned` when the owner rejects or kicks it. `room_presence` is a liveness view
+pruned on a short timer, so it is deliberately not used to answer "may this
+account open this board" — an idle granted account keeps access.
 
 Two consequences worth knowing:
 
@@ -148,7 +151,7 @@ confirmed control of both identities before rebinding, and there is no
 administrative interface for it. Subject recovery therefore still means creating
 a new account.
 
-The older bearer-token grant matrix (`src/lib/whiteboard/access.ts`) still backs
-the `/requests` endpoints and now sits alongside account-keyed membership.
-Collapsing the two, so there is a single authorization source per room, is
-worthwhile follow-up work.
+The older bearer-token grant matrix (`src/lib/whiteboard/access.ts`) is gone.
+`/access`, `/requests`, and `/waiting` read and write `room_members` only, keyed
+by the Worker-stamped local account id. Leftover `room_access` /
+`access_requests` tables are unused and are not consulted for authorization.

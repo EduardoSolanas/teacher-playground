@@ -1,10 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   roomPostSchema,
+  roomSceneSchema,
+  roomSettingsSchema,
   presencePostSchema,
   waitingPostSchema,
   requestsPostSchema,
   requestActionPostSchema,
+  hasRoomSettingsIntent,
+  hasRoomSceneIntent,
   PEER_ID_RE,
   COLOR_RE,
   MAX_ELEMENTS,
@@ -12,20 +16,13 @@ import {
 } from './requestSchemas';
 
 describe('requestSchemas hardening (SEC-005)', () => {
-  describe('roomPostSchema', () => {
-    it('parses a valid room body', () => {
-      const result = roomPostSchema.safeParse({
+  describe('roomSceneSchema', () => {
+    it('parses a valid scene body', () => {
+      const result = roomSceneSchema.safeParse({
         elements: [],
         viewport: { x: 0, y: 0, zoom: 1 },
-        maxUsers: 3,
-        hostPeerId: 'abcdefg1',
-        name: 'Algebra',
       });
       expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.maxUsers).toBe(3);
-        expect(result.data.name).toBe('Algebra');
-      }
     });
 
     it('rejects malformed viewport', () => {
@@ -35,29 +32,63 @@ describe('requestSchemas hardening (SEC-005)', () => {
       expect(result.success).toBe(false);
     });
 
-    it('rejects maxUsers outside the allowed range', () => {
-      expect(roomPostSchema.safeParse({ maxUsers: 0 }).success).toBe(false);
-      expect(roomPostSchema.safeParse({ maxUsers: 11 }).success).toBe(false);
-      expect(roomPostSchema.safeParse({ maxUsers: MAX_MAX_USERS }).success).toBe(true);
-    });
-
     it('rejects oversized element lists', () => {
-      const result = roomPostSchema.safeParse({
+      const result = roomSceneSchema.safeParse({
         elements: new Array(MAX_ELEMENTS + 1).fill({ type: 'rectangle' }),
       });
       expect(result.success).toBe(false);
     });
 
     it('rejects non-array elements', () => {
-      expect(roomPostSchema.safeParse({ elements: { not: 'an array' } }).success).toBe(false);
+      expect(roomSceneSchema.safeParse({ elements: { not: 'an array' } }).success).toBe(false);
+    });
+  });
+
+  describe('roomSettingsSchema', () => {
+    it('parses a valid settings body', () => {
+      const result = roomSettingsSchema.safeParse({
+        maxUsers: 3,
+        hostPeerId: 'abcdefg1',
+        name: 'Algebra',
+        allowFirstUserHost: false,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.maxUsers).toBe(3);
+        expect(result.data.name).toBe('Algebra');
+      }
+    });
+
+    it('rejects maxUsers outside the allowed range', () => {
+      expect(roomSettingsSchema.safeParse({ maxUsers: 0 }).success).toBe(false);
+      expect(roomSettingsSchema.safeParse({ maxUsers: 11 }).success).toBe(false);
+      expect(roomSettingsSchema.safeParse({ maxUsers: MAX_MAX_USERS }).success).toBe(true);
     });
 
     it('rejects oversized room names', () => {
-      expect(roomPostSchema.safeParse({ name: 'a'.repeat(101) }).success).toBe(false);
+      expect(roomSettingsSchema.safeParse({ name: 'a'.repeat(101) }).success).toBe(false);
     });
 
     it('rejects non-conforming hostPeerId', () => {
-      expect(roomPostSchema.safeParse({ hostPeerId: 'bad peer id!' }).success).toBe(false);
+      expect(roomSettingsSchema.safeParse({ hostPeerId: 'bad peer id!' }).success).toBe(false);
+    });
+  });
+
+  describe('route field mixing', () => {
+    it('detects creator-only settings fields', () => {
+      expect(hasRoomSettingsIntent({ elements: [] })).toBe(false);
+      expect(hasRoomSettingsIntent({ maxUsers: 4 })).toBe(true);
+      expect(hasRoomSettingsIntent({ name: 'Room' })).toBe(true);
+      expect(hasRoomSettingsIntent({ hostPeerId: 'abc' })).toBe(true);
+      expect(hasRoomSettingsIntent({ allowFirstUserHost: false })).toBe(true);
+      expect(hasRoomSettingsIntent(null)).toBe(false);
+    });
+
+    it('detects scene fields on a settings body', () => {
+      expect(hasRoomSceneIntent({ maxUsers: 4 })).toBe(false);
+      expect(hasRoomSceneIntent({ elements: [] })).toBe(true);
+      expect(hasRoomSceneIntent({ viewport: { x: 0, y: 0, zoom: 1 } })).toBe(true);
+      expect(hasRoomSceneIntent(null)).toBe(false);
     });
   });
 
@@ -66,6 +97,13 @@ describe('requestSchemas hardening (SEC-005)', () => {
       expect(PEER_ID_RE.test('user-abc123')).toBe(true);
       const result = presencePostSchema.safeParse({ peerId: 'user-abc123' });
       expect(result.success).toBe(true);
+    });
+
+    it('allows kick by accountId without a peerId', () => {
+      expect(presencePostSchema.safeParse({
+        action: 'kick',
+        accountId: '11111111-2222-3333-4444-555555555555',
+      }).success).toBe(true);
     });
 
     it('rejects an out-of-grammar peerId', () => {
@@ -89,6 +127,13 @@ describe('requestSchemas hardening (SEC-005)', () => {
   describe('waitingPostSchema', () => {
     it('rejects an out-of-grammar peerId', () => {
       expect(waitingPostSchema.safeParse({ peerId: '../evil', action: 'approve' }).success).toBe(false);
+    });
+
+    it('accepts moderate-by-accountId without a peerId', () => {
+      expect(waitingPostSchema.safeParse({
+        action: 'approve',
+        accountId: '11111111-2222-3333-4444-555555555555',
+      }).success).toBe(true);
     });
   });
 

@@ -95,6 +95,25 @@ describe('production deployment policy', () => {
     expect(deploymentGuide).toContain('is not a supported runtime');
   });
 
+  it('pins GitHub Actions to full commit SHAs on a maintained Node LTS', () => {
+    const workflowPaths = ['.github/workflows/ci.yml', '.github/workflows/deploy-cloudflare.yml'];
+
+    for (const workflowPath of workflowPaths) {
+      const workflow = readRepositoryFile(workflowPath);
+      const actionRefs = [...workflow.matchAll(/^\s+uses:\s+(\S+)/gm)].map((match) => match[1]);
+
+      expect(actionRefs.length, workflowPath).toBeGreaterThan(0);
+
+      for (const actionRef of actionRefs) {
+        expect(actionRef, `${workflowPath} ${actionRef}`).toMatch(/@[0-9a-f]{40}$/);
+        expect(actionRef, `${workflowPath} ${actionRef}`).not.toMatch(/@v\d/);
+      }
+
+      expect(workflow, workflowPath).not.toMatch(/^\s+node-version:\s*['"]?20(?:\.\d+)*['"]?\s*$/m);
+      expect(workflow, workflowPath).toMatch(/^\s+node-version:\s*['"]?22(?:\.\d+){2}['"]?\s*$/m);
+    }
+  });
+
   it('does not track runtime environment configuration', () => {
     const trackedEnvironmentFiles = trackedRepositoryFiles().filter(isEnvironmentFile);
     const trackedRuntimeEnvironmentFiles = trackedEnvironmentFiles.filter(isNonExampleEnvironmentFile);

@@ -143,6 +143,7 @@ export type WhiteboardRoom = {
 
 export type WhiteboardUser = {
   peerId: string;
+  accountId?: string | null;
   userName: string;
   color: string;
   isHost: boolean;

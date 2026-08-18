@@ -1,10 +1,68 @@
 import { describe, expect, it } from 'vitest';
-import { handleRoomPost, handleRoomGet } from './room';
+import { handleRoomPost, handleRoomGet, handleRoomSettings, handleRoomDelete } from './room';
 import { getRoomDb } from '../roomDb';
-import { getRoomAllowFirstUserHost } from '../roomSchema';
+import { getRoomAllowFirstUserHost, deleteRoomScopedData } from '../roomSchema';
+import { approveAccount, requestAccess } from '../membership';
 
-function postRequest(body: Record<string, unknown>) {
-  return new Request('http://localhost/api/whiteboard/room/test', {
+const ROOM_SCOPED_TABLES = [
+  'rooms',
+  'room_members',
+  'room_presence',
+  'waiting_peers',
+  'kicked_peers',
+  'room_access',
+  'access_requests',
+] as const;
+
+function scopedCounts(db: ReturnType<typeof getRoomDb>, roomId: string) {
+  return Object.fromEntries(
+    ROOM_SCOPED_TABLES.map((table) => [
+      table,
+      (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE room_id = ?`).get(roomId) as { n: number }).n,
+    ]),
+  ) as Record<(typeof ROOM_SCOPED_TABLES)[number], number>;
+}
+
+function seedEveryRoomScopedTable(
+  db: ReturnType<typeof getRoomDb>,
+  roomId: string,
+  now = Date.now(),
+) {
+  db.prepare(
+    `INSERT INTO rooms (room_id, elements, viewport, max_users, host_peer_id, name,
+                        allow_first_user_host, created_at, updated_at)
+     VALUES (?, '[]', '{"x":0,"y":0,"zoom":1}', 3, null, ?, 0, ?, ?)`,
+  ).run(roomId, roomId, now, now);
+  db.prepare(
+    `INSERT INTO room_members (
+       room_id, account_id, role, display_name, email, requested_at, created_at, updated_at, expires_at
+     ) VALUES (?, ?, 'owner', 'Ada', 'ada@example.com', NULL, ?, ?, NULL)`,
+  ).run(roomId, `acc-${roomId}`, now, now);
+  db.prepare(
+    `INSERT INTO room_presence (room_id, peer_id, user_name, color, first_seen, last_seen, account_id)
+     VALUES (?, ?, 'Ada', '#fff', ?, ?, ?)`,
+  ).run(roomId, `peer-${roomId}`, now, now, `acc-${roomId}`);
+  db.prepare(
+    `INSERT INTO waiting_peers (room_id, peer_id, user_name, color, requested_at, account_id)
+     VALUES (?, ?, 'Eve', '#000', ?, ?)`,
+  ).run(roomId, `wait-${roomId}`, now, `acc-wait-${roomId}`);
+  db.prepare(
+    `INSERT INTO kicked_peers (room_id, peer_id, kicked_at) VALUES (?, ?, ?)`,
+  ).run(roomId, `kick-${roomId}`, now);
+  db.prepare(
+    `INSERT INTO room_access (room_id, token_hash, role, user_name, email, created_at, expires_at)
+     VALUES (?, ?, 'creator', 'Ada', 'ada@example.com', ?, NULL)`,
+  ).run(roomId, `hash-${roomId}`, now);
+  db.prepare(
+    `INSERT INTO access_requests (room_id, request_id, token_hash, user_name, email, requested_at)
+     VALUES (?, ?, ?, 'Eve', 'eve@example.com', ?)`,
+  ).run(roomId, `req-${roomId}`, `reqhash-${roomId}`, now);
+}
+
+function postRequest(path: string, body: Record<string, unknown>, accountId?: string) {
+  const url = new URL(`http://localhost/api/whiteboard/room/test${path}`);
+  if (accountId) url.searchParams.set('accountId', accountId);
+  return new Request(url, {
     method: 'POST',
     body: JSON.stringify(body),
     headers: { 'Content-Type': 'application/json' },
@@ -16,19 +74,20 @@ describe('room allowFirstUserHost setting', () => {
     const db = getRoomDb();
     const roomId = `room-default-${crypto.randomUUID()}`;
 
-    await handleRoomPost(db, roomId, postRequest({ elements: [] }));
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }));
 
     expect(getRoomAllowFirstUserHost(db, roomId)).toBe(false);
   });
 
-  it('stores the setting when a room is created with it on', async () => {
+  it('stores the setting on the settings route', async () => {
     const db = getRoomDb();
     const roomId = `room-create-on-${crypto.randomUUID()}`;
 
-    const response = await handleRoomPost(
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }));
+    const response = await handleRoomSettings(
       db,
       roomId,
-      postRequest({ elements: [], allowFirstUserHost: true }),
+      postRequest('/settings', { allowFirstUserHost: true }),
     );
 
     expect(response.status).toBe(200);
@@ -39,21 +98,22 @@ describe('room allowFirstUserHost setting', () => {
   it('updates the setting on an existing room', async () => {
     const db = getRoomDb();
     const roomId = `room-update-${crypto.randomUUID()}`;
-    await handleRoomPost(db, roomId, postRequest({ elements: [] }));
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }));
 
-    await handleRoomPost(db, roomId, postRequest({ allowFirstUserHost: true }));
+    await handleRoomSettings(db, roomId, postRequest('/settings', { allowFirstUserHost: true }));
     expect(getRoomAllowFirstUserHost(db, roomId)).toBe(true);
 
-    await handleRoomPost(db, roomId, postRequest({ allowFirstUserHost: false }));
+    await handleRoomSettings(db, roomId, postRequest('/settings', { allowFirstUserHost: false }));
     expect(getRoomAllowFirstUserHost(db, roomId)).toBe(false);
   });
 
-  it('leaves the setting untouched when a write omits it', async () => {
+  it('leaves the setting untouched when a scene write omits it', async () => {
     const db = getRoomDb();
     const roomId = `room-omit-${crypto.randomUUID()}`;
-    await handleRoomPost(db, roomId, postRequest({ allowFirstUserHost: true }));
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }));
+    await handleRoomSettings(db, roomId, postRequest('/settings', { allowFirstUserHost: true }));
 
-    await handleRoomPost(db, roomId, postRequest({ elements: [] }));
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }));
 
     expect(getRoomAllowFirstUserHost(db, roomId)).toBe(true);
   });
@@ -61,7 +121,8 @@ describe('room allowFirstUserHost setting', () => {
   it('reports the setting on read', async () => {
     const db = getRoomDb();
     const roomId = `room-read-${crypto.randomUUID()}`;
-    await handleRoomPost(db, roomId, postRequest({ allowFirstUserHost: true }));
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }));
+    await handleRoomSettings(db, roomId, postRequest('/settings', { allowFirstUserHost: true }));
 
     const response = await handleRoomGet(
       db,
@@ -75,13 +136,192 @@ describe('room allowFirstUserHost setting', () => {
   it('rejects a non-boolean setting', async () => {
     const db = getRoomDb();
     const roomId = `room-bad-${crypto.randomUUID()}`;
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }));
 
-    const response = await handleRoomPost(
+    const response = await handleRoomSettings(
       db,
       roomId,
-      postRequest({ allowFirstUserHost: 'yes' }),
+      postRequest('/settings', { allowFirstUserHost: 'yes' }),
     );
 
     expect(response.status).toBe(400);
+  });
+
+  it('rejects settings fields on the scene route with 400', async () => {
+    const db = getRoomDb();
+    const roomId = `room-scene-mix-${crypto.randomUUID()}`;
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }));
+
+    const mixed = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [], maxUsers: 9, name: 'Stolen' }),
+    );
+    expect(mixed.status).toBe(400);
+
+    const read = await handleRoomGet(
+      db,
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`),
+    );
+    expect(await read.json()).toMatchObject({ name: null, maxUsers: 3, elements: [] });
+  });
+
+  it('rejects scene fields on the settings route with 400', async () => {
+    const db = getRoomDb();
+    const roomId = `room-settings-mix-${crypto.randomUUID()}`;
+    await handleRoomPost(db, roomId, postRequest('', { elements: [{ id: 'keep' }] }));
+
+    const mixed = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { maxUsers: 5, elements: [{ id: 'stolen' }] }),
+    );
+    expect(mixed.status).toBe(400);
+
+    const read = await handleRoomGet(
+      db,
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`),
+    );
+    expect(await read.json()).toMatchObject({ maxUsers: 3, elements: [{ id: 'keep' }] });
+  });
+
+  it('refuses settings changes from a non-owner when an account is present', async () => {
+    const db = getRoomDb();
+    const roomId = `room-settings-authz-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const editor = `acc-editor-${crypto.randomUUID()}`;
+
+    await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [] }, owner),
+    );
+    await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { name: 'Original', maxUsers: 3 }, owner),
+    );
+    requestAccess(db, { roomId, accountId: editor, userName: 'Ed' });
+    approveAccount(db, roomId, editor, { role: 'editor' });
+
+    const denied = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { name: 'Stolen', maxUsers: 9 }, editor),
+    );
+    expect(denied.status).toBe(403);
+
+    const read = await handleRoomGet(
+      db,
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`),
+    );
+    expect(await read.json()).toMatchObject({ name: 'Original', maxUsers: 3 });
+  });
+
+  it('returns a generic 500 body when storage throws', async () => {
+    const db = {
+      prepare() {
+        throw new Error(
+          'SQLITE_ERROR teacher@school.edu token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig {"elements":[{"id":"el-1"}]}',
+        );
+      },
+    };
+
+    const response = await handleRoomGet(
+      db as never,
+      'room-x',
+      new Request('http://localhost/api/whiteboard/room/room-x'),
+    );
+
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body).toEqual({ error: 'Internal server error' });
+    expect(JSON.stringify(body)).not.toContain('SQLITE_ERROR');
+    expect(JSON.stringify(body)).not.toContain('teacher@school.edu');
+    expect(JSON.stringify(body)).not.toContain('el-1');
+  });
+});
+
+describe('atomic room deletion', () => {
+  it('removes every room-scoped table in one call and leaves other rooms intact', async () => {
+    const db = getRoomDb();
+    const doomed = `delete-doomed-${crypto.randomUUID()}`;
+    const keep = `delete-keep-${crypto.randomUUID()}`;
+    seedEveryRoomScopedTable(db, doomed);
+    seedEveryRoomScopedTable(db, keep);
+
+    expect(scopedCounts(db, doomed)).toEqual({
+      rooms: 1,
+      room_members: 1,
+      room_presence: 1,
+      waiting_peers: 1,
+      kicked_peers: 1,
+      room_access: 1,
+      access_requests: 1,
+    });
+
+    const response = await handleRoomDelete(
+      db,
+      doomed,
+      new Request(`http://localhost/api/whiteboard/room/${doomed}`, { method: 'DELETE' }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ success: true });
+
+    expect(scopedCounts(db, doomed)).toEqual({
+      rooms: 0,
+      room_members: 0,
+      room_presence: 0,
+      waiting_peers: 0,
+      kicked_peers: 0,
+      room_access: 0,
+      access_requests: 0,
+    });
+    expect(scopedCounts(db, keep)).toEqual({
+      rooms: 1,
+      room_members: 1,
+      room_presence: 1,
+      waiting_peers: 1,
+      kicked_peers: 1,
+      room_access: 1,
+      access_requests: 1,
+    });
+  });
+
+  it('rolls back earlier table deletes when a later delete throws', () => {
+    const inner = getRoomDb();
+    const roomId = `delete-rollback-${crypto.randomUUID()}`;
+    seedEveryRoomScopedTable(inner, roomId);
+
+    let deletes = 0;
+    const db = {
+      prepare(sql: string) {
+        const stmt = inner.prepare(sql);
+        if (!sql.startsWith('DELETE FROM')) return stmt;
+        return {
+          run(...args: unknown[]) {
+            deletes += 1;
+            if (deletes >= 3) throw new Error('injected');
+            return stmt.run(...args);
+          },
+        };
+      },
+      exec: inner.exec.bind(inner),
+      transaction: inner.transaction.bind(inner),
+    };
+
+    expect(() => deleteRoomScopedData(db as never, roomId)).toThrow('injected');
+    expect(scopedCounts(inner, roomId)).toEqual({
+      rooms: 1,
+      room_members: 1,
+      room_presence: 1,
+      waiting_peers: 1,
+      kicked_peers: 1,
+      room_access: 1,
+      access_requests: 1,
+    });
   });
 });

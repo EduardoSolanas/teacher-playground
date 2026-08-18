@@ -1,6 +1,27 @@
 import * as Y from 'yjs';
-import { describe, expect, it, vi } from 'vitest';
-import { createYWebRTCProvider, destroyProvider, getSignalingUrls } from './ywebrtcProvider';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  createYWebRTCProvider,
+  destroyProvider,
+  getSignalingUrls,
+  isWhiteboardDebugEnabled,
+  sanitizeSignalingUrl,
+} from './ywebrtcProvider';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
+
+function stubHttpsPage() {
+  vi.stubGlobal('window', {
+    location: {
+      protocol: 'https:',
+      hostname: 'whiteboard.example.com',
+      host: 'whiteboard.example.com',
+    },
+  });
+}
 
 describe('getSignalingUrls', () => {
   it('uses the browser host for the default signaling URL', () => {
@@ -13,46 +34,33 @@ describe('getSignalingUrls', () => {
     });
 
     expect(getSignalingUrls()).toEqual(['ws://192.168.1.50:3000/signaling']);
-
-    vi.unstubAllGlobals();
   });
 
   it('uses wss when the page is served over https', () => {
-    vi.stubGlobal('window', {
-      location: {
-        protocol: 'https:',
-        hostname: 'whiteboard.example.com',
-        host: 'whiteboard.example.com',
-      },
-    });
+    stubHttpsPage();
 
     expect(getSignalingUrls()).toEqual(['wss://whiteboard.example.com/signaling']);
-
-    vi.unstubAllGlobals();
   });
 
-  it('allows explicit signaling URLs from the environment', () => {
-    vi.stubEnv('NEXT_PUBLIC_YWEBRTC_SIGNALING_URL', 'wss://one.example.com, ws://two.example.com');
+  it('allows explicit development signaling URLs that use /signaling', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    vi.stubEnv(
+      'NEXT_PUBLIC_YWEBRTC_SIGNALING_URL',
+      'wss://one.example.com/signaling, ws://two.example.com/signaling',
+    );
 
-    expect(getSignalingUrls()).toEqual(['wss://one.example.com', 'ws://two.example.com']);
-
-    vi.unstubAllEnvs();
+    expect(getSignalingUrls()).toEqual([
+      'wss://one.example.com/signaling',
+      'ws://two.example.com/signaling',
+    ]);
   });
 
   it('puts the room on the signaling URL so the Worker can route the socket', () => {
-    vi.stubGlobal('window', {
-      location: {
-        protocol: 'https:',
-        hostname: 'whiteboard.example.com',
-        host: 'whiteboard.example.com',
-      },
-    });
+    stubHttpsPage();
 
     expect(getSignalingUrls('math-101')).toEqual([
       'wss://whiteboard.example.com/signaling?room=math-101',
     ]);
-
-    vi.unstubAllGlobals();
   });
 
   it('encodes a room id that needs escaping', () => {
@@ -67,19 +75,19 @@ describe('getSignalingUrls', () => {
     expect(getSignalingUrls('a b&c')).toEqual([
       'wss://example.com/signaling?room=a%20b%26c',
     ]);
-
-    vi.unstubAllGlobals();
   });
 
   it('appends the room to explicitly configured signaling URLs', () => {
-    vi.stubEnv('NEXT_PUBLIC_YWEBRTC_SIGNALING_URL', 'wss://one.example.com, ws://two.example.com/path?x=1');
+    vi.stubEnv('NODE_ENV', 'development');
+    vi.stubEnv(
+      'NEXT_PUBLIC_YWEBRTC_SIGNALING_URL',
+      'wss://one.example.com/signaling, ws://two.example.com/signaling',
+    );
 
     expect(getSignalingUrls('r1')).toEqual([
-      'wss://one.example.com?room=r1',
-      'ws://two.example.com/path?x=1&room=r1',
+      'wss://one.example.com/signaling?room=r1',
+      'ws://two.example.com/signaling?room=r1',
     ]);
-
-    vi.unstubAllEnvs();
   });
 
   it('does not initialize WebRTC on the server', () => {
@@ -92,6 +100,89 @@ describe('getSignalingUrls', () => {
     expect(() => entry.provider.connect()).not.toThrow();
 
     destroyProvider('server-render-room');
-    vi.unstubAllGlobals();
+  });
+});
+
+describe('production signaling URL policy', () => {
+  it('rejects ws:, credentials, fragments, unexpected paths, and extra query', () => {
+    const policy = { production: true, pageHost: 'whiteboard.example.com' };
+
+    expect(sanitizeSignalingUrl('ws://whiteboard.example.com/signaling', policy)).toBeNull();
+    expect(sanitizeSignalingUrl('wss://user:pass@whiteboard.example.com/signaling', policy)).toBeNull();
+    expect(sanitizeSignalingUrl('wss://whiteboard.example.com/signaling#frag', policy)).toBeNull();
+    expect(sanitizeSignalingUrl('wss://whiteboard.example.com/other', policy)).toBeNull();
+    expect(sanitizeSignalingUrl('wss://whiteboard.example.com/signaling?x=1', policy)).toBeNull();
+    expect(sanitizeSignalingUrl('https://whiteboard.example.com/signaling', policy)).toBeNull();
+  });
+
+  it('rejects non-allowlisted hosts even when the rest of the URL is well-formed', () => {
+    const policy = { production: true, pageHost: 'whiteboard.example.com' };
+
+    expect(sanitizeSignalingUrl('wss://evil.example/signaling', policy)).toBeNull();
+  });
+
+  it('accepts same-origin wss /signaling', () => {
+    expect(
+      sanitizeSignalingUrl('wss://whiteboard.example.com/signaling', {
+        production: true,
+        pageHost: 'whiteboard.example.com',
+      }),
+    ).toBe('wss://whiteboard.example.com/signaling');
+  });
+
+  it('accepts an explicitly allowlisted wss host', () => {
+    vi.stubEnv('NEXT_PUBLIC_YWEBRTC_SIGNALING_ALLOWED_HOSTS', 'signals.example.com');
+
+    expect(
+      sanitizeSignalingUrl('wss://signals.example.com/signaling', {
+        production: true,
+        pageHost: 'whiteboard.example.com',
+      }),
+    ).toBe('wss://signals.example.com/signaling');
+  });
+
+  it('fails closed when every configured production URL is unsafe', () => {
+    stubHttpsPage();
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv(
+      'NEXT_PUBLIC_YWEBRTC_SIGNALING_URL',
+      'ws://whiteboard.example.com/signaling, wss://user:secret@whiteboard.example.com/signaling, wss://whiteboard.example.com/admin#x',
+    );
+
+    expect(getSignalingUrls('room-1')).toEqual([]);
+  });
+
+  it('keeps only allowlisted production endpoints from a mixed list', () => {
+    stubHttpsPage();
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv(
+      'NEXT_PUBLIC_YWEBRTC_SIGNALING_URL',
+      'wss://evil.example/signaling, wss://whiteboard.example.com/signaling, ws://whiteboard.example.com/signaling',
+    );
+
+    expect(getSignalingUrls()).toEqual(['wss://whiteboard.example.com/signaling']);
+  });
+});
+
+describe('isWhiteboardDebugEnabled', () => {
+  it('is off for a production-like build without an explicit flag', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('NEXT_PUBLIC_WHITEBOARD_DEBUG', '');
+    vi.stubEnv('NEXT_PUBLIC_E2E', '');
+
+    expect(isWhiteboardDebugEnabled()).toBe(false);
+  });
+
+  it('is on in development', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+
+    expect(isWhiteboardDebugEnabled()).toBe(true);
+  });
+
+  it('is on when NEXT_PUBLIC_WHITEBOARD_DEBUG=1 even in production', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('NEXT_PUBLIC_WHITEBOARD_DEBUG', '1');
+
+    expect(isWhiteboardDebugEnabled()).toBe(true);
   });
 });

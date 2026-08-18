@@ -40,8 +40,7 @@ class DOStatement implements RoomStatement {
 
   // `changes` must match better-sqlite3: the rows actually modified by the
   // statement. Cursor.rowsWritten is an I/O metric that also counts index
-  // writes, so it is not interchangeable here — access.ts derives
-  // authorization booleans from this value.
+  // writes, so it is not interchangeable here.
   run(...params: unknown[]): { changes: number } {
     this.sql.exec(this.sqlQuery, ...params);
     const row = this.sql.exec('SELECT changes() AS c').one() as { c: number };

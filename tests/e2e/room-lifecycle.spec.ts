@@ -119,23 +119,26 @@ test.describe('Room lifecycle', () => {
     await expect.poll(async () => sceneElementIds(page), { timeout: 10000 }).toContain(testElemId);
   });
 
-  test('navigating directly to a room id that was never created still renders the board', async ({
+  test('navigating directly to a room id that was never created does not admit the visitor', async ({
     page,
   }) => {
-    // Navigate to a non-existent room id (use a fake UUID-like string)
-    const fakeRoomId = 'nonexistent-room-12345';
+    // Typing a URL is join, not create: first-user host is off and GET /room
+    // requires a grant, so a never-created id cannot become a live board.
+    const fakeRoomId = `never-created-${Date.now()}`;
     await page.goto(appUrl(`/whiteboard/${fakeRoomId}`));
 
-    // The app shows the username prompt for new rooms
     const usernameInput = page.getByTestId('whiteboard-username-input');
     await expect(usernameInput).toBeVisible({ timeout: 5000 });
     await usernameInput.fill('NonExistentRoomUser');
     await page.getByTestId('whiteboard-join-room-btn').click();
 
-    // The board should render and be accessible (even if empty)
-    await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
-    await waitForExcalidrawApi(page);
-    expect(await sceneElementIds(page)).toEqual([]);
+    await expect(page.getByRole('heading', { name: /Room is Full/ })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId('whiteboard-canvas-area')).toHaveCount(0);
+
+    const roomStatus = await page.evaluate(async (roomId) => {
+      return (await fetch(`/api/whiteboard/room/${roomId}`)).status;
+    }, fakeRoomId);
+    expect(roomStatus).toBe(403);
   });
 
   test('creating several rooms in succession each yields a distinct room id', async ({ browser }) => {

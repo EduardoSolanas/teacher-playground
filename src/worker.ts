@@ -251,8 +251,8 @@ export default {
       return forward(env, roomId, '/signaling', request, url, session);
     }
 
-    // Short-lived LiveKit join token. RoomDO enforces admission (owner/member
-    // only; waiting peers get 403) and mints the JWT when LIVEKIT_* is set.
+    // Short-lived LiveKit join token. RoomDO enforces admission (granted
+    // roles only; waiting peers get 403) and mints the JWT when LIVEKIT_* is set.
     if (url.pathname === AV_TOKEN) {
       // POST-only: SameSite=Lax sends the session cookie on top-level GET
       // navigations and the origin guard deliberately exempts GETs, so a GET

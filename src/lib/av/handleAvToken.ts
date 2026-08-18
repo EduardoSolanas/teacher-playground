@@ -7,7 +7,7 @@
  */
 
 import type { RoomDatabase } from '../whiteboard/db';
-import { getRoomRole } from '../whiteboard/roomSchema';
+import { getGrantRole } from '../whiteboard/membership';
 import { avEligible, avEligibilityStatus } from './avAuthorization';
 import {
   buildLiveKitToken,
@@ -40,7 +40,7 @@ export async function issueAvTokenResponse(
   input: IssueAvTokenInput,
 ): Promise<Response> {
   const config = parseLiveKitConfig(input.env);
-  const role = getRoomRole(input.db, input.roomId, input.accountId);
+  const role = getGrantRole(input.db, input.roomId, input.accountId);
   const waiting = isWaitingAccount(input.db, input.roomId, input.accountId);
 
   // Waiting overrides membership: a suspended member back in the queue must

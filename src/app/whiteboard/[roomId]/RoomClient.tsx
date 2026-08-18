@@ -20,6 +20,7 @@ import AvSessionPanel from '@/components/av/AvSessionPanel';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import * as store from '@/lib/whiteboard/store';
 import { cleanupStaleRooms } from '@/lib/whiteboard/persistence';
+import { isWhiteboardDebugEnabled } from '@/lib/whiteboard/ywebrtcProvider';
 
 const ExcalidrawWrapper = dynamic(
   () => import('@/components/whiteboard/ExcalidrawWrapper'),
@@ -79,7 +80,7 @@ function RoomContent({ roomId }: { roomId: string }) {
     setElements,
   } = useCollaboration(roomId);
 
-  const { clearState } = usePersistence(roomId, elements, { x: 0, y: 0, zoom: 1 } as any);
+  const { clearState, clearSession } = usePersistence(roomId, elements, { x: 0, y: 0, zoom: 1 } as any);
 
   // Voice only after admission. Waiting / kicked peers never fetch a token.
   const avEnabled = Boolean(userName) && !isWaiting && !wasKicked;
@@ -105,12 +106,13 @@ function RoomContent({ roomId }: { roomId: string }) {
   }, [syncUserName, userName]);
 
   useEffect(() => {
-    if (!wasKicked || typeof window === 'undefined') return;
-    window.localStorage.removeItem('whiteboard_username');
+    if (!wasKicked) return;
+    clearSession();
     setUserName(null);
-  }, [wasKicked]);
+  }, [wasKicked, clearSession]);
 
   useEffect(() => {
+    if (!isWhiteboardDebugEnabled() || typeof window === 'undefined') return;
     (window as any).__whiteboardStore = store;
     (window as any).__whiteboardCollab = {
       provider,
@@ -155,7 +157,11 @@ function RoomContent({ roomId }: { roomId: string }) {
         roomCode={roomId}
         waitingPosition={waitingPosition || waitingPeers.length + 1}
         onWait={reloadPresence}
-        onLeave={leaveWaitingRoom}
+        onLeave={() => {
+          clearSession();
+          leaveWaitingRoom();
+          setUserName(null);
+        }}
       />
     );
   }

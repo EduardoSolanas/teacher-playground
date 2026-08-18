@@ -8,11 +8,14 @@ import {
 } from './avAuthorization';
 
 describe('isAdmittedRole', () => {
-  it('admits owner and member', () => {
+  it('admits owner, editor, viewer, and legacy member', () => {
     expect(isAdmittedRole('owner')).toBe(true);
+    expect(isAdmittedRole('editor')).toBe(true);
+    expect(isAdmittedRole('viewer')).toBe(true);
     expect(isAdmittedRole('member')).toBe(true);
   });
-  it('rejects waiting and unknown', () => {
+  it('rejects pending, waiting, and unknown', () => {
+    expect(isAdmittedRole('pending')).toBe(false);
     expect(isAdmittedRole('waiting')).toBe(false);
     expect(isAdmittedRole('unknown')).toBe(false);
     expect(isAdmittedRole(null)).toBe(false);
@@ -23,6 +26,8 @@ describe('roleFromValue', () => {
   it('maps values to roles', () => {
     expect(roleFromValue('owner')).toBe('owner');
     expect(roleFromValue('member')).toBe('member');
+    expect(roleFromValue('editor')).toBe('editor');
+    expect(roleFromValue('pending')).toBe('pending');
     expect(roleFromValue('waiting')).toBe('waiting');
     expect(roleFromValue(undefined)).toBe('unknown');
   });
@@ -32,6 +37,8 @@ describe('avEligible', () => {
   it('is eligible for admitted participants', () => {
     expect(avEligible('owner').eligible).toBe(true);
     expect(avEligible('member').eligible).toBe(true);
+    expect(avEligible('editor').eligible).toBe(true);
+    expect(avEligible('viewer').eligible).toBe(true);
     expect(avEligible('owner').reason).toBe('admitted');
   });
   it('is not eligible for waiting participants', () => {

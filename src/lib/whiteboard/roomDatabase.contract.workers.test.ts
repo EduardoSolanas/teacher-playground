@@ -4,14 +4,11 @@ import { env } from 'cloudflare:workers';
 import type { RoomDO } from '../../do/RoomDO';
 import type { RoomDatabase } from './db';
 import {
-  grantAccess,
-  findGrant,
-  revokeGrant,
-  createRequest,
-  approveRequest,
-  denyRequest,
-  purgeExpiredGrants,
-} from './access';
+  approveAccount,
+  getMembership,
+  insertOwner,
+  requestAccess,
+} from './membership';
 
 declare global {
   namespace Cloudflare {
@@ -31,7 +28,7 @@ async function withDb<T>(fn: (db: RoomDatabase) => T): Promise<T> {
 }
 
 describe('RoomDatabase contract on real Durable Object SQLite', () => {
-  it('applySchema creates all six tables', async () => {
+  it('applySchema creates the room tables', async () => {
     const tables = await withDb((db) =>
       (db
         .prepare(
@@ -44,6 +41,7 @@ describe('RoomDatabase contract on real Durable Object SQLite', () => {
       'access_requests',
       'kicked_peers',
       'room_access',
+      'room_members',
       'room_presence',
       'rooms',
       'waiting_peers',
@@ -158,96 +156,47 @@ describe('RoomDatabase contract on real Durable Object SQLite', () => {
   });
 });
 
-describe('access.ts against real Durable Object SQLite', () => {
-  it('grants, finds, and revokes a grant', async () => {
+describe('membership against real Durable Object SQLite', () => {
+  it('stores one grant per account and never both pending and editor', async () => {
     const result = await withDb((db) => {
-      grantAccess(db, {
-        roomId: 'room-1',
-        token: 'tok-1',
-        role: 'peer',
-        userName: 'Ada',
-      });
-      const found = findGrant(db, 'room-1', 'tok-1');
-      const revoked = revokeGrant(db, 'room-1', 'tok-1');
-      const afterRevoke = findGrant(db, 'room-1', 'tok-1');
-      const revokedAgain = revokeGrant(db, 'room-1', 'tok-1');
-      return { found, revoked, afterRevoke, revokedAgain };
+      requestAccess(db, { roomId: 'room-1', accountId: 'acc-1', userName: 'Ada' });
+      const granted = approveAccount(db, 'room-1', 'acc-1', { role: 'editor' });
+      const rows = db
+        .prepare(`SELECT role FROM room_members WHERE room_id = ? AND account_id = ?`)
+        .all('room-1', 'acc-1') as Array<{ role: string }>;
+      return { granted: granted?.role, rows };
     });
 
-    expect(result.found).toMatchObject({ role: 'peer', userName: 'Ada' });
-    expect(result.revoked).toBe(true);
-    expect(result.afterRevoke).toBeNull();
-    // Depends on a correct `changes` of 0.
-    expect(result.revokedAgain).toBe(false);
+    expect(result.granted).toBe('editor');
+    expect(result.rows).toEqual([{ role: 'editor' }]);
   });
 
-  it('approveRequest moves a request into a grant inside one transaction', async () => {
+  it('approveAccount is a no-op when the account is not pending', async () => {
     const result = await withDb((db) => {
-      createRequest(db, {
-        roomId: 'room-2',
-        requestId: 'req-1',
-        token: 'tok-2',
-        userName: 'Grace',
-      });
-      const grant = approveRequest(db, 'room-2', 'req-1', { role: 'peer' });
+      insertOwner(db, 'room-2', 'owner', 1);
       return {
-        grant,
-        found: findGrant(db, 'room-2', 'tok-2'),
-        remaining: db
-          .prepare(`SELECT COUNT(*) AS n FROM access_requests WHERE room_id = ?`)
-          .get('room-2') as { n: number },
+        missing: approveAccount(db, 'room-2', 'nobody', { role: 'editor' }),
+        owner: getMembership(db, 'room-2', 'owner')?.role,
       };
     });
 
-    expect(result.grant).toMatchObject({ role: 'peer', userName: 'Grace' });
-    expect(result.found).toMatchObject({ role: 'peer', userName: 'Grace' });
-    expect(result.remaining.n).toBe(0);
+    expect(result.missing).toBeNull();
+    expect(result.owner).toBe('owner');
   });
 
-  it('denyRequest reports whether a request was removed', async () => {
+  it('requestAccess after ban does not insert a pending row', async () => {
     const result = await withDb((db) => {
-      createRequest(db, {
-        roomId: 'room-3',
-        requestId: 'req-2',
-        token: 'tok-3',
-        userName: 'Alan',
-      });
+      requestAccess(db, { roomId: 'room-3', accountId: 'acc-3', userName: 'Alan' });
+      db.prepare(`UPDATE room_members SET role = 'banned' WHERE room_id = ? AND account_id = ?`)
+        .run('room-3', 'acc-3');
+      const again = requestAccess(db, { roomId: 'room-3', accountId: 'acc-3', userName: 'Alan' });
       return {
-        denied: denyRequest(db, 'room-3', 'req-2'),
-        deniedAgain: denyRequest(db, 'room-3', 'req-2'),
+        again,
+        role: getMembership(db, 'room-3', 'acc-3')?.role,
       };
     });
 
-    expect(result.denied).toBe(true);
-    expect(result.deniedAgain).toBe(false);
-  });
-
-  it('purgeExpiredGrants returns the number of grants removed', async () => {
-    const purged = await withDb((db) => {
-      grantAccess(db, {
-        roomId: 'room-4',
-        token: 'expired-1',
-        role: 'peer',
-        userName: 'A',
-        expiresAt: 500,
-      });
-      grantAccess(db, {
-        roomId: 'room-4',
-        token: 'expired-2',
-        role: 'peer',
-        userName: 'B',
-        expiresAt: 500,
-      });
-      grantAccess(db, {
-        roomId: 'room-4',
-        token: 'live',
-        role: 'peer',
-        userName: 'C',
-        expiresAt: 10_000,
-      });
-      return purgeExpiredGrants(db, 1_000);
-    });
-
-    expect(purged).toBe(2);
+    expect(result.again).toEqual({ ok: false, reason: 'banned' });
+    expect(result.role).toBe('banned');
   });
 });

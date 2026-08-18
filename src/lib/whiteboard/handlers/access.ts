@@ -1,6 +1,11 @@
 import type { RoomDatabase } from '../db';
-import { getBearerToken } from '../authz';
-import { findGrant, hashToken } from '../access';
+import { verifiedAccountId } from '../authz';
+import {
+  effectiveRole,
+  getMembership,
+  toPublicRole,
+} from '../membership';
+import { internalErrorResponse } from '../../http/safeError';
 
 // GET /api/whiteboard/room/[roomId]/access - check own access status
 export async function handleAccessGet(
@@ -9,40 +14,29 @@ export async function handleAccessGet(
   request: Request,
 ): Promise<Response> {
   try {
-    const token = getBearerToken(request);
-
-    if (!token) {
-      return Response.json({ error: 'Bearer token required' }, { status: 401 });
+    const accountId = verifiedAccountId(request);
+    if (!accountId) {
+      return Response.json({ error: 'Account required' }, { status: 401 });
     }
 
-    // Check if token has a valid grant
-    const grant = findGrant(db, roomId, token);
-    if (grant) {
+    const membership = getMembership(db, roomId, accountId);
+    const role = effectiveRole(membership);
+    if (role === 'banned') {
+      return Response.json({ status: 'rejected' });
+    }
+    if (role === 'pending') {
+      return Response.json({ status: 'pending' });
+    }
+    if (membership && (role === 'owner' || role === 'editor' || role === 'viewer')) {
       return Response.json({
         status: 'approved',
-        role: grant.role,
-        expiresAt: grant.expiresAt,
+        role: toPublicRole(role),
+        expiresAt: membership.expiresAt,
       });
     }
 
-    // Check if token has a pending request
-    const tokenHash = hashToken(token);
-    const pendingRequest = db.prepare(`
-      SELECT request_id FROM access_requests
-      WHERE room_id = ? AND token_hash = ?
-      LIMIT 1
-    `).get(roomId, tokenHash) as { request_id: string } | undefined;
-
-    if (pendingRequest) {
-      return Response.json({ status: 'pending' });
-    }
-
-    // No grant or request
     return Response.json({ status: 'none' });
   } catch (e) {
-    return Response.json(
-      { error: e instanceof Error ? e.message : 'Failed to check access' },
-      { status: 500 }
-    );
+    return internalErrorResponse(e, 'handleAccessGet');
   }
 }

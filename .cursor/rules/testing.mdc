@@ -1,0 +1,11 @@
+---
+description: Strict TDD, required e2e, and mutation testing
+alwaysApply: true
+---
+
+Follow root `AGENTS.md` for all code changes.
+
+- Strict TDD: failing test first, then the smallest implementation.
+- Run `npm test`, `npm run test:workers`, and `npm run typecheck` every cycle.
+- Run `npm run test:e2e` (via `scripts/run-e2e.mjs`, never raw Playwright) before handing off user-visible or HTTP/session work.
+- Mutation-test new security guards: invert one check, prove tests fail, revert. Do not write “mutation-tested” in `security.md` unless that was done.

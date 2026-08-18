@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 
-import {
-  applySchema,
-  addRoomMember,
-} from '../whiteboard/roomSchema';
+import { applySchema } from '../whiteboard/roomSchema';
+import { approveAccount, insertOwner, requestAccess } from '../whiteboard/membership';
 import type { RoomDatabase } from '../whiteboard/db';
 import { issueAvTokenResponse } from './handleAvToken';
 import { verifyLiveKitToken } from './livekitToken';
@@ -24,7 +22,7 @@ const LIVEKIT_ENV = {
 describe('issueAvTokenResponse', () => {
   it('returns 503 when LiveKit is unconfigured', async () => {
     const db = memoryDb();
-    addRoomMember(db, 'room-1', 'acct-owner', 'owner');
+    insertOwner(db, 'room-1', 'acct-owner');
     const res = await issueAvTokenResponse({
       db,
       env: {},
@@ -66,7 +64,9 @@ describe('issueAvTokenResponse', () => {
 
   it('returns 403 when a member is back in the waiting queue', async () => {
     const db = memoryDb();
-    addRoomMember(db, 'room-1', 'acct-member', 'member');
+    insertOwner(db, 'room-1', 'acct-owner');
+    requestAccess(db, { roomId: 'room-1', accountId: 'acct-member', userName: 'Peer' });
+    approveAccount(db, 'room-1', 'acct-member', { role: 'editor' });
     db.prepare(
       `INSERT INTO waiting_peers (room_id, peer_id, user_name, color, requested_at, account_id)
        VALUES (?, ?, ?, ?, ?, ?)`,
@@ -88,7 +88,7 @@ describe('issueAvTokenResponse', () => {
     // admitted participant bump another off the call. The identity is
     // therefore always the server-verified account id.
     const db = memoryDb();
-    addRoomMember(db, 'room-1', 'acct-owner', 'owner');
+    insertOwner(db, 'room-1', 'acct-owner');
     const res = await issueAvTokenResponse({
       db,
       env: LIVEKIT_ENV,
@@ -114,7 +114,9 @@ describe('issueAvTokenResponse', () => {
 
   it('issues a token for an admitted member', async () => {
     const db = memoryDb();
-    addRoomMember(db, 'room-1', 'acct-member', 'member');
+    insertOwner(db, 'room-1', 'acct-owner');
+    requestAccess(db, { roomId: 'room-1', accountId: 'acct-member', userName: 'Peer' });
+    approveAccount(db, 'room-1', 'acct-member', { role: 'editor' });
     const res = await issueAvTokenResponse({
       db,
       env: LIVEKIT_ENV,

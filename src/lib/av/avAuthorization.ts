@@ -2,21 +2,23 @@
  * A/V admission authorization.
  *
  * The video feature must only be available to participants who have been
- * admitted into the room (role `owner` or `member`). Waiting participants
- * (role `waiting` / no row yet) must be denied A/V tokens.
+ * admitted into the room (owner / editor / viewer). Pending, banned, and
+ * unknown accounts must be denied A/V tokens. `member` is kept as an alias
+ * for editor-equivalent admission from older grant rows.
  */
 
-export type RoomRole = 'owner' | 'member' | 'waiting' | 'unknown';
+export type RoomRole = 'owner' | 'editor' | 'viewer' | 'member' | 'pending' | 'waiting' | 'unknown';
 
 /** True when the account is an admitted (non-waiting) room participant. */
 export function isAdmittedRole(role: unknown): boolean {
-  return role === 'owner' || role === 'member';
+  return role === 'owner' || role === 'editor' || role === 'viewer' || role === 'member';
 }
 
 export function roleFromValue(value: unknown): RoomRole {
   if (value === 'owner') return 'owner';
-  if (value === 'member') return 'member';
-  if (value === 'waiting') return 'waiting';
+  if (value === 'editor' || value === 'member') return value;
+  if (value === 'viewer') return 'viewer';
+  if (value === 'pending' || value === 'waiting') return value;
   return 'unknown';
 }
 
@@ -29,7 +31,7 @@ export function avEligible(role: unknown): AvEligibility {
   if (isAdmittedRole(role)) {
     return { eligible: true, reason: 'admitted' };
   }
-  if (role === 'waiting') {
+  if (role === 'waiting' || role === 'pending') {
     return { eligible: false, reason: 'waiting' };
   }
   return { eligible: false, reason: 'not-a-member' };

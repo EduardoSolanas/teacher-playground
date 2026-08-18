@@ -95,62 +95,87 @@ export function applySchema(db: RoomDatabase): void {
     CREATE INDEX IF NOT EXISTS idx_room_access_room ON room_access(room_id)
   `);
 
-  // Durable room membership, keyed by the verified local account rather than a
-  // client-supplied peer id. room_presence is a liveness view that is pruned on
-  // a short timer, so it cannot answer "may this account open this board".
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS room_members (
-      room_id TEXT NOT NULL,
-      account_id TEXT NOT NULL,
-      role TEXT NOT NULL CHECK (role IN ('owner','member')),
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (room_id, account_id)
-    )
-  `);
+  // One grant per local account. waiting_peers / room_access are not
+  // authorization; presence is liveness only.
+  migrateRoomMembers(db);
 
-  // The account behind a peer, so an approval can promote the right account.
   for (const table of ['room_presence', 'waiting_peers']) {
-    const columns = db
+    const peerColumns = db
       .prepare(`PRAGMA table_info(${table})`)
       .all() as Array<{ name: string }>;
-    if (!columns.some((column) => column.name === 'account_id')) {
+    if (!peerColumns.some((column) => column.name === 'account_id')) {
       db.exec(`ALTER TABLE ${table} ADD COLUMN account_id TEXT`);
     }
   }
 }
 
-export type RoomRole = 'owner' | 'member';
+const MEMBERSHIP_DDL = `
+  CREATE TABLE room_members (
+    room_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('owner','editor','viewer','pending','banned')),
+    display_name TEXT,
+    email TEXT,
+    requested_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    expires_at INTEGER,
+    PRIMARY KEY (room_id, account_id)
+  )
+`;
 
-/** Records a room membership. An existing owner is never demoted. */
-export function addRoomMember(
-  db: RoomDatabase,
-  roomId: string,
-  accountId: string,
-  role: RoomRole,
-  now = Date.now(),
-): void {
-  db.prepare(
-    `INSERT INTO room_members (room_id, account_id, role, created_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(room_id, account_id) DO UPDATE SET
-       role = CASE WHEN room_members.role = 'owner' THEN 'owner' ELSE excluded.role END`,
-  ).run(roomId, accountId, role, now);
-}
+function migrateRoomMembers(db: RoomDatabase): void {
+  const existing = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'room_members'`)
+    .get() as { name: string } | undefined;
 
-export function getRoomRole(
-  db: RoomDatabase,
-  roomId: string,
-  accountId: string | null,
-): RoomRole | null {
-  if (!accountId) return null;
-  const row = db
-    .prepare(`SELECT role FROM room_members WHERE room_id = ? AND account_id = ?`)
-    .get(roomId, accountId) as { role: RoomRole } | undefined;
-  return row?.role ?? null;
+  if (!existing) {
+    db.exec(MEMBERSHIP_DDL);
+    return;
+  }
+
+  const memberColumns = db
+    .prepare(`PRAGMA table_info(room_members)`)
+    .all() as Array<{ name: string }>;
+  if (memberColumns.some((column) => column.name === 'display_name')) return;
+
+  db.exec(MEMBERSHIP_DDL.replace('CREATE TABLE room_members', 'CREATE TABLE room_members_v2'));
+  db.exec(`
+    INSERT INTO room_members_v2 (
+      room_id, account_id, role, display_name, email,
+      requested_at, created_at, updated_at, expires_at
+    )
+    SELECT room_id, account_id,
+           CASE role WHEN 'member' THEN 'editor' ELSE role END,
+           NULL, NULL, NULL, created_at, created_at, NULL
+    FROM room_members
+  `);
+  db.exec(`DROP TABLE room_members`);
+  db.exec(`ALTER TABLE room_members_v2 RENAME TO room_members`);
 }
 
 export function roomExists(db: RoomDatabase, roomId: string): boolean {
   return db.prepare(`SELECT 1 FROM rooms WHERE room_id = ?`).get(roomId) !== undefined;
+}
+
+/** Every table that stores a `room_id`. Leftover token tables are included. */
+export const ROOM_SCOPED_TABLES = [
+  'room_presence',
+  'waiting_peers',
+  'kicked_peers',
+  'room_access',
+  'access_requests',
+  'room_members',
+  'rooms',
+] as const;
+
+/** Deletes every room-scoped row in one SQLite transaction. */
+export function deleteRoomScopedData(db: RoomDatabase, roomId: string): void {
+  db.transaction(() => {
+    for (const table of ROOM_SCOPED_TABLES) {
+      db.prepare(`DELETE FROM ${table} WHERE room_id = ?`).run(roomId);
+    }
+  })();
 }
 
 /**

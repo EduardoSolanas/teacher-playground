@@ -1,10 +1,22 @@
-/** Stable per-room peer id (survives refresh) for collaboration and host assignment. */
+import { randomHexId } from '@/lib/crypto/randomId';
+
+export function peerIdStorageKey(roomId: string): string {
+  return `whiteboard:${roomId}:peer_id`;
+}
+
+/**
+ * Stable per-room cursor label in localStorage. This is never a grant key:
+ * the server binds the label to the authenticated account on join and
+ * authorizes from `room_members.account_id`. Server-issued session ids were
+ * not added here (client Yjs/cursor identity is still this label); forging
+ * it cannot moderate or un-ban.
+ */
 export function getStablePeerId(roomId: string) {
-  const fallback = `user-${Math.random().toString(36).substring(2, 9)}`;
+  const fallback = `user-${randomHexId()}`;
   if (typeof window === 'undefined') return fallback;
 
   try {
-    const key = `whiteboard:${roomId}:peer_id`;
+    const key = peerIdStorageKey(roomId);
     const saved = localStorage.getItem(key);
     if (saved) return saved;
 
@@ -12,5 +24,14 @@ export function getStablePeerId(roomId: string) {
     return fallback;
   } catch {
     return fallback;
+  }
+}
+
+export function clearStoredPeerId(roomId: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(peerIdStorageKey(roomId));
+  } catch {
+    // localStorage unavailable
   }
 }

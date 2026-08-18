@@ -58,6 +58,20 @@ function expectOutsideInclusiveRange(
 }
 
 describe('development dependency security policy', () => {
+  it('makes high and critical npm audit failures blocking in CI', () => {
+    const ciWorkflow = readFileSync(resolve(repositoryRoot, '.github/workflows/ci.yml'), 'utf8').replace(
+      /\r\n/g,
+      '\n',
+    );
+    const auditStep = ciWorkflow.match(
+      /- name: Audit npm dependencies\n(?:[ \t]+.+\n)*?[ \t]+run: npm audit --audit-level=high\n?/,
+    );
+
+    expect(auditStep, 'CI must run a blocking high/critical npm audit').not.toBeNull();
+    expect(auditStep?.[0]).not.toMatch(/continue-on-error:\s*true/);
+    expect(ciWorkflow).not.toMatch(/Dependency audit \(non-blocking\)/);
+  });
+
   it('pins patched versions for the audited high and critical advisories', () => {
     const lock = readPackageLock();
 

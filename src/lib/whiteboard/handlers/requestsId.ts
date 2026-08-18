@@ -1,9 +1,9 @@
 import type { RoomDatabase } from '../db';
-import { requireGrant } from '../authz';
-import { approveRequest, denyRequest, Role } from '../access';
+import { verifiedAccountId } from '../authz';
+import { approveAccount, approveRoleFromPayload, banAccount, getGrantRole, isOwnerRole, toPublicRole } from '../membership';
 import { parseBody, requestActionPostSchema } from '../requestSchemas';
+import { internalErrorResponse } from '../../http/safeError';
 
-// POST /api/whiteboard/room/[roomId]/requests/[requestId] - approve or deny request
 export async function handleRequestsIdPost(
   db: RoomDatabase,
   roomId: string,
@@ -11,8 +11,11 @@ export async function handleRequestsIdPost(
   request: Request,
 ): Promise<Response> {
   try {
-    const grant = requireGrant(db, roomId, request, ['creator']);
-    if (!grant) {
+    const caller = verifiedAccountId(request);
+    if (!caller) {
+      return Response.json({ error: 'Account required' }, { status: 401 });
+    }
+    if (!isOwnerRole(getGrantRole(db, roomId, caller))) {
       return Response.json({ error: 'Forbidden' }, { status: 403 });
     }
 
@@ -29,18 +32,14 @@ export async function handleRequestsIdPost(
     }
 
     const { action, role } = parseResult.data;
+    // The path names the waiting account. Body.accountId, if sent, is ignored.
+    const targetAccountId = requestId;
 
     if (action === 'approve') {
-      const approveRole = (role ?? 'peer') as Role;
-      const now = Date.now();
-      const expiresAt = approveRole === 'peer'
-        ? now + 12 * 60 * 60 * 1000 // 12 hours for peer
-        : null; // no expiry for viewer
-
-      const result = approveRequest(db, roomId, requestId, {
-        role: approveRole,
-        expiresAt,
-      });
+      const grantRole = approveRoleFromPayload(role);
+      const result = db.transaction(() =>
+        approveAccount(db, roomId, targetAccountId, { role: grantRole }),
+      )();
 
       if (!result) {
         return Response.json({ error: 'Request not found' }, { status: 404 });
@@ -48,21 +47,31 @@ export async function handleRequestsIdPost(
 
       return Response.json({
         success: true,
-        role: result.role,
+        role: toPublicRole(result.role),
         expiresAt: result.expiresAt,
       });
     }
 
-    const deleted = denyRequest(db, roomId, requestId);
-    if (!deleted) {
+    let denied = false;
+    db.transaction(() => {
+      const pending = db
+        .prepare(
+          `SELECT 1 FROM room_members WHERE room_id = ? AND account_id = ? AND role = 'pending'`,
+        )
+        .get(roomId, targetAccountId);
+      if (!pending) return;
+      banAccount(db, roomId, targetAccountId);
+      db.prepare(`DELETE FROM waiting_peers WHERE room_id = ? AND account_id = ?`)
+        .run(roomId, targetAccountId);
+      denied = true;
+    })();
+
+    if (!denied) {
       return Response.json({ error: 'Request not found' }, { status: 404 });
     }
 
     return Response.json({ success: true });
   } catch (e) {
-    return Response.json(
-      { error: e instanceof Error ? e.message : 'Failed to process request' },
-      { status: 500 }
-    );
+    return internalErrorResponse(e, 'handleRequestsIdPost');
   }
 }

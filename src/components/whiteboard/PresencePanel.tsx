@@ -9,10 +9,10 @@ interface PresencePanelProps {
   isLocalHost: boolean;
   collapsed: boolean;
   onToggle: () => void;
-  onApprove: (peerId: string) => void;
-  onReject: (peerId: string) => void;
-  onKick: (peerId: string) => void;
-  onSuspend: (peerId: string) => void;
+  onApprove: (peerId: string, accountId?: string | null) => void;
+  onReject: (peerId: string, accountId?: string | null) => void;
+  onKick: (peerId: string, accountId?: string | null) => void;
+  onSuspend: (peerId: string, accountId?: string | null) => void;
   /** Peer ids whose microphone is currently muted in the voice session. */
   mutedPeerIds?: ReadonlySet<string>;
 }
@@ -68,37 +68,37 @@ export default function PresencePanel({
     }
   }, [menuOpen, handleCloseMenu]);
 
-  const handleApproveAction = useCallback(() => {
-    if (menuPeerId) {
-      onApprove(menuPeerId);
-      handleCloseMenu();
-    }
-  }, [menuPeerId, onApprove, handleCloseMenu]);
-
-  const handleRejectAction = useCallback(() => {
-    if (menuPeerId) {
-      onReject(menuPeerId);
-      handleCloseMenu();
-    }
-  }, [menuPeerId, onReject, handleCloseMenu]);
-
-  const handleKick = useCallback(() => {
-    if (menuPeerId) {
-      onKick(menuPeerId);
-      handleCloseMenu();
-    }
-  }, [menuPeerId, onKick, handleCloseMenu]);
-
-  const handleSuspend = useCallback(() => {
-    if (menuPeerId) {
-      onSuspend(menuPeerId);
-      handleCloseMenu();
-    }
-  }, [menuPeerId, onSuspend, handleCloseMenu]);
-
   const waitingPeerIds = new Set(waitingPeers.map((user) => user.peerId));
   const allUsers = [...waitingPeers, ...users.filter((user) => !waitingPeerIds.has(user.peerId))];
   const menuPeer = menuPeerId ? allUsers.find((user) => user.peerId === menuPeerId) : null;
+
+  const handleApproveAction = useCallback(() => {
+    if (menuPeerId) {
+      onApprove(menuPeerId, menuPeer?.accountId);
+      handleCloseMenu();
+    }
+  }, [menuPeerId, menuPeer?.accountId, onApprove, handleCloseMenu]);
+
+  const handleRejectAction = useCallback(() => {
+    if (menuPeerId) {
+      onReject(menuPeerId, menuPeer?.accountId);
+      handleCloseMenu();
+    }
+  }, [menuPeerId, menuPeer?.accountId, onReject, handleCloseMenu]);
+
+  const handleKick = useCallback(() => {
+    if (menuPeerId) {
+      onKick(menuPeerId, menuPeer?.accountId);
+      handleCloseMenu();
+    }
+  }, [menuPeerId, menuPeer?.accountId, onKick, handleCloseMenu]);
+
+  const handleSuspend = useCallback(() => {
+    if (menuPeerId) {
+      onSuspend(menuPeerId, menuPeer?.accountId);
+      handleCloseMenu();
+    }
+  }, [menuPeerId, menuPeer?.accountId, onSuspend, handleCloseMenu]);
   const menuPeerIsWaiting = Boolean(menuPeer?.isWaiting);
   const menu =
     isLocalHost && menuOpen && menuPeerId && menuPeer ? (
@@ -273,7 +273,7 @@ export default function PresencePanel({
                       data-testid={`whiteboard-approve-${user.peerId}`}
                       onClick={(e) => {
                         e.stopPropagation();
-                        onApprove(user.peerId);
+                        onApprove(user.peerId, user.accountId);
                       }}
                       className="flex-shrink-0 rounded-lg bg-emerald-500 px-3 py-1.5 text-[12px] font-semibold text-white shadow-md transition-colors duration-150 hover:bg-emerald-600"
                     >

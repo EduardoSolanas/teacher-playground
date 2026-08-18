@@ -102,6 +102,7 @@ async function expectPersistedElement(page: Page, roomId: string, elementId: str
 // ── Waiting Room State Helpers ───────────────────────────────────────────────
 
 async function getCollabState(page: Page) {
+  // Requires debug globals: development, NEXT_PUBLIC_WHITEBOARD_DEBUG=1, or NEXT_PUBLIC_E2E=1.
   return page.evaluate(() => {
     const collab = (window as any).__whiteboardCollab;
     return { isWaiting: collab?.isWaiting ?? false };

@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { generateRoomId } from '@/lib/crypto/randomId';
 import { getStablePeerId } from '@/lib/whiteboard/peerId';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 
@@ -11,15 +12,6 @@ export default function WhiteboardRoute() {
   const [maxUsers, setMaxUsers] = useState(3);
   const [creationTimes, setCreationTimes] = useState<number[]>([]);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
-
-  const generateRoomId = useCallback(() => {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    let id = '';
-    for (let i = 0; i < 8; i++) {
-      id += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return id;
-  }, []);
 
   const isValidRoomCode = (code: string): boolean => /^[a-zA-Z0-9_-]{1,20}$/.test(code);
 
@@ -39,18 +31,26 @@ export default function WhiteboardRoute() {
     const hostPeerId = getStablePeerId(roomId);
 
     try {
-      const response = await ajaxFetch(`/api/whiteboard/room/${roomId}`, {
+      const created = await ajaxFetch(`/api/whiteboard/room/${roomId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           elements: [],
           viewport: { x: 0, y: 0, zoom: 1 },
-          maxUsers,
-          hostPeerId,
         }),
       });
 
-      if (!response.ok) {
+      if (!created.ok) {
+        throw new Error('Failed to create room');
+      }
+
+      const settings = await ajaxFetch(`/api/whiteboard/room/${roomId}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxUsers, hostPeerId }),
+      });
+
+      if (!settings.ok) {
         throw new Error('Failed to create room');
       }
 
@@ -60,7 +60,7 @@ export default function WhiteboardRoute() {
       setIsCreatingRoom(false);
       alert('Room creation failed. Please try again.');
     }
-  }, [creationTimes, generateRoomId, isCreatingRoom, maxUsers, router]);
+  }, [creationTimes, isCreatingRoom, maxUsers, router]);
 
   const handleJoinRoom = useCallback(() => {
     if (joinCode.trim().length > 0 && isValidRoomCode(joinCode.trim())) {

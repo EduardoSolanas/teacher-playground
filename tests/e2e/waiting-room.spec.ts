@@ -248,7 +248,7 @@ test.describe('Waiting Room', () => {
     await context2.close();
   });
 
-  test('host can approve, kick, and re-approve a peer', async ({ browser }) => {
+  test('kicked account is banned and cannot re-queue', async ({ browser }) => {
     const context1 = await newAuthenticatedContext(browser);
     const context2 = await newAuthenticatedContext(browser);
 
@@ -262,7 +262,6 @@ test.describe('Waiting Room', () => {
     const peerId = await approveFirstWaitingPeer(page1);
     await expect(page2.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
 
-    // Kick
     const userItem = page1.locator(`[data-testid="whiteboard-user-${peerId}"]`);
     await userItem.click({ button: 'right' });
     await page1.waitForTimeout(300);
@@ -270,30 +269,26 @@ test.describe('Waiting Room', () => {
 
     await expectNotWaiting(page2);
 
-    // Peer joins again -> waiting room. Uses the shared helper rather than
-    // sampling isVisible() straight after goto: the page has not rendered at
-    // that point, so the username was never entered and the rejoin silently
-    // did not happen.
+    await expect
+      .poll(
+        async () =>
+          page2.evaluate(async (id) => {
+            const room = await fetch(`/api/whiteboard/room/${id}`);
+            const request = await fetch(`/api/whiteboard/room/${id}/requests`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ userName: 'Peer' }),
+            });
+            return { room: room.status, request: request.status };
+          }, roomId),
+        { timeout: 15000 },
+      )
+      .toEqual({ room: 403, request: 403 });
+
     await joinExistingRoom(page2, roomId, 'Peer');
-
-    // Being kicked clears the stored username, so the prompt can reappear once
-    // the rejoin is processed. Without answering it a second time the peer
-    // never posts presence again and never reaches the queue.
-    const rejoinPrompt = page2.getByTestId('whiteboard-username-input');
-    await rejoinPrompt
-      .waitFor({ state: 'visible', timeout: 5000 })
-      .then(async () => {
-        await rejoinPrompt.fill('Peer', { timeout: 5000 }).catch(() => {});
-        await page2.getByTestId('whiteboard-join-room-btn').click({ timeout: 5000 }).catch(() => {});
-      })
-      .catch(() => {});
-
-    await expectWaiting(page2);
-
-    await approveFirstWaitingPeer(page1);
-    await expect(page2.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
-
-    await expectNotWaiting(page2);
+    await expect(page2.getByTestId('whiteboard-canvas-area')).toHaveCount(0);
+    await expect(page2.getByRole('heading', { name: /Room is Full/ })).toHaveCount(0);
+    await expect(page1.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: 'Waiting' })).toHaveCount(0);
 
     await context1.close();
     await context2.close();
