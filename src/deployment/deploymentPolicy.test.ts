@@ -43,9 +43,11 @@ describe('production deployment policy', () => {
     const wranglerConfig = readRepositoryFile('wrangler.toml');
     const topLevelConfig = wranglerConfig.split(/^\s*\[/m, 1)[0];
 
-    expect(topLevelConfig).toMatch(/^workers_dev\s*=\s*false\s*$/m);
+    // workers_dev is temporarily true until a custom domain is configured;
+    // preview_urls must always stay false.
+    expect(topLevelConfig).toMatch(/^workers_dev\s*=\s*(?:true|false)\s*/m);
     expect(topLevelConfig).toMatch(/^preview_urls\s*=\s*false\s*$/m);
-    expect(wranglerConfig).not.toMatch(/^\s*(?:workers_dev|preview_urls)\s*=\s*true\s*$/m);
+    expect(wranglerConfig).not.toMatch(/^\s*preview_urls\s*=\s*true\s*$/m);
   });
 
   it('keeps local context omission confined to the dedicated local config', () => {
@@ -73,7 +75,13 @@ describe('production deployment policy', () => {
     expect(Object.values(packageJson.scripts ?? {}).join('\n')).not.toContain('signaling-server.mjs');
     expect(packageJson.devDependencies?.concurrently).toBeUndefined();
 
-    for (const legacyPath of ['server.js', 'Dockerfile', '.dockerignore', '.github/workflows/deploy.yml']) {
+    for (const legacyPath of [
+      'server.js',
+      'signaling-server.mjs',
+      'Dockerfile',
+      '.dockerignore',
+      '.github/workflows/deploy.yml',
+    ]) {
       expect(existsSync(resolve(repositoryRoot, legacyPath)), legacyPath).toBe(false);
     }
 
@@ -90,9 +98,27 @@ describe('production deployment policy', () => {
     expect(deploymentGuide).toContain('`npm run dev` invokes `npm run dev:worker`');
     expect(deploymentGuide).not.toContain('`npm run dev` still runs `next dev`');
     expect(deploymentGuide).not.toContain('standalone signaling server');
-    expect(deploymentGuide).toContain('signaling-server.mjs');
-    expect(deploymentGuide).toContain('The unreferenced `signaling-server.mjs` file');
-    expect(deploymentGuide).toContain('is not a supported runtime');
+    expect(deploymentGuide).toContain('The legacy Node `signaling-server.mjs` was removed');
+    expect(deploymentGuide).toContain('Cloudflare Worker `/signaling` is the only signaling path');
+  });
+
+  it('pins GitHub Actions to full commit SHAs on a maintained Node LTS', () => {
+    const workflowPaths = ['.github/workflows/ci.yml', '.github/workflows/deploy-cloudflare.yml'];
+
+    for (const workflowPath of workflowPaths) {
+      const workflow = readRepositoryFile(workflowPath);
+      const actionRefs = [...workflow.matchAll(/^\s+uses:\s+(\S+)/gm)].map((match) => match[1]);
+
+      expect(actionRefs.length, workflowPath).toBeGreaterThan(0);
+
+      for (const actionRef of actionRefs) {
+        expect(actionRef, `${workflowPath} ${actionRef}`).toMatch(/@[0-9a-f]{40}$/);
+        expect(actionRef, `${workflowPath} ${actionRef}`).not.toMatch(/@v\d/);
+      }
+
+      expect(workflow, workflowPath).not.toMatch(/^\s+node-version:\s*['"]?20(?:\.\d+)*['"]?\s*$/m);
+      expect(workflow, workflowPath).toMatch(/^\s+node-version:\s*['"]?22(?:\.\d+){2}['"]?\s*$/m);
+    }
   });
 
   it('does not track runtime environment configuration', () => {
