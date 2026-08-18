@@ -1067,13 +1067,8 @@ acceptance tests and evidence are satisfied.
     dropping the ArrayBuffer branch timed out the workers test (reverted).
     Browser collaboration uses `y-websocket` `SignalingWebsocketProvider`
     against `/signaling?room=` (`url` getter is live in y-websocket 3).
-    Residual: JSON y-webrtc `publish` remains. Independent verifier
-    APPROVE-AS-BLOCKED for host→peer e2e over `/signaling` with no
-    RTCPeerConnection. Follow-up: typecheck TS2352 fixed; mock honors
-    `connect: false` so restoring that option fails
-    `connects the websocket provider in the browser` (reverted). Late-joiner
-    e2e uses API persist, not Yjs history. Viewer binary is separately
-    APPROVE.
+    Residual: late-joiner e2e uses API persist, not Yjs history. Viewer
+    binary and JSON `publish` are separately APPROVE (live `canWriteBoard`).
 - [ ] Do not create a collaboration provider before approval and authorization.
   - Evidence: independent verifier APPROVE-AS-BLOCKED (do not check).
     `shouldStartCollaboration` blocks pending/waiting/kicked; the hook
@@ -1089,8 +1084,8 @@ acceptance tests and evidence are satisfied.
   one-time ticket is necessary (SEC-003).
   - Evidence: independent verifier APPROVE for grant-gated `/signaling`
     upgrades (pending/outsider 403, owner 101). Origin + session were
-    already required. Residual: JSON y-webrtc `publish` is still accepted;
-    Yjs binary now shares this socket (see Yjs move item).
+    already required. Residual: ping/subscribe still have no write gate;
+    Yjs binary shares this socket (see Yjs move item).
 - [ ] Bind every socket attachment to `account_id`, `session_id`, room grant
   version, role, and expiry; validate exact `Origin`, protocol, topic, schema,
   message size, connection count, rate, and bounded fan-out.
@@ -1104,12 +1099,13 @@ acceptance tests and evidence are satisfied.
 - [ ] Add raw-client adversarial tests for pending reads, viewer writes, socket
   replay, wrong room/origin, malformed/oversized frames, rate abuse, kick, and
   account-wide revocation.
-  - Evidence: independent verifier APPROVE for viewer binary drop.
-    Each ArrayBuffer is gated with live `getGrantRole` + `canWriteBoard`;
-    missing attachment fails closed. Mutant (skip the guard) killed
-    `does not relay binary ArrayBuffer frames from a viewer`. Residual:
-    JSON `publish` from viewers still fans out; viewer awareness binary
-    is also dropped.
+  - Evidence: independent verifier APPROVE for viewer binary drop and
+    viewer JSON `publish` drop. Each ArrayBuffer and each `publish` is
+    gated with live `getGrantRole` + `canWriteBoard`; missing attachment
+    fails closed. Mutants (skip each guard) killed the matching workers
+    tests. Residual: ping/subscribe from viewers; viewer awareness binary
+    is also dropped. Kick still uses the 30s alarm, not an immediate
+    socket close.
 
 **Phase gate**
 

@@ -551,6 +551,11 @@ export class RoomDO extends DurableObject {
 
       case 'publish': {
         if (typeof msg.topic !== 'string') return;
+        const attachment = ws.deserializeAttachment() as SocketIdentity | null;
+        if (!attachment?.accountId || !attachment.roomId) return;
+        const role = getGrantRole(this.db, attachment.roomId, attachment.accountId);
+        if (!canWriteBoard(role)) return;
+
         const peers = this.ctx.getWebSockets();
         // The publisher receives its own message too.
         // y-webrtc filters by peer id, and changing this breaks peer discovery.

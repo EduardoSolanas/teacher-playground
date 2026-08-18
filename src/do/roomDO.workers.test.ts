@@ -244,6 +244,58 @@ describe('y-webrtc signaling over Durable Object WebSockets', () => {
     expect(leaked).toBe(false);
   });
 
+  async function connectGranted(who: LocalAuthSession, roomId: string): Promise<WebSocket> {
+    const res = await authenticatedFetch(`/signaling?room=${roomId}`, who, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(res.status).toBe(101);
+    const ws = res.webSocket;
+    if (!ws) throw new Error('no webSocket on response');
+    ws.accept();
+    return ws;
+  }
+
+  async function grantViewer(
+    owner: LocalAuthSession,
+    viewer: LocalAuthSession,
+    roomId: string,
+  ) {
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, viewer, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Viewer' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${viewer.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'viewer' }),
+      },
+    )).status).toBe(200);
+  }
+
+  it('does not fan out JSON publish from a viewer', async () => {
+    const owner = await bootstrapLocalSession('publish-viewer-owner');
+    const viewer = await bootstrapLocalSession('publish-viewer-viewer');
+    const roomId = 'publish-viewer-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantViewer(owner, viewer, roomId);
+
+    const ownerSocket = await connectGranted(owner, roomId);
+    const viewerSocket = await connectGranted(viewer, roomId);
+
+    let received = false;
+    ownerSocket.addEventListener('message', () => { received = true; }, { once: true });
+
+    viewerSocket.send(JSON.stringify({ type: 'publish', topic: 'whiteboard-signal-room', data: 'hello' }));
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(received).toBe(false);
+  });
+
   it('replies to an application-level ping', async () => {
     const ws = await connect('ping-room');
     const reply = nextMessage(ws);
