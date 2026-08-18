@@ -176,6 +176,11 @@ message-size, connection-count, or publish-rate check exists.
 - [ ] Require an existing room and bind the connection attachment to its room.
 - [ ] Enforce protocol schemas, expected topic, frame size, sockets per room and
   principal, message rate, and bounded fan-out.
+  - Verified live in code (review round 2, `RoomDO.webSocketMessage`): no
+    frame-size cap, no message-rate limit, no per-principal socket cap, and a
+    `publish` is broadcast to every room socket — an admitted peer can send
+    arbitrarily large frames at any rate with room-sized amplification. This
+    is a standing weakness on main today, not merely planned work.
 - [ ] Redact credentials/tickets from logs and metrics.
 - [ ] Revalidate on hibernation wake: a WebSocket attachment written at accept
   time is a snapshot, not a session. On wake (message or alarm after
@@ -1011,10 +1016,14 @@ acceptance tests and evidence are satisfied.
 
 - [ ] Every HTTP route is mapped to the matrix; rejected operations leave all
   tables unchanged; no anonymous or pending caller receives room data or PII.
-  - Evidence: independent verifier said do not check. Full e2e is not
-    green: `room-lifecycle` never-created room, `waiting-room` self-leave
-    prompt, and kick-then-re-approve (kick is a ban). `GET /settings` is
-    always 403 including for the owner.
+  - Evidence: independent verifier APPROVE-AS-BLOCKED (do not check).
+    The three stale UI specs are aligned (never-created URL is join not
+    create; self-leave restores the username prompt; kick is a lasting
+    account ban). Re-verified after the LiveKit merge: `npm test` 281,
+    `npm run test:workers` 96, typecheck clean, `npm run test:e2e` 93/93.
+    Residual that keeps this gate open: `GET /settings` is 403 even for
+    the owner (`POST`/`PATCH` still succeed). Kick mutant (`dropPending`
+    instead of `banAccount`) was killed.
 
 ### Phase 3 — replace the peer-to-peer security boundary
 
@@ -1396,3 +1405,38 @@ becoming a bridge into a teacher's entire Drive.
 - If Phase 11 ships, no integration holds a broader scope than picked-file
   access, no plaintext provider token is stored, and no third-party origin
   loads in a room outside the owner-controlled allowlist (Phase 11 gate).
+
+## Running locally
+
+The local stack is native — `wrangler dev` plus two small Node scripts — and
+deliberately not docker-compose. The repository removed its Docker path as
+part of SEC-009 precisely because a second way to run the app is a second
+security surface to keep in parity (SEC-014); reintroducing one for local
+convenience would recreate that drift, and `workerd` under `wrangler dev` is
+already the same runtime that serves production. If a container wrapper is
+ever genuinely needed (for example CI on a locked-down runner), it must wrap
+these same commands, not define its own server.
+
+Prerequisites: Node (the version CI pins in `.github/workflows/ci.yml`),
+`npm ci`.
+
+| Command | What it runs |
+| --- | --- |
+| `npm run dev` | `next build` + `wrangler dev` — the real Worker, Durable Objects, static assets |
+| `npm run dev:access` | Local Cloudflare Access stand-in (`scripts/local-access-issuer.mjs`): signs real RS256 assertions with a throwaway key, including negative variants (expired, wrong issuer/audience) |
+| `scripts/local-access-proxy.mjs` | Fronts the Worker like Cloudflare's edge would: turns a login cookie into `Cf-Access-Jwt-Assertion` and strips any client-supplied copy of that header |
+| `npm run test:e2e` | Orchestrates all of the above on free ports and runs Playwright against the production build — the closest thing to staging that exists locally |
+
+Notes:
+
+- The authentication boundary is exercised for real locally: the Worker
+  verifies the local issuer's JWKS exactly as it would Cloudflare's, so
+  forged/expired/wrong-audience requests fail closed in local runs too.
+- Local state lives in `.wrangler/` (Durable Object SQLite) and is ignored;
+  never point local runs at `.data/` or commit local databases (SEC-008).
+- A/V needs `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` in
+  `.dev.vars` (a LiveKit Cloud dev project or a local `livekit-server`).
+  Without them the token route returns 503 and the board runs without A/V —
+  that degradation is itself a tested path.
+- Never put real production secrets in `.dev.vars` or `wrangler.local.toml`;
+  local runs use throwaway credentials only.

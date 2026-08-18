@@ -120,6 +120,26 @@ After an implementer finishes or a verifier returns `APPROVE` / `REJECT` /
 so phase tables, in-flight rows, and SEC status match `security.md` and the
 latest verdicts. Do not leave the canvas describing the previous phase.
 
+## Delegation
+
+Spawn implementation subagents on a cheaper model variant (Sonnet-class, or
+Haiku for mechanical edits) to save tokens; the orchestrating session stays on
+the stronger model and does what cheap models are bad at:
+
+- Write the task prompt with the failing test named, the files in scope, and
+  the AGENTS.md rules restated (TDD, no mocks, mutation step) — subagents do
+  not inherit this file automatically.
+- Verify every deliverable yourself: re-run the suites, read the diff, and
+  attempt one mutant on any new guard. Cheap-model output has previously
+  fabricated verification results, installed broken tooling, and deleted an
+  entire source tree when asked to remove one directory — treat "it says it
+  passed" as unverified until you ran it.
+- Keep architecture, security decisions, conflict resolution, and anything
+  touching `security.md` checkboxes in the orchestrating session.
+
+One subagent per task slice; do not fan out overlapping edits to the same
+files in parallel.
+
 ## Verifiers
 
 After an implementation task, a separate read-only verifier must re-run the
