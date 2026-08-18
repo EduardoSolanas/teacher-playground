@@ -1047,6 +1047,115 @@ describe('stale grant version drops signaling publishes', () => {
     await new Promise((r) => setTimeout(r, 200));
     expect(received).toBe(false);
   });
+
+  it('closes the socket with 4401 when grantVersion is stale on a subscribe frame', async () => {
+    const owner = await bootstrapLocalSession('stale-close-owner');
+    const editor = await bootstrapLocalSession('stale-close-editor');
+    const roomId = 'stale-close-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'editor-peer', userName: 'Editor', color: '#3498db' }),
+    })).status).toBe(200);
+
+    const ownerRes = await authenticatedFetch(`/signaling?room=${roomId}`, owner, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(ownerRes.status).toBe(101);
+    ownerRes.webSocket!.accept();
+
+    const editorRes = await authenticatedFetch(`/signaling?room=${roomId}`, editor, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(editorRes.status).toBe(101);
+    const editorSocket = editorRes.webSocket!;
+    editorSocket.accept();
+
+    await bumpGrantVersion(roomId);
+
+    const closed = new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error('stale socket was not closed')),
+        2_000,
+      );
+      editorSocket.addEventListener('close', (event: CloseEvent) => {
+        clearTimeout(timer);
+        resolve(event.code);
+      }, { once: true });
+    });
+
+    editorSocket.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
+    expect(await closed).toBe(4401);
+  });
+});
+
+describe('alarm purges expired editor grants', () => {
+  function roomStub(roomId: string) {
+    return env.ROOMS.get(env.ROOMS.idFromName(roomId));
+  }
+
+  async function grantEditor(
+    owner: LocalAuthSession,
+    editor: LocalAuthSession,
+    roomId: string,
+  ) {
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Editor' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${editor.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    )).status).toBe(200);
+  }
+
+  it('deletes expired editor rows and refuses signaling reconnect', async () => {
+    const owner = await bootstrapLocalSession('purge-expired-owner');
+    const editor = await bootstrapLocalSession('purge-expired-editor');
+    const roomId = 'purge-expired-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+
+    const open = await authenticatedFetch(`/signaling?room=${roomId}`, editor, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(open.status).toBe(101);
+    open.webSocket!.accept();
+
+    await runInDurableObject(
+      roomStub(roomId),
+      (instance: RoomDO) => {
+        instance.db.prepare(
+          `UPDATE room_members SET expires_at = 1 WHERE room_id = ? AND account_id = ?`,
+        ).run(roomId, editor.accountId);
+      },
+    );
+
+    await runDurableObjectAlarm(roomStub(roomId));
+
+    const row = await runInDurableObject(
+      roomStub(roomId),
+      (instance: RoomDO) => instance.db.prepare(
+        `SELECT role FROM room_members WHERE room_id = ? AND account_id = ?`,
+      ).get(roomId, editor.accountId),
+    );
+    expect(row).toBeUndefined();
+
+    const reconnect = await authenticatedFetch(`/signaling?room=${roomId}`, editor, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(reconnect.status).toBe(403);
+  });
 });
 
 describe('revocation check runs without being triggered by hand', () => {

@@ -8,6 +8,7 @@ import {
   isGrantedRole,
   isOwnerRole,
   peerAccountId,
+  purgeExpiredGrants,
 } from '../lib/whiteboard/membership';
 import type { RoomDatabase } from '../lib/whiteboard/db';
 import { GLOBAL_IDENTITY_OBJECT_NAME } from './IdentityDO';
@@ -492,6 +493,12 @@ export class RoomDO extends DurableObject {
     }
     if (identities.size === 0) return;
 
+    const roomIds = [...new Set([...identities.values()].map((i) => i.roomId))];
+    const now = Date.now();
+    for (const roomId of roomIds) {
+      purgeExpiredGrants(this.db, roomId, now);
+    }
+
     const accountIds = [...new Set([...identities.values()].map((i) => i.accountId))];
     let statuses: Record<string, { state: string; authorizationEpoch: number }>;
     try {
@@ -544,10 +551,19 @@ export class RoomDO extends DurableObject {
   }
 
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
+    const attachment = ws.deserializeAttachment() as SocketIdentity | null;
+    if (
+      !attachment?.accountId
+      || !attachment.roomId
+      || this.isStaleGrant(attachment)
+      || !isGrantedRole(getGrantRole(this.db, attachment.roomId, attachment.accountId))
+    ) {
+      this.closeRevoked(ws);
+      return;
+    }
+
     // y-websocket sends Yjs updates as binary; relay to other peers, not back to sender.
     if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
-      const attachment = ws.deserializeAttachment() as SocketIdentity | null;
-      if (!attachment?.accountId || !attachment.roomId || this.isStaleGrant(attachment)) return;
       const role = getGrantRole(this.db, attachment.roomId, attachment.accountId);
       if (!canWriteBoard(role)) return;
 
@@ -588,8 +604,6 @@ export class RoomDO extends DurableObject {
 
       case 'publish': {
         if (typeof msg.topic !== 'string') return;
-        const attachment = ws.deserializeAttachment() as SocketIdentity | null;
-        if (!attachment?.accountId || !attachment.roomId || this.isStaleGrant(attachment)) return;
         const role = getGrantRole(this.db, attachment.roomId, attachment.accountId);
         if (!canWriteBoard(role)) return;
 

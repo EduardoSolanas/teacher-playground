@@ -1101,6 +1101,12 @@ acceptance tests and evidence are satisfied.
     increments `grant_version` the same way as kick (verifier APPROVE).
 - [ ] Revalidate hibernated-socket attachments on wake against current grant
   version, epoch, and expiry (SEC-003).
+  - Evidence: independent verifier APPROVE for `webSocketMessage` entry
+    guard: missing attachment, stale `grantVersion`, or `!isGrantedRole`
+    → 4401. Subscribe after version bump closes the socket. Mutant skip
+    `closeRevoked` killed that test. Residual: `{type:'ping'}` still uses
+    `setWebSocketAutoResponse` and never hits the guard; epoch is still
+    the ~30s identity alarm, not per-frame IdentityDO RPC.
 - [ ] Choose and document account-wide revocation: reliable active-room fan-out,
   or a measurable maximum delay enforced by authorization-epoch revalidation,
   short socket expiry, and forced reconnect.
@@ -1151,9 +1157,12 @@ acceptance tests and evidence are satisfied.
     `purgeExpiredGrants` deletes expired `role='editor'` rows for one room;
     owner/viewer/pending/banned and other rooms stay. Mutation-tested
     (dropped `role = 'editor'`; membership test failed; reverted).
-    `npm test` 284/284. Residual: not wired into RoomDO or alarms;
-    `effectiveRole` already treats expired editors as absent. Sessions,
-    rooms, waiting, kicks, PII, and tombstone TTLs are not done.
+    `npm test` 284/284. Residual: wired into `RoomDO.alarm()` (verifier
+    APPROVE): unique `roomId`s on open sockets are purged before identity
+    RPC. Skip-purge mutant left expired editor rows. Purge does not close
+    live sockets (next non-ping frame does). Sessions, rooms, waiting,
+    kicks, PII, and tombstone TTLs are not done. `effectiveRole` already
+    treats expired editors as absent.
 - [ ] Add boundary, quota, concurrent-create, injected-failure, expiry, deletion,
   and recreation tests.
 
