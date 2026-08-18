@@ -204,9 +204,11 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(MARKETING_PAGES).toEqual(['/', '/pricing', '/terms', '/privacy']);
     });
 
-    it('accepts /_next/ assets and favicon.ico', () => {
-      expect(isPublicPath('/_next/static/chunk.js')).toBe(true);
+    it('accepts the favicon but not app bundle assets', () => {
+      // The marketing pages are self-contained static HTML, so nothing under
+      // /_next/ needs to be public; app bundles stay behind Access.
       expect(isPublicPath('/favicon.ico')).toBe(true);
+      expect(isPublicPath('/_next/static/chunk.js')).toBe(false);
     });
 
     it('rejects sensitive path families', () => {

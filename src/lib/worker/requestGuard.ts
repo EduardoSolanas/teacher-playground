@@ -84,7 +84,8 @@ export function isPublicPath(pathname: string): boolean {
   if (pathname.includes('..')) return false;
   if ((MARKETING_PAGES as readonly string[]).includes(pathname)) return true;
   if (pathname === '/favicon.ico') return true;
-  if (pathname.startsWith('/_next/')) return true;
+  // Deliberately NOT /_next/: the marketing pages are self-contained static
+  // HTML, so the app's JS/CSS bundles never need to be public.
   return false;
 }
 

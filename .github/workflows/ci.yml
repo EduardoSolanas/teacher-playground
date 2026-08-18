@@ -95,6 +95,20 @@ jobs:
           path: test-results/
           retention-days: 7
 
+  sast:
+    name: Static application security testing
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      - name: Run Semgrep
+        run: semgrep scan --config auto --error --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='*.spec.ts' --exclude-rule='javascript.express.security.x-frame-options-misconfiguration.x-frame-options-misconfiguration'
+
   dependency-audit:
     name: Dependency audit
     runs-on: ubuntu-24.04

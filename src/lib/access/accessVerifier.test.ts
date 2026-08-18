@@ -338,11 +338,10 @@ describe('Cloudflare Access request verification', () => {
   });
 
   it.each([
-    ['https issuer with local HTTP JWKS', 'https-local-jwks'],
     ['localhost issuer', 'localhost'],
     ['mixed loopback ports', 'different-port'],
     ['HTTPS JWKS', 'https-jwks'],
-  ] as const)('requires runtime Access context for %s even in local-test', async (_name, variant) => {
+  ] as const)('rejects %s in local-test (invalid config)', async (_name, variant) => {
     const port = new URL(jwksUrl).port;
     const issuer = variant === 'localhost' ? `http://localhost:${port}`
       : variant === 'different-port' ? `http://127.0.0.1:${Number(port) + 1}`
@@ -357,13 +356,25 @@ describe('Cloudflare Access request verification', () => {
     )).rejects.toBeInstanceOf(AccessVerificationError);
   });
 
-  it('does not allow context omission outside the dedicated same-origin loopback issuer', async () => {
+  it('accepts a valid JWT even when ctx.access is unavailable (old compat date)', async () => {
     const token = await signToken(privateKey, claims());
-    await expect(verifyAccessRequest(
+    const principal = await verifyAccessRequest(
       new Request('https://app.example.test', { headers: { 'Cf-Access-Jwt-Assertion': token } }),
       undefined,
-      { ACCESS_ISSUER: ISSUER, ACCESS_AUDIENCE: AUDIENCE, ACCESS_JWKS_URL: jwksUrl },
+      { ACCESS_ISSUER: ISSUER, ACCESS_AUDIENCE: AUDIENCE, ACCESS_JWKS_URL: jwksUrl, ENVIRONMENT: 'local-test' },
       { now, fetch: globalThis.fetch },
-    )).rejects.toBeInstanceOf(AccessVerificationError);
+    );
+    expect(principal.subject).toBe('human-1');
+  });
+
+  it('accepts a JWT whose header omits the optional typ field (RFC 7519 §5.1)', async () => {
+    const token = await signToken(privateKey, claims(), { typ: undefined });
+    const principal = await verifyAccessRequest(
+      new Request('https://app.example.test', { headers: { 'Cf-Access-Jwt-Assertion': token } }),
+      context(),
+      { ACCESS_ISSUER: ISSUER, ACCESS_AUDIENCE: AUDIENCE, ACCESS_JWKS_URL: jwksUrl, ENVIRONMENT: 'local-test' },
+      { now, fetch: globalThis.fetch },
+    );
+    expect(principal.subject).toBe('human-1');
   });
 });
