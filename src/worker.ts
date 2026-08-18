@@ -210,19 +210,17 @@ export default {
       principal = await verifyAccessRequest(request, ctx.access, env);
     } catch (error) {
       if (error instanceof AccessVerificationError) {
-        // TEMP DEBUG: include diagnostics in response (remove after fix)
-        const debug = {
+        // TEMP DEBUG: log diagnostics to Workers Logs (remove after fix)
+        console.error('[access-debug]', JSON.stringify({
           hasCtxAccess: !!ctx.access,
           ctxAccessAud: ctx.access?.aud ?? null,
           hasJwtHeader: !!request.headers.get('Cf-Access-Jwt-Assertion'),
           envAudience: env.ACCESS_AUDIENCE ?? null,
           envIssuer: env.ACCESS_ISSUER ?? null,
           envJwksUrl: env.ACCESS_JWKS_URL ?? null,
-        };
-        return withSecurityHeaders(Response.json(
-          { error: 'Unauthorized', debug },
-          { status: 401, headers: { 'Cache-Control': 'no-store' } },
-        ));
+          path: url.pathname,
+        }));
+        return unauthorized();
       }
       throw error;
     }
