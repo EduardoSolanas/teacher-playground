@@ -1091,13 +1091,14 @@ acceptance tests and evidence are satisfied.
   message size, connection count, rate, and bounded fan-out.
 - [ ] Implement room kick/revoke by incrementing the grant version and closing
   matching live and hibernating sockets.
-  - Evidence: independent verifier APPROVE for immediate close of matching
-    `/signaling` sockets on kick (4401 `SOCKET_REVOKED_CLOSE_CODE`) in
-    `RoomDO.fetch` via `kickedPeer.accountId`. Empty `closeAccountSockets`
-    killed both new workers tests. Residual: no grant-version increment;
-    identity-wide disable still uses the ~30s alarm; hibernating ping
-    auto-response does not wake the DO; suspend shares the hook but has
-    no dedicated socket-close test.
+  - Evidence: independent verifier APPROVE for immediate socket close on
+    kick (4401) and for `rooms.grant_version` increment before close.
+    Sockets stamp `grantVersion` at upgrade; stale binary/`publish` is
+    dropped (`isStaleGrant` vs current DB). Mutants: skip increment
+    (version stayed 0); `isStaleGrant` always false (stale relay tests
+    failed). Residual: suspend does not bump version; identity-wide
+    disable still uses the ~30s alarm; hibernating ping auto-response
+    does not wake the DO.
 - [ ] Revalidate hibernated-socket attachments on wake against current grant
   version, epoch, and expiry (SEC-003).
 - [ ] Choose and document account-wide revocation: reliable active-room fan-out,

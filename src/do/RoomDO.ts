@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { DODatabase } from '../lib/whiteboard/doDatabase';
-import { applySchema, roomExists } from '../lib/whiteboard/roomSchema';
+import { applySchema, getGrantVersion, incrementGrantVersion, roomExists } from '../lib/whiteboard/roomSchema';
 import {
   bindPeerAccount,
   canWriteBoard,
@@ -100,6 +100,7 @@ interface SocketIdentity {
   accountId: string;
   authorizationEpoch: number;
   roomId: string;
+  grantVersion: number;
 }
 
 export interface RoomEnv {
@@ -191,6 +192,9 @@ export class RoomDO extends DurableObject {
         };
         const targetAccountId = payload.kickedPeer?.accountId ?? payload.suspendedPeer?.accountId;
         if (targetAccountId) {
+          if (action === 'kick') {
+            incrementGrantVersion(this.db, roomId);
+          }
           this.closeAccountSockets(targetAccountId);
         }
       }
@@ -448,7 +452,12 @@ export class RoomDO extends DurableObject {
     const [client, server] = Object.values(pair);
 
     this.ctx.acceptWebSocket(server);
-    const identity: SocketIdentity = { accountId, authorizationEpoch: epoch, roomId };
+    const identity: SocketIdentity = {
+      accountId,
+      authorizationEpoch: epoch,
+      roomId,
+      grantVersion: getGrantVersion(this.db, roomId),
+    };
     server.serializeAttachment(identity);
     // Awaited, not floating: a storage write racing the returned response
     // shows up as "database is locked: SQLITE_BUSY".
@@ -530,11 +539,17 @@ export class RoomDO extends DurableObject {
     }
   }
 
+  private isStaleGrant(attachment: SocketIdentity | null): boolean {
+    if (!attachment?.roomId) return true;
+    if (typeof attachment.grantVersion !== 'number') return true;
+    return getGrantVersion(this.db, attachment.roomId) !== attachment.grantVersion;
+  }
+
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
     // y-websocket sends Yjs updates as binary; relay to other peers, not back to sender.
     if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
       const attachment = ws.deserializeAttachment() as SocketIdentity | null;
-      if (!attachment?.accountId || !attachment.roomId) return;
+      if (!attachment?.accountId || !attachment.roomId || this.isStaleGrant(attachment)) return;
       const role = getGrantRole(this.db, attachment.roomId, attachment.accountId);
       if (!canWriteBoard(role)) return;
 
@@ -576,7 +591,7 @@ export class RoomDO extends DurableObject {
       case 'publish': {
         if (typeof msg.topic !== 'string') return;
         const attachment = ws.deserializeAttachment() as SocketIdentity | null;
-        if (!attachment?.accountId || !attachment.roomId) return;
+        if (!attachment?.accountId || !attachment.roomId || this.isStaleGrant(attachment)) return;
         const role = getGrantRole(this.db, attachment.roomId, attachment.accountId);
         if (!canWriteBoard(role)) return;
 

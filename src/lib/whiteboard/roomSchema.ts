@@ -32,6 +32,10 @@ export function applySchema(db: RoomDatabase): void {
     // Existing rooms migrate to the secure default: the fallback stays off
     // unless a creator turns it on.
     db.exec(`ALTER TABLE rooms ADD COLUMN allow_first_user_host INTEGER NOT NULL DEFAULT 0`);
+    columns = db.prepare(`PRAGMA table_info(rooms)`).all() as Array<{ name: string }>;
+  }
+  if (!columns.some((column) => column.name === 'grant_version')) {
+    db.exec(`ALTER TABLE rooms ADD COLUMN grant_version INTEGER NOT NULL DEFAULT 0`);
   }
 
   db.exec(`
@@ -181,4 +185,17 @@ export function getRoomHostPeerId(
     .prepare(`SELECT host_peer_id FROM rooms WHERE room_id = ?`)
     .get(roomId) as { host_peer_id: string | null } | undefined;
   return row?.host_peer_id ?? null;
+}
+
+/** Monotonic room grant epoch; bumped on kick so stale sockets cannot publish. */
+export function getGrantVersion(db: RoomDatabase, roomId: string): number {
+  const row = db
+    .prepare(`SELECT grant_version FROM rooms WHERE room_id = ?`)
+    .get(roomId) as { grant_version: number } | undefined;
+  return row?.grant_version ?? 0;
+}
+
+export function incrementGrantVersion(db: RoomDatabase, roomId: string): number {
+  db.prepare(`UPDATE rooms SET grant_version = grant_version + 1 WHERE room_id = ?`).run(roomId);
+  return getGrantVersion(db, roomId);
 }

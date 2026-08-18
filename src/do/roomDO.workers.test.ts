@@ -704,6 +704,263 @@ describe('kick closes live signaling sockets', () => {
   });
 });
 
+describe('kick increments room grant version', () => {
+  async function connectGranted(who: LocalAuthSession, roomId: string): Promise<WebSocket> {
+    const res = await authenticatedFetch(`/signaling?room=${roomId}`, who, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(res.status).toBe(101);
+    const ws = res.webSocket;
+    if (!ws) throw new Error('no webSocket on response');
+    ws.accept();
+    return ws;
+  }
+
+  async function grantEditor(
+    owner: LocalAuthSession,
+    editor: LocalAuthSession,
+    roomId: string,
+  ) {
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Editor' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${editor.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    )).status).toBe(200);
+  }
+
+  function closeSignal(ws: WebSocket): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error('socket was not closed immediately after kick')),
+        2_000,
+      );
+      ws.addEventListener('close', (event: CloseEvent) => {
+        clearTimeout(timer);
+        resolve(event.code);
+      }, { once: true });
+    });
+  }
+
+  async function readGrantVersion(roomId: string): Promise<number> {
+    return runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      (instance: RoomDO) => {
+        const row = instance.db.prepare(
+          `SELECT grant_version AS grantVersion FROM rooms WHERE room_id = ?`,
+        ).get(roomId) as { grantVersion: number } | undefined;
+        return row?.grantVersion ?? 0;
+      },
+    );
+  }
+
+  it('increments grant_version and closes the kicked signaling socket', async () => {
+    const owner = await bootstrapLocalSession('grant-kick-owner');
+    const editor = await bootstrapLocalSession('grant-kick-editor');
+    const roomId = 'grant-kick-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'editor-peer', userName: 'Editor', color: '#3498db' }),
+    })).status).toBe(200);
+
+    expect(await readGrantVersion(roomId)).toBe(0);
+
+    const editorSocket = await connectGranted(editor, roomId);
+    const editorClosed = closeSignal(editorSocket);
+
+    const kick = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'kick', peerId: 'editor-peer' }),
+    });
+    expect(kick.status).toBe(200);
+
+    expect(await editorClosed).toBe(4401);
+    expect(await readGrantVersion(roomId)).toBe(1);
+  });
+
+  it('still upgrades a different granted user after a kick', async () => {
+    const owner = await bootstrapLocalSession('grant-survivor-owner');
+    const kicked = await bootstrapLocalSession('grant-survivor-kicked');
+    const survivor = await bootstrapLocalSession('grant-survivor-other');
+    const roomId = 'grant-survivor-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, kicked, roomId);
+    await grantEditor(owner, survivor, roomId);
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, kicked, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'kicked-peer', userName: 'Kicked', color: '#3498db' }),
+    })).status).toBe(200);
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'kick', peerId: 'kicked-peer' }),
+    })).status).toBe(200);
+
+    const res = await authenticatedFetch(`/signaling?room=${roomId}`, survivor, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(res.status).toBe(101);
+  });
+
+  it('still denies the kicked account on presence and signaling', async () => {
+    const owner = await bootstrapLocalSession('grant-ban-owner');
+    const editor = await bootstrapLocalSession('grant-ban-editor');
+    const roomId = 'grant-ban-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'editor-peer', userName: 'Editor', color: '#3498db' }),
+    })).status).toBe(200);
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'kick', peerId: 'editor-peer' }),
+    })).status).toBe(200);
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'new-peer', userName: 'Editor', color: '#3498db' }),
+    })).status).toBe(403);
+
+    const res = await authenticatedFetch(`/signaling?room=${roomId}`, editor, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('stale grant version drops signaling publishes', () => {
+  async function grantEditor(
+    owner: LocalAuthSession,
+    editor: LocalAuthSession,
+    roomId: string,
+  ) {
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Editor' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${editor.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    )).status).toBe(200);
+  }
+
+  async function bumpGrantVersion(roomId: string): Promise<void> {
+    await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      (instance: RoomDO) => {
+        instance.db.prepare(
+          `UPDATE rooms SET grant_version = grant_version + 1 WHERE room_id = ?`,
+        ).run(roomId);
+      },
+    );
+  }
+
+  it('does not relay binary when attachment grantVersion is stale', async () => {
+    const owner = await bootstrapLocalSession('stale-binary-owner');
+    const editor = await bootstrapLocalSession('stale-binary-editor');
+    const roomId = 'stale-binary-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'editor-peer', userName: 'Editor', color: '#3498db' }),
+    })).status).toBe(200);
+
+    const ownerRes = await authenticatedFetch(`/signaling?room=${roomId}`, owner, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(ownerRes.status).toBe(101);
+    const ownerSocket = ownerRes.webSocket!;
+    ownerSocket.accept();
+
+    const editorRes = await authenticatedFetch(`/signaling?room=${roomId}`, editor, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(editorRes.status).toBe(101);
+    const editorSocket = editorRes.webSocket!;
+    editorSocket.accept();
+
+    await bumpGrantVersion(roomId);
+
+    let received = false;
+    ownerSocket.addEventListener('message', () => { received = true; }, { once: true });
+    editorSocket.send(new Uint8Array([0x01, 0x02, 0x03, 0x04]).buffer);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(received).toBe(false);
+  });
+
+  it('does not relay publish JSON when attachment grantVersion is stale', async () => {
+    const owner = await bootstrapLocalSession('stale-publish-owner');
+    const editor = await bootstrapLocalSession('stale-publish-editor');
+    const roomId = 'stale-publish-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'editor-peer', userName: 'Editor', color: '#3498db' }),
+    })).status).toBe(200);
+
+    const ownerRes = await authenticatedFetch(`/signaling?room=${roomId}`, owner, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(ownerRes.status).toBe(101);
+    const ownerSocket = ownerRes.webSocket!;
+    ownerSocket.accept();
+
+    const editorRes = await authenticatedFetch(`/signaling?room=${roomId}`, editor, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(editorRes.status).toBe(101);
+    const editorSocket = editorRes.webSocket!;
+    editorSocket.accept();
+
+    await bumpGrantVersion(roomId);
+
+    let received = false;
+    ownerSocket.addEventListener('message', () => { received = true; }, { once: true });
+    editorSocket.send(JSON.stringify({
+      type: 'publish',
+      topic: 'room',
+      data: { peerId: 'editor-peer' },
+    }));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(received).toBe(false);
+  });
+});
+
 describe('revocation check runs without being triggered by hand', () => {
   it('closes a revoked socket on its own scheduled alarm', async () => {
     const roomId = 'revoke-room-selfscheduled';
