@@ -91,6 +91,18 @@ export function getGrantRole(
   return effectiveRole(row ?? null, now);
 }
 
+/** Remove expired editor grants; authorization already treats them as absent. */
+export function purgeExpiredGrants(
+  db: RoomDatabase,
+  roomId: string,
+  now = Date.now(),
+): void {
+  db.prepare(
+    `DELETE FROM room_members
+     WHERE room_id = ? AND role = 'editor' AND expires_at IS NOT NULL AND expires_at <= ?`,
+  ).run(roomId, now);
+}
+
 export function isOwnerRole(role: MembershipRole | null): boolean {
   return role === 'owner';
 }

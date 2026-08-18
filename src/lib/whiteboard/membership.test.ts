@@ -8,6 +8,7 @@ import {
   getGrantRole,
   getMembership,
   insertOwner,
+  purgeExpiredGrants,
   requestAccess,
   resolveModerationTarget,
 } from './membership';
@@ -89,6 +90,49 @@ describe('room membership state machine', () => {
 
     const byAccount = resolveModerationTarget(db, 'r', { accountId: 'a1' });
     expect(byAccount).toEqual({ ok: true, accountId: 'a1', peerId: null });
+  });
+
+  it('purges expired editor rows only for the given room', () => {
+    const now = 10_000;
+    const insertMember = (
+      roomId: string,
+      accountId: string,
+      role: string,
+      expiresAt: number | null,
+    ) => {
+      db.prepare(
+        `INSERT INTO room_members (
+           room_id, account_id, role, display_name, email,
+           requested_at, created_at, updated_at, expires_at
+         ) VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?, ?)`,
+      ).run(roomId, accountId, role, 1, 1, expiresAt);
+    };
+
+    insertMember('r1', 'expired-editor', 'editor', now - 1);
+    insertMember('r1', 'fresh-editor', 'editor', now + 1);
+    insertMember('r1', 'owner', 'owner', now - 1);
+    insertMember('r1', 'viewer', 'viewer', now - 1);
+    insertMember('r1', 'banned', 'banned', now - 1);
+    insertMember('r1', 'pending', 'pending', now - 1);
+    insertMember('r2', 'other-expired-editor', 'editor', now - 1);
+
+    purgeExpiredGrants(db, 'r1', now);
+
+    const roles = db.prepare(
+      `SELECT room_id AS roomId, account_id AS accountId, role
+       FROM room_members ORDER BY room_id, account_id`,
+    ).all() as Array<{ roomId: string; accountId: string; role: string }>;
+
+    expect(roles).toEqual([
+      { roomId: 'r1', accountId: 'banned', role: 'banned' },
+      { roomId: 'r1', accountId: 'fresh-editor', role: 'editor' },
+      { roomId: 'r1', accountId: 'owner', role: 'owner' },
+      { roomId: 'r1', accountId: 'pending', role: 'pending' },
+      { roomId: 'r1', accountId: 'viewer', role: 'viewer' },
+      { roomId: 'r2', accountId: 'other-expired-editor', role: 'editor' },
+    ]);
+    expect(getMembership(db, 'r1', 'expired-editor')).toBeNull();
+    expect(getMembership(db, 'r1', 'fresh-editor')?.role).toBe('editor');
   });
 
   it('treats an expired editor grant as absent and keeps a viewer grant', () => {
