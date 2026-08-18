@@ -205,40 +205,36 @@ export default {
       });
     }
 
+    // TEMP: step-by-step Access verification with debug (remove after diagnosis)
     let principal: VerifiedAccessPrincipal;
+    const debugSteps: string[] = [];
     try {
+      // Step 1: Try JWKS fetch directly to check reachability
+      const jwksUrl = env.ACCESS_JWKS_URL;
+      if (jwksUrl) {
+        try {
+          const jwksResp = await fetch(jwksUrl, { headers: { Accept: 'application/json' } });
+          const jwksBody = await jwksResp.text();
+          const jwksData = JSON.parse(jwksBody);
+          const keyCount = Array.isArray(jwksData.keys) ? jwksData.keys.length : 0;
+          const token = request.headers.get('Cf-Access-Jwt-Assertion') ?? '';
+          const headerPart = token.split('.')[0];
+          let kid = 'n/a';
+          try { kid = JSON.parse(atob(headerPart.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - headerPart.length % 4) % 4))).kid; } catch {}
+          const kidMatch = Array.isArray(jwksData.keys) && jwksData.keys.some((k: Record<string, unknown>) => k.kid === kid);
+          debugSteps.push(`jwks:${jwksResp.status},keys:${keyCount},kidMatch:${kidMatch}`);
+        } catch (e) {
+          debugSteps.push(`jwks-err:${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      // Step 2: actual verification
       principal = await verifyAccessRequest(request, ctx.access, env);
+      debugSteps.push('verify:ok');
     } catch (error) {
       if (error instanceof AccessVerificationError) {
+        debugSteps.push('verify:FAIL');
         const resp = unauthorized();
-        // TEMP: debug header (remove after diagnosis)
-        const token = request.headers.get('Cf-Access-Jwt-Assertion') ?? '';
-        const parts = token.split('.');
-        let claimsDebug = '';
-        try {
-          const decoded = atob(parts[1].replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - parts[1].length % 4) % 4));
-          const claims = JSON.parse(decoded);
-          claimsDebug = JSON.stringify({
-            iss: claims.iss,
-            aud: typeof claims.aud === 'string' ? claims.aud.slice(0, 12) + '...' : 'array',
-            sub: typeof claims.sub === 'string' ? claims.sub.slice(0, 8) + '...' : claims.sub,
-            type: claims.type,
-            exp: claims.exp,
-            nbf: claims.nbf,
-            iat: claims.iat,
-            now: Math.floor(Date.now() / 1000),
-          });
-        } catch { claimsDebug = 'parse-failed'; }
-        resp.headers.set('X-Debug-Access', JSON.stringify({
-          ca: !!ctx.access,
-          jh: !!request.headers.get('Cf-Access-Jwt-Assertion'),
-          ea: !!env.ACCESS_AUDIENCE,
-          ei: !!env.ACCESS_ISSUER,
-          ej: !!env.ACCESS_JWKS_URL,
-          parts: parts.length,
-          kid: parts.length === 3 ? (() => { try { return JSON.parse(atob(parts[0].replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - parts[0].length % 4) % 4))).kid; } catch { return 'err'; } })() : 'n/a',
-          claims: claimsDebug,
-        }));
+        resp.headers.set('X-Debug-Steps', debugSteps.join('|'));
         return resp;
       }
       throw error;
