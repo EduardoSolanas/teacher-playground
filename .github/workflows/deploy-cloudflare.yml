@@ -56,7 +56,7 @@ jobs:
 
       # - name: End-to-end tests
       #   continue-on-error: true
-      #   run: npm run test:e2e
+      #   run: npm run test:e2e -- --skip-build -- --skip-build
 
       # - name: Upload e2e artifacts on failure
       #   if: failure()

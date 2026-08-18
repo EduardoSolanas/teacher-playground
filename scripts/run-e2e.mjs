@@ -142,29 +142,36 @@ process.once('SIGINT', stopOnSignal);
 process.once('SIGTERM', stopOnSignal);
 
 try {
-  accessIssuerProcess = spawn(process.execPath, [resolve(process.cwd(), 'scripts/local-access-issuer.mjs')], {
-    env: { ...process.env, LOCAL_ACCESS_PORT: String(accessPort) },
-    stdio: 'inherit',
-  });
-  await waitForIssuer(accessIssuer, accessIssuerProcess);
-  const tokenResponse = await fetch(`${accessIssuer}/token?sub=e2e-human`);
-  if (!tokenResponse.ok) throw new Error(`local Access token failed: ${tokenResponse.status}`);
-  const tokenPayload = await tokenResponse.json();
-  if (!tokenPayload || typeof tokenPayload.token !== 'string') throw new Error('local Access issuer returned no token');
-  const accessToken = tokenPayload.token;
-  if (interrupted) throw new Error('E2E run interrupted');
-
-  if (!skipBuild) {
-    buildProcess = spawn(process.execPath, [resolve(process.cwd(), 'node_modules/next/dist/bin/next'), 'build', '--webpack'], {
+    // Start issuer and build in parallel — they are independent.
+    accessIssuerProcess = spawn(process.execPath, [resolve(process.cwd(), 'scripts/local-access-issuer.mjs')], {
+      env: { ...process.env, LOCAL_ACCESS_PORT: String(accessPort) },
       stdio: 'inherit',
-      env: { ...process.env, NEXT_PUBLIC_E2E: '1' },
     });
-    const buildCode = await waitForChild(buildProcess);
-    if (buildCode !== 0) {
-      buildPassed = false;
-      result = buildCode;
+
+    let buildDone;
+    if (!skipBuild) {
+      buildProcess = spawn(process.execPath, [resolve(process.cwd(), 'node_modules/next/dist/bin/next'), 'build', '--webpack'], {
+        stdio: 'inherit',
+        env: { ...process.env, NEXT_PUBLIC_E2E: '1' },
+      });
+      buildDone = waitForChild(buildProcess);
     }
-  }
+
+    await waitForIssuer(accessIssuer, accessIssuerProcess);
+    const tokenResponse = await fetch(`${accessIssuer}/token?sub=e2e-human`);
+    if (!tokenResponse.ok) throw new Error(`local Access token failed: ${tokenResponse.status}`);
+    const tokenPayload = await tokenResponse.json();
+    if (!tokenPayload || typeof tokenPayload.token !== 'string') throw new Error('local Access issuer returned no token');
+    const accessToken = tokenPayload.token;
+    if (interrupted) throw new Error('E2E run interrupted');
+
+    if (buildDone) {
+      const buildCode = await buildDone;
+      if (buildCode !== 0) {
+        buildPassed = false;
+        result = buildCode;
+      }
+    }
 
   if (buildPassed) {
     if (interrupted) throw new Error('E2E run interrupted');

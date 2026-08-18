@@ -62,6 +62,7 @@ describe('TeacherRoomList', () => {
     expect(onOpen).toHaveBeenCalledTimes(1);
     expect(onOpen).toHaveBeenCalledWith('room-alpha');
 
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
     fireEvent.click(screen.getByTestId('whiteboard-room-rename-room-alpha'));
     expect(onOpen).toHaveBeenCalledTimes(1);
 

@@ -3,12 +3,29 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { generateRoomId } from '@/lib/crypto/randomId';
-import { isValidJoinCode, JOIN_CODE_MAX_LENGTH } from '@/lib/whiteboard/joinCode';
 import { getStablePeerId } from '@/lib/whiteboard/peerId';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import TeacherRoomList, {
   type TeacherRoomSummary,
 } from '@/components/whiteboard/TeacherRoomList';
+
+const ADJECTIVES = [
+  'Bright', 'Calm', 'Swift', 'Warm', 'Bold',
+  'Fresh', 'Clear', 'Keen', 'Neat', 'Vivid',
+  'Cozy', 'Lively', 'Gentle', 'Snappy', 'Curious',
+];
+
+const NOUNS = [
+  'Canvas', 'Studio', 'Board', 'Space', 'Workshop',
+  'Lab', 'Room', 'Desk', 'Corner', 'Garden',
+  'Atelier', 'Haven', 'Nook', 'Forum', 'Stage',
+];
+
+function generateRoomName(): string {
+  const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+  return `${adj} ${noun}`;
+}
 
 function parseTeacherRooms(payload: unknown): TeacherRoomSummary[] {
   if (!payload || typeof payload !== 'object') return [];
@@ -34,7 +51,7 @@ function parseTeacherRooms(payload: unknown): TeacherRoomSummary[] {
 
 export default function WhiteboardRoute() {
   const router = useRouter();
-  const [joinCode, setJoinCode] = useState('');
+  const [roomName, setRoomName] = useState(() => generateRoomName());
   const [maxUsers, setMaxUsers] = useState(3);
   const [creationTimes, setCreationTimes] = useState<number[]>([]);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
@@ -95,7 +112,7 @@ export default function WhiteboardRoute() {
       const settings = await ajaxFetch(`/api/whiteboard/room/${roomId}/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ maxUsers, hostPeerId }),
+        body: JSON.stringify({ maxUsers, hostPeerId, name: roomName.trim() || null }),
       });
 
       if (!settings.ok) {
@@ -108,7 +125,7 @@ export default function WhiteboardRoute() {
       setIsCreatingRoom(false);
       alert('Room creation failed. Please try again.');
     }
-  }, [creationTimes, isCreatingRoom, maxUsers, router]);
+  }, [creationTimes, isCreatingRoom, maxUsers, roomName, router]);
 
   const refreshRooms = useCallback(async () => {
     const response = await ajaxFetch('/api/whiteboard/rooms');
@@ -133,11 +150,16 @@ export default function WhiteboardRoute() {
     [refreshRooms],
   );
 
-  const handleJoinRoom = useCallback(() => {
-    if (joinCode.trim().length > 0 && isValidJoinCode(joinCode.trim())) {
-      router.push(`/whiteboard/${joinCode.trim()}`);
-    }
-  }, [joinCode, router]);
+  const handleDelete = useCallback(
+    async (roomId: string) => {
+      const response = await ajaxFetch(`/api/whiteboard/room/${roomId}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) return;
+      await refreshRooms();
+    },
+    [refreshRooms],
+  );
 
   return (
     <div
@@ -152,6 +174,32 @@ export default function WhiteboardRoute() {
         padding: 24,
       }}
     >
+      <button
+        data-testid="whiteboard-logout-btn"
+        onClick={async () => {
+          try {
+            await ajaxFetch('/auth/session/logout', { method: 'POST' });
+          } catch {}
+          window.location.href = 'https://ha-smart-home.cloudflareaccess.com/cdn-cgi/access/logout';
+        }}
+        style={{
+          position: 'fixed',
+          top: 16,
+          right: 16,
+          padding: '8px 16px',
+          border: '1px solid rgba(255,255,255,0.3)',
+          borderRadius: 8,
+          background: 'rgba(0,0,0,0.2)',
+          backdropFilter: 'blur(8px)',
+          color: '#fff',
+          fontSize: 13,
+          fontWeight: 600,
+          cursor: 'pointer',
+          zIndex: 1100,
+        }}
+      >
+        Sign out
+      </button>
       <div
         style={{
           background: '#fff',
@@ -160,7 +208,6 @@ export default function WhiteboardRoute() {
           maxWidth: 640,
           width: '100%',
           boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
-          textAlign: 'center',
         }}
       >
         <h1
@@ -169,6 +216,7 @@ export default function WhiteboardRoute() {
             fontWeight: 700,
             color: '#1a1a2e',
             marginBottom: 8,
+            textAlign: 'center',
           }}
         >
           Collaborative Whiteboard
@@ -179,9 +227,10 @@ export default function WhiteboardRoute() {
             color: '#666',
             marginBottom: 36,
             lineHeight: 1.5,
+            textAlign: 'center',
           }}
         >
-          Create or join a room to start collaborating in real-time
+          Create a room to start collaborating in real-time
         </p>
 
         <TeacherRoomList
@@ -189,136 +238,128 @@ export default function WhiteboardRoute() {
           loading={roomsLoading}
           onOpen={(roomId) => router.push(`/whiteboard/${roomId}`)}
           onRename={handleRename}
+          onDelete={handleDelete}
         />
 
-        <button
-          data-testid="whiteboard-create-room-btn"
-          onClick={handleCreateRoom}
-          disabled={isCreatingRoom}
-          aria-busy={isCreatingRoom}
+        <div
           style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 10,
-            width: '100%',
-            padding: '14px 24px',
-            border: 'none',
-            borderRadius: 10,
-            background: isCreatingRoom
-              ? 'linear-gradient(135deg, #94a3b8 0%, #64748b 100%)'
-              : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-            color: '#fff',
-            fontSize: 16,
-            fontWeight: 600,
-            cursor: isCreatingRoom ? 'wait' : 'pointer',
-            marginBottom: 16,
-            opacity: isCreatingRoom ? 0.85 : 1,
+            background: '#f8f9fa',
+            borderRadius: 12,
+            padding: '24px',
+            marginTop: rooms.length > 0 ? 24 : 0,
           }}
         >
-          {isCreatingRoom && (
-            <span
-              aria-hidden="true"
-              style={{
-                width: 16,
-                height: 16,
-                border: '2px solid rgba(255,255,255,0.45)',
-                borderTopColor: '#fff',
-                borderRadius: '50%',
-                animation: 'whiteboard-spin 0.8s linear infinite',
-                flexShrink: 0,
-              }}
-            />
-          )}
-          {isCreatingRoom ? 'Creating room...' : 'Create Room'}
-        </button>
-
-        <label
-          style={{
-            display: 'block',
-            textAlign: 'left',
-            color: '#4b5563',
-            fontSize: 13,
-            fontWeight: 600,
-            marginBottom: 8,
-          }}
-        >
-          People allowed
-        </label>
-        <input
-          type="number"
-          min={1}
-          max={10}
-          value={maxUsers}
-          onChange={(e) => setMaxUsers(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
-          style={{
-            width: '100%',
-            padding: '12px 14px',
-            border: '2px solid #e0e0e0',
-            borderRadius: 10,
-            fontSize: 16,
-            textAlign: 'center',
-            outline: 'none',
-            boxSizing: 'border-box',
-            marginBottom: 16,
-          }}
-        />
-
-        <div style={{ margin: '24px 0' }}>
-          <div
+          <h2
             style={{
-              height: 1,
-              background: '#e0e0e0',
-              marginBottom: 24,
+              fontSize: 16,
+              fontWeight: 700,
+              color: '#1a1a2e',
+              margin: '0 0 16px',
             }}
-          />
-        </div>
+          >
+            New room
+          </h2>
 
-        <div style={{ marginBottom: 16 }}>
+          <label
+            style={{
+              display: 'block',
+              color: '#4b5563',
+              fontSize: 13,
+              fontWeight: 600,
+              marginBottom: 6,
+            }}
+          >
+            Room name
+          </label>
           <input
             type="text"
-            placeholder="Enter room code"
-            data-testid="whiteboard-room-code-input"
-            value={joinCode}
-            onChange={(e) => setJoinCode(e.target.value.slice(0, JOIN_CODE_MAX_LENGTH))}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleJoinRoom();
-            }}
+            data-testid="whiteboard-room-name-input"
+            value={roomName}
+            onChange={(e) => setRoomName(e.target.value.slice(0, 100))}
+            placeholder="e.g. Maths Lesson"
             style={{
               width: '100%',
-              padding: '14px 16px',
+              padding: '10px 12px',
               border: '2px solid #e0e0e0',
-              borderRadius: 10,
-              fontSize: 16,
-              textAlign: 'center',
-              letterSpacing: 2,
+              borderRadius: 8,
+              fontSize: 15,
               outline: 'none',
               boxSizing: 'border-box',
+              marginBottom: 12,
             }}
-            onFocus={(e) => (e.target.style.borderColor = '#667eea')}
-            onBlur={(e) => (e.target.style.borderColor = '#e0e0e0')}
           />
-        </div>
 
-        <button
-          data-testid="whiteboard-join-room-btn"
-          onClick={handleJoinRoom}
-          disabled={joinCode.trim().length === 0}
-          style={{
-            display: 'block',
-            width: '100%',
-            padding: '14px 24px',
-            border: 'none',
-            borderRadius: 10,
-            background: joinCode.trim().length > 0 ? '#3498db' : '#bdc3c7',
-            color: '#fff',
-            fontSize: 16,
-            fontWeight: 600,
-            cursor: joinCode.trim().length > 0 ? 'pointer' : 'not-allowed',
-          }}
-        >
-          Join Room
-        </button>
+          <label
+            style={{
+              display: 'block',
+              color: '#4b5563',
+              fontSize: 13,
+              fontWeight: 600,
+              marginBottom: 6,
+            }}
+          >
+            People allowed
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={10}
+            value={maxUsers}
+            onChange={(e) => setMaxUsers(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              border: '2px solid #e0e0e0',
+              borderRadius: 8,
+              fontSize: 15,
+              textAlign: 'center',
+              outline: 'none',
+              boxSizing: 'border-box',
+              marginBottom: 16,
+            }}
+          />
+
+          <button
+            data-testid="whiteboard-create-room-btn"
+            onClick={handleCreateRoom}
+            disabled={isCreatingRoom}
+            aria-busy={isCreatingRoom}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 10,
+              width: '100%',
+              padding: '12px 24px',
+              border: 'none',
+              borderRadius: 8,
+              background: isCreatingRoom
+                ? 'linear-gradient(135deg, #94a3b8 0%, #64748b 100%)'
+                : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+              color: '#fff',
+              fontSize: 15,
+              fontWeight: 600,
+              cursor: isCreatingRoom ? 'wait' : 'pointer',
+              opacity: isCreatingRoom ? 0.85 : 1,
+            }}
+          >
+            {isCreatingRoom && (
+              <span
+                aria-hidden="true"
+                style={{
+                  width: 16,
+                  height: 16,
+                  border: '2px solid rgba(255,255,255,0.45)',
+                  borderTopColor: '#fff',
+                  borderRadius: '50%',
+                  animation: 'whiteboard-spin 0.8s linear infinite',
+                  flexShrink: 0,
+                }}
+              />
+            )}
+            {isCreatingRoom ? 'Creating room...' : 'Create Room'}
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -58,7 +58,7 @@ describe('WhiteboardRoute room list', () => {
     expect(screen.queryByRole('combobox')).toBeNull();
     expect(container.querySelector('select')).toBeNull();
     expect(screen.getByTestId('whiteboard-create-room-btn')).toBeTruthy();
-    expect(screen.getByTestId('whiteboard-room-code-input')).toBeTruthy();
+    expect(screen.getByTestId('whiteboard-room-name-input')).toBeTruthy();
   });
 
   it('opens a listed room via the router', async () => {
@@ -107,8 +107,9 @@ describe('WhiteboardRoute room list', () => {
     });
 
     expect(screen.getByTestId('whiteboard-create-room-btn')).toBeTruthy();
-    expect(screen.getByTestId('whiteboard-room-code-input')).toBeTruthy();
+    expect(screen.getByTestId('whiteboard-room-name-input')).toBeTruthy();
 
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-beta'));
     fireEvent.click(screen.getByTestId('whiteboard-room-rename-room-beta'));
     fireEvent.change(screen.getByTestId('whiteboard-room-name-input-room-beta'), {
       target: { value: 'Geometry' },

@@ -18,7 +18,7 @@ function encode(value) {
 
 function token(subject = 'local-human', variant = 'valid') {
   const now = Math.floor(Date.now() / 1_000);
-  const header = encode({ alg: 'RS256', kid: 'local-key-1', typ: 'JWT' });
+  const header = encode({ alg: 'RS256', kid: 'local-key-1' });
   const claims = { iss: issuer, aud: [audience], sub: subject, type: 'app', iat: now, nbf: now, exp: now + 3_600 };
   if (variant === 'expired') claims.exp = now - 1;
   if (variant === 'wrong-issuer') claims.iss = 'http://evil-access.invalid';

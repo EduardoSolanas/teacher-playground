@@ -3,12 +3,6 @@
 import { useEffect, useState } from 'react';
 import { ajaxFetch, SESSION_EXPIRED_EVENT } from '@/lib/http/ajaxFetch';
 
-/**
- * Cloudflare Access adds the assertion to the same-origin request at the edge.
- * This one-shot exchange creates the local opaque session used by API and
- * signaling routes. We intentionally do not retry on 401: local logout or
- * revocation must remain effective until the user performs a fresh login.
- */
 export function AccessSessionBootstrap({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<'loading' | 'ready' | 'unavailable'>('loading');
 
@@ -18,12 +12,15 @@ export function AccessSessionBootstrap({ children }: { children: React.ReactNode
       if (!cancelled) setState('unavailable');
     };
     window.addEventListener(SESSION_EXPIRED_EVENT, expire);
+
+    const timeout = setTimeout(() => {
+      if (!cancelled && state === 'loading') setState('unavailable');
+    }, 15_000);
+
     const headers = { Accept: 'application/json' };
     void (async () => {
       try {
-        const current = await ajaxFetch('/auth/session/current', {
-          headers,
-        });
+        const current = await ajaxFetch('/auth/session/current', { headers });
         if (current.ok) {
           if (!cancelled) setState('ready');
           return;
@@ -41,15 +38,66 @@ export function AccessSessionBootstrap({ children }: { children: React.ReactNode
     })();
     return () => {
       cancelled = true;
+      clearTimeout(timeout);
       window.removeEventListener(SESSION_EXPIRED_EVENT, expire);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (state === 'loading') {
-    return <div role="status" aria-live="polite">Loading secure session…</div>;
+    return (
+      <div role="status" aria-live="polite" style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '100vh',
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        color: '#666',
+        fontSize: 16,
+      }}>
+        Loading secure session…
+      </div>
+    );
   }
   if (state === 'unavailable') {
-    return <div role="alert">This secure session is unavailable. Sign in again to continue.</div>;
+    return (
+      <div role="alert" style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 16,
+        minHeight: '100vh',
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        color: '#333',
+        fontSize: 16,
+        padding: 24,
+        textAlign: 'center',
+      }}>
+        <p style={{ margin: 0 }}>Session unavailable. Your login may have expired.</p>
+        <button
+          onClick={() => window.location.reload()}
+          style={{
+            padding: '10px 24px',
+            border: 'none',
+            borderRadius: 8,
+            background: '#667eea',
+            color: '#fff',
+            fontSize: 15,
+            fontWeight: 600,
+            cursor: 'pointer',
+          }}
+        >
+          Retry
+        </button>
+        <a
+          href="https://ha-smart-home.cloudflareaccess.com/cdn-cgi/access/logout"
+          style={{ color: '#667eea', fontSize: 14 }}
+        >
+          Sign out and try again
+        </a>
+      </div>
+    );
   }
   return <>{children}</>;
 }

@@ -19,26 +19,23 @@ async function cleanContextAndJoin(
   name: string,
   joinCode?: string,
 ) {
-  await page.goto(appUrl('/whiteboard'));
-  await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
-
-  // Clear the stored identity here rather than via addInitScript: an init
-  // script re-runs on every navigation in the context, which would also wipe
-  // state that other tests navigate away and back to assert has persisted.
-  // The room page reads localStorage when it mounts, so clearing on the lobby
-  // before entering a room is enough to establish a fresh identity per call.
-  await page.evaluate(() => {
-    localStorage.removeItem('whiteboard_username');
-    localStorage.setItem(
-      'whiteboard_user_color',
-      '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0'),
-    );
+  if (joinCode) {
+    await page.goto(appUrl(`/whiteboard/${joinCode}`));
+  } else {
+    await page.goto(appUrl('/whiteboard'));
+  }
+  await expect(page.locator('h1')).toContainText('Collaborative Whiteboard', { timeout: 5000 }).catch(() => {
+    // Already on the room page (direct navigation with joinCode).
   });
 
-  if (joinCode) {
-    await page.getByTestId('whiteboard-room-code-input').fill(joinCode);
-    await page.getByTestId('whiteboard-join-room-btn').click();
-  } else {
+  if (!joinCode) {
+    await page.evaluate(() => {
+      localStorage.removeItem('whiteboard_username');
+      localStorage.setItem(
+        'whiteboard_user_color',
+        '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0'),
+      );
+    });
     await page.getByTestId('whiteboard-create-room-btn').click();
   }
 

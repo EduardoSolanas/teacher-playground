@@ -16,23 +16,23 @@ if (!accessIssuer || !accessToken) {
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  timeout: 60000,
+  timeout: 30_000,
   expect: {
-    timeout: 10000,
+    timeout: 5_000,
   },
   // Tests are independent: each creates its own room id and authenticates as
   // its own Access subject, and rooms are separate Durable Objects.
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 2 : 4,
+  retries: process.env.CI ? 1 : 0,
+  workers: process.env.CI ? 4 : 4,
   reporter: "html",
   use: {
     ...devices["Desktop Chrome"],
     baseURL,
     // Defaults to 0, meaning an action waits until the whole test times out.
     // A prompt that unmounts mid-fill then costs 60s instead of failing fast.
-    actionTimeout: 15000,
+    actionTimeout: 10_000,
     storageState: {
       cookies: [{
         name: "CF_Authorization",
