@@ -209,7 +209,18 @@ export default {
     try {
       principal = await verifyAccessRequest(request, ctx.access, env);
     } catch (error) {
-      if (error instanceof AccessVerificationError) return unauthorized();
+      if (error instanceof AccessVerificationError) {
+        const resp = unauthorized();
+        // TEMP: debug header (remove after diagnosis)
+        resp.headers.set('X-Debug-Access', JSON.stringify({
+          ca: !!ctx.access,
+          jh: !!request.headers.get('Cf-Access-Jwt-Assertion'),
+          ea: !!env.ACCESS_AUDIENCE,
+          ei: !!env.ACCESS_ISSUER,
+          ej: !!env.ACCESS_JWKS_URL,
+        }));
+        return resp;
+      }
       throw error;
     }
 
