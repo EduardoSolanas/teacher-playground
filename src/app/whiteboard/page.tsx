@@ -3,6 +3,7 @@
 import { useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { generateRoomId } from '@/lib/crypto/randomId';
+import { isValidJoinCode, JOIN_CODE_MAX_LENGTH } from '@/lib/whiteboard/joinCode';
 import { getStablePeerId } from '@/lib/whiteboard/peerId';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 
@@ -12,8 +13,6 @@ export default function WhiteboardRoute() {
   const [maxUsers, setMaxUsers] = useState(3);
   const [creationTimes, setCreationTimes] = useState<number[]>([]);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
-
-  const isValidRoomCode = (code: string): boolean => /^[a-zA-Z0-9_-]{1,20}$/.test(code);
 
   const handleCreateRoom = useCallback(async () => {
     if (isCreatingRoom) return;
@@ -63,7 +62,7 @@ export default function WhiteboardRoute() {
   }, [creationTimes, isCreatingRoom, maxUsers, router]);
 
   const handleJoinRoom = useCallback(() => {
-    if (joinCode.trim().length > 0 && isValidRoomCode(joinCode.trim())) {
+    if (joinCode.trim().length > 0 && isValidJoinCode(joinCode.trim())) {
       router.push(`/whiteboard/${joinCode.trim()}`);
     }
   }, [joinCode, router]);
@@ -202,7 +201,7 @@ export default function WhiteboardRoute() {
             placeholder="Enter room code"
             data-testid="whiteboard-room-code-input"
             value={joinCode}
-            onChange={(e) => setJoinCode(e.target.value.slice(0, 20))}
+            onChange={(e) => setJoinCode(e.target.value.slice(0, JOIN_CODE_MAX_LENGTH))}
             onKeyDown={(e) => {
               if (e.key === 'Enter') handleJoinRoom();
             }}
