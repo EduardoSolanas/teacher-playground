@@ -233,7 +233,7 @@ export default {
       debugSteps.push('verify:ok');
     } catch (error) {
       if (error instanceof AccessVerificationError) {
-        debugSteps.push('verify:FAIL');
+        debugSteps.push(`verify:FAIL@${error.step}`);
         // Try signature verification manually
         try {
           const token = request.headers.get('Cf-Access-Jwt-Assertion') ?? '';

@@ -25,11 +25,16 @@ export interface VerifiedAccessPrincipal {
 }
 
 export class AccessVerificationError extends Error {
+  // TEMP: step tracks which check failed (remove after diagnosis)
+  step = 0;
   constructor() {
     super('Unauthorized');
     this.name = 'AccessVerificationError';
   }
 }
+
+// TEMP: mutable step counter for diagnosis
+let _debugStep = 0;
 
 interface JwtHeader {
   alg?: unknown;
@@ -65,7 +70,9 @@ const JWKS_FETCH_TIMEOUT_MS = 3_000;
 export const JWKS_REFRESH_COOLDOWN_MS = 30_000;
 
 function fail(): never {
-  throw new AccessVerificationError();
+  const err = new AccessVerificationError();
+  err.step = _debugStep;
+  throw err;
 }
 
 function decodeBase64Url(value: string): Uint8Array {
@@ -261,31 +268,39 @@ export async function verifyAccessRequest(
   environment: AccessEnvironment,
   options: { now?: number; fetch?: typeof fetch } = {},
 ): Promise<VerifiedAccessPrincipal> {
+  _debugStep = 1; // validateConfiguration
   const config = validateConfiguration(environment);
   // ctx.access is populated only when the Workers runtime version supports it
   // (introduced 2026-08-14, requires a recent compatibility_date). The JWT
   // signature verification below is the real security boundary; this is
   // defense-in-depth when the runtime provides it.
+  _debugStep = 2; // ctx.access aud check
   if (context && context.aud !== config.audience) fail();
 
+  _debugStep = 3; // parseJwt
   const parsed = parseJwt(request);
+  _debugStep = 4; // header field check
   if (parsed.header.alg !== 'RS256' || parsed.header.typ !== 'JWT' || typeof parsed.header.kid !== 'string' || parsed.header.kid.length === 0) fail();
   const now = options.now ?? Date.now();
   const fetcher = options.fetch ?? globalThis.fetch;
+  _debugStep = 5; // fetchJwks
   let keys = await fetchJwks(config.jwksUrl, fetcher, now, false);
   let jwk = keys.get(parsed.header.kid);
   if (!jwk) {
     const lastForcedRefresh = forcedRefreshAt.get(config.jwksUrl) ?? Number.NEGATIVE_INFINITY;
     if (now - lastForcedRefresh >= JWKS_REFRESH_COOLDOWN_MS) {
       forcedRefreshAt.set(config.jwksUrl, now);
+      _debugStep = 6; // fetchJwks retry
       keys = await fetchJwks(config.jwksUrl, fetcher, now, true);
       jwk = keys.get(parsed.header.kid);
     }
   }
+  _debugStep = 7; // kid not found
   if (!jwk) fail();
 
   let publicKey: CryptoKey;
   try {
+    _debugStep = 8; // importKey
     publicKey = await crypto.subtle.importKey(
       'jwk',
       jwk,
@@ -293,17 +308,20 @@ export async function verifyAccessRequest(
       false,
       ['verify'],
     );
+    _debugStep = 9; // verify signature
     const valid = await crypto.subtle.verify(
       { name: 'RSASSA-PKCS1-v1_5' },
       publicKey,
       new Uint8Array(parsed.signature),
       new TextEncoder().encode(`${parsed.encodedHeader}.${parsed.encodedPayload}`),
     );
+    _debugStep = 10; // signature invalid
     if (!valid) fail();
   } catch {
     fail();
   }
 
+  _debugStep = 11; // validateClaims
   const principal = validateClaims(parsed.claims, config.issuer, config.audience, now);
   if (context) {
     let identity: Record<string, unknown> | undefined;
