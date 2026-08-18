@@ -78,6 +78,10 @@ export function applySchema(db: RoomDatabase): void {
   `);
 
   migrateRoomMembers(db);
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS room_members_one_owner
+     ON room_members(room_id) WHERE role = 'owner'`,
+  );
 
   db.exec(`DROP TABLE IF EXISTS room_access`);
   db.exec(`DROP TABLE IF EXISTS access_requests`);

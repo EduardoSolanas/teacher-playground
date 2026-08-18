@@ -17,11 +17,27 @@ export const MAX_ELEMENT_KEYS = 64;
 export const MAX_ELEMENT_NEST_DEPTH = 10;
 export const MAX_MAX_USERS = 10;
 
+/** Excalidraw embed/media types that must not persist unless explicitly allowlisted. */
+export const BLOCKED_ELEMENT_TYPES = new Set([
+  'iframe',
+  'embeddable',
+  'magicframe',
+  'image',
+]);
+
 /** U+0000–U+001F and U+007F — stripped from display and room names (SEC-017). */
 const ASCII_CONTROL_RE = /[\u0000-\u001F\u007F]/g;
+/** Zero-width / BOM — stripped so names cannot hide homoglyphs (SEC-017). */
+const ZERO_WIDTH_RE = /[\u200B\u200C\u200D\uFEFF]/g;
+/** Confusable whitespace collapsed to a single space after stripping (SEC-017). */
+const WHITESPACE_RE = /\s+/g;
 
 export function stripAsciiControls(value: string): string {
-  return value.replace(ASCII_CONTROL_RE, '').trim();
+  return value
+    .replace(ASCII_CONTROL_RE, '')
+    .replace(ZERO_WIDTH_RE, '')
+    .replace(WHITESPACE_RE, ' ')
+    .trim();
 }
 
 const normalizedNameBase = z.preprocess(
@@ -120,6 +136,30 @@ function addBoundedSceneValueIssues(
   });
 }
 
+function isAllowedElementLink(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return false;
+  }
+  if (trimmed.startsWith('//')) {
+    return false;
+  }
+  if (
+    trimmed.startsWith('/')
+    || trimmed.startsWith('./')
+    || trimmed.startsWith('../')
+    || trimmed.startsWith('#')
+    || trimmed.startsWith('?')
+  ) {
+    return true;
+  }
+  try {
+    return new URL(trimmed).protocol === 'https:';
+  } catch {
+    return !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed);
+  }
+}
+
 export const sceneElementSchema = z
   .object({
     id: z.string().regex(ELEMENT_ID_RE, 'element id must match the allowed grammar'),
@@ -127,6 +167,26 @@ export const sceneElementSchema = z
   })
   .passthrough()
   .superRefine((element, ctx) => {
+    if (typeof element.type === 'string') {
+      const normalizedType = element.type.trim().toLowerCase();
+      if (BLOCKED_ELEMENT_TYPES.has(normalizedType)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'element type is not permitted',
+        });
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(element, 'link')) {
+      const link = (element as { link?: unknown }).link;
+      if (typeof link !== 'string' || !isAllowedElementLink(link)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'element link must be https or a relative URL',
+        });
+      }
+    }
+
     const keys = Object.keys(element);
     if (keys.length > MAX_ELEMENT_KEYS) {
       ctx.addIssue({

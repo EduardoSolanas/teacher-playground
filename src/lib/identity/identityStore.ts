@@ -1,4 +1,5 @@
 import type { RoomDatabase } from '../whiteboard/db';
+import { isValidRoomId } from '../worker/requestGuard';
 
 const MAX_SUBJECT_KEY_LENGTH = 2048;
 
@@ -83,6 +84,7 @@ export function applyIdentitySchema(db: RoomDatabase): void {
           absolute_expires_at >= idle_expires_at
         ),
       revoked_at INTEGER CHECK (revoked_at IS NULL OR revoked_at >= created_at),
+      confirmed_at INTEGER CHECK (confirmed_at IS NULL OR confirmed_at >= created_at),
       FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
     )
   `);
@@ -94,6 +96,13 @@ export function applyIdentitySchema(db: RoomDatabase): void {
     CREATE INDEX IF NOT EXISTS idx_sessions_expiry
       ON sessions(idle_expires_at, absolute_expires_at)
   `);
+
+  const sessionColumns = db
+    .prepare(`PRAGMA table_info(sessions)`)
+    .all() as Array<{ name: string }>;
+  if (!sessionColumns.some((column) => column.name === 'confirmed_at')) {
+    db.exec(`ALTER TABLE sessions ADD COLUMN confirmed_at INTEGER`);
+  }
 
   // Append-only record of operator actions that change what an account may do.
   // Epoch changes revoke sessions and disconnect live rooms, so they must not
@@ -122,6 +131,26 @@ export function applyIdentitySchema(db: RoomDatabase): void {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_authorization_audit_account
       ON authorization_audit(account_id, created_at)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS account_rooms (
+      account_id TEXT NOT NULL,
+      room_id TEXT NOT NULL
+        CHECK (length(room_id) BETWEEN 1 AND 64),
+      role TEXT NOT NULL DEFAULT 'owner'
+        CHECK (role IN ('owner')),
+      name TEXT CHECK (name IS NULL OR length(name) <= 100),
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (account_id, room_id),
+      FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_account_rooms_account_updated
+      ON account_rooms(account_id, updated_at DESC)
   `);
 }
 
@@ -343,4 +372,112 @@ export function readAccountAuthorizations(
   }
 
   return statuses;
+}
+
+const MAX_OWNED_ROOM_NAME_LENGTH = 100;
+
+export type OwnedRoomRole = 'owner';
+
+export interface OwnedRoomRecord {
+  roomId: string;
+  name: string | null;
+  role: OwnedRoomRole;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface RecordOwnedRoomInput {
+  accountId: string;
+  roomId: string;
+  name?: string | null;
+  now: number;
+}
+
+function normalizeOwnedRoomName(name: string | null | undefined): string | null {
+  if (name == null) return null;
+  if (typeof name !== 'string' || name.length > MAX_OWNED_ROOM_NAME_LENGTH) {
+    throw new IdentityInputError(
+      `name must be at most ${MAX_OWNED_ROOM_NAME_LENGTH} characters`,
+    );
+  }
+  return name;
+}
+
+function requireValidRoomId(roomId: string): string {
+  if (!isValidRoomId(roomId)) {
+    throw new IdentityInputError('invalid roomId');
+  }
+  return roomId;
+}
+
+/** Upserts an owned-room index row. created_at is kept on conflict. */
+export function recordOwnedRoom(
+  db: RoomDatabase,
+  input: RecordOwnedRoomInput,
+): OwnedRoomRecord {
+  const roomId = requireValidRoomId(input.roomId);
+  const name = normalizeOwnedRoomName(input.name);
+  const now = input.now;
+
+  db.prepare(
+    `INSERT INTO account_rooms (
+       account_id, room_id, role, name, created_at, updated_at
+     ) VALUES (?, ?, 'owner', ?, ?, ?)
+     ON CONFLICT(account_id, room_id) DO UPDATE SET
+       name = excluded.name,
+       updated_at = excluded.updated_at`,
+  ).run(input.accountId, roomId, name, now, now);
+
+  const row = db
+    .prepare(
+      `SELECT room_id AS roomId, name, role,
+              created_at AS createdAt, updated_at AS updatedAt
+       FROM account_rooms
+       WHERE account_id = ? AND room_id = ?`,
+    )
+    .get(input.accountId, roomId) as OwnedRoomRecord | undefined;
+  if (!row) {
+    throw new IdentityInputError('failed to record owned room');
+  }
+  return {
+    roomId: row.roomId,
+    name: row.name,
+    role: row.role,
+    createdAt: Number(row.createdAt),
+    updatedAt: Number(row.updatedAt),
+  };
+}
+
+export function listOwnedRooms(
+  db: RoomDatabase,
+  accountId: string,
+): OwnedRoomRecord[] {
+  return (
+    db
+      .prepare(
+        `SELECT room_id AS roomId, name, role,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM account_rooms
+         WHERE account_id = ?
+         ORDER BY updated_at DESC`,
+      )
+      .all(accountId) as OwnedRoomRecord[]
+  ).map((row) => ({
+    roomId: row.roomId,
+    name: row.name,
+    role: row.role,
+    createdAt: Number(row.createdAt),
+    updatedAt: Number(row.updatedAt),
+  }));
+}
+
+export function removeOwnedRoom(
+  db: RoomDatabase,
+  accountId: string,
+  roomId: string,
+): void {
+  requireValidRoomId(roomId);
+  db.prepare(
+    `DELETE FROM account_rooms WHERE account_id = ? AND room_id = ?`,
+  ).run(accountId, roomId);
 }

@@ -1,6 +1,6 @@
 import type { RoomDatabase } from '../db';
 import { verifiedAccountId } from '../authz';
-import { getGrantRole, insertOwner, isOwnerRole } from '../membership';
+import { canWriteBoard, getGrantRole, insertOwner, isOwnerRole } from '../membership';
 import {
   hasRoomSceneIntent,
   hasRoomSettingsIntent,
@@ -61,6 +61,14 @@ function roomSettingsResponse(
   });
 }
 
+function isUniqueConstraint(error: unknown): boolean {
+  const code = error && typeof error === 'object' && 'code' in error
+    ? String((error as { code: unknown }).code)
+    : '';
+  const message = error instanceof Error ? error.message : String(error);
+  return code.includes('CONSTRAINT') || /unique constraint/i.test(message);
+}
+
 function readRoomSettings(db: RoomDatabase, roomId: string) {
   return db.prepare(
     `SELECT max_users, name, host_peer_id, allow_first_user_host, created_at, updated_at
@@ -119,8 +127,14 @@ export async function handleRoomPost(
     const viewportJson = JSON.stringify(viewport || { x: 0, y: 0, zoom: 1 });
 
     let hasCreatorGrant = false;
+    const role = getGrantRole(db, roomId, accountId);
 
     if (existing) {
+      // Room ids are share/display identifiers. Authorization is the
+      // room_members grant, not a second capability code minted here.
+      if (accountId && !canWriteBoard(role)) {
+        return Response.json({ error: 'Room already exists' }, { status: 409 });
+      }
       db.prepare(
         `UPDATE rooms
          SET elements = ?, viewport = ?, updated_at = ?
@@ -157,6 +171,9 @@ export async function handleRoomPost(
     }
     return roomSettingsResponse(settings, { hasCreatorGrant });
   } catch (e) {
+    if (isUniqueConstraint(e)) {
+      return Response.json({ error: 'Room already exists' }, { status: 409 });
+    }
     return internalErrorResponse(e, 'handleRoomPost');
   }
 }

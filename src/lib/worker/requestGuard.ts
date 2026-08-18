@@ -11,8 +11,45 @@ export const ROOM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 /** Cap for request bodies (1 MiB) so `request.json()` never reads unbounded data. */
 export const MAX_BODY_BYTES = 1024 * 1024;
 
+/** Max concurrent signaling sockets per account on one room object. */
+export const SIGNALING_MAX_SOCKETS_PER_ACCOUNT = 4;
+
+/** Max concurrent signaling sockets per room object. */
+export const SIGNALING_MAX_SOCKETS_PER_ROOM = 32;
+
+/** Max signaling messages per account within {@link SIGNALING_RATE_WINDOW_MS}. */
+export const SIGNALING_MAX_MESSAGES_PER_WINDOW = 60;
+
+/** Sliding window for per-account signaling message rate limits. */
+export const SIGNALING_RATE_WINDOW_MS = 1000;
+
 export function isValidRoomId(roomId: string): boolean {
   return ROOM_ID_RE.test(roomId);
+}
+
+/** Inbound identity/credential headers that must not reach RoomDO. */
+const FORWARDED_IDENTITY_HEADERS = [
+  'cookie',
+  'authorization',
+  'cf-access-jwt-assertion',
+  'cf-access-authenticated-user-email',
+  'x-account-id',
+  'x-user-id',
+  'x-forwarded-user',
+] as const;
+
+/**
+ * Returns a copy of `headers` without caller-supplied identity. WebSocket
+ * upgrade headers (`Upgrade`, `Connection`, `Sec-WebSocket-*`) and `Origin`
+ * are left in place. Session identity must travel only via Worker-stamped
+ * query params (`accountId`, `accountEpoch`, `sessionId`).
+ */
+export function stripForwardedIdentityHeaders(headers: Headers): Headers {
+  const stripped = new Headers(headers);
+  for (const name of FORWARDED_IDENTITY_HEADERS) {
+    stripped.delete(name);
+  }
+  return stripped;
 }
 
 /** A Content-Length header that exceeds the body cap means we can reject before reading. */
@@ -53,7 +90,7 @@ export function isPublicPath(pathname: string): boolean {
 
 /**
  * Applies the shared security-header baseline to every outbound response
- * (SEC-012). HTML responses get a report-only CSP plus noindex; everything
+ * (SEC-012). HTML responses get an enforced CSP plus noindex; everything
  * else gets `Cache-Control: no-store` so sensitive data is never cached.
  * Pass `indexable: true` (SEC-015 marketing pages) to keep the CSP and every
  * other header but omit `X-Robots-Tag` so search engines may index the page.
@@ -78,10 +115,8 @@ export function withSecurityHeaders(
 
   if (isHtml) {
     if (!options?.indexable) headers.set('X-Robots-Tag', 'noindex');
-    // Report-only first (SEC-012): enforced CSP must not break Excalidraw, so
-    // the policy is announced before it is ever enforced.
     headers.set(
-      'Content-Security-Policy-Report-Only',
+      'Content-Security-Policy',
       [
         "default-src 'self'",
         "frame-ancestors 'none'",

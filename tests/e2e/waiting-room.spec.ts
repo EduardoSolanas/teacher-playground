@@ -89,6 +89,32 @@ async function approveFirstWaitingPeer(hostPage: Page) {
 }
 
 test.describe('Waiting Room', () => {
+  test('presence list labels only the server-verified owner as Host', async ({ browser }) => {
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
+    const hostPage = await context1.newPage();
+    const peerPage = await context2.newPage();
+
+    try {
+      const roomId = await createRoomWithMaxUsers(hostPage, 'HostBadgeHost', 3);
+      await expect(hostPage.locator('[data-testid^="whiteboard-user-host-"]')).toBeVisible({
+        timeout: 15000,
+      });
+      await expect(hostPage.locator('[data-testid^="whiteboard-user-host-"]')).toHaveText('Host');
+
+      await joinExistingRoom(peerPage, roomId, 'HostBadgePeer');
+      await expectWaiting(peerPage);
+      await approveFirstWaitingPeer(hostPage);
+      await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+
+      await expect(peerPage.locator('[data-testid^="whiteboard-user-host-"]')).toHaveCount(1);
+      await expect(hostPage.locator('[data-testid^="whiteboard-user-host-"]')).toHaveCount(1);
+    } finally {
+      await context1.close();
+      await context2.close();
+    }
+  });
+
   test('peer always starts in waiting room even when room has spare capacity', async ({ browser }) => {
     const context1 = await newAuthenticatedContext(browser);
     const context2 = await newAuthenticatedContext(browser);

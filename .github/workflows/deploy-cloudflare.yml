@@ -16,6 +16,7 @@ jobs:
   deploy:
     name: Deploy Worker and static assets
     runs-on: ubuntu-24.04
+    environment: prod
 
     steps:
       - name: Checkout
@@ -69,4 +70,4 @@ jobs:
         uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}

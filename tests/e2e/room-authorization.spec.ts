@@ -97,6 +97,49 @@ function assertNoRoomDataOrPii(payload: unknown, secret: { boardName: string; em
   expect(text).not.toMatch(/"elements"/);
 }
 
+function cookieHeaderFrom(page: Page): Promise<string> {
+  return page.context().cookies().then((cookies) => cookies
+    .map((cookie) => `${cookie.name}=${cookie.value}`)
+    .join('; '));
+}
+
+/** Node fetch so we can send a forged Origin the browser would never set. */
+async function csrfPost(path: string, cookie: string, origin: string, body: unknown) {
+  const baseURL = process.env.PLAYWRIGHT_BASE_URL;
+  if (!baseURL) throw new Error('PLAYWRIGHT_BASE_URL is not set; run via npm run test:e2e');
+  const headers: Record<string, string> = {
+    Cookie: cookie,
+    'content-type': 'application/json',
+  };
+  if (origin) headers.Origin = origin;
+  const response = await fetch(new URL(path, baseURL), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+  return { status: response.status, json: await response.json().catch(() => null) };
+}
+
+function signalingOutcome(page: Page, roomId: string): Promise<string> {
+  return page.evaluate((room) => new Promise<string>((resolve) => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new WebSocket(`${protocol}//${window.location.host}/signaling?room=${encodeURIComponent(room)}`);
+    const timer = window.setTimeout(() => {
+      socket.close();
+      resolve('timeout');
+    }, 10_000);
+    socket.onopen = () => {
+      window.clearTimeout(timer);
+      socket.close();
+      resolve('open');
+    };
+    socket.onerror = () => {
+      window.clearTimeout(timer);
+      resolve('error');
+    };
+  }), roomId);
+}
+
 test.describe('room authorization across accounts', () => {
   test('a room created by one account is unreadable to another', async ({ browser }) => {
     const roomId = `authz-private-${Date.now()}`;
@@ -237,7 +280,7 @@ test.describe('room authorization across accounts', () => {
     }
   });
 
-  test('create, request, approve, join, expire TTL, revoke, and deny without leaking PII', async ({ browser }) => {
+  test('create, request, approve, join, revoke, and deny without leaking PII', async ({ browser }) => {
     const roomId = `authz-lifecycle-${Date.now()}`;
     const secret = { boardName: `LifecycleBoard-${roomId}`, email: `student-${roomId}@hidden.example` };
     const owner = await signedInPage(browser, `owner-${roomId}`);
@@ -322,6 +365,164 @@ test.describe('room authorization across accounts', () => {
       await owner.close();
       await guest.close();
       await anonymous.close();
+    }
+  });
+
+  test('cookie-authenticated mutations fail with a foreign Origin', async ({ browser }) => {
+    const roomId = `authz-csrf-${Date.now()}`;
+    const owner = await signedInPage(browser, `owner-${roomId}`);
+
+    try {
+      expect(await apiStatus(owner.page, `/api/whiteboard/room/${roomId}`, {
+        method: 'POST',
+        body: JSON.stringify({ elements: [] }),
+      })).toBe(200);
+      expect(await apiStatus(owner.page, `/api/whiteboard/room/${roomId}/settings`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'CSRF board' }),
+      })).toBe(200);
+
+      const cookie = await cookieHeaderFrom(owner.page);
+      const hijack = await csrfPost(
+        `/api/whiteboard/room/${roomId}/settings`,
+        cookie,
+        'https://attacker.example',
+        { name: 'Stolen' },
+      );
+      expect(hijack.status).toBe(403);
+      expect(hijack.json).toEqual({ error: 'Origin required' });
+
+      const missing = await csrfPost(
+        `/api/whiteboard/room/${roomId}/settings`,
+        cookie,
+        '',
+        { name: 'Stolen' },
+      );
+      expect(missing.status).toBe(403);
+
+      expect(await apiJson(owner.page, `/api/whiteboard/room/${roomId}`))
+        .toMatchObject({ name: 'CSRF board' });
+    } finally {
+      await owner.close();
+    }
+  });
+
+  test('signaling upgrades fail for outsiders and pending accounts', async ({ browser }) => {
+    const roomId = `authz-signaling-${Date.now()}`;
+    const owner = await signedInPage(browser, `owner-${roomId}`);
+    const outsider = await signedInPage(browser, `outsider-${roomId}`);
+
+    try {
+      expect(await apiStatus(owner.page, `/api/whiteboard/room/${roomId}`, {
+        method: 'POST',
+        body: JSON.stringify({ elements: [] }),
+      })).toBe(200);
+
+      expect(await signalingOutcome(owner.page, roomId)).toBe('open');
+      expect(await signalingOutcome(outsider.page, roomId)).toBe('error');
+
+      expect(await apiStatus(outsider.page, `/api/whiteboard/room/${roomId}/presence`, {
+        method: 'POST',
+        body: JSON.stringify({ peerId: 'pending-peer', userName: 'Guest', color: '#e74c3c' }),
+      })).toBe(200);
+      expect(await signalingOutcome(outsider.page, roomId)).toBe('error');
+    } finally {
+      await owner.close();
+      await outsider.close();
+    }
+  });
+
+  test('a viewer can read the board but cannot write scene or settings', async ({ browser }) => {
+    const roomId = `authz-viewer-${Date.now()}`;
+    const owner = await signedInPage(browser, `owner-${roomId}`);
+    const guest = await signedInPage(browser, `viewer-${roomId}`);
+
+    try {
+      expect(await apiStatus(owner.page, `/api/whiteboard/room/${roomId}`, {
+        method: 'POST',
+        body: JSON.stringify({ elements: [{ id: 'owner-dot' }] }),
+      })).toBe(200);
+      expect(await apiStatus(owner.page, `/api/whiteboard/room/${roomId}/settings`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Viewer lesson' }),
+      })).toBe(200);
+
+      const requested = await apiCall(guest.page, `/api/whiteboard/room/${roomId}/requests`, {
+        method: 'POST',
+        body: JSON.stringify({ userName: 'Viewer' }),
+      });
+      expect(requested.status).toBe(201);
+      const requestId = (requested.json as { requestId: string }).requestId;
+
+      expect(await apiStatus(owner.page, `/api/whiteboard/room/${roomId}/requests/${requestId}`, {
+        method: 'POST',
+        body: JSON.stringify({ action: 'approve', role: 'viewer' }),
+      })).toBe(200);
+
+      expect(await apiJson(guest.page, `/api/whiteboard/room/${roomId}`))
+        .toMatchObject({ name: 'Viewer lesson' });
+      expect(await signalingOutcome(guest.page, roomId)).toBe('open');
+      expect(await apiStatus(guest.page, `/api/whiteboard/room/${roomId}`, {
+        method: 'POST',
+        body: JSON.stringify({ elements: [{ id: 'hijack' }] }),
+      })).toBe(403);
+      expect(await apiStatus(guest.page, `/api/whiteboard/room/${roomId}/settings`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Hijacked' }),
+      })).toBe(403);
+      expect(await apiJson(owner.page, `/api/whiteboard/room/${roomId}`))
+        .toMatchObject({ name: 'Viewer lesson' });
+    } finally {
+      await owner.close();
+      await guest.close();
+    }
+  });
+
+  test('an approved editor cannot admit or kick through the HTTP APIs', async ({ browser }) => {
+    const roomId = `authz-editor-mod-${Date.now()}`;
+    const owner = await signedInPage(browser, `owner-${roomId}`);
+    const editor = await signedInPage(browser, `editor-${roomId}`);
+    const waiting = await signedInPage(browser, `waiting-${roomId}`);
+
+    try {
+      expect(await apiStatus(owner.page, `/api/whiteboard/room/${roomId}`, {
+        method: 'POST',
+        body: JSON.stringify({ elements: [] }),
+      })).toBe(200);
+      expect(await apiStatus(owner.page, `/api/whiteboard/room/${roomId}/presence`, {
+        method: 'POST',
+        body: JSON.stringify({ peerId: 'host-peer', userName: 'Host', color: '#3498db' }),
+      })).toBe(200);
+
+      const requested = await apiCall(editor.page, `/api/whiteboard/room/${roomId}/requests`, {
+        method: 'POST',
+        body: JSON.stringify({ userName: 'Editor' }),
+      });
+      expect(requested.status).toBe(201);
+      const requestId = (requested.json as { requestId: string }).requestId;
+      expect(await apiStatus(owner.page, `/api/whiteboard/room/${roomId}/requests/${requestId}`, {
+        method: 'POST',
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      })).toBe(200);
+
+      expect(await apiStatus(waiting.page, `/api/whiteboard/room/${roomId}/presence`, {
+        method: 'POST',
+        body: JSON.stringify({ peerId: 'waiting-peer', userName: 'Waiting', color: '#e67e22' }),
+      })).toBe(200);
+
+      expect(await apiStatus(editor.page, `/api/whiteboard/room/${roomId}/waiting`, {
+        method: 'POST',
+        body: JSON.stringify({ peerId: 'waiting-peer', action: 'approve' }),
+      })).toBe(403);
+      expect(await apiStatus(editor.page, `/api/whiteboard/room/${roomId}/presence`, {
+        method: 'POST',
+        body: JSON.stringify({ action: 'kick', peerId: 'waiting-peer' }),
+      })).toBe(403);
+      expect(await apiStatus(waiting.page, `/api/whiteboard/room/${roomId}`)).toBe(403);
+    } finally {
+      await owner.close();
+      await editor.close();
+      await waiting.close();
     }
   });
 });

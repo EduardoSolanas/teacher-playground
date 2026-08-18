@@ -24,6 +24,30 @@ export interface Membership {
 
 const PEER_GRANT_MS = 12 * 60 * 60 * 1000;
 
+/** Hard ceiling when a room has no `max_users` row. */
+export const MAX_WAITING = 50;
+
+export function accessQueueCap(db: RoomDatabase, roomId: string): number {
+  const row = db.prepare(
+    `SELECT max_users AS maxUsers FROM rooms WHERE room_id = ?`,
+  ).get(roomId) as { maxUsers: number } | undefined;
+  if (row && Number.isInteger(row.maxUsers) && row.maxUsers > 0) {
+    return Math.min(row.maxUsers, MAX_WAITING);
+  }
+  return MAX_WAITING;
+}
+
+export function isAccessQueueFull(db: RoomDatabase, roomId: string): boolean {
+  const cap = accessQueueCap(db, roomId);
+  const pending = db.prepare(
+    `SELECT COUNT(*) AS n FROM room_members WHERE room_id = ? AND role = 'pending'`,
+  ).get(roomId) as { n: number };
+  const waiting = db.prepare(
+    `SELECT COUNT(*) AS n FROM waiting_peers WHERE room_id = ?`,
+  ).get(roomId) as { n: number };
+  return pending.n >= cap || waiting.n >= cap;
+}
+
 export function isGrantedRole(role: MembershipRole | null): boolean {
   return role === 'owner' || role === 'editor' || role === 'viewer';
 }
@@ -128,7 +152,7 @@ export function insertOwner(
 export type RequestAccessResult =
   | { ok: true; status: 'approved'; role: PublicGrantRole; expiresAt: number | null }
   | { ok: true; status: 'pending'; requestId: string }
-  | { ok: false; reason: 'banned' };
+  | { ok: false; reason: 'banned' | 'queue_full' };
 
 /**
  * None → pending. Already granted stays granted. Banned stays banned.
@@ -159,6 +183,10 @@ export function requestAccess(
   }
   if (role === 'pending' && current) {
     return { ok: true, status: 'pending', requestId: current.accountId };
+  }
+
+  if (isAccessQueueFull(db, params.roomId)) {
+    return { ok: false, reason: 'queue_full' };
   }
 
   db.prepare(
@@ -195,6 +223,44 @@ export function requestAccess(
     };
   }
   return { ok: true, status: 'pending', requestId: params.accountId };
+}
+
+export function enqueueWaitingPeer(
+  db: RoomDatabase,
+  params: {
+    roomId: string;
+    peerId: string;
+    userName: string;
+    color: string;
+    accountId: string;
+    now?: number;
+  },
+): { ok: true } | { ok: false; reason: 'queue_full' } {
+  const existing = db.prepare(
+    `SELECT 1 AS ok FROM waiting_peers WHERE room_id = ? AND peer_id = ?`,
+  ).get(params.roomId, params.peerId) as { ok: number } | undefined;
+
+  if (!existing && isAccessQueueFull(db, params.roomId)) {
+    return { ok: false, reason: 'queue_full' };
+  }
+
+  const now = params.now ?? Date.now();
+  db.prepare(
+    `INSERT INTO waiting_peers (room_id, peer_id, user_name, color, requested_at, account_id)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(room_id, peer_id) DO UPDATE SET
+      user_name = excluded.user_name,
+      color = excluded.color,
+      account_id = excluded.account_id`,
+  ).run(
+    params.roomId,
+    params.peerId,
+    params.userName,
+    params.color,
+    now,
+    params.accountId,
+  );
+  return { ok: true };
 }
 
 export function listPending(

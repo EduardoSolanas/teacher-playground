@@ -9,6 +9,7 @@ import { IdentityDO, getIdentityObject } from './do/IdentityDO';
 import { createRateLimiter } from './lib/http/rateLimit';
 import {
   parseSessionCookie,
+  sessionAllowsDestructiveAction,
   type ValidatedSession,
 } from './lib/identity/sessionStore';
 import { logAuthEvent, type AuthEventInput } from './lib/security/authEvents';
@@ -18,6 +19,7 @@ import {
   isPublicPath,
   isValidRoomId,
   MARKETING_PAGES,
+  stripForwardedIdentityHeaders,
   withSecurityHeaders,
 } from './lib/worker/requestGuard';
 
@@ -43,7 +45,11 @@ const ROOM_API = /^\/api\/whiteboard\/room\/([^/]+)(\/.*)?$/;
 const AV_TOKEN = '/api/av/token';
 const SESSION_ISSUE = '/auth/session';
 const SESSION_CURRENT = '/auth/session/current';
+const SESSION_CONFIRM = '/auth/session/confirm';
 const SESSION_LOGOUT = '/auth/session/logout';
+const ACCOUNT_EXPORT = '/auth/account/export';
+const ACCOUNT_ROOMS = '/api/whiteboard/rooms';
+const IDENTITY_ACCOUNT_ROOMS = 'https://identity/accounts/rooms';
 
 /** Room-creation POSTs per verified account within a one-minute window (SEC-005). */
 const ROOM_CREATE_RATE_WINDOW_MS = 60_000;
@@ -57,10 +63,67 @@ const strictLocalTestRoomCreateLimiter = createRateLimiter({
   max: ROOM_CREATE_RATE_MAX,
 });
 
+/** Access-request POSTs per verified account within a one-minute window (SEC-005). */
+const ACCESS_REQUEST_RATE_WINDOW_MS = 60_000;
+const ACCESS_REQUEST_RATE_MAX = 20;
+const productionAccessRequestLimiter = createRateLimiter({
+  windowMs: ACCESS_REQUEST_RATE_WINDOW_MS,
+  max: ACCESS_REQUEST_RATE_MAX,
+});
+const strictLocalTestAccessRequestLimiter = createRateLimiter({
+  windowMs: ACCESS_REQUEST_RATE_WINDOW_MS,
+  max: ACCESS_REQUEST_RATE_MAX,
+});
+
 function roomCreateLimiterFor(env: Env) {
   return env.ENVIRONMENT === 'local-test'
     ? strictLocalTestRoomCreateLimiter
     : productionRoomCreateLimiter;
+}
+
+function accessRequestLimiterFor(env: Env) {
+  return env.ENVIRONMENT === 'local-test'
+    ? strictLocalTestAccessRequestLimiter
+    : productionAccessRequestLimiter;
+}
+
+/**
+ * Presence POSTs (join/heartbeat and kick/suspend) per account per minute (SEC-017).
+ * Kick shares this cap so the Worker can limit without cloning/parsing JSON.
+ */
+const PRESENCE_POST_RATE_WINDOW_MS = 60_000;
+const PRESENCE_POST_RATE_MAX = 30;
+const productionPresencePostLimiter = createRateLimiter({
+  windowMs: PRESENCE_POST_RATE_WINDOW_MS,
+  max: PRESENCE_POST_RATE_MAX,
+});
+const strictLocalTestPresencePostLimiter = createRateLimiter({
+  windowMs: PRESENCE_POST_RATE_WINDOW_MS,
+  max: PRESENCE_POST_RATE_MAX,
+});
+
+function presencePostLimiterFor(env: Env) {
+  return env.ENVIRONMENT === 'local-test'
+    ? strictLocalTestPresencePostLimiter
+    : productionPresencePostLimiter;
+}
+
+/** Existing-room scene POSTs (POST /room/:id empty subpath) per account per minute (SEC-005). */
+const SCENE_WRITE_RATE_WINDOW_MS = 60_000;
+const SCENE_WRITE_RATE_MAX = 120;
+const productionSceneWriteLimiter = createRateLimiter({
+  windowMs: SCENE_WRITE_RATE_WINDOW_MS,
+  max: SCENE_WRITE_RATE_MAX,
+});
+const strictLocalTestSceneWriteLimiter = createRateLimiter({
+  windowMs: SCENE_WRITE_RATE_WINDOW_MS,
+  max: SCENE_WRITE_RATE_MAX,
+});
+
+function sceneWriteLimiterFor(env: Env) {
+  return env.ENVIRONMENT === 'local-test'
+    ? strictLocalTestSceneWriteLimiter
+    : productionSceneWriteLimiter;
 }
 
 function shouldRateLimitRoomCreate(env: Env, request: Request): boolean {
@@ -96,7 +159,8 @@ function unauthorized(env: Env, reason = 'unauthorized'): Response {
   ));
 }
 
-function rateLimited(retryAfterMs: number): Response {
+function rateLimited(env: Env, retryAfterMs: number): Response {
+  emitAuthEvent({ type: 'rate_limit', outcome: 'blocked' }, env);
   const retryAfterSec = Math.ceil(retryAfterMs / 1000);
   return withSecurityHeaders(Response.json(
     { error: 'Too many requests' },
@@ -121,6 +185,7 @@ function originGuard(env: Env, request: Request, pathname: string): Response | n
     || (!readOnly && (
       pathname === SESSION_ISSUE
       || pathname === SESSION_LOGOUT
+      || pathname === SESSION_CONFIRM
       || pathname.startsWith('/api/')
     ));
   if (!guarded || hasExactOrigin(request)) return null;
@@ -202,6 +267,29 @@ async function sessionCurrent(
   return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
 }
 
+async function sessionConfirm(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return withSecurityHeaders(Response.json({ error: 'Method not allowed' }, { status: 405, headers: { Allow: 'POST' } }));
+  }
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const result = await identity.fetch(
+    new Request('https://identity/sessions/confirm', {
+      ...internalJson(principal),
+      headers: {
+        'content-type': 'application/json',
+        cookie: request.headers.get('cookie') ?? '',
+      },
+    }),
+  );
+  const headers = new Headers(result.headers);
+  headers.set('Cache-Control', 'no-store');
+  return withSecurityHeaders(new Response(result.body, { status: result.status, headers }));
+}
+
 async function sessionLogout(env: Env, request: Request): Promise<Response> {
   // See issueSession: an empty browser POST may still have a body stream.
   if (request.method !== 'POST') {
@@ -215,6 +303,103 @@ async function sessionLogout(env: Env, request: Request): Promise<Response> {
   return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
 }
 
+async function accountExport(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'GET') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'GET' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const result = await identity.fetch(new Request('https://identity/accounts/export', {
+    method: 'GET',
+    headers: { cookie: request.headers.get('cookie') ?? '' },
+  }));
+  return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
+}
+
+async function listAccountRooms(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'GET') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'GET' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const result = await identity.fetch(new Request(IDENTITY_ACCOUNT_ROOMS, {
+    method: 'GET',
+    headers: { cookie: request.headers.get('cookie') ?? '' },
+  }));
+  return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
+}
+
+function syncOwnedRoom(
+  env: Env,
+  cookie: string,
+  method: 'POST' | 'DELETE',
+  body: { roomId: string; name?: string | null },
+): Promise<void> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  return identity.fetch(new Request(IDENTITY_ACCOUNT_ROOMS, {
+    method,
+    headers: {
+      'content-type': 'application/json',
+      cookie,
+    },
+    body: JSON.stringify(body),
+  })).then((response) => {
+    if (!response.ok) {
+      console.error('identity account rooms sync failed', response.status);
+    }
+  }).catch(() => {
+    console.error('identity account rooms sync failed');
+  });
+}
+
+async function recordCreatedRoomIfGranted(
+  env: Env,
+  cookie: string,
+  roomId: string,
+  response: Response,
+): Promise<void> {
+  try {
+    const payload = await response.json() as { hasCreatorGrant?: unknown };
+    if (payload.hasCreatorGrant !== true) return;
+    await syncOwnedRoom(env, cookie, 'POST', { roomId, name: null });
+  } catch {
+    console.error('identity account rooms create sync failed');
+  }
+}
+
+async function syncOwnedRoomNameFromSettings(
+  env: Env,
+  cookie: string,
+  roomId: string,
+  request: Request,
+): Promise<void> {
+  try {
+    const payload = await request.json() as { name?: unknown };
+    if (payload == null || typeof payload !== 'object' || Array.isArray(payload)) return;
+    if (!('name' in payload)) return;
+    if (payload.name !== null && typeof payload.name !== 'string') return;
+    await syncOwnedRoom(env, cookie, 'POST', { roomId, name: payload.name });
+  } catch {
+    console.error('identity account rooms settings sync failed');
+  }
+}
+
 /** Forwards to the room's Durable Object, preserving the original query. */
 function forward(
   env: Env,
@@ -226,19 +411,26 @@ function forward(
 ): Promise<Response> {
   const target = new URL(`https://room${path}`);
   url.searchParams.forEach((value, key) => target.searchParams.set(key, value));
-  // `set` overwrites, so a client-supplied roomId/accountId/epoch on the
-  // original query cannot survive into the internal request.
+  // `set` overwrites, so a client-supplied roomId/accountId/epoch/sessionId on
+  // the original query cannot survive into the internal request.
   target.searchParams.set('roomId', roomId);
   if (session) {
     target.searchParams.set('accountId', session.accountId);
     target.searchParams.set('accountEpoch', String(session.authorizationEpoch));
+    target.searchParams.set('sessionId', session.sessionId);
   } else {
     target.searchParams.delete('accountId');
     target.searchParams.delete('accountEpoch');
+    target.searchParams.delete('sessionId');
   }
 
   const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
-  return stub.fetch(new Request(target, request)).then((response) => {
+  const forwarded = new Request(target, request);
+  const stripped = stripForwardedIdentityHeaders(forwarded.headers);
+  for (const name of [...forwarded.headers.keys()]) {
+    if (!stripped.has(name)) forwarded.headers.delete(name);
+  }
+  return stub.fetch(forwarded).then((response) => {
     // A 101 Switching Protocols upgrade carries a WebSocket pair that
     // reconstructing the Response would drop, so pass it through untouched.
     if (response.status === 101 && response.webSocket) return response;
@@ -309,8 +501,17 @@ export default {
     if (url.pathname === SESSION_CURRENT) {
       return sessionCurrent(env, request, principal);
     }
+    if (url.pathname === SESSION_CONFIRM) {
+      return sessionConfirm(env, request, principal);
+    }
     if (url.pathname === SESSION_LOGOUT) {
       return sessionLogout(env, request);
+    }
+    if (url.pathname === ACCOUNT_EXPORT) {
+      return accountExport(env, request, principal);
+    }
+    if (url.pathname === ACCOUNT_ROOMS) {
+      return listAccountRooms(env, request, principal);
     }
 
     // Assets may bootstrap the local session. Every mutable/API and signaling
@@ -372,15 +573,59 @@ export default {
         }
       }
       const subpath = match[2] ?? '';
+      if (
+        request.method === 'DELETE'
+        && subpath === ''
+        && session
+        && !sessionAllowsDestructiveAction(session)
+      ) {
+        return withSecurityHeaders(Response.json(
+          { error: 'Reauthentication required' },
+          { status: 403, headers: { 'Cache-Control': 'no-store' } },
+        ));
+      }
       if (request.method === 'POST' && subpath === '' && session && shouldRateLimitRoomCreate(env, request)) {
         const accessStatus = await probeRoomAccessStatus(env, roomId, url, session);
         if (accessStatus === 'none') {
           const limit = roomCreateLimiterFor(env).take(session.accountId);
-          if (!limit.ok) return rateLimited(limit.retryAfterMs);
+          if (!limit.ok) return rateLimited(env, limit.retryAfterMs);
+        } else {
+          const limit = sceneWriteLimiterFor(env).take(session.accountId);
+          if (!limit.ok) return rateLimited(env, limit.retryAfterMs);
         }
       }
+      if (request.method === 'POST' && subpath === '/requests' && session && shouldRateLimitRoomCreate(env, request)) {
+        const limit = accessRequestLimiterFor(env).take(session.accountId);
+        if (!limit.ok) return rateLimited(env, limit.retryAfterMs);
+      }
+      if (request.method === 'POST' && subpath === '/presence' && session && shouldRateLimitRoomCreate(env, request)) {
+        const limit = presencePostLimiterFor(env).take(session.accountId);
+        if (!limit.ok) return rateLimited(env, limit.retryAfterMs);
+      }
       // The verified account decides which rooms this caller may touch.
-      return forward(env, roomId, `/room${subpath}`, request, url, session);
+      const settingsClone = session
+        && subpath === '/settings'
+        && (request.method === 'POST' || request.method === 'PATCH')
+        ? request.clone()
+        : null;
+      const response = await forward(env, roomId, `/room${subpath}`, request, url, session);
+      if (session && subpath === '') {
+        const cookie = request.headers.get('cookie') ?? '';
+        if (request.method === 'POST' && response.ok) {
+          ctx.waitUntil(recordCreatedRoomIfGranted(env, cookie, roomId, response.clone()));
+        } else if (request.method === 'DELETE' && response.status === 200) {
+          ctx.waitUntil(syncOwnedRoom(env, cookie, 'DELETE', { roomId }));
+        }
+      }
+      if (session && settingsClone && response.ok) {
+        ctx.waitUntil(syncOwnedRoomNameFromSettings(
+          env,
+          request.headers.get('cookie') ?? '',
+          roomId,
+          settingsClone,
+        ));
+      }
+      return response;
     }
 
     // Serve the placeholder room page for any /whiteboard/<roomId> URL. The

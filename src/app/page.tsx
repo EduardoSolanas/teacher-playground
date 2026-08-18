@@ -89,7 +89,7 @@ function HeroBoard() {
 export default function Home() {
   return (
     <div className="min-h-screen flex flex-col bg-amber-50/40">
-      <header className="max-w-5xl w-full mx-auto px-6 pt-6 flex items-center justify-between">
+      <header className="max-w-5xl w-full mx-auto px-8 sm:px-6 pt-6 flex items-center justify-between">
         <span className="font-semibold text-slate-900">Teacher Playground</span>
         <nav className="flex items-center gap-6 text-sm text-slate-600">
           <Link href="/pricing" className="hover:text-slate-900">Pricing</Link>
@@ -103,7 +103,7 @@ export default function Home() {
       </header>
 
       <main className="flex-1">
-        <section className="max-w-5xl mx-auto px-6 pt-16 pb-12 grid gap-10 lg:grid-cols-2 lg:items-center">
+        <section className="max-w-5xl mx-auto px-8 sm:px-6 pt-16 pb-12 grid gap-10 lg:grid-cols-2 lg:items-center">
           <div>
             <h1 className="text-4xl sm:text-5xl font-bold tracking-tight text-slate-900">
               Your online tutoring room
@@ -134,7 +134,7 @@ export default function Home() {
           <HeroBoard />
         </section>
 
-        <section className="max-w-5xl mx-auto px-6 pb-20">
+        <section className="max-w-5xl mx-auto px-8 sm:px-6 pb-20">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             {FEATURES.map((feature) => (
               <div
@@ -152,7 +152,7 @@ export default function Home() {
       </main>
 
       <footer className="border-t border-slate-200 bg-white py-8">
-        <div className="max-w-5xl mx-auto px-6 flex flex-wrap items-center justify-center gap-6 text-sm text-slate-500">
+        <div className="max-w-5xl mx-auto px-8 sm:px-6 flex flex-wrap items-center justify-center gap-6 text-sm text-slate-500">
           <span>Teacher Playground</span>
           <Link href="/terms" className="hover:text-slate-800">Terms</Link>
           <Link href="/privacy" className="hover:text-slate-800">Privacy</Link>

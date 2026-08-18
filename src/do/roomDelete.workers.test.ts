@@ -2,11 +2,13 @@ import { beforeEach, describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { runInDurableObject } from 'cloudflare:test';
 import type { RoomDO } from './RoomDO';
+import { getIdentityObject, type IdentityDO } from './IdentityDO';
 import {
   authenticatedFetch,
   bootstrapLocalSession,
   type LocalAuthSession,
 } from '../test/workerAuth';
+import { DESTRUCTIVE_FRESH_MS } from '../lib/identity/sessionStore';
 
 const ROOM_SCOPED_TABLES = [
   'rooms',
@@ -134,7 +136,23 @@ describe('atomic room deletion in RoomDO', () => {
       body: JSON.stringify({ elements: [] }),
     });
     expect(recreate.status).toBe(410);
-    expect(await recreate.json()).not.toMatchObject({ hasCreatorGrant: true });
+    expect(await recreate.json()).toEqual({ error: 'Room deleted' });
+    expect(recreate.headers.get('Cache-Control')).toBe('no-store');
+
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      expect(scopedCounts(instance, roomId)).toEqual({
+        rooms: 0,
+        room_members: 0,
+        room_presence: 0,
+        waiting_peers: 0,
+        kicked_peers: 0,
+      });
+      expect(
+        instance.db
+          .prepare(`SELECT 1 FROM room_tombstones WHERE room_id = ?`)
+          .get(roomId),
+      ).toBeDefined();
+    });
 
     const get = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner);
     expect(get.status).toBe(410);
@@ -146,5 +164,112 @@ describe('atomic room deletion in RoomDO', () => {
       body: JSON.stringify({ elements: [] }),
     });
     expect(otherRecreate.status).toBe(410);
+    expect(await otherRecreate.json()).toEqual({ error: 'Room deleted' });
+  });
+});
+
+async function ageSessionCreatedAt(accountId: string, ageMs: number): Promise<void> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  await runInDurableObject(identity, (instance: IdentityDO) => {
+    instance.db
+      .prepare(
+        `UPDATE sessions SET created_at = created_at - ?
+         WHERE account_id = ? AND revoked_at IS NULL`,
+      )
+      .run(ageMs, accountId);
+  });
+}
+
+describe('fresh proof for destructive room DELETE', () => {
+  it('rejects a 6-minute-old session cookie without confirm and leaves the room', async () => {
+    const owner = await bootstrapLocalSession(`stale-delete-${crypto.randomUUID()}`);
+    const roomId = `stale-delete-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    await ageSessionCreatedAt(owner.accountId, DESTRUCTIVE_FRESH_MS + 60_000);
+
+    const del = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'DELETE',
+    });
+    expect(del.status).toBe(403);
+    expect(await del.json()).toEqual({ error: 'Reauthentication required' });
+
+    const still = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner);
+    expect(still.status).toBe(200);
+  });
+
+  it('allows DELETE after Access-bound session confirm on an old cookie', async () => {
+    const owner = await bootstrapLocalSession(`confirm-delete-${crypto.randomUUID()}`);
+    const roomId = `confirm-delete-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    await ageSessionCreatedAt(owner.accountId, DESTRUCTIVE_FRESH_MS + 60_000);
+
+    const confirm = await authenticatedFetch('/auth/session/confirm', owner, {
+      method: 'POST',
+    });
+    expect(confirm.status).toBe(200);
+
+    const del = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'DELETE',
+    });
+    expect(del.status).toBe(200);
+
+    const gone = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner);
+    expect(gone.status).toBe(410);
+  });
+
+  it('allows DELETE on a just-issued session without confirm', async () => {
+    const owner = await bootstrapLocalSession(`fresh-delete-${crypto.randomUUID()}`);
+    const roomId = `fresh-delete-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const del = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'DELETE',
+    });
+    expect(del.status).toBe(200);
+
+    const gone = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner);
+    expect(gone.status).toBe(410);
+  });
+
+  it('does not require fresh proof for presence DELETE', async () => {
+    const owner = await bootstrapLocalSession(`stale-presence-${crypto.randomUUID()}`);
+    const roomId = `stale-presence-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const peerId = `peer-${crypto.randomUUID()}`;
+    const join = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId, userName: 'Ada', color: '#3498db' }),
+    });
+    expect(join.status).toBe(200);
+    const issuedPeerId = (await join.json() as { peerId: string }).peerId;
+
+    await ageSessionCreatedAt(owner.accountId, DESTRUCTIVE_FRESH_MS + 60_000);
+
+    const leave = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/presence?peerId=${encodeURIComponent(issuedPeerId)}`,
+      owner,
+      { method: 'DELETE' },
+    );
+    expect(leave.status).toBe(200);
   });
 });

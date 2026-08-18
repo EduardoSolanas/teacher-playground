@@ -11,6 +11,7 @@ import {
   purgeExpiredGrants,
   requestAccess,
   resolveModerationTarget,
+  enqueueWaitingPeer,
 } from './membership';
 
 let db: Database.Database;
@@ -40,6 +41,19 @@ describe('room membership state machine', () => {
       insertOwner(db, 'r', 'owner-a', 1);
     })();
     insertOwner(db, 'r', 'owner-a', 2);
+
+    const rows = db.prepare(`SELECT account_id, role FROM room_members WHERE room_id = ?`).all('r') as Array<{
+      account_id: string;
+      role: string;
+    }>;
+    expect(rows).toEqual([{ account_id: 'owner-a', role: 'owner' }]);
+  });
+
+  it('rejects insertOwner for a second account without replacing the owner', () => {
+    db.prepare(`INSERT INTO rooms (room_id, created_at, updated_at) VALUES (?, ?, ?)`).run('r', 1, 1);
+    insertOwner(db, 'r', 'owner-a', 1);
+
+    expect(() => insertOwner(db, 'r', 'owner-b', 2)).toThrow();
 
     const rows = db.prepare(`SELECT account_id, role FROM room_members WHERE room_id = ?`).all('r') as Array<{
       account_id: string;
@@ -133,6 +147,56 @@ describe('room membership state machine', () => {
     ]);
     expect(getMembership(db, 'r1', 'expired-editor')).toBeNull();
     expect(getMembership(db, 'r1', 'fresh-editor')?.role).toBe('editor');
+  });
+
+  it('rejects a new requestAccess after pending rows reach the room maxUsers cap', () => {
+    db.prepare(
+      `INSERT INTO rooms (room_id, created_at, updated_at, max_users) VALUES (?, 1, 1, 3)`,
+    ).run('r');
+
+    for (let i = 1; i <= 3; i += 1) {
+      const result = requestAccess(db, { roomId: 'r', accountId: `a${i}`, userName: `User${i}` });
+      expect(result).toMatchObject({ ok: true, status: 'pending' });
+    }
+
+    const overflow = requestAccess(db, { roomId: 'r', accountId: 'a4', userName: 'Overflow' });
+    expect(overflow).toEqual({ ok: false, reason: 'queue_full' });
+
+    const pending = db.prepare(
+      `SELECT COUNT(*) AS n FROM room_members WHERE room_id = ? AND role = 'pending'`,
+    ).get('r') as { n: number };
+    expect(pending.n).toBe(3);
+    expect(getMembership(db, 'r', 'a4')).toBeNull();
+  });
+
+  it('rejects a new waiting_peers row after pending waiters reach the room maxUsers cap', () => {
+    db.prepare(
+      `INSERT INTO rooms (room_id, created_at, updated_at, max_users) VALUES (?, 1, 1, 2)`,
+    ).run('r');
+    for (let i = 1; i <= 2; i += 1) {
+      db.prepare(
+        `INSERT INTO waiting_peers (room_id, peer_id, user_name, color, requested_at, account_id)
+         VALUES ('r', ?, ?, '#111111', 1, ?)`,
+      ).run(`peer-${i}`, `Wait${i}`, `w${i}`);
+    }
+
+    const overflowAccess = requestAccess(db, { roomId: 'r', accountId: 'a-new', userName: 'New' });
+    expect(overflowAccess).toEqual({ ok: false, reason: 'queue_full' });
+    expect(getMembership(db, 'r', 'a-new')).toBeNull();
+
+    const overflowWaiting = enqueueWaitingPeer(db, {
+      roomId: 'r',
+      peerId: 'peer-new',
+      userName: 'New',
+      color: '#222222',
+      accountId: 'a-new',
+    });
+    expect(overflowWaiting).toEqual({ ok: false, reason: 'queue_full' });
+
+    const waiting = db.prepare(
+      `SELECT COUNT(*) AS n FROM waiting_peers WHERE room_id = ?`,
+    ).get('r') as { n: number };
+    expect(waiting.n).toBe(2);
   });
 
   it('treats an expired editor grant as absent and keeps a viewer grant', () => {

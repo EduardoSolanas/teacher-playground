@@ -1,11 +1,36 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { generateRoomId } from '@/lib/crypto/randomId';
 import { isValidJoinCode, JOIN_CODE_MAX_LENGTH } from '@/lib/whiteboard/joinCode';
 import { getStablePeerId } from '@/lib/whiteboard/peerId';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
+import TeacherRoomList, {
+  type TeacherRoomSummary,
+} from '@/components/whiteboard/TeacherRoomList';
+
+function parseTeacherRooms(payload: unknown): TeacherRoomSummary[] {
+  if (!payload || typeof payload !== 'object') return [];
+  const rooms = Array.isArray(payload)
+    ? payload
+    : (payload as { rooms?: unknown }).rooms;
+  if (!Array.isArray(rooms)) return [];
+  const parsed: TeacherRoomSummary[] = [];
+  for (const entry of rooms) {
+    if (!entry || typeof entry !== 'object') continue;
+    const roomId = (entry as { roomId?: unknown }).roomId;
+    if (typeof roomId !== 'string' || roomId.length === 0) continue;
+    const name = (entry as { name?: unknown }).name;
+    const createdAt = (entry as { createdAt?: unknown }).createdAt;
+    parsed.push({
+      roomId,
+      name: typeof name === 'string' ? name : null,
+      createdAt: typeof createdAt === 'number' ? createdAt : undefined,
+    });
+  }
+  return parsed;
+}
 
 export default function WhiteboardRoute() {
   const router = useRouter();
@@ -13,6 +38,30 @@ export default function WhiteboardRoute() {
   const [maxUsers, setMaxUsers] = useState(3);
   const [creationTimes, setCreationTimes] = useState<number[]>([]);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+  const [rooms, setRooms] = useState<TeacherRoomSummary[]>([]);
+  const [roomsLoading, setRoomsLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await ajaxFetch('/api/whiteboard/rooms');
+        if (!response.ok) {
+          if (!cancelled) setRooms([]);
+          return;
+        }
+        const payload: unknown = await response.json();
+        if (!cancelled) setRooms(parseTeacherRooms(payload));
+      } catch {
+        if (!cancelled) setRooms([]);
+      } finally {
+        if (!cancelled) setRoomsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleCreateRoom = useCallback(async () => {
     if (isCreatingRoom) return;
@@ -61,6 +110,29 @@ export default function WhiteboardRoute() {
     }
   }, [creationTimes, isCreatingRoom, maxUsers, router]);
 
+  const refreshRooms = useCallback(async () => {
+    const response = await ajaxFetch('/api/whiteboard/rooms');
+    if (!response.ok) {
+      setRooms([]);
+      return;
+    }
+    const payload: unknown = await response.json();
+    setRooms(parseTeacherRooms(payload));
+  }, []);
+
+  const handleRename = useCallback(
+    async (roomId: string, nextName: string) => {
+      const response = await ajaxFetch(`/api/whiteboard/room/${roomId}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: nextName }),
+      });
+      if (!response.ok) return;
+      await refreshRooms();
+    },
+    [refreshRooms],
+  );
+
   const handleJoinRoom = useCallback(() => {
     if (joinCode.trim().length > 0 && isValidJoinCode(joinCode.trim())) {
       router.push(`/whiteboard/${joinCode.trim()}`);
@@ -85,7 +157,7 @@ export default function WhiteboardRoute() {
           background: '#fff',
           borderRadius: 16,
           padding: '48px 40px',
-          maxWidth: 480,
+          maxWidth: 640,
           width: '100%',
           boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
           textAlign: 'center',
@@ -111,6 +183,13 @@ export default function WhiteboardRoute() {
         >
           Create or join a room to start collaborating in real-time
         </p>
+
+        <TeacherRoomList
+          rooms={rooms}
+          loading={roomsLoading}
+          onOpen={(roomId) => router.push(`/whiteboard/${roomId}`)}
+          onRename={handleRename}
+        />
 
         <button
           data-testid="whiteboard-create-room-btn"

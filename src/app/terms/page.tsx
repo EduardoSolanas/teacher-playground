@@ -3,7 +3,7 @@ import Link from "next/link";
 export default function Terms() {
   return (
     <div className="min-h-screen flex flex-col">
-      <main className="flex-1 max-w-2xl mx-auto px-6 py-16 w-full space-y-6 text-slate-700 leading-relaxed">
+      <main className="flex-1 max-w-2xl mx-auto px-8 sm:px-6 py-16 w-full space-y-6 text-slate-700 leading-relaxed">
         <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-amber-900 text-sm">
           Draft &mdash; requires owner and legal review before the service
           charges money.
@@ -76,7 +76,7 @@ export default function Terms() {
       </main>
 
       <footer className="border-t border-slate-200 py-8">
-        <div className="max-w-2xl mx-auto px-6 flex flex-wrap items-center justify-center gap-6 text-sm text-slate-500">
+        <div className="max-w-2xl mx-auto px-8 sm:px-6 flex flex-wrap items-center justify-center gap-6 text-sm text-slate-500">
           <Link href="/" className="hover:text-slate-800">
             Home
           </Link>

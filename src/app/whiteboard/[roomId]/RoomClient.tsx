@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, Suspense } from 'react';
 import dynamic from 'next/dynamic';
 import { useCollaboration } from '@/hooks/useCollaboration';
 import { usePersistence } from '@/hooks/usePersistence';
+import { useClearSessionOnEviction } from '@/hooks/useClearSessionOnEviction';
 import { useAvSession } from '@/hooks/useAvSession';
 import UserNamePrompt from '@/components/whiteboard/UserNamePrompt';
 import LoadingScreen from '@/components/whiteboard/LoadingScreen';
@@ -66,6 +67,8 @@ function RoomContent({ roomId }: { roomId: string }) {
     waitingPeers,
     isWaiting,
     wasKicked,
+    wasRejected,
+    wasSuspended,
     approvePeer,
     rejectPeer,
     leaveWaitingRoom,
@@ -82,6 +85,8 @@ function RoomContent({ roomId }: { roomId: string }) {
   } = useCollaboration(roomId);
 
   const { clearState, clearSession } = usePersistence(roomId, elements, { x: 0, y: 0, zoom: 1 } as any);
+
+  useClearSessionOnEviction(clearSession, { wasKicked, wasRejected, wasSuspended });
 
   // Voice only after admission. Waiting / kicked peers never fetch a token.
   const avEnabled = Boolean(userName) && !isWaiting && !wasKicked;
@@ -107,10 +112,9 @@ function RoomContent({ roomId }: { roomId: string }) {
   }, [syncUserName, userName]);
 
   useEffect(() => {
-    if (!wasKicked) return;
-    clearSession();
+    if (!wasKicked && !wasRejected && !wasSuspended) return;
     setUserName(null);
-  }, [wasKicked, clearSession]);
+  }, [wasKicked, wasRejected, wasSuspended]);
 
   useEffect(() => {
     if (!isWhiteboardDebugEnabled() || typeof window === 'undefined') return;
@@ -211,7 +215,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         />
         {elements.length === 0 && activeTool === 'select' && <EmptyState />}
       </div>
-      <RemoteCursorOverlay cursors={cursors} />
+      <RemoteCursorOverlay cursors={cursors} users={users} />
       <PresencePanel
         users={users}
         waitingPeers={waitingPeers}

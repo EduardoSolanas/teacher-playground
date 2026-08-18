@@ -2,6 +2,13 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import type { WhiteboardUser } from '@/types/whiteboard';
 
+function accountNameDisc(accountId: string | null | undefined): string | null {
+  if (!accountId) return null;
+  const hex = accountId.replace(/[^0-9a-fA-F]/g, '');
+  if (hex.length < 4) return null;
+  return hex.slice(-4).toLowerCase();
+}
+
 interface PresencePanelProps {
   users: WhiteboardUser[];
   waitingPeers: WhiteboardUser[];
@@ -70,6 +77,16 @@ export default function PresencePanel({
 
   const waitingPeerIds = new Set(waitingPeers.map((user) => user.peerId));
   const allUsers = [...waitingPeers, ...users.filter((user) => !waitingPeerIds.has(user.peerId))];
+  const duplicateNames = new Set<string>();
+  if (isLocalHost) {
+    const nameCounts = new Map<string, number>();
+    for (const user of allUsers) {
+      nameCounts.set(user.userName, (nameCounts.get(user.userName) ?? 0) + 1);
+    }
+    for (const [name, count] of nameCounts) {
+      if (count > 1) duplicateNames.add(name);
+    }
+  }
   const menuPeer = menuPeerId ? allUsers.find((user) => user.peerId === menuPeerId) : null;
 
   const handleApproveAction = useCallback(() => {
@@ -215,6 +232,10 @@ export default function PresencePanel({
             const canModerate = isLocalHost && !isSelf && !isHostUser;
 
             const isWaitingModeratable = isWaiting && canModerate;
+            const nameDisc =
+              isLocalHost && duplicateNames.has(user.userName)
+                ? accountNameDisc(user.accountId)
+                : null;
 
             return (
               <div
@@ -247,12 +268,25 @@ export default function PresencePanel({
                       style={{ fontWeight: isSelf ? 600 : 400 }}
                     >
                       {user.userName}
+                      {nameDisc ? (
+                        <span
+                          data-testid={`whiteboard-user-disc-${user.peerId}`}
+                          className="ml-1 text-[11px] font-mono font-normal text-slate-500"
+                        >
+                          {nameDisc}
+                        </span>
+                      ) : null}
                       {isSelf && (
                         <span className="text-xs font-normal text-slate-400"> (you)</span>
                       )}
                     </div>
                     {isHostUser && (
-                      <span className="text-[10px] font-semibold text-emerald-500">Host</span>
+                      <span
+                        data-testid={`whiteboard-user-host-${user.peerId}`}
+                        className="text-[10px] font-semibold text-emerald-500"
+                      >
+                        Host
+                      </span>
                     )}
                     {isWaiting && (
                       <span className="text-[10px] font-semibold text-amber-600">Waiting</span>

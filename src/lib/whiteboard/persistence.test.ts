@@ -6,6 +6,8 @@ import {
   USERNAME_STORAGE_KEY,
   cleanupStaleRooms,
   clearOnLeave,
+  clearOnReject,
+  clearOnSuspend,
   clearRoomSessionMaterial,
   debouncedSaveBoardState,
   isOfflineBoardCacheEnabled,
@@ -91,6 +93,44 @@ describe('whiteboard persistence (SEC-011)', () => {
     localStorage.setItem(USER_COLOR_STORAGE_KEY, '#3498db');
 
     clearOnLeave(ROOM);
+
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
+    expect(localStorage.getItem(`whiteboard:${ROOM}:timestamp`)).toBeNull();
+    expect(localStorage.getItem(`whiteboard:${ROOM}:offline_cache`)).toBeNull();
+    expect(localStorage.getItem(peerIdStorageKey(ROOM))).toBeNull();
+    expect(localStorage.getItem(USERNAME_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(USER_COLOR_STORAGE_KEY)).toBeNull();
+    expect(loadBoardState(ROOM)).toBeNull();
+    expect(peerId).toMatch(/^user-/);
+  });
+
+  it('clearOnReject wipes board, peer, opt-in, and session identity', async () => {
+    setOfflineBoardCacheEnabled(ROOM, true);
+    await saveBoardState(ROOM, [ELEMENT], VIEWPORT);
+    const peerId = getStablePeerId(ROOM);
+    localStorage.setItem(USERNAME_STORAGE_KEY, 'Ada');
+    localStorage.setItem(USER_COLOR_STORAGE_KEY, '#3498db');
+
+    clearOnReject(ROOM);
+
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
+    expect(localStorage.getItem(`whiteboard:${ROOM}:timestamp`)).toBeNull();
+    expect(localStorage.getItem(`whiteboard:${ROOM}:offline_cache`)).toBeNull();
+    expect(localStorage.getItem(peerIdStorageKey(ROOM))).toBeNull();
+    expect(localStorage.getItem(USERNAME_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(USER_COLOR_STORAGE_KEY)).toBeNull();
+    expect(loadBoardState(ROOM)).toBeNull();
+    expect(peerId).toMatch(/^user-/);
+  });
+
+  it('clearOnSuspend wipes board, peer, opt-in, and session identity', async () => {
+    setOfflineBoardCacheEnabled(ROOM, true);
+    await saveBoardState(ROOM, [ELEMENT], VIEWPORT);
+    const peerId = getStablePeerId(ROOM);
+    localStorage.setItem(USERNAME_STORAGE_KEY, 'Ada');
+    localStorage.setItem(USER_COLOR_STORAGE_KEY, '#3498db');
+
+    clearOnSuspend(ROOM);
 
     expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
     expect(localStorage.getItem(`whiteboard:${ROOM}:timestamp`)).toBeNull();

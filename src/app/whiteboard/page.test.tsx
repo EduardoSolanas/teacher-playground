@@ -1,0 +1,134 @@
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+
+const push = vi.fn();
+const ajaxFetch = vi.fn();
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push }),
+}));
+
+vi.mock('@/lib/http/ajaxFetch', () => ({
+  ajaxFetch: (...args: unknown[]) => ajaxFetch(...args),
+}));
+
+vi.mock('@/lib/crypto/randomId', () => ({
+  generateRoomId: () => 'new-room',
+}));
+
+vi.mock('@/lib/whiteboard/peerId', () => ({
+  getStablePeerId: () => 'peer-host',
+}));
+
+import WhiteboardRoute from './page';
+
+function jsonResponse(body: unknown, ok = true): Response {
+  return {
+    ok,
+    status: ok ? 200 : 500,
+    json: async () => body,
+  } as Response;
+}
+
+describe('WhiteboardRoute room list', () => {
+  beforeEach(() => {
+    push.mockReset();
+    ajaxFetch.mockReset();
+  });
+
+  it('loads rooms from GET /api/whiteboard/rooms and keeps create/join', async () => {
+    ajaxFetch.mockResolvedValue(
+      jsonResponse({
+        rooms: [
+          { roomId: 'room-alpha', name: 'Algebra' },
+          { roomId: 'room-beta' },
+        ],
+      }),
+    );
+
+    const { container } = render(<WhiteboardRoute />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-room-list-item-room-alpha')).toBeTruthy();
+    });
+
+    expect(ajaxFetch).toHaveBeenCalledWith('/api/whiteboard/rooms');
+    expect(screen.getByRole('heading', { level: 2, name: 'Your rooms' })).toBeTruthy();
+    expect(screen.getAllByRole('listitem')).toHaveLength(2);
+    expect(screen.queryByRole('combobox')).toBeNull();
+    expect(container.querySelector('select')).toBeNull();
+    expect(screen.getByTestId('whiteboard-create-room-btn')).toBeTruthy();
+    expect(screen.getByTestId('whiteboard-room-code-input')).toBeTruthy();
+  });
+
+  it('opens a listed room via the router', async () => {
+    ajaxFetch.mockResolvedValue(
+      jsonResponse({
+        rooms: [{ roomId: 'room-alpha', name: 'Algebra' }],
+      }),
+    );
+
+    render(<WhiteboardRoute />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-room-list-item-room-alpha')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('link', { name: /Algebra/ }));
+    expect(push).toHaveBeenCalledWith('/whiteboard/room-alpha');
+  });
+
+  it('renames an unnamed room via settings POST then refreshes the list', async () => {
+    ajaxFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/whiteboard/rooms' && (!init || !init.method || init.method === 'GET')) {
+        if (ajaxFetch.mock.calls.filter((call) => call[0] === '/api/whiteboard/rooms').length > 1) {
+          return Promise.resolve(
+            jsonResponse({
+              rooms: [{ roomId: 'room-beta', name: 'Geometry', createdAt: 1_700_000_000_000 }],
+            }),
+          );
+        }
+        return Promise.resolve(
+          jsonResponse({
+            rooms: [{ roomId: 'room-beta', createdAt: 1_700_000_000_000 }],
+          }),
+        );
+      }
+      if (url === '/api/whiteboard/room/room-beta/settings' && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      return Promise.resolve(jsonResponse({}, false));
+    });
+
+    render(<WhiteboardRoute />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-room-list-item-room-beta')).toBeTruthy();
+    });
+
+    expect(screen.getByTestId('whiteboard-create-room-btn')).toBeTruthy();
+    expect(screen.getByTestId('whiteboard-room-code-input')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-rename-room-beta'));
+    fireEvent.change(screen.getByTestId('whiteboard-room-name-input-room-beta'), {
+      target: { value: 'Geometry' },
+    });
+    fireEvent.click(screen.getByTestId('whiteboard-room-name-save-room-beta'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-room-list-item-room-beta').textContent).toContain(
+        'Geometry',
+      );
+    });
+
+    const settingsCall = ajaxFetch.mock.calls.find(
+      (call) => call[0] === '/api/whiteboard/room/room-beta/settings',
+    );
+    expect(settingsCall?.[1]).toMatchObject({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    expect(JSON.parse(String(settingsCall?.[1]?.body))).toEqual({ name: 'Geometry' });
+    expect(push).not.toHaveBeenCalled();
+  });
+});

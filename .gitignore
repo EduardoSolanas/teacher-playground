@@ -26,14 +26,12 @@ dist/
 # TypeScript
 *.tsbuildinfo
 
-# Playwright
+# Playwright and ad-hoc test output
 test-results/
-
 playwright-report/
 e2e-results.txt
 test-output.txt
 test-results.txt
-
 
 .idea/
 

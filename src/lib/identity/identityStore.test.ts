@@ -5,6 +5,9 @@ import {
   applyIdentitySchema,
   resolveAccountForSubject,
   readAccountAuthorizations,
+  recordOwnedRoom,
+  listOwnedRooms,
+  removeOwnedRoom,
 } from './identityStore';
 import { applySchema as applyRoomSchema } from '../whiteboard/roomSchema';
 
@@ -26,9 +29,16 @@ describe('authoritative identity store', () => {
       .all()
       .map((row) => (row as { name: string }).name);
 
-    expect(tables).toEqual(['access_subjects', 'accounts', 'authorization_audit', 'sessions']);
+    expect(tables).toEqual([
+      'access_subjects',
+      'account_rooms',
+      'accounts',
+      'authorization_audit',
+      'sessions',
+    ]);
 
-    const columns = tables.flatMap((table) =>
+    const identityTables = tables.filter((table) => table !== 'account_rooms');
+    const columns = identityTables.flatMap((table) =>
       db
         .prepare(`PRAGMA table_info(${table})`)
         .all()
@@ -170,6 +180,7 @@ describe('authoritative identity store', () => {
       'idle_expires_at',
       'absolute_expires_at',
       'revoked_at',
+      'confirmed_at',
     ]);
     expect(sessionColumns).not.toContain('token');
     expect(sessionColumns).not.toContain('email');
@@ -321,5 +332,122 @@ describe('account authorization lookup for live connections', () => {
         Array.from({ length: 501 }, (_, index) => `account-${index}`),
       ),
     ).toThrow(IdentityInputError);
+  });
+});
+
+describe('account owned-room index', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    applyIdentitySchema(db);
+  });
+
+  function account(subject: string) {
+    return resolveAccountForSubject(db, {
+      issuer: 'https://issuer',
+      subject,
+    }).account;
+  }
+
+  it('lists an empty array when the account owns no rooms', () => {
+    const owner = account('owner-empty');
+    expect(listOwnedRooms(db, owner.accountId)).toEqual([]);
+  });
+
+  it('records two rooms and lists newest updated first', () => {
+    const owner = account('owner-two');
+    recordOwnedRoom(db, {
+      accountId: owner.accountId,
+      roomId: 'room-older',
+      name: 'Older',
+      now: 1_000,
+    });
+    recordOwnedRoom(db, {
+      accountId: owner.accountId,
+      roomId: 'room-newer',
+      name: 'Newer',
+      now: 2_000,
+    });
+
+    expect(listOwnedRooms(db, owner.accountId)).toEqual([
+      {
+        roomId: 'room-newer',
+        name: 'Newer',
+        role: 'owner',
+        createdAt: 2_000,
+        updatedAt: 2_000,
+      },
+      {
+        roomId: 'room-older',
+        name: 'Older',
+        role: 'owner',
+        createdAt: 1_000,
+        updatedAt: 1_000,
+      },
+    ]);
+  });
+
+  it('does not list rooms owned by another account', () => {
+    const mine = account('owner-mine');
+    const other = account('owner-other');
+    recordOwnedRoom(db, {
+      accountId: other.accountId,
+      roomId: 'secret-room',
+      name: 'Secret',
+      now: 1_000,
+    });
+
+    expect(listOwnedRooms(db, mine.accountId)).toEqual([]);
+    expect(listOwnedRooms(db, other.accountId)).toEqual([
+      expect.objectContaining({ roomId: 'secret-room' }),
+    ]);
+  });
+
+  it('upserts name and updated_at while keeping created_at', () => {
+    const owner = account('owner-upsert');
+    recordOwnedRoom(db, {
+      accountId: owner.accountId,
+      roomId: 'same-room',
+      name: 'First',
+      now: 1_000,
+    });
+    recordOwnedRoom(db, {
+      accountId: owner.accountId,
+      roomId: 'same-room',
+      name: 'Second',
+      now: 3_000,
+    });
+
+    expect(listOwnedRooms(db, owner.accountId)).toEqual([
+      {
+        roomId: 'same-room',
+        name: 'Second',
+        role: 'owner',
+        createdAt: 1_000,
+        updatedAt: 3_000,
+      },
+    ]);
+  });
+
+  it('removes an owned room without affecting other rows', () => {
+    const owner = account('owner-remove');
+    recordOwnedRoom(db, {
+      accountId: owner.accountId,
+      roomId: 'keep-me',
+      name: null,
+      now: 1_000,
+    });
+    recordOwnedRoom(db, {
+      accountId: owner.accountId,
+      roomId: 'drop-me',
+      name: 'Gone',
+      now: 2_000,
+    });
+    removeOwnedRoom(db, owner.accountId, 'drop-me');
+
+    expect(listOwnedRooms(db, owner.accountId)).toEqual([
+      expect.objectContaining({ roomId: 'keep-me' }),
+    ]);
   });
 });

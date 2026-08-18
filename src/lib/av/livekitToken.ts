@@ -104,6 +104,50 @@ export async function buildLiveKitToken(
   return `${signingInput}.${base64url(signature)}`;
 }
 
+/** TTL for LiveKit Room Service API JWTs (short-lived admin tokens). */
+export const LIVEKIT_ROOM_SERVICE_TOKEN_TTL_SECONDS = 60;
+
+export interface BuildLiveKitRoomServiceTokenInput {
+  readonly apiKey: string;
+  readonly apiSecret: string;
+  readonly room: string;
+  readonly ttlSeconds?: number;
+}
+
+/**
+ * Builds a short-lived HS256 JWT for LiveKit Room Service HTTP APIs.
+ *
+ * Claims: iss = API key, video.roomAdmin = true, video.room = room name.
+ */
+export async function buildLiveKitRoomServiceToken(
+  input: BuildLiveKitRoomServiceTokenInput,
+): Promise<string> {
+  const ttlSeconds = input.ttlSeconds ?? LIVEKIT_ROOM_SERVICE_TOKEN_TTL_SECONDS;
+  const now = Math.floor(Date.now() / 1000);
+  const exp = now + ttlSeconds;
+
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const payload: Record<string, unknown> = {
+    iss: input.apiKey,
+    sub: input.apiKey,
+    nbf: now,
+    exp,
+    video: {
+      roomAdmin: true,
+      room: input.room,
+    },
+  };
+
+  const encodedHeader = base64url(utf8(JSON.stringify(header)));
+  const encodedPayload = base64url(utf8(JSON.stringify(payload)));
+  const signingInput = `${encodedHeader}.${encodedPayload}`;
+
+  const secret = utf8(input.apiSecret);
+  const signature = await hmacSha256(secret, utf8(signingInput));
+
+  return `${signingInput}.${base64url(signature)}`;
+}
+
 /** Parses a LiveKit config from a Worker env binding (all-or-nothing). */
 export interface LiveKitConfig {
   readonly url: string;

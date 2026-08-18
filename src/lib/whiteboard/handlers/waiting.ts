@@ -14,6 +14,10 @@ import {
   resolveModerationTarget,
 } from '../membership';
 import { internalErrorResponse } from '../../http/safeError';
+import { logAuthEvent } from '../../security/authEvents';
+
+type AuthEventWriter = (line: string) => void;
+const defaultAuthEventWriter: AuthEventWriter = (line) => console.info(line);
 
 export async function handleWaitingGet(
   db: RoomDatabase,
@@ -100,6 +104,7 @@ export async function handleWaitingPost(
   db: RoomDatabase,
   roomId: string,
   request: Request,
+  write: AuthEventWriter = defaultAuthEventWriter,
 ): Promise<Response> {
   try {
     let body: unknown;
@@ -147,6 +152,13 @@ export async function handleWaitingPost(
         }
         throw e;
       }
+
+      logAuthEvent({
+        type: 'grant_change',
+        accountId: target.accountId,
+        roomId,
+        outcome: 'approved',
+      }, write);
 
       const activeUsers = readActiveUsers(db, roomId);
       return Response.json({

@@ -1,19 +1,25 @@
 import { DurableObject } from 'cloudflare:workers';
+import { isValidRoomId } from '../lib/worker/requestGuard';
 import { DODatabase } from '../lib/whiteboard/doDatabase';
 import type { RoomDatabase } from '../lib/whiteboard/db';
 import {
   IdentityInputError,
   MAX_AUTHORIZATION_BATCH,
   applyIdentitySchema,
+  listOwnedRooms,
   readAccountAuthorizations,
+  recordOwnedRoom,
+  removeOwnedRoom,
   resolveAccountForSubject,
 } from '../lib/identity/identityStore';
 import {
   SessionUnauthorizedError,
   authorizeSessionForPrincipal,
   clearSessionCookie,
+  confirmSession,
   disableAccount,
   enableAccount,
+  exportOwnAccountData,
   issueSessionForVerifiedPrincipal,
   logoutSession,
   parseSessionCookie,
@@ -27,9 +33,12 @@ const RESOLVE_PATH = '/subjects/resolve';
 const ISSUE_SESSION_PATH = '/sessions/issue';
 const CURRENT_SESSION_PATH = '/sessions/current';
 const AUTHORIZE_SESSION_PATH = '/sessions/authorize';
+const CONFIRM_SESSION_PATH = '/sessions/confirm';
 const ROTATE_SESSION_PATH = '/sessions/rotate';
 const LOGOUT_SESSION_PATH = '/sessions/logout';
 const AUTHORIZATIONS_PATH = '/accounts/authorizations';
+const EXPORT_ACCOUNT_PATH = '/accounts/export';
+const ACCOUNT_ROOMS_PATH = '/accounts/rooms';
 const REVOKE_ALL_PATH = '/accounts/revoke-all';
 const DISABLE_ACCOUNT_PATH = '/accounts/disable';
 const ENABLE_ACCOUNT_PATH = '/accounts/enable';
@@ -87,6 +96,23 @@ function isAccountBody(value: unknown): value is {
     body.accountId.length >= 1 &&
     body.accountId.length <= 128
   );
+}
+
+function isOwnedRoomBody(value: unknown): value is {
+  roomId: string;
+  name?: string | null;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  if (typeof body.roomId !== 'string' || !isValidRoomId(body.roomId)) {
+    return false;
+  }
+  if ('name' in body && body.name !== null && typeof body.name !== 'string') {
+    return false;
+  }
+  return true;
 }
 
 function mediaType(request: Request): string | null {
@@ -217,6 +243,21 @@ export class IdentityDO extends DurableObject {
       return current ? Response.json(current, { headers: noStore() }) : unauthorized(true);
     }
 
+    if (url.pathname === CONFIRM_SESSION_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readExactJson(request, isSubjectBody);
+      if ('response' in parsed) return parsed.response;
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const current = token
+        ? await authorizeSessionForPrincipal(this.db, token, parsed.body)
+        : null;
+      if (!current) return unauthorized(true);
+      const confirmed = token ? await confirmSession(this.db, token) : null;
+      return confirmed
+        ? Response.json(confirmed, { headers: noStore() })
+        : unauthorized(true);
+    }
+
     if (url.pathname === ROTATE_SESSION_PATH) {
       if (request.method !== 'POST') return methodNotAllowed('POST');
       if (request.body !== null) {
@@ -244,6 +285,58 @@ export class IdentityDO extends DurableObject {
         status: 204,
         headers: noStore({ 'Set-Cookie': clearSessionCookie() }),
       });
+    }
+
+    if (url.pathname === EXPORT_ACCOUNT_PATH) {
+      if (request.method !== 'GET') return methodNotAllowed('GET');
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const exported = token
+        ? await exportOwnAccountData(this.db, token)
+        : null;
+      return exported
+        ? Response.json(exported, { headers: noStore() })
+        : unauthorized(true);
+    }
+
+    if (url.pathname === ACCOUNT_ROOMS_PATH) {
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+
+      if (request.method === 'GET') {
+        return Response.json(
+          { rooms: listOwnedRooms(this.db, session.accountId) },
+          { headers: noStore() },
+        );
+      }
+
+      if (request.method === 'POST') {
+        const parsed = await readExactJson(request, isOwnedRoomBody);
+        if ('response' in parsed) return parsed.response;
+        try {
+          const room = recordOwnedRoom(this.db, {
+            accountId: session.accountId,
+            roomId: parsed.body.roomId,
+            name: parsed.body.name,
+            now: Date.now(),
+          });
+          return Response.json(room, { headers: noStore() });
+        } catch (error) {
+          if (error instanceof IdentityInputError) {
+            return Response.json({ error: error.message }, { status: 400 });
+          }
+          throw error;
+        }
+      }
+
+      if (request.method === 'DELETE') {
+        const parsed = await readExactJson(request, isOwnedRoomBody);
+        if ('response' in parsed) return parsed.response;
+        removeOwnedRoom(this.db, session.accountId, parsed.body.roomId);
+        return new Response(null, { status: 204, headers: noStore() });
+      }
+
+      return methodNotAllowed('GET, POST, DELETE');
     }
 
     // Lets a room re-check the accounts behind its already-open sockets.

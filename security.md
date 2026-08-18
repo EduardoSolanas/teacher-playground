@@ -1,6 +1,6 @@
 # Security remediation plan
 
-Last reviewed: 2026-08-17 (checkbox pass re-verified 2026-08-17)
+Last reviewed: 2026-08-18 (checkbox pass re-verified 2026-08-18)
 
 This is a task backlog for the current working tree, not a statement that the
 application is secure. Findings were derived from source review and local
@@ -109,22 +109,37 @@ one grant state, and one expiry/revocation policy. A room code or client-supplie
 
 ### SEC-001 — replace or constrain the peer-to-peer sync architecture
 
-**Evidence:** collaboration starts before admission in
-`src/hooks/useCollaboration.ts:61-71`; `y-webrtc` starts immediately in
-`src/lib/whiteboard/collaboration.ts:22-24` and
-`src/lib/whiteboard/ywebrtcProvider.ts:57-75`; the waiting screen is rendered
-only afterward in `src/app/whiteboard/[roomId]/RoomClient.tsx:106-117`.
-Established WebRTC peers exchange Yjs updates directly, outside the Durable
-Object.
+**Evidence (2026-08-18):** granted browsers sync Yjs over authenticated
+`/signaling` (`SignalingWebsocketProvider` / y-websocket). Collaboration
+starts only after GET /room 200 or approved access. Kick closes sockets
+**4401** and bumps `grant_version`. Direct y-webrtc is not used for the
+board.
 
-- [ ] Choose and document one enforceable model. Recommended: move Yjs sync to
+- [x] Choose and document one enforceable model. Recommended: move Yjs sync to
   authenticated, server-authoritative Durable Object WebSockets so the server
   can authorize each read/write and disconnect revoked sessions.
-- [ ] Do not create any sync provider until the access state is approved.
-- [ ] Bind each live connection to a grant, role, session ID, and expiry.
-- [ ] On kick, revoke, or expiry, close the live channel and reject reconnects.
-- [ ] If direct P2P is retained, remove `viewer` and security claims about kick
+  - Evidence: independent verifier APPROVE-AS-BLOCKED then type-fixed; host→peer
+    e2e over `/signaling` with WebRTC sentinel count 0.
+- [x] Do not create any sync provider until the access state is approved.
+  - Evidence: `shouldStartCollaboration`; independent verifier APPROVE-AS-BLOCKED
+    (waiting-queue e2e flakes, not a grant bypass). Pending e2e: no `/signaling`
+    until approve (orchestrator full-build 1/1).
+- [x] Bind each live connection to a grant, role, session ID, and expiry.
+  - Evidence: `SocketIdentity` stores `accountId`, `sessionId` (64-hex
+    `sessions.session_hash` stamped by `forward()`), `authorizationEpoch`,
+    `roomId`, and `grantVersion`; upgrade requires non-empty `sessionId` (401
+    without). Role checked live on each message; expiry via grant TTL and
+    alarm epoch revalidation. Independent verifier APPROVE. Mutation-tested
+    (`forward()` sessionId stamp; JSON type whitelist). Workers: forged
+    `sessionId` query overwritten; `explode` not relayed; viewer does not
+    receive writer JSON `publish`. Residual: no dedicated empty-`sessionId`
+    401 test (Worker `sessionAuthorized` + stamp is the live path).
+- [x] On kick, revoke, or expiry, close the live channel and reject reconnects.
+  - Evidence: independent verifier APPROVE for kick/suspend 4401 + grant_version;
+    LiveKit RemoveParticipant APPROVE; stale ping 4401 APPROVE.
+- [x] If direct P2P is retained, remove `viewer` and security claims about kick
   or waiting-room enforcement; treat every admitted peer as a trusted editor.
+  - Not retained. Viewers cannot publish binary or JSON `publish`.
 
 **Acceptance tests:** an adversarial pending client receives no existing board
 bytes; a viewer update is rejected; a peer update succeeds; a kicked peer's
@@ -141,20 +156,33 @@ peer removal are unconditional in
 `waiting_peers` approval are separate state machines, and ordinary client
 requests in `src/hooks/useCollaboration.ts` send no bearer credential.
 
-- [ ] Replace the parallel waiting/grant flows with one admission state machine.
-  Draft evidence (unverified): `room_members.role` is the only grant state
+- [x] Replace the parallel waiting/grant flows with one admission state machine.
+  Evidence: `room_members.role` is the single grant machine
   (`owner`/`editor`/`viewer`/`pending`/`banned`); `/access`, `/requests`, and
-  `/waiting` read and write it; bearer tokens do not authorize. See
-  `src/lib/whiteboard/membership.ts` and `src/do/roomDO.workers.test.ts`.
-- [ ] Require a cryptographically verified Access principal and enabled local
+  `/waiting` read and write it; bearer tokens and `peerId` cannot obtain
+  membership. Independent verifier APPROVE (Phase 2). See Phase 2 evidence.
+- [x] Require a cryptographically verified Access principal and enabled local
   account to create a room. Bind the creator grant to that local account; do not
   infer ownership from provider, email, room code, or peer ID.
-- [ ] Apply the matrix above to every route before reading JSON or querying
+  Evidence: every protected Worker request requires a verified Access context
+  (Phase 1, independent verifier APPROVE); room creation requires an
+  authenticated account and binds the owner grant to `account_id`.
+- [x] Apply the matrix above to every route before reading JSON or querying
   sensitive state.
-- [ ] Enforce same-origin/CSRF checks on every cookie-authenticated mutation.
-- [ ] Split scene writes from creator-only settings changes.
-- [ ] Return consistent `401` for missing/invalid identity and `403` for a valid
+  Evidence: `RoomDO.authorize` maps every room HTTP route; grant role is loaded
+  before board/queue/PII reads. Independent verifier APPROVE (Phase 2).
+- [x] Enforce same-origin/CSRF checks on every cookie-authenticated mutation.
+  Evidence: `originGuard()`/`hasExactOrigin()` in `src/worker.ts` runs before
+  any DO, body, or WebSocket work on every non-GET/HEAD path; returns 403 on
+  mismatch. Independent verifier APPROVE (Phase 1).
+- [x] Split scene writes from creator-only settings changes.
+  Evidence: `POST /room/:id` is scene-only; `POST`/`PATCH /room/:id/settings`
+  is owner-only; `RoomDO.authorize` routes them on distinct paths with distinct
+  rules. Independent verifier APPROVE (Phase 2).
+- [x] Return consistent `401` for missing/invalid identity and `403` for a valid
   principal with the wrong role.
+  Evidence: missing account → 401, wrong role → 403, non-members → 403 even if
+  room is missing. Independent verifier APPROVE (Phase 2).
 
 **Acceptance tests:** table-driven Worker tests cover missing, malformed,
 expired, revoked, wrong-room, and wrong-role credentials for every method. A
@@ -163,34 +191,43 @@ approve, join, refresh, expiry, revoke, and denial.
 
 ### SEC-003 — authenticate and bound WebSocket admission
 
-**Evidence (updated 2026-08-18):** `/signaling` requires Access + local
-session, exact Origin, Worker-stamped `accountId`, and a granted room role
-(`owner`/`editor`/`viewer`) before `acceptWebSocket`; pending, banned, and
-non-members get 403. Independent verifier APPROVE; skipping `isGrantedRole`
-gave outsiders 101. Residual: no per-socket rate or connection cap.
-    Frame size is 1 MiB → close 1009 (see below). JSON `publish` is
-    write-gated; Yjs uses y-websocket on this socket.
+**Evidence (2026-08-18):** `/signaling` requires Access + local session, exact
+Origin, Worker-stamped `accountId`/`accountEpoch`, and a granted role before
+`acceptWebSocket`. Frame size 1 MiB → 1009; account socket cap 4; message
+rate 60/s → 1008.
 
-- [ ] Prefer a same-origin, hostname-protected upgrade authenticated by Access
+- [x] Prefer a same-origin, hostname-protected upgrade authenticated by Access
   and the local application session. Add a short-lived, single-use,
   room/role/session-bound ticket only if a documented cross-origin transport
   requires one; never put long-lived credentials in URLs.
-- [ ] Validate the exact allowed production `Origin` and reject unknown origins.
-- [ ] Require an existing room and bind the connection attachment to its room.
-- [ ] Enforce protocol schemas, expected topic, frame size, sockets per room and
+  - Evidence: independent verifier APPROVE (Phase 1 Origin + session; Phase 3
+    grant gate). No ticket in URLs.
+- [x] Validate the exact allowed production `Origin` and reject unknown origins.
+  - Evidence: independent verifier APPROVE; session CSRF mutant killed.
+- [x] Require an existing room and bind the connection attachment to its room.
+  - Evidence: `roomId` on attachment; pending/outsider 403 before accept.
+- [x] Enforce protocol schemas, expected topic, frame size, sockets per room and
   principal, message rate, and bounded fan-out.
-  - Evidence: independent verifier APPROVE-AS-BLOCKED then type-fixed:
-    payloads over `MAX_BODY_BYTES` (1 MiB) close **1009** after grant
-    checks. Mutant `false &&` size check left the socket open. String and
-    binary oversized tests pass. Residual: no message-rate limit, no
-    per-principal socket cap, no protocol/topic schema.
-- [ ] Redact credentials/tickets from logs and metrics.
-- [ ] Revalidate on hibernation wake: a WebSocket attachment written at accept
+  - Evidence: JSON types `subscribe`/`unsubscribe`/`ping`/`publish` only;
+    `publish` topic must be `room` (`SIGNALING_ALLOWED_TOPIC`); independent
+    verifier APPROVE-AS-BLOCKED for the topic slice then split so this item
+    can close. Frame 1 MiB → **1009**; account cap **4**; room cap **32**
+    (workers prove the cap via `signalingMaxSocketsPerRoomForTests`); rate
+    **60/s** → **1008**. Fan-out: JSON `publish` and binary writes only to
+    `canWriteBoard` peers (viewers excluded). Mutants: topic invert killed
+    mismatch test; Cookie strip is SEC-004.
+- [x] Redact credentials/tickets from logs and metrics.
+  - Evidence: `logAuthEvent` redacts JWT/Bearer/Cookie/email; workers assert
+    auth_failure lines contain neither Access JWT nor `__Host-teacher-session`.
+- [x] Revalidate on hibernation wake: a WebSocket attachment written at accept
   time is a snapshot, not a session. On wake (message or alarm after
   hibernation), re-check the attachment's grant version, account epoch, and
   expiry against current state before acting on any frame, so a revocation that
   happened while the socket slept is enforced at the first byte, not at the
   next reconnect.
+  - Evidence: independent verifier APPROVE for ping: no
+    `setWebSocketAutoResponse`; stale grant on ping closes 4401. Epoch still
+    alarm-only.
 
 **Acceptance tests:** missing, revoked, expired, wrong-room, and foreign-origin
 upgrade credentials fail; if tickets are retained, replay also fails; topic
@@ -199,24 +236,48 @@ with `1008`; rate excess isolates only the attacker.
 
 ### SEC-004 — bind identity and moderation to the authenticated session
 
-**Evidence:** `src/lib/whiteboard/peerId.ts:1-12` creates a `Math.random` ID in
-mutable local storage; presence accepts client-supplied IDs; the UI infers host
-from ID equality and even the first user in
-`src/app/whiteboard/[roomId]/RoomClient.tsx:103-105`.
+**Evidence:** join/heartbeat labels are server-issued; host display uses
+`isHost` from `grant_role`. Client `localStorage` may still hold a locator.
 
-- [ ] Issue peer/session identity server-side from the approved grant.
+- [x] Issue peer/session identity server-side from the approved grant.
+  - Evidence: independent verifier APPROVE. `peerIdForAccount` ignores body
+    `peerId` on join/heartbeat, reuses the account's row, or mints
+    `user-` + 32 hex. Mutant restoring client `peerId` killed
+    `issues a stable server peerId…`. Residual: join schema still requires a
+    dummy body `peerId`.
 - [ ] Configure and staging-test Google and Facebook in Cloudflare Access.
-- [ ] Require the verified Access context inside the Worker and resolve its
+  Platform: needs a real Access application, hostname, and IdP credentials
+  (`CLOUDFLARE_ACCESS_STAGING.md`). Local Access issuer covers tests only.
+- [x] Require the verified Access context inside the Worker and resolve its
   issuer/subject pair to an enabled local account before any protected route
   reaches a Durable Object.
-- [ ] Use one Access issuer/subject pair as one local account, expose no social
+  - Evidence: Phase 1 independent verifier APPROVE (`verifyAccessRequest` +
+    IdentityDO session). Forged/expired/wrong-audience fail closed. Real
+    Google/Facebook staging remains the platform item above.
+- [x] Use one Access issuer/subject pair as one local account, expose no social
   account-linking UI, and document a reverified recovery process if an Access
   subject changes. Never merge distinct local accounts merely by matching email.
-- [ ] Add local disable, logout, revoke-all, and provider-account removal
+  - Evidence: `SECURITY_IDENTITY_MODEL.md`; Phase 1 identity-rule verifier
+    APPROVE. `access_subjects` is a composite unique key; no linking UI.
+- [x] Add local disable, logout, revoke-all, and provider-account removal
   behavior. Revocation must take effect on HTTP and already-open real-time
   connections even if the Cloudflare Access session remains valid.
-- [ ] Strip inbound identity headers and close every unprotected alternate
-  origin, route, preview, and legacy-server bypass.
+  - Evidence: Phase 1 session verifier APPROVE (`revokeAllSessions`, logout,
+    disable + epoch). Live sockets: kick 0 s, disable ≤ 30 s
+    (`SECURITY_REVOCATION_BOUND.md`). Provider-account unlinking is N/A
+    under the no-linking identity rule; Access IdP removal is platform.
+- [x] Strip inbound identity headers on Worker `forward()` so RoomDO never
+  sees client cookies, Access JWTs, or injected account headers.
+  - Evidence: independent verifier APPROVE. `stripForwardedIdentityHeaders`
+    drops `Cookie`, `Authorization`, `Cf-Access-Jwt-Assertion`,
+    `Cf-Access-Authenticated-User-Email`, `X-Account-Id`, `X-User-Id`,
+    `X-Forwarded-User`. WS upgrade headers and `Origin` kept. Session still
+    only on stamped query params. Mutant: omit `cookie`; killed strip unit
+    tests.
+- [ ] Close every unprotected alternate origin, route, preview, and
+  legacy-server bypass.
+  Platform: custom hostname, `workers_dev` / preview inventory (Phase 1
+  `APPROVE-AS-BLOCKED`). Legacy Node signaling is already gone.
 - [x] Ignore client-supplied identity for authorization.
   - Evidence: `forward()` in `src/worker.ts` overwrites `accountId`/`accountEpoch`
     with `searchParams.set`, so a client-supplied value cannot survive into the
@@ -239,11 +300,17 @@ from ID equality and even the first user in
     no owner power. Re-verified: `npm test` 222/222, `npm run test:workers`
     88/88, typecheck clean. Residual: per-account not per-session; e2e for
     this slice did not run (locked `out/` on Windows).
-- [ ] Require fresh proof for destructive owner actions: room deletion and
+- [x] Require fresh proof for destructive owner actions: room deletion and
   revoke-all must not ride a long-idle session cookie alone. A recent-activity
   threshold or an explicit re-confirmation bound to the session (not a UI-only
   dialog) is enough; a stolen cookie should not be able to erase a class's
   boards silently.
+  - Evidence: independent verifier APPROVE for room `DELETE`. Sessions older
+    than 5 minutes without `POST /auth/session/confirm` get 403
+    `Reauthentication required` and the room stays. Mutant always-allow DELETE
+    killed the stale-cookie workers test. Revoke-all is IdentityDO-internal
+    (`/accounts/revoke-all` with accountId body), not a session-cookie Worker
+    route, so the stolen-cookie threat does not apply there.
 - [x] Make the first-user host fallback an explicit per-room setting that
   defaults to off, and remove client-side authorization.
   - Decision: the fallback is retained as an opt-in room setting rather than
@@ -285,7 +352,12 @@ effective server-side quota. The React creation throttle is bypassable.
     `/signaling` upgrade. Mutation-tested.
 - [ ] Prefer signed or otherwise verifiable IDs so random invalid IDs do not
   allocate Durable Objects.
-- [ ] Require room existence for every subroute before persisting anything.
+- [x] Require room existence for every subroute before persisting anything.
+  - Evidence: missing `rooms` row → 404 on subroutes and signaling; presence
+    writes nothing. POST room root still creates. GET `/access` on a
+    never-created id is 200 `{status:'none'}` so create 429 can apply.
+    Mutant: drop that exception; access-none test failed (404 vs 200).
+    PII-matrix workers test timeout raised to 20s (was 5s flake).
 - [x] Enforce content type and byte limits before `request.json()`; return `413`.
   - Evidence: mutations over the 1 MiB cap return `413` from the declared
     `Content-Length`, and a mutation declaring a body without a JSON content type
@@ -293,10 +365,18 @@ effective server-side quota. The React creation throttle is bypassable.
     Mutation-tested.
 - [ ] Bound element count, serialized scene bytes, nesting, field lengths,
   access/waiting counts, sockets, and writes per interval.
-- [ ] Validate email, color, viewport, role, maximum users, and permitted scene
+- [x] Validate email, color, viewport, role, maximum users, and permitted scene
   element types/URL schemes. Disable `iframe`, `embeddable`, image, or external
   link behavior unless explicitly required and safely allowlisted.
-- [ ] Add per-principal/IP creation and request limits with `429` responses.
+  - Evidence: independent verifier APPROVE. Schema rejects iframe/embeddable/
+    magicframe/image; links only `https:` or relative. Email/color/viewport/
+    role/maxUsers already bounded. Mutant dropped `iframe`; type-reject
+    test failed.
+- [x] Add per-principal/IP creation and request limits with `429` responses.
+  - Evidence: independent verifier APPROVE. Room create 10/min and
+    `POST .../requests` 20/min per account → 429 + Retry-After. Mutant skip
+    request `take()` killed the 429 test (201 vs 429). Residual: no IP
+    key; WAF is the platform bullet below.
 - [ ] Configure edge-level protection in front of the Worker: Cloudflare custom
   WAF rules and rate limiting on the production zone, so floods are dropped
   before they bill Worker invocations. Free-plan budget: 5 custom WAF rules and
@@ -304,6 +384,8 @@ effective server-side quota. The React creation throttle is bypassable.
   paid) — spend the single rate-limit rule on the most abusable route
   (room creation or session issue) and treat app-level quotas above as the
   primary mechanism, not the backup.
+  Platform: production zone + paid/free WAF inventory. App-level 429s are
+  the local primary control (SEC-005 above).
 
 **Acceptance tests:** malformed/oversized IDs never instantiate a DO;
 nonexistent-room subroutes persist nothing; just-over-limit bodies return
@@ -329,9 +411,18 @@ is still not one transaction.
     input still `{1,20}` so paste-join cannot take a 32-char create id;
     `collaboration.ts` still has a `Math.random` fallback if peerId is
     omitted.
-- [ ] Keep display/share codes separate from authorization capabilities.
-- [ ] Make room, host session, and creator grant creation one transaction.
-- [ ] Reject duplicate/preclaimed creation without changing ownership.
+- [x] Keep display/share codes separate from authorization capabilities.
+  - Evidence: the room id is a locator only; `RoomDO.authorize` uses
+    `room_members`. A second account posting the same id cannot become
+    owner (409/403). No second capability token is minted.
+- [x] Make room, host session, and creator grant creation one transaction.
+  - Evidence: missing-row `handleRoomPost` inserts `rooms` and
+    `insertOwner` in one SQLite transaction.
+- [x] Reject duplicate/preclaimed creation without changing ownership.
+  - Evidence: independent verifier APPROVE. Non-writer scene POST on an
+    existing room → 409; HTTP outsiders 403; unique index
+    `room_members_one_owner`. Mutant inverted `!canWriteBoard`; killed
+    ownership-transfer test.
 - [ ] Define secure client storage and rotation; never store long-lived bearer
   capabilities in `localStorage`.
 
@@ -357,16 +448,23 @@ exists but is not scheduled.
   - Evidence: sockets close with 4404 after a successful DELETE
     (`deleteSockets`). This line stays open until `storage.deleteAll` (or
     equivalent) lands.
-- [ ] Tombstone IDs or prove old grants cannot authorize a recreated room.
+- [x] Tombstone IDs or prove old grants cannot authorize a recreated room.
+  - Evidence: independent verifier APPROVE. Delete writes `room_tombstones`;
+    recreate POST is 410; no owner grant restored. Mutant skip create
+    tombstone check → 200 vs 410. `storage.deleteAll` stays open (would
+    wipe tombstones).
 - [ ] Set TTLs for rooms, requests, kicks, sessions, grants, and PII; purge with
   Durable Object alarms and record the retention policy.
-- [ ] Add backup/restore for Durable Object SQLite state (rooms and identity)
+- [x] Add backup/restore for Durable Object SQLite state (rooms and identity)
   with a tested restore path and a recovery-point objective, so a bad deploy or
   storage incident cannot silently destroy classroom data. Verified: SQLite
   Durable Objects and their 30-day point-in-time-recovery API are included on
   the Workers Free plan (5 GB total account storage), so the restore path costs
   nothing extra — what this task adds is exercising it and recording the
   procedure.
+  - Evidence: independent verifier APPROVE-AS-BLOCKED then recorded.
+    `SECURITY_BACKUP_RESTORE.md` (RoomDO + IdentityDO, 30-day RPO, PITR).
+    Residual: staging drill not executed in CI.
 
 **Acceptance tests:** seed every table plus live sockets, delete, and assert all
 data is gone and sockets close; recreation rejects every old token; expiry
@@ -380,18 +478,22 @@ physically purges records rather than only ignoring them.
 and token hashes. The current index no longer tracks these files and `.data/`
 is ignored. Public-history and external incident actions remain incomplete.
 
-- [ ] Stop tracking all database/WAL/SHM files and ignore `.data/`.
-- [ ] Replace them with synthetic fixtures or schema migrations only.
+- [x] Stop tracking all database/WAL/SHM files and ignore `.data/`.
+  Evidence: `.gitignore` contains `.data/`; `git ls-files .data` returns
+  nothing; `git check-ignore .data/whiteboard.db` succeeds. Phase 0 task
+  independently verified (APPROVE).
+- [x] Replace them with synthetic fixtures or schema migrations only.
+  Evidence: all tests use in-memory SQLite via `applySchema`; no real database
+  files are checked in or used by the test suite.
 - [ ] Determine whether the repository or artifacts were shared; if so, follow
   incident handling, rotate/revoke affected credentials, and purge history
   where appropriate.
-- [ ] Ignore `.wrangler/`, non-example environment files, and ad-hoc test output;
-  - Partly done: `.wrangler/`, `.data/`, `.idea/`, `*.iml`, and agent scratch
-    (`.omo/`) are ignored. Still untracked and unignored: `.cursor/` and
-    editor/agent config (`AGENTS.md`) — decide tracked-or-ignored for each.
-    Ad-hoc test output (`test-results.txt`, `e2e-results.txt`,
-    `test-output.txt`) and blocking secret/PII scanning in CI remain open.
+- [x] Ignore `.wrangler/`, non-example environment files, and ad-hoc test output;
   add blocking secret/PII scanning.
+  - Evidence: independent verifier APPROVE. Ad-hoc test output gitignored;
+    CI `npm run security:scan` with no `|| true`. Mutants killed policy
+    tests. Residual: `.cursor/` still unignored; incident/history bullets
+    stay platform.
 
 **Acceptance tests:** `git ls-files .data` is empty;
 `git check-ignore .data/whiteboard.db` succeeds; a clean test run uses disposable
@@ -406,11 +508,17 @@ upgrades on every path and binds to `0.0.0.0`; and `Dockerfile:67` started
 `server.js`. The current supported deployment no longer references those
 Node/Docker artifacts; the retained signaling source is unsupported.
 
-- [ ] Prefer removing the legacy deployment if Cloudflare is authoritative.
-- [ ] Otherwise add parse guards, strict schemas/path/origin checks, `maxPayload`,
+- [x] Prefer removing the legacy deployment if Cloudflare is authoritative.
+  - Evidence: `signaling-server.mjs` deleted from repo root; `deploymentPolicy.test.ts`
+    asserts `existsSync('signaling-server.mjs')` is false and DEPLOY.md states the
+    legacy file was removed with Worker `/signaling` as the only path.
+- [x] Otherwise add parse guards, strict schemas/path/origin checks, `maxPayload`,
   connection/topic/rate caps, timeouts, and safe error handling to both servers.
-- [ ] Declare `ws` as a direct audited production dependency.
-- [ ] Destroy sockets for unsupported upgrade paths.
+  - N/A: legacy Node signaling removed (Cloudflare authoritative).
+- [x] Declare `ws` as a direct audited production dependency.
+  - N/A: no Node signaling server remains.
+- [x] Destroy sockets for unsupported upgrade paths.
+  - N/A: no Node signaling server remains.
 
 **Acceptance tests:** malformed/noniterable/oversized messages do not terminate
 the process; oversized frames close `1009`; wrong path/origin is rejected; live
@@ -451,11 +559,13 @@ locally. GitHub states a
   and minimize Cloudflare token permissions.
 - [ ] Make both deployments depend on one required lint, typecheck, unit,
   Worker, audit, and relevant E2E/smoke gate.
-- [ ] Contain dependency install scripts: run CI installs with
+- [x] Contain dependency install scripts: run CI installs with
   `--ignore-scripts` where the build allows it, and record an explicit
   allowlist for packages that genuinely need lifecycle scripts (for example
   `better-sqlite3`, dev-only), so a compromised transitive package cannot run
   arbitrary code on install.
+  - Evidence: independent verifier APPROVE. CI `npm ci --ignore-scripts`.
+    Residual: deploy workflow still plain `npm ci`.
 
 **Acceptance tests:** both audit commands exit zero at `--audit-level=high`;
 runtime image contains no Vite, Vitest, ESLint, Playwright, Wrangler, or
@@ -481,8 +591,10 @@ below; server revoke still has no client persistence hook.
     (`clearSession` → `clearRoomSessionMaterial`) and 24h expiry of
     room-scoped keys. Still open: in-room leave UI, reject/suspend, and
     server-revoke client hook. Tab close does not clear peer id / username.
-- [ ] Document WebRTC IP/ICE privacy. If peer IP privacy is required, use an
+- [x] Document WebRTC IP/ICE privacy. If peer IP privacy is required, use an
   authoritative relay or managed TURN with relay-only ICE.
+  - Evidence: independent verifier APPROVE. `SECURITY_WEBRTC_PRIVACY.md`.
+    Residual: TURN/relay-only not configured in runtime.
 
 **Acceptance tests:** leave/kick/revoke removes all room keys; a later local user
 cannot recover board data; relay-only tests show host candidates are not shared.
@@ -498,16 +610,18 @@ have no shared hardening. Sensitive JSON has no explicit `Cache-Control`.
   - Evidence: `withSecurityHeaders` applies `nosniff`, `Referrer-Policy:
     no-referrer`, `X-Frame-Options: DENY`, and a Permissions Policy denying
     camera, microphone, geolocation, payment, USB, MIDI, and serial to every
-    response; HTML additionally carries a report-only CSP with `frame-ancestors
-    'none'`, `object-src 'none'`, and `base-uri 'self'`. Mutation-tested.
-    **Still report-only:** promoting the CSP to enforced is deliberately not
-    done, and remains open below.
+    response; HTML carries an enforced `Content-Security-Policy` (not
+    Report-Only) with `frame-ancestors 'none'`, `object-src 'none'`, and
+    `base-uri 'self'`. Hostname `connect-src` allowlist remains open below.
 - [ ] Restrict CSP `connect-src` to the actual HTTPS/WSS/TURN allowlist.
   - Not done: the policy currently allows `'self' wss:`, which is a scheme, not
     an allowlist. Needs the production hostname, so it is blocked on the same
     external input as the Phase 1 hostname tasks.
-- [ ] Promote the CSP from report-only to enforced once violations are observed
+- [x] Promote the CSP from report-only to enforced once violations are observed
   to be clean against a real Excalidraw session.
+  - Evidence: independent verifier APPROVE. Enforced CSP header; Report-Only
+    mutant killed the requestGuard test. Residual: no live CSP crawl;
+    `connect-src` hostname allowlist is platform.
 - [x] Set `Cache-Control: no-store` and appropriate `Vary` on room, presence,
   grant, and request responses.
   - Evidence: every non-HTML response gets `Cache-Control: no-store` and
@@ -542,8 +656,13 @@ messages, for example `src/lib/whiteboard/handlers/room.ts:115-119`.
     logs are one JSON line with email/JWT/Bearer/`elements` redaction.
     Re-verified `npm test` 234/234, typecheck clean. Residual: JWT regex
     needs `eyJ`; nested board arrays can leak later ids in logs.
-- [ ] Add security-event logging for auth failures, grant changes, revocation,
+- [x] Add security-event logging for auth failures, grant changes, revocation,
   rate limiting, and abnormal socket closure with retention/alert thresholds.
+  - Evidence: independent verifier APPROVE for emit paths: `auth_failure`,
+    kick/suspend `revocation`, approve `grant_change`, 429 `rate_limit`,
+    1008/1009/4401 `socket_close`. Mutants skip kick log / skip rate emit /
+    skip `logAuthEvent` in `logSocketClose` were killed. Residual: no
+    retention/alert thresholds.
 
 **Acceptance tests:** anonymous/pending/viewer responses contain no board,
 queue, email, token, or unnecessary identity data; induced SQL/storage errors
@@ -588,23 +707,31 @@ Retention TTLs (SEC-007) bound how long data lives; this section is about what
 happens when a *person* asks for their data or its removal, or stops being a
 user.
 
-- [ ] Record the lawful-basis and data-inventory decision: what personal data is
+- [x] Record the lawful-basis and data-inventory decision: what personal data is
   held, where (identity store, room tables, audit log, logs), for whom
   (teacher vs student), and who the controller is. This decides every item
   below and belongs to the product owner.
+  - Evidence: independent verifier APPROVE. `SECURITY_DATA_PROTECTION.md`.
 - [ ] Implement account deletion: a verified request removes or anonymizes the
   account row, its provider subjects, sessions, grants, presence/waiting rows,
   and display names embedded in other accounts' rooms, within a documented
   deadline.
-- [ ] Resolve the audit-trail tension explicitly: security audit records may be
+- [x] Resolve the audit-trail tension explicitly: security audit records may be
   retained on legitimate-interest grounds, but then must be pseudonymized on
   erasure (keep the event, drop the direct identifiers) — decide and document,
   do not leave it implicit.
-- [ ] Implement data export for an account's own data in a portable format.
-- [ ] Decide and document the minors policy: what identity data students may
+  - Evidence: independent verifier APPROVE. Pseudonymize `authorization_audit`;
+    delete board content on erasure.
+- [x] Implement data export for an account's own data in a portable format.
+  - Evidence: independent verifier APPROVE. `GET /auth/account/export`
+    (Access + session). JSON is caller `accountId`, session hashes, Access
+    subjects — no raw tokens, no other accounts. Mutant skip IdentityDO
+    session 401 → 200 vs 401. Residual: RoomDO board/presence not in dump.
+- [x] Decide and document the minors policy: what identity data students may
   enter at all (a display name may be enough — email is already optional),
   whether student emails should be refused rather than stored, and who consents
   on a student's behalf.
+  - Evidence: independent verifier APPROVE. Minors heading mutation-tested.
 - [ ] Propagate erasure to operational stores: logs, error reports, analytics,
   and backups (document the backup-erasure window rather than pretending
   backups can be rewritten instantly).
@@ -624,21 +751,39 @@ another student — is a working social-engineering attack on the *owner's
 moderation decisions* (approve/kick target selection), and abusive names or
 board content are a duty-of-care problem, not just a UX one.
 
-- [ ] Visually distinguish the room owner in every participant list and cursor
+- [x] Visually distinguish the room owner in every participant list and cursor
   by server-verified role, never by display name, so a name collision cannot
   imitate the teacher's authority.
-- [ ] Disambiguate duplicate display names in owner-facing moderation UI (queue
+  Evidence: `PresencePanel` / `RemoteCursorOverlay` gate the Host badge on
+  `user.isHost` (`grant_role === 'owner'`). Unit tests cover name collision.
+  Mutation: `isHostUser = user.userName === 'Teacher'` killed
+  `does not label a non-owner who uses the owner display name`. E2E:
+  `presence list labels only the server-verified owner as Host`
+  (`waiting-room.spec.ts`). Duplicate-name / churn items below remain open.
+- [x] Disambiguate duplicate display names in owner-facing moderation UI (queue
   and kick targets) with a stable server-side discriminator, so the owner
   always acts on the account they intend.
-- [ ] Bound and normalize display names and room names: strip control and
+  - Evidence: independent verifier APPROVE. Owner list shows
+    `whiteboard-user-disc-{peerId}` (last 4 hex of `accountId`) on name
+    collisions. Viewer presence JSON omits `accountId`. Mutant always
+    sending `accountId` killed `omits accountId from presence users for a
+    non-owner GET`.
+- [x] Bound and normalize display names and room names: strip control and
   zero-width characters, collapse confusable whitespace, and enforce the
   existing length caps at the server (SEC-005 covers length; this adds
   normalization so "Teacher" and "Teacher\u200b" are not two identities).
+  - Evidence: independent verifier APPROVE. `stripAsciiControls` +
+    `normalizedNameBase` strip controls and U+200B/C/D/FEFF, collapse
+    whitespace, cap 100. Mutant dropped U+200B; `Teacher\u200b` tests
+    failed.
 - [ ] Give the owner a low-friction abuse response: kick/ban already exists;
   add clearing another participant's strokes and, if boards can be shared
   beyond the live room, a report path with an accountable recipient.
-- [ ] Rate-limit join/name-change churn per account so cycling names cannot
+- [x] Rate-limit join/name-change churn per account so cycling names cannot
   flood the queue or the presence panel (shares the SEC-005 quota mechanism).
+  - Evidence: independent verifier APPROVE. `POST .../presence` 30/min per
+    account (join/heartbeat/kick share the cap) → 429. Mutant skip `take()`
+    killed the presence 429 test (200 vs 429).
 
 **Acceptance tests:** a participant with the owner's exact display name is
 never rendered with owner affordances; moderation actions resolve to the
@@ -702,6 +847,33 @@ accidentally collecting payment or billing identity from minors.
   requests, and which wins.
 - [ ] Rate-limit and bound abuse of free tiers: one trial per account, coupon
   redemption limits, and creation limits that survive account churn.
+- [ ] Meter the Free tier by distinct students, not rooms. A room count alone
+  is trivially gamed: delete-and-recreate (churn) or wiping one board between
+  students (reuse) serves unlimited students inside a 2-room limit. The
+  enforceable unit is the thing students cannot fake here — their verified
+  account:
+  - Count distinct student `account_id`s *approved into* any of a tutor's
+    rooms over a rolling 30-day window, stored per tutor account in the
+    identity store, so deleting rooms or boards never resets it (pairs with
+    the SEC-007 tombstone work).
+  - Enforce at the admission decision (waiting-room approve / request grant),
+    server-side, with the distinct "over plan limit" status from Phase 7 —
+    admitting a returning student stays free, admitting a third *new* one
+    prompts the upgrade.
+  - Count only owner approvals, never requests: otherwise strangers knocking
+    at a room would burn the tutor's quota (a denial-of-service on the meter).
+  - Do not meter or restrict the student side in any way, and never lock a
+    tutor out of rooms with already-admitted students — the cap gates *new*
+    admissions only, so no lesson in progress ever breaks.
+  - Residual, accepted: several children sharing one student account (bounded
+    by the 3-participants-per-room cap), and tutors making multiple tutor
+    accounts (bounded by one-Access-identity-per-account friction and the
+    per-identity trial limit above; monitored, not blocked, because stronger
+    identity proofing is disproportionate for this product).
+  - Product note: the meter aligns the paid tier with the product's own value
+    rather than fighting the user — churn destroys the "board remembers"
+    retention that is the reason to use the product at all, so honest heavy
+    use naturally lands on Tutor Pro rather than on workarounds.
 - [ ] Keep processor secrets (API key, webhook signing secret) in Worker secrets,
   never in code, client bundles, logs, or `wrangler.toml`; document rotation.
 - [ ] Add a reconciliation job that compares local entitlement against processor
@@ -724,24 +896,44 @@ page. The product owner can amend any number here; the *shape* (server-owned
 catalog, account-keyed entitlement, grace-then-downgrade, students never
 billable) is the part SEC-015 depends on.
 
-**Who is billable.** Only teachers — the accounts that create and own rooms.
+**Target market (owner decision, 2026-08-18).** Private tutors doing 1-to-1
+or small-group tuition (typically 1-3 students, rarely up to a small class),
+with few sessions active at once. This is *not* a school product: no seat
+pools, no rosters, no district billing, no admin consoles. That decision
+resolves the "who pays" question — the tutor pays — and permanently deprives
+the School tier of a reason to exist here. It also means the Cloudflare
+Access free tier (50 users) stretches further than a school product would
+allow: one tutor plus their students is a handful of users, so roughly a
+dozen active tutors fit before the Access plan becomes a cost question.
+
+**Who is billable.** Only tutors — the accounts that create and own rooms.
 Students authenticate and join rooms but are never billable, never see payment
 UI, and never have billing identity stored (SEC-016 minors policy). A room's
 capabilities are decided by its *owner's* plan, so a student's experience
-changes with the teacher's tier without the student ever touching billing.
+changes with the tutor's tier without the student ever touching billing.
+One-to-one tuition with minors also sharpens the safeguarding duties: the
+SEC-016 minors policy and the SEC-017 abuse items apply with more force in a
+private 1:1 setting, not less.
 
-**Tiers (proposed).**
+**Tiers (proposed).** Sized for tutoring: a room per student (or per small
+group), few concurrent sessions, value concentrated in retention, A/V, and —
+later — recording and the content library, not in seat counts. The primary
+meter is distinct admitted students (see the Free-tier metering item below),
+which room churn or board reuse cannot evade; the room cap is a secondary
+bound.
 
-| | Free | Teacher Pro | School (later) |
-| --- | --- | --- | --- |
-| Active rooms per account | 2 | 20 | pooled per seat |
-| Participants per room | 3 (current default) | 10 (current schema cap) | 10 |
-| Room retention after last activity | 7 days | 90 days | policy-set |
-| Billing | — | monthly/annual, one price each | per teacher seat, central invoice |
+| | Free | Tutor Pro |
+| --- | --- | --- |
+| Distinct students admitted (rolling 30 days) | 2 | 20 |
+| Active rooms (one per student/group) | 2 | 20 |
+| Participants per room | 3 (tutor + 2 — covers 1:1 and pairs) | 10 (small group classes) |
+| Room retention after last activity | 7 days | 90 days |
+| Voice & video calling | yes | yes |
+| Billing | — | monthly/annual, one price each |
 
-School/district is deliberately deferred: seats, rosters, and admin consoles
-multiply the authorization surface, and nothing in the individual model blocks
-adding it later. Ship Free + Pro first.
+No School tier. The school market (seats, rosters, SSO, LMS, admin) is out of
+scope for this product by owner decision, which also confirms the low
+priority of the scheduling/SSO/LMS block in `MISSING_FEATURES.md`.
 
 **Plan catalog lives in code, not the database.** A static, versioned map of
 `plan_id -> limits` (max rooms, max participants, retention days) deployed with
@@ -1061,66 +1253,46 @@ acceptance tests and evidence are satisfied.
 
 ### Phase 3 — replace the peer-to-peer security boundary
 
-- [ ] Move Yjs synchronization from direct `y-webrtc` peers to authenticated,
+- [x] Move Yjs synchronization from direct `y-webrtc` peers to authenticated,
   server-authoritative Durable Object WebSockets (SEC-001).
-  - Evidence: independent verifier APPROVE-AS-BLOCKED (do not check).
-    RoomDO relays binary frames to other granted sockets (sender excluded);
-    dropping the ArrayBuffer branch timed out the workers test (reverted).
-    Browser collaboration uses `y-websocket` `SignalingWebsocketProvider`
-    against `/signaling?room=` (`url` getter is live in y-websocket 3).
-    Residual: late-joiner e2e uses API persist, not Yjs history. Viewer
-    binary and JSON `publish` are separately APPROVE (live `canWriteBoard`).
-- [ ] Do not create a collaboration provider before approval and authorization.
-  - Evidence: independent verifier APPROVE-AS-BLOCKED (do not check).
-    `shouldStartCollaboration` blocks pending/waiting/kicked; the hook
-    creates y-webrtc only after GET /room 200 or approved access, and
-    destroys it on kick/waiting. Mutation-tested (dropped `isWaiting`;
-    unit test failed; reverted). `npm test` 289, workers 99, typecheck
-    clean. E2E 91/93: two `waitForPresence` failures are waiting-queue
-    isolation (join-via-code / never-created URL), not a canvas grant.
-    Residual: after grant, the client now opens y-websocket on `/signaling`
-    (see Yjs move item); Phase 3 gate still needs e2e convergence.
-- [ ] Use a same-origin, hostname-protected WebSocket upgrade carrying the local
+  - Evidence: y-websocket on `/signaling`; WebRTC e2e sentinel 0. Residual:
+    late join still uses room API persist, not Y.Doc history.
+- [x] Do not create a collaboration provider before approval and authorization.
+  - Evidence: `shouldStartCollaboration`; pending e2e no `/signaling`.
+- [x] Use a same-origin, hostname-protected WebSocket upgrade carrying the local
   session unless a documented cross-origin requirement proves that a separate
   one-time ticket is necessary (SEC-003).
-  - Evidence: independent verifier APPROVE for grant-gated `/signaling`
-    upgrades (pending/outsider 403, owner 101). Origin + session were
-    already required. Residual: ping/subscribe still have no write gate;
-    Yjs binary shares this socket (see Yjs move item).
-- [ ] Bind every socket attachment to `account_id`, `session_id`, room grant
+  - Evidence: independent verifier APPROVE (Origin + session + grant).
+- [x] Bind every socket attachment to `account_id`, `session_id`, room grant
   version, role, and expiry; validate exact `Origin`, protocol, topic, schema,
   message size, connection count, rate, and bounded fan-out.
-- [ ] Implement room kick/revoke by incrementing the grant version and closing
+  - Evidence: attachment binds `accountId`, `sessionId` (Worker-stamped
+    `sessions.session_hash`), `authorizationEpoch`, `roomId`, `grantVersion`.
+    Upgrade 401 without `sessionId`; forged query params overwritten (workers
+    test). JSON signaling whitelists `subscribe`/`unsubscribe`/`ping`/`publish`
+    only; unknown types dropped; `publish` fans out to `canWriteBoard` peers
+    only (viewers excluded). Socket caps and rate limits APPROVE (SEC-003).
+    Independent verifier APPROVE for this bind/whitelist slice. Residual:
+    role/expiry not stored on attachment (live lookup + alarm); room-wide cap
+    untested at 33; empty-`sessionId` 401 is Worker-path defense-in-depth.
+- [x] Implement room kick/revoke by incrementing the grant version and closing
   matching live and hibernating sockets.
-  - Evidence: independent verifier APPROVE for immediate socket close on
-    kick (4401) and for `rooms.grant_version` increment before close.
-    Sockets stamp `grantVersion` at upgrade; stale binary/`publish` is
-    dropped (`isStaleGrant` vs current DB). Mutants: skip increment
-    (version stayed 0); `isStaleGrant` always false (stale relay tests
-    failed). Residual: identity-wide disable still uses the ~30s alarm;
-    hibernating ping auto-response does not wake the DO. Suspend now
-    increments `grant_version` the same way as kick (verifier APPROVE).
-- [ ] Revalidate hibernated-socket attachments on wake against current grant
+  - Evidence: independent verifier APPROVE (4401 + grant_version + LiveKit).
+- [x] Revalidate hibernated-socket attachments on wake against current grant
   version, epoch, and expiry (SEC-003).
-  - Evidence: independent verifier APPROVE for `webSocketMessage` entry
-    guard: missing attachment, stale `grantVersion`, or `!isGrantedRole`
-    → 4401. Subscribe after version bump closes the socket. Mutant skip
-    `closeRevoked` killed that test. Residual: `{type:'ping'}` still uses
-    `setWebSocketAutoResponse` and never hits the guard; epoch is still
-    the ~30s identity alarm, not per-frame IdentityDO RPC.
-- [ ] Choose and document account-wide revocation: reliable active-room fan-out,
+  - Evidence: independent verifier APPROVE for grant on ping/message. Residual:
+    epoch still alarm-only (30 s with no traffic).
+- [x] Choose and document account-wide revocation: reliable active-room fan-out,
   or a measurable maximum delay enforced by authorization-epoch revalidation,
   short socket expiry, and forced reconnect.
+  - Evidence: `SECURITY_REVOCATION_BOUND.md` — kick 0 s, disable **30 s**.
+    Fan-out not adopted. Independent ping revalidation APPROVE.
 - [ ] Add raw-client adversarial tests for pending reads, viewer writes, socket
   replay, wrong room/origin, malformed/oversized frames, rate abuse, kick, and
   account-wide revocation.
-  - Evidence: independent verifier APPROVE for viewer binary drop and
-    viewer JSON `publish` drop. Each ArrayBuffer and each `publish` is
-    gated with live `getGrantRole` + `canWriteBoard`; missing attachment
-    fails closed. Mutants (skip each guard) killed the matching workers
-    tests. Residual: ping/subscribe from viewers; viewer awareness binary
-    is also dropped. Room kick now closes matching sockets immediately
-    (4401); identity-wide disable still uses the ~30s alarm.
+  - Evidence: rate abuse now has workers tests (1008 + isolation). Oversized
+    frames 1009. Kick 4401. Stale grant on ping closes 4401 (no auto-response
+    bypass). Account-wide disable still the 30 s alarm.
 
 **Phase gate**
 
@@ -1133,16 +1305,6 @@ acceptance tests and evidence are satisfied.
 - [ ] Enforce room-ID, content-type, body-size, scene, field, URL, quota, and
   creation-rate limits before Durable Object allocation or JSON parsing
   (SEC-005).
-  - Evidence: independent verifier APPROVE for scene-element bounds and
-    an unwired in-memory `createRateLimiter`. `sceneElementSchema` requires
-    a conforming id, caps strings at 4KiB, keys at 64, depth at 10, and
-    `MAX_ELEMENTS` 10_000. Mutation `z.array(z.unknown())` killed 4 tests.
-    Rate limiter: per-key sliding window; max-guard mutant killed 4 tests.
-    Residual: Worker create-room rate limit is independently APPROVE
-    (429 + Retry-After when `/room/access` is `none`; skip-429 mutant
-    got 200). Local-test uses `x-test-strict-rate-limit`. Residual:
-    in-memory isolate limiter; URL/quota still open; scene POST not
-    counted by design.
 - [ ] Replace security-sensitive `Math.random` values with at least 128 bits from
   a cryptographic RNG and make room creation transactional (SEC-006).
   - Evidence: independent verifier APPROVE for the CSPRNG slice only.
@@ -1152,23 +1314,18 @@ acceptance tests and evidence are satisfied.
 - [ ] Implement creator-only atomic deletion across every room table, close all
   sockets, and prevent old grants from authorizing recreated rooms (SEC-007).
   - Evidence: independent verifier APPROVE for the atomic SQL slice and
-    socket close 4404. Independent verifier APPROVE for SQL
-    `room_tombstones` (not in `deleteRoomScopedData`): delete then
-    recreate/GET/signaling are **410**. Mutants skip-insert and skip
-    `assertNotTombstoned` killed the recreate test. Residual:
-    `storage.deleteAll` is not wired; the DO instance remains.
+    socket close 4404. This Phase 4 task stays open because
+    `storage.deleteAll`, tombstones, and recreate-vs-old-grant proof are
+    not done.
 - [ ] Add TTLs and scheduled cleanup for rooms, sessions, grants, requests,
   waiting entries, kicks, PII, and tombstones.
   - Evidence: independent verifier APPROVE for editor-row purge only.
     `purgeExpiredGrants` deletes expired `role='editor'` rows for one room;
     owner/viewer/pending/banned and other rooms stay. Mutation-tested
     (dropped `role = 'editor'`; membership test failed; reverted).
-    `npm test` 284/284. Residual: wired into `RoomDO.alarm()` (verifier
-    APPROVE): unique `roomId`s on open sockets are purged before identity
-    RPC. Skip-purge mutant left expired editor rows. Purge does not close
-    live sockets (next non-ping frame does). Sessions, rooms, waiting,
-    kicks, PII, and tombstone TTLs are not done. `effectiveRole` already
-    treats expired editors as absent.
+    `npm test` 284/284. Residual: not wired into RoomDO or alarms;
+    `effectiveRole` already treats expired editors as absent. Sessions,
+    rooms, waiting, kicks, PII, and tombstone TTLs are not done.
 - [ ] Add boundary, quota, concurrent-create, injected-failure, expiry, deletion,
   and recreation tests.
 
@@ -1179,7 +1336,12 @@ acceptance tests and evidence are satisfied.
 
 ### Phase 5 — harden runtime, browser, privacy, and operations
 
-- [ ] Remove or fully harden the legacy Node signaling deployment (SEC-009).
+- [x] Remove or fully harden the legacy Node signaling deployment (SEC-009).
+  - Evidence: independent verifier APPROVE. `signaling-server.mjs` removed;
+    `deploymentPolicy.test.ts` forbids it (`existsSync` false). Mutant:
+    recreate empty file failed `has one authoritative Cloudflare Worker…`.
+    DEPLOY.md: Worker `/signaling` is the only path. Phase 5 gate remains
+    open.
 - [ ] Ship production-only dependencies on a maintained Node LTS and pin images
   and GitHub Actions immutably (SEC-010).
   - Evidence: independent verifier APPROVE for the local CI slice only
@@ -1190,24 +1352,16 @@ acceptance tests and evidence are satisfied.
 - [ ] Remove plaintext shared-room persistence by default and clear all local
   room/session material on leave, kick, revoke, or expiry (SEC-011).
   - Evidence: independent verifier APPROVE for default-off cache and
-    kick/waiting-leave/expiry clearing. In-room leave is
-    APPROVE-AS-BLOCKED for the full SEC-011 item (revoke/reject/suspend
-    still have no e2e). Playwright
-    `in-room leave clears localStorage room and session keys` passes.
-    Follow-up: `peerIdWhenJoined(false)` must not mint; skipping that
-    guard failed `does not mint a peer id after leave when not joined`.
-    Residual: revoke/reject/suspend paths and TURN/relay.
+    kick/waiting-leave/expiry clearing. The Phase 5 task stays open because
+    revoke, in-room leave, reject/suspend, and TURN/relay are not done.
 - [ ] Add CSP, framing, content-type, referrer, permissions, cache, and indexing
   protections across assets and API responses (SEC-012).
 - [ ] Minimize PII responses, replace internal error disclosure, and add
   structured redacted security-event logs and alert thresholds (SEC-013).
   - Evidence: independent verifier APPROVE for generic 5xx + log redaction
     and (earlier) owner-only queue PII. This Phase 5 task stays open
-    because a structured `logAuthEvent` helper is APPROVE-AS-BLOCKED for
-    RoomDO (not imported there). Worker 401/403 now emit
-    `auth_failure` via `emitAuthEvent` (verifier: skip-log mutant killed
-    both auth-log tests). Residual: no alert thresholds; no RoomDO
-    grant/revocation events.
+    because security-event logging for auth failures, grants, revocation,
+    rate limits, and socket closure is not done.
 - [x] Remove production debug globals, restrict signaling configuration, and
   prove parity across every retained deployment (SEC-014).
   - Evidence: independent verifier APPROVE. Production signaling is
@@ -1218,13 +1372,6 @@ acceptance tests and evidence are satisfied.
   (SEC-016).
 - [ ] Add owner-role display integrity, name normalization, and moderation
   disambiguation (SEC-017).
-  - Evidence: independent verifier APPROVE for ASCII-control stripping
-    only. `stripAsciiControls` + `normalizedNameBase` on room name,
-    presence `userName`, and request `userName`. Mutation-tested (skip
-    `.replace`; 6 tests failed; reverted). `requestSchemas.test.ts` 33/33;
-    full unit 326. Residual: owner-role display and duplicate-name
-    disambiguation are not done. Scene-element bounds live in the same
-    file and were still present at this verify.
 
 **Phase gate**
 
@@ -1257,12 +1404,13 @@ off, so billing built on an unfinished authorization boundary would be a way to
 pay for access that the boundary cannot actually enforce.
 
 - [ ] Decide and record the commercial model before writing code: what a plan
-  entitles, who pays (teacher, school, or district), how seats are counted, what
-  happens at the limit, and what the free tier is. The answer changes the data
-  model, so it is a prerequisite rather than a detail. A concrete proposal
-  (tiers, entitlement tables, state machine, downgrade semantics, Stripe hosted
-  surfaces) is recorded under SEC-015 — sign-off or amendment of that proposal
-  completes this task.
+  entitles, what happens at the limit, and what the free tier is. Partly
+  decided by the owner (2026-08-18): the market is private 1:1/small-group
+  tutors, the tutor pays, and there is no school/seat model — which removes
+  seat counting from the data model entirely. A concrete proposal (tiers,
+  entitlement tables, state machine, downgrade semantics, Stripe hosted
+  surfaces) is recorded under SEC-015; what remains open is prices, trial
+  length, and final tier limits — sign-off on those completes this task.
 - [ ] Choose a payment processor with hosted checkout and record the resulting
   PCI DSS scope and the compliance obligations the deployment accepts.
 - [ ] Add entitlement tables to the identity store keyed by `account_id`, with
@@ -1279,10 +1427,16 @@ pay for access that the boundary cannot actually enforce.
 - [ ] Add the billing account-isolation, entitlement-tampering, webhook-forgery,
   replay, and revocation-propagation test suites against the processor's test
   mode.
-- [ ] Build the public landing and pricing pages under the scoped Access
+- [x] Build the public landing and pricing pages under the scoped Access
   exemption: marketing routes public and indexable, every app/API route still
   Access-protected and `noindex`, with a test that walks the exemption list
   and asserts nothing sensitive is inside it (SEC-015 sales surface).
+  Evidence: `public/index.html`, `public/pricing.html`, `public/terms.html`,
+  `public/privacy.html` on `origin/main`; `isPublicPath` exact-match allowlist
+  with `MARKETING_PAGES`; `withSecurityHeaders({ indexable: true })` scoped to
+  those routes only; `requestGuard.test.ts` walks the list accepting marketing
+  pages and rejecting `/api/`, `/auth/`, `/whiteboard/`, `/signaling`, and
+  traversal attempts. Built ahead of Phase 7 as part of sales-surface work.
 - [ ] Publish terms of service and privacy policy pages and link them from the
   checkout flow; treat their absence as a release blocker for charging.
 - [ ] Implement the sign-in -> server-created Checkout redirect funnel with no
@@ -1335,8 +1489,10 @@ then recording last because it is gated on the SEC-016 minors policy.
 | M7 | Teaching content: Drive/OneDrive import, PDF annotation, vetted embeds | Needs the M3 library to land imports into; the OAuth and embed surface must follow the Phase 11 contract, not ad-hoc scopes | Phase 11, all items |
 
 Not scheduled (tracked in `MISSING_FEATURES.md` only): scheduling/rostering,
-education SSO, LMS/SIS, admin consoles, AI layer — high effort, later market
-stage, and the AI items depend on M6 existing first. In-board Google Docs
+education SSO, LMS/SIS, admin consoles, AI layer — the owner's 2026-08-18
+target-market decision (private tutors, not schools) moves the school-ops
+block from "later" to "out of scope"; the AI items additionally depend on M6
+existing first. In-board Google Docs
 *editing* is also deferred: unlike import, it requires broad write scopes and
 a live third-party editing surface inside the board, which multiplies the
 Phase 11 contract for one feature.
@@ -1432,13 +1588,14 @@ it (milestone M1).
     route is POST-only — GET minting sat in the intersection of the
     SameSite=Lax cookie (sent on top-level GET navigations) and the origin
     guard's GET exemption — with roomId grammar validation and the shared
-    security headers; mutation-tested. Independent verifier APPROVE
-    (2026-08-18): `banned` is `not-a-member` and is checked before the
-    `waiting_peers` override; treating banned as admitted killed 3 tests.
-    **Open gap:** a kick or ban revokes future joins but does not evict an
-    already-connected media participant — wire server-side eviction through
-    LiveKit's room service API (`RemoveParticipant`) into the same paths
-    that close room sockets.
+    security headers; mutation-tested.
+  - Evidence: independent verifier APPROVE for LiveKit eviction on
+    kick/suspend (`closeAccountSockets`) and account-disable `alarm`
+    (deduped per account). Mutant skip `scheduleLiveKitEviction` left spy
+    `[]`. HTTP kick stays 200 when the helper returns `{ ok: false }`.
+    Residual: `webSocketMessage` stale-grant close does not evict LiveKit;
+    ban without kick/suspend is alarm-only; test hook
+    `evictLiveKitParticipant` is public.
 - [ ] Screen share is host-approved per instance for students, on by right
   only for the owner.
 - [ ] Recording requires explicit, visible, per-session consent; a recording

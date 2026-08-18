@@ -1,3 +1,4 @@
+import { randomHexId } from '../../crypto/randomId';
 import type { RoomDatabase } from '../db';
 import { verifiedAccountId } from '../authz';
 import {
@@ -6,6 +7,7 @@ import {
   getGrantRole,
   isGrantedRole,
   isOwnerRole,
+  enqueueWaitingPeer,
   requestAccess,
   resolveModerationTarget,
   suspendAccount,
@@ -14,6 +16,10 @@ import { readActiveUsers, readWaitingPeers } from '../presence';
 import { getRoomHostPeerId } from '../roomSchema';
 import { parseBody, presencePostSchema } from '../requestSchemas';
 import { internalErrorResponse } from '../../http/safeError';
+import { logAuthEvent } from '../../security/authEvents';
+
+type AuthEventWriter = (line: string) => void;
+const defaultAuthEventWriter: AuthEventWriter = (line) => console.info(line);
 
 function callerSeesWaitingQueue(
   db: RoomDatabase,
@@ -25,18 +31,27 @@ function callerSeesWaitingQueue(
   return getGrantRole(db, roomId, accountId) === 'owner';
 }
 
+function withoutAccountId<T extends { accountId?: unknown }>(rows: T[]) {
+  return rows.map((row) => {
+    const { accountId: _accountId, ...rest } = row;
+    return rest;
+  });
+}
+
 function presencePayload(
   db: RoomDatabase,
   roomId: string,
   request: Request,
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> {
+  const ownerView = callerSeesWaitingQueue(db, roomId, request);
+  const users = readActiveUsers(db, roomId);
   const payload: Record<string, unknown> = {
-    users: readActiveUsers(db, roomId),
+    users: ownerView ? users : withoutAccountId(users),
     hostPeerId: getRoomHostPeerId(db, roomId),
     ...extra,
   };
-  if (callerSeesWaitingQueue(db, roomId, request)) {
+  if (ownerView) {
     payload.waitingPeers = readWaitingPeers(db, roomId);
   }
   return payload;
@@ -58,6 +73,7 @@ export async function handlePresencePost(
   db: RoomDatabase,
   roomId: string,
   request: Request,
+  write: AuthEventWriter = defaultAuthEventWriter,
 ): Promise<Response> {
   try {
     let body: unknown;
@@ -111,6 +127,13 @@ export async function handlePresencePost(
           clearAccountPeers(db, roomId, target.accountId);
         })();
 
+        logAuthEvent({
+          type: 'revocation',
+          accountId: target.accountId,
+          roomId,
+          outcome: 'kicked',
+        }, write);
+
         return Response.json(presencePayload(db, roomId, request, {
           kickedPeer: { peerId: label ?? target.accountId, accountId: target.accountId },
         }));
@@ -140,6 +163,13 @@ export async function handlePresencePost(
         );
       })();
 
+      logAuthEvent({
+        type: 'revocation',
+        accountId: target.accountId,
+        roomId,
+        outcome: 'suspended',
+      }, write);
+
       return Response.json(presencePayload(db, roomId, request, {
         suspendedPeer: {
           peerId: presenceRows[0]?.peerId ?? label ?? target.accountId,
@@ -149,7 +179,7 @@ export async function handlePresencePost(
       }));
     }
 
-    const pId = String(peerId || '');
+    const pId = peerIdForAccount(db, roomId, caller);
     const uName = String(userName || 'Anonymous');
     const c = String(color || '#3498db');
     const grantRole = getGrantRole(db, roomId, caller);
@@ -163,7 +193,7 @@ export async function handlePresencePost(
     if (isGrantedRole(grantRole)) {
       upsertPresence(db, roomId, pId, uName, c, now, caller);
       db.prepare(`DELETE FROM waiting_peers WHERE room_id = ? AND account_id = ?`).run(roomId, caller);
-      return Response.json(presencePayload(db, roomId, request, { isWaiting: false }));
+      return Response.json(presencePayload(db, roomId, request, { isWaiting: false, peerId: pId }));
     }
 
     const requested = requestAccess(db, {
@@ -172,10 +202,23 @@ export async function handlePresencePost(
       userName: uName,
     });
     if (!requested.ok) {
+      if (requested.reason === 'queue_full') {
+        return Response.json({ error: 'Waiting queue is full' }, { status: 429 });
+      }
       return Response.json({ error: 'Forbidden' }, { status: 403 });
     }
-    enqueueWaiting(db, roomId, pId, uName, c, now, caller);
-    return Response.json(presencePayload(db, roomId, request, { isWaiting: true }));
+    const queued = enqueueWaitingPeer(db, {
+      roomId,
+      peerId: pId,
+      userName: uName,
+      color: c,
+      accountId: caller,
+      now,
+    });
+    if (!queued.ok) {
+      return Response.json({ error: 'Waiting queue is full' }, { status: 429 });
+    }
+    return Response.json(presencePayload(db, roomId, request, { isWaiting: true, peerId: pId }));
   } catch (e) {
     return internalErrorResponse(e, 'handlePresencePost');
   }
@@ -210,6 +253,16 @@ export async function handlePresenceDelete(
   }
 }
 
+function peerIdForAccount(db: RoomDatabase, roomId: string, accountId: string): string {
+  const existing = db.prepare(
+    `SELECT peer_id AS peerId FROM room_presence WHERE room_id = ? AND account_id = ?
+     UNION
+     SELECT peer_id AS peerId FROM waiting_peers WHERE room_id = ? AND account_id = ?`,
+  ).get(roomId, accountId, roomId, accountId) as { peerId: string } | undefined;
+  if (existing?.peerId) return existing.peerId;
+  return `user-${randomHexId()}`;
+}
+
 function upsertPresence(
   db: RoomDatabase,
   roomId: string,
@@ -230,21 +283,3 @@ function upsertPresence(
   ).run(roomId, peerId, userName, color, now, now, accountId);
 }
 
-function enqueueWaiting(
-  db: RoomDatabase,
-  roomId: string,
-  peerId: string,
-  userName: string,
-  color: string,
-  now: number,
-  accountId: string,
-): void {
-  db.prepare(
-    `INSERT INTO waiting_peers (room_id, peer_id, user_name, color, requested_at, account_id)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(room_id, peer_id) DO UPDATE SET
-      user_name = excluded.user_name,
-      color = excluded.color,
-      account_id = excluded.account_id`,
-  ).run(roomId, peerId, userName, color, now, accountId);
-}

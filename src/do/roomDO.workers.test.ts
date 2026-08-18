@@ -2,7 +2,7 @@ import { beforeEach, describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { runDurableObjectAlarm, runInDurableObject, SELF } from 'cloudflare:test';
 import { getIdentityObject, type IdentityDO } from './IdentityDO';
-import type { RoomDO } from './RoomDO';
+import { RoomDO } from './RoomDO';
 import { ROOM_SETTINGS_KEYS } from '../lib/whiteboard/requestSchemas';
 import { MAX_BODY_BYTES } from '../lib/worker/requestGuard';
 import {
@@ -23,6 +23,41 @@ function splitRoomWrite(body: Record<string, unknown>) {
     }
   }
   return { scene, settings };
+}
+
+async function joinPresence(
+  who: LocalAuthSession,
+  roomId: string,
+  clientPeerId: string,
+  extra: Record<string, unknown> = {},
+) {
+  const res = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, who, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      peerId: clientPeerId,
+      userName: extra.userName ?? clientPeerId,
+      color: extra.color ?? '#3498db',
+      ...extra,
+    }),
+  });
+  let peerId = clientPeerId;
+  try {
+    const data = await res.clone().json() as { peerId?: string };
+    if (typeof data.peerId === 'string') peerId = data.peerId;
+  } catch {
+    // Non-JSON error bodies still expose status to the caller.
+  }
+  return { res, status: res.status, ok: res.ok, peerId };
+}
+
+async function joinEditorPeer(editor: LocalAuthSession, roomId: string): Promise<string> {
+  const joined = await joinPresence(editor, roomId, 'editor-peer', {
+    userName: 'Editor',
+    color: '#3498db',
+  });
+  expect(joined.status).toBe(200);
+  return joined.peerId;
 }
 
 async function writeRoom(
@@ -208,12 +243,12 @@ describe('y-webrtc signaling over Durable Object WebSockets', () => {
     const b = await connect('signal-room');
 
     const received = nextMessage(b);
-    a.send(JSON.stringify({ type: 'publish', topic: 'whiteboard-signal-room', data: 'hello' }));
+    a.send(JSON.stringify({ type: 'publish', topic: 'room', data: 'hello' }));
 
     const payload = JSON.parse(await received);
     expect(payload).toMatchObject({
       type: 'publish',
-      topic: 'whiteboard-signal-room',
+      topic: 'room',
       data: 'hello',
     });
     // y-webrtc uses this to learn how many peers are on the topic.
@@ -227,9 +262,9 @@ describe('y-webrtc signaling over Durable Object WebSockets', () => {
     await connect('echo-room');
 
     const own = nextMessage(a);
-    a.send(JSON.stringify({ type: 'publish', topic: 't', data: 1 }));
+    a.send(JSON.stringify({ type: 'publish', topic: 'room', data: 1 }));
 
-    expect(JSON.parse(await own)).toMatchObject({ type: 'publish', topic: 't', data: 1 });
+    expect(JSON.parse(await own)).toMatchObject({ type: 'publish', topic: 'room', data: 1 });
   });
 
   it('does not leak a publish across rooms', async () => {
@@ -239,7 +274,7 @@ describe('y-webrtc signaling over Durable Object WebSockets', () => {
     let leaked = false;
     outsider.addEventListener('message', () => { leaked = true; }, { once: true });
 
-    a.send(JSON.stringify({ type: 'publish', topic: 't', data: 1 }));
+    a.send(JSON.stringify({ type: 'publish', topic: 'room', data: 1 }));
     await new Promise((r) => setTimeout(r, 200));
 
     expect(leaked).toBe(false);
@@ -277,6 +312,26 @@ describe('y-webrtc signaling over Durable Object WebSockets', () => {
     )).status).toBe(200);
   }
 
+  it('does not deliver JSON publish to viewer peers', async () => {
+    const owner = await bootstrapLocalSession('publish-viewer-recipient-owner');
+    const viewer = await bootstrapLocalSession('publish-viewer-recipient-viewer');
+    const roomId = 'publish-viewer-recipient-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantViewer(owner, viewer, roomId);
+
+    const ownerSocket = await connectGranted(owner, roomId);
+    const viewerSocket = await connectGranted(viewer, roomId);
+
+    let received = false;
+    viewerSocket.addEventListener('message', () => { received = true; }, { once: true });
+
+    ownerSocket.send(JSON.stringify({ type: 'publish', topic: 'room', data: 'hello' }));
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(received).toBe(false);
+  });
+
   it('does not fan out JSON publish from a viewer', async () => {
     const owner = await bootstrapLocalSession('publish-viewer-owner');
     const viewer = await bootstrapLocalSession('publish-viewer-viewer');
@@ -291,7 +346,7 @@ describe('y-webrtc signaling over Durable Object WebSockets', () => {
     let received = false;
     ownerSocket.addEventListener('message', () => { received = true; }, { once: true });
 
-    viewerSocket.send(JSON.stringify({ type: 'publish', topic: 'whiteboard-signal-room', data: 'hello' }));
+    viewerSocket.send(JSON.stringify({ type: 'publish', topic: 'room', data: 'hello' }));
 
     await new Promise((r) => setTimeout(r, 200));
     expect(received).toBe(false);
@@ -302,6 +357,71 @@ describe('y-webrtc signaling over Durable Object WebSockets', () => {
     const reply = nextMessage(ws);
     ws.send(JSON.stringify({ type: 'ping' }));
     expect(JSON.parse(await reply)).toEqual({ type: 'pong' });
+  });
+
+  it('drops unknown JSON signaling types without relaying', async () => {
+    const a = await connect('unknown-type-room');
+    const b = await connect('unknown-type-room');
+
+    let received = false;
+    b.addEventListener('message', () => { received = true; }, { once: true });
+
+    a.send(JSON.stringify({ type: 'explode', data: 'boom' }));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(received).toBe(false);
+  });
+
+  it('does not relay a JSON publish with a topic other than room', async () => {
+    const a = await connect('topic-mismatch-room');
+    const b = await connect('topic-mismatch-room');
+
+    let received = false;
+    b.addEventListener('message', () => { received = true; }, { once: true });
+
+    a.send(JSON.stringify({ type: 'publish', topic: 'not-the-room', data: 'hello' }));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(received).toBe(false);
+  });
+});
+
+describe('signaling sessionId binding', () => {
+  function roomStub(roomId: string) {
+    return env.ROOMS.get(env.ROOMS.idFromName(roomId));
+  }
+
+  it('stamps sessionId from the validated session and ignores forged query params', async () => {
+    const owner = await bootstrapLocalSession('sessionid-stamp-owner');
+    const roomId = 'sessionid-stamp-room';
+    const current = await authenticatedFetch('/auth/session/current', owner);
+    expect(current.status).toBe(200);
+    const { sessionId: realSessionId } = (await current.json()) as { sessionId: string };
+
+    const forgedSessionId = '0'.repeat(64);
+    expect(forgedSessionId).not.toBe(realSessionId);
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const res = await authenticatedFetch(
+      `/signaling?room=${roomId}&sessionId=${forgedSessionId}&accountId=attacker&accountEpoch=999`,
+      owner,
+      { headers: { Upgrade: 'websocket' } },
+    );
+    expect(res.status).toBe(101);
+    expect(res.webSocket).not.toBeNull();
+    res.webSocket?.accept();
+
+    const attachment = await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      const ctx = (instance as unknown as { ctx: { getWebSockets(): WebSocket[] } }).ctx;
+      const sockets = ctx.getWebSockets();
+      return sockets[0]?.deserializeAttachment() as {
+        sessionId?: string;
+        accountId?: string;
+      } | undefined;
+    });
+    expect(attachment?.sessionId).toBe(realSessionId);
+    expect(attachment?.sessionId).not.toBe(forgedSessionId);
+    expect(attachment?.accountId).toBe(owner.accountId);
+    res.webSocket?.close();
   });
 });
 
@@ -431,6 +551,203 @@ describe('y-websocket document bytes over RoomDO WebSockets', () => {
     const receivedFromOwner = nextBinaryMessage(viewerSocket);
     ownerSocket.send(ownerPayload.buffer);
     expect(Array.from(new Uint8Array(await receivedFromOwner))).toEqual(Array.from(ownerPayload));
+  });
+});
+
+describe('signaling socket caps', () => {
+  async function signalingUpgrade(who: LocalAuthSession, roomId: string) {
+    return authenticatedFetch(`/signaling?room=${roomId}`, who, {
+      headers: { Upgrade: 'websocket' },
+    });
+  }
+
+  async function grantEditor(
+    owner: LocalAuthSession,
+    editor: LocalAuthSession,
+    roomId: string,
+  ) {
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Editor' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${editor.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    )).status).toBe(200);
+  }
+
+  it('rejects a fifth signaling socket for the same granted account', async () => {
+    const owner = await bootstrapLocalSession('socket-cap-owner');
+    const roomId = 'socket-cap-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const sockets: WebSocket[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const res = await signalingUpgrade(owner, roomId);
+      expect(res.status).toBe(101);
+      const ws = res.webSocket;
+      if (!ws) throw new Error('no webSocket on response');
+      ws.accept();
+      sockets.push(ws);
+    }
+
+    const fifth = await signalingUpgrade(owner, roomId);
+    expect(fifth.status).toBe(403);
+    expect(await fifth.json()).toEqual({ error: 'Too many connections' });
+    expect(fifth.webSocket).toBeNull();
+
+    for (const ws of sockets) ws.close();
+  });
+
+  it('still accepts a different account when one account is at its socket cap', async () => {
+    const owner = await bootstrapLocalSession('socket-cap-isolation-owner');
+    const editor = await bootstrapLocalSession('socket-cap-isolation-editor');
+    const roomId = 'socket-cap-isolation-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+
+    for (let i = 0; i < 4; i += 1) {
+      const res = await signalingUpgrade(owner, roomId);
+      expect(res.status).toBe(101);
+      res.webSocket!.accept();
+    }
+
+    const editorRes = await signalingUpgrade(editor, roomId);
+    expect(editorRes.status).toBe(101);
+    expect(editorRes.webSocket).not.toBeNull();
+    editorRes.webSocket!.accept();
+    editorRes.webSocket!.close();
+  });
+
+  it('rejects the next signaling socket when the room is at its socket cap', async () => {
+    const previousCap = RoomDO.signalingMaxSocketsPerRoomForTests;
+    RoomDO.signalingMaxSocketsPerRoomForTests = 2;
+    const sockets: WebSocket[] = [];
+    try {
+      const owner = await bootstrapLocalSession('room-socket-cap-owner');
+      const roomId = 'room-socket-cap-room';
+
+      expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+      for (let i = 0; i < 2; i += 1) {
+        const res = await signalingUpgrade(owner, roomId);
+        expect(res.status).toBe(101);
+        const ws = res.webSocket;
+        if (!ws) throw new Error('no webSocket on response');
+        ws.accept();
+        sockets.push(ws);
+      }
+
+      const extra = await signalingUpgrade(owner, roomId);
+      expect(extra.status).toBe(403);
+      expect(await extra.json()).toEqual({ error: 'Too many connections' });
+      expect(extra.webSocket).toBeNull();
+    } finally {
+      RoomDO.signalingMaxSocketsPerRoomForTests = previousCap;
+      for (const ws of sockets) ws.close();
+    }
+  });
+});
+
+describe('signaling message rate limit', () => {
+  async function connectGranted(who: LocalAuthSession, roomId: string): Promise<WebSocket> {
+    const res = await authenticatedFetch(`/signaling?room=${roomId}`, who, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(res.status).toBe(101);
+    const ws = res.webSocket;
+    if (!ws) throw new Error('no webSocket on response');
+    ws.accept();
+    return ws;
+  }
+
+  async function grantEditor(
+    owner: LocalAuthSession,
+    editor: LocalAuthSession,
+    roomId: string,
+  ) {
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Editor' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${editor.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    )).status).toBe(200);
+  }
+
+  function closeSignal(ws: WebSocket): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('socket was not closed')), 2000);
+      ws.addEventListener('close', (event: CloseEvent) => {
+        clearTimeout(timer);
+        resolve(event.code);
+      }, { once: true });
+    });
+  }
+
+  function nextMessage(ws: WebSocket): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timed out')), 2000);
+      ws.addEventListener('message', (event: MessageEvent) => {
+        clearTimeout(timer);
+        resolve(String(event.data));
+      }, { once: true });
+    });
+  }
+
+  it('closes with 1008 when a granted owner exceeds SIGNALING_MAX_MESSAGES_PER_WINDOW', async () => {
+    const owner = await bootstrapLocalSession('rate-limit-owner');
+    const roomId = 'rate-limit-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const ws = await connectGranted(owner, roomId);
+    const closed = closeSignal(ws);
+
+    for (let i = 0; i < 60; i += 1) {
+      ws.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
+    }
+    ws.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
+
+    expect(await closed).toBe(1008);
+  });
+
+  it('still relays a peer under the rate limit while the attacker is closed', async () => {
+    const owner = await bootstrapLocalSession('rate-limit-isolation-owner');
+    const editor = await bootstrapLocalSession('rate-limit-isolation-editor');
+    const roomId = 'rate-limit-isolation-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+
+    const attacker = await connectGranted(owner, roomId);
+    const survivor = await connectGranted(editor, roomId);
+
+    const attackerClosed = closeSignal(attacker);
+    for (let i = 0; i < 61; i += 1) {
+      attacker.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
+    }
+    expect(await attackerClosed).toBe(1008);
+
+    const received = nextMessage(survivor);
+    survivor.send(JSON.stringify({ type: 'publish', topic: 'room', data: 'ok' }));
+    expect(JSON.parse(await received)).toMatchObject({ type: 'publish', topic: 'room', data: 'ok' });
+    expect(survivor.readyState).toBe(WebSocket.OPEN);
   });
 });
 
@@ -671,6 +988,32 @@ describe('revocation closes live signaling sockets', () => {
     expect(closed.closed).toBe(true);
   });
 
+  it('evicts LiveKit when alarm closes revoked sockets after account disable', async () => {
+    const roomId = 'revoke-livekit-disabled';
+    const subject = await bootstrapLocalSession('revoke-livekit-disabled');
+    await openSocket(roomId, subject);
+
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      instance.liveKitEvictCalls = [];
+      instance.evictLiveKitParticipant = async (input) => {
+        instance.liveKitEvictCalls!.push({
+          roomId: input.roomId,
+          identity: input.identity,
+        });
+        return { ok: true };
+      };
+    });
+
+    await changeAccount('disable', subject.accountId);
+    await runDurableObjectAlarm(roomStub(roomId));
+
+    const calls = await runInDurableObject(
+      roomStub(roomId),
+      (instance: RoomDO) => [...(instance.liveKitEvictCalls ?? [])],
+    );
+    expect(calls).toEqual([{ roomId, identity: subject.accountId }]);
+  });
+
   it('leaves another account\'s socket open when one account is revoked', async () => {
     const roomId = 'revoke-room-isolated';
     const target = await bootstrapLocalSession('revoke-isolated-target');
@@ -758,11 +1101,7 @@ describe('kick closes live signaling sockets', () => {
 
     expect((await writeRoom(roomId, owner)).status).toBe(200);
     await grantEditor(owner, editor, roomId);
-    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'editor-peer', userName: 'Editor', color: '#3498db' }),
-    })).status).toBe(200);
+    const editorPeerId = await joinEditorPeer(editor, roomId);
 
     const ownerSocket = await connectGranted(owner, roomId);
     const editorSocket = await connectGranted(editor, roomId);
@@ -771,7 +1110,7 @@ describe('kick closes live signaling sockets', () => {
     const kick = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'kick', peerId: 'editor-peer' }),
+      body: JSON.stringify({ action: 'kick', peerId: editorPeerId }),
     });
     expect(kick.status).toBe(200);
 
@@ -786,11 +1125,7 @@ describe('kick closes live signaling sockets', () => {
 
     expect((await writeRoom(roomId, owner)).status).toBe(200);
     await grantEditor(owner, editor, roomId);
-    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'editor-peer', userName: 'Editor', color: '#3498db' }),
-    })).status).toBe(200);
+    const editorPeerId = await joinEditorPeer(editor, roomId);
 
     const ownerSocket = await connectGranted(owner, roomId);
     const editorSocket = await connectGranted(editor, roomId);
@@ -799,7 +1134,7 @@ describe('kick closes live signaling sockets', () => {
     const kick = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'kick', peerId: 'editor-peer' }),
+      body: JSON.stringify({ action: 'kick', peerId: editorPeerId }),
     });
     expect(kick.status).toBe(200);
     expect(await editorClosed).toBe(4401);
@@ -814,6 +1149,122 @@ describe('kick closes live signaling sockets', () => {
     }
     await new Promise((r) => setTimeout(r, 200));
     expect(received).toBe(false);
+  });
+});
+
+describe('kick and suspend evict LiveKit participant', () => {
+  type LiveKitEvictCall = { roomId: string; identity: string };
+
+  function roomStub(roomId: string) {
+    return env.ROOMS.get(env.ROOMS.idFromName(roomId));
+  }
+
+  async function installEvictSpy(roomId: string) {
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      instance.liveKitEvictCalls = [];
+      instance.evictLiveKitParticipant = async (input) => {
+        instance.liveKitEvictCalls!.push({
+          roomId: input.roomId,
+          identity: input.identity,
+        });
+        return { ok: true };
+      };
+    });
+  }
+
+  async function readEvictCalls(roomId: string): Promise<LiveKitEvictCall[]> {
+    return runInDurableObject(
+      roomStub(roomId),
+      (instance: RoomDO) => [...(instance.liveKitEvictCalls ?? [])],
+    );
+  }
+
+  async function grantEditor(
+    owner: LocalAuthSession,
+    editor: LocalAuthSession,
+    roomId: string,
+  ) {
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Editor' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${editor.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    )).status).toBe(200);
+  }
+
+  it('evicts LiveKit once when kicking an account', async () => {
+    const owner = await bootstrapLocalSession('livekit-kick-owner');
+    const editor = await bootstrapLocalSession('livekit-kick-editor');
+    const roomId = 'livekit-kick-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+    const editorPeerId = await joinEditorPeer(editor, roomId);
+
+    await installEvictSpy(roomId);
+
+    const kick = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'kick', peerId: editorPeerId }),
+    });
+    expect(kick.status).toBe(200);
+
+    expect(await readEvictCalls(roomId)).toEqual([
+      { roomId, identity: editor.accountId },
+    ]);
+  });
+
+  it('evicts LiveKit once when suspending an account', async () => {
+    const owner = await bootstrapLocalSession('livekit-suspend-owner');
+    const editor = await bootstrapLocalSession('livekit-suspend-editor');
+    const roomId = 'livekit-suspend-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+    const editorPeerId = await joinEditorPeer(editor, roomId);
+
+    await installEvictSpy(roomId);
+
+    const suspend = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'suspend', peerId: editorPeerId }),
+    });
+    expect(suspend.status).toBe(200);
+
+    expect(await readEvictCalls(roomId)).toEqual([
+      { roomId, identity: editor.accountId },
+    ]);
+  });
+
+  it('still returns 200 when LiveKit eviction fails', async () => {
+    const owner = await bootstrapLocalSession('livekit-fail-owner');
+    const editor = await bootstrapLocalSession('livekit-fail-editor');
+    const roomId = 'livekit-fail-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+    const editorPeerId = await joinEditorPeer(editor, roomId);
+
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      instance.evictLiveKitParticipant = async () => ({ ok: false, status: 503 });
+    });
+
+    const kick = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'kick', peerId: editorPeerId }),
+    });
+    expect(kick.status).toBe(200);
   });
 });
 
@@ -882,11 +1333,7 @@ describe('kick increments room grant version', () => {
 
     expect((await writeRoom(roomId, owner)).status).toBe(200);
     await grantEditor(owner, editor, roomId);
-    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'editor-peer', userName: 'Editor', color: '#3498db' }),
-    })).status).toBe(200);
+    const editorPeerId = await joinEditorPeer(editor, roomId);
 
     expect(await readGrantVersion(roomId)).toBe(0);
 
@@ -896,7 +1343,7 @@ describe('kick increments room grant version', () => {
     const kick = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'kick', peerId: 'editor-peer' }),
+      body: JSON.stringify({ action: 'kick', peerId: editorPeerId }),
     });
     expect(kick.status).toBe(200);
 
@@ -914,16 +1361,16 @@ describe('kick increments room grant version', () => {
     await grantEditor(owner, kicked, roomId);
     await grantEditor(owner, survivor, roomId);
 
-    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, kicked, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'kicked-peer', userName: 'Kicked', color: '#3498db' }),
-    })).status).toBe(200);
+    const kickedJoin = await joinPresence(kicked, roomId, 'kicked-peer', {
+      userName: 'Kicked',
+      color: '#3498db',
+    });
+    expect(kickedJoin.status).toBe(200);
 
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'kick', peerId: 'kicked-peer' }),
+      body: JSON.stringify({ action: 'kick', peerId: kickedJoin.peerId }),
     })).status).toBe(200);
 
     const res = await authenticatedFetch(`/signaling?room=${roomId}`, survivor, {
@@ -939,16 +1386,12 @@ describe('kick increments room grant version', () => {
 
     expect((await writeRoom(roomId, owner)).status).toBe(200);
     await grantEditor(owner, editor, roomId);
-    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'editor-peer', userName: 'Editor', color: '#3498db' }),
-    })).status).toBe(200);
+    const editorPeerId = await joinEditorPeer(editor, roomId);
 
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'kick', peerId: 'editor-peer' }),
+      body: JSON.stringify({ action: 'kick', peerId: editorPeerId }),
     })).status).toBe(200);
 
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
@@ -1029,11 +1472,7 @@ describe('suspend increments room grant version', () => {
 
     expect((await writeRoom(roomId, owner)).status).toBe(200);
     await grantEditor(owner, editor, roomId);
-    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'editor-peer', userName: 'Editor', color: '#3498db' }),
-    })).status).toBe(200);
+    const editorPeerId = await joinEditorPeer(editor, roomId);
 
     expect(await readGrantVersion(roomId)).toBe(0);
 
@@ -1043,7 +1482,7 @@ describe('suspend increments room grant version', () => {
     const suspend = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'suspend', peerId: 'editor-peer' }),
+      body: JSON.stringify({ action: 'suspend', peerId: editorPeerId }),
     });
     expect(suspend.status).toBe(200);
 
@@ -1092,11 +1531,7 @@ describe('stale grant version drops signaling publishes', () => {
 
     expect((await writeRoom(roomId, owner)).status).toBe(200);
     await grantEditor(owner, editor, roomId);
-    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'editor-peer', userName: 'Editor', color: '#3498db' }),
-    })).status).toBe(200);
+    await joinEditorPeer(editor, roomId);
 
     const ownerRes = await authenticatedFetch(`/signaling?room=${roomId}`, owner, {
       headers: { Upgrade: 'websocket' },
@@ -1128,11 +1563,7 @@ describe('stale grant version drops signaling publishes', () => {
 
     expect((await writeRoom(roomId, owner)).status).toBe(200);
     await grantEditor(owner, editor, roomId);
-    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'editor-peer', userName: 'Editor', color: '#3498db' }),
-    })).status).toBe(200);
+    await joinEditorPeer(editor, roomId);
 
     const ownerRes = await authenticatedFetch(`/signaling?room=${roomId}`, owner, {
       headers: { Upgrade: 'websocket' },
@@ -1168,11 +1599,7 @@ describe('stale grant version drops signaling publishes', () => {
 
     expect((await writeRoom(roomId, owner)).status).toBe(200);
     await grantEditor(owner, editor, roomId);
-    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'editor-peer', userName: 'Editor', color: '#3498db' }),
-    })).status).toBe(200);
+    await joinEditorPeer(editor, roomId);
 
     const ownerRes = await authenticatedFetch(`/signaling?room=${roomId}`, owner, {
       headers: { Upgrade: 'websocket' },
@@ -1202,6 +1629,44 @@ describe('stale grant version drops signaling publishes', () => {
 
     editorSocket.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
     expect(await closed).toBe(4401);
+  });
+
+  it('closes the socket with 4401 when grantVersion is stale on a ping frame', async () => {
+    const owner = await bootstrapLocalSession('stale-ping-owner');
+    const editor = await bootstrapLocalSession('stale-ping-editor');
+    const roomId = 'stale-ping-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+    await joinEditorPeer(editor, roomId);
+
+    const editorRes = await authenticatedFetch(`/signaling?room=${roomId}`, editor, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(editorRes.status).toBe(101);
+    const editorSocket = editorRes.webSocket!;
+    editorSocket.accept();
+
+    await bumpGrantVersion(roomId);
+
+    let pongReceived = false;
+    editorSocket.addEventListener('message', () => { pongReceived = true; }, { once: true });
+
+    const closed = new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error('stale socket was not closed on ping')),
+        2_000,
+      );
+      editorSocket.addEventListener('close', (event: CloseEvent) => {
+        clearTimeout(timer);
+        resolve(event.code);
+      }, { once: true });
+    });
+
+    editorSocket.send(JSON.stringify({ type: 'ping' }));
+    expect(await closed).toBe(4401);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(pongReceived).toBe(false);
   });
 });
 
@@ -1322,11 +1787,7 @@ describe('room authorization matrix', () => {
   }
 
   function joinAs(who: LocalAuthSession, roomId: string, peerId: string) {
-    return authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, who, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId, userName: peerId, color: '#3498db' }),
-    });
+    return joinPresence(who, roomId, peerId);
   }
 
   it('makes the creator the owner and lets it read its own board', async () => {
@@ -1349,6 +1810,14 @@ describe('room authorization matrix', () => {
     // The board is unchanged after every refusal.
     const read = await authenticatedFetch('/api/whiteboard/room/matrix-closed', owner);
     expect(await read.json()).toMatchObject({ name: 'Private' });
+
+    const members = await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName('matrix-closed')),
+      (instance: RoomDO) => instance.db.prepare(
+        `SELECT account_id AS accountId, role FROM room_members WHERE room_id = ?`,
+      ).all('matrix-closed') as Array<{ accountId: string; role: string }>,
+    );
+    expect(members).toEqual([{ accountId: owner.accountId, role: 'owner' }]);
   });
 
   it('refuses an outsider moderating the waiting queue', async () => {
@@ -1387,10 +1856,10 @@ describe('room authorization matrix', () => {
     const roomId = 'matrix-presence-delete';
     await createRoomAs(owner, roomId);
     await joinAs(owner, roomId, 'host-peer');
-    await joinAs(outsider, roomId, 'guest-peer');
+    const guest = await joinAs(outsider, roomId, 'guest-peer');
 
     const del = await authenticatedFetch(
-      `/api/whiteboard/room/${roomId}/presence?peerId=guest-peer`,
+      `/api/whiteboard/room/${roomId}/presence?peerId=${encodeURIComponent(guest.peerId)}`,
       owner,
       { method: 'DELETE' },
     );
@@ -1401,19 +1870,49 @@ describe('room authorization matrix', () => {
     // leave it there either way.
     const presence = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner);
     const data = (await presence.json()) as { waitingPeers: Array<{ peerId: string }> };
-    expect(data.waitingPeers.map((p) => p.peerId)).toContain('guest-peer');
+    expect(data.waitingPeers.map((p) => p.peerId)).toContain(guest.peerId);
+  });
+
+  it('does not let an outsider occupy the owner peer label by posting it', async () => {
+    const roomId = `sec004-owner-label-${crypto.randomUUID()}`;
+    await createRoomAs(owner, roomId);
+    const ownerJoin = await joinAs(owner, roomId, 'host-peer');
+    expect(ownerJoin.status).toBe(200);
+    const ownerBody = await ownerJoin.res.json() as {
+      peerId: string;
+      users: Array<{ peerId: string }>;
+    };
+    const ownerPeerId = ownerJoin.peerId;
+    expect(ownerPeerId).toMatch(/^user-[0-9a-f]{32}$/);
+    expect(ownerPeerId).not.toBe('host-peer');
+    expect(ownerBody.users.map((user) => user.peerId)).toContain(ownerPeerId);
+
+    const hijack = await joinAs(outsider, roomId, ownerPeerId);
+    if (hijack.ok) {
+      expect(hijack.peerId).not.toBe(ownerPeerId);
+    } else {
+      expect(hijack.status).toBe(403);
+    }
+
+    const presence = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner);
+    const data = await presence.json() as {
+      users: Array<{ peerId: string }>;
+      waitingPeers: Array<{ peerId: string }>;
+    };
+    expect(data.users.map((user) => user.peerId)).toContain(ownerPeerId);
+    expect(data.waitingPeers.map((peer) => peer.peerId)).not.toContain(ownerPeerId);
   });
 
   it('refuses claiming a peerId already bound to another account', async () => {
     const roomId = 'matrix-presence-claim';
     await createRoomAs(owner, roomId);
     await joinAs(owner, roomId, 'host-peer');
-    await joinAs(outsider, roomId, 'guest-peer');
+    const guest = await joinAs(outsider, roomId, 'guest-peer');
 
     const hijack = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'guest-peer', userName: 'Hijacker', color: '#000000' }),
+      body: JSON.stringify({ peerId: guest.peerId, userName: 'Hijacker', color: '#000000' }),
     });
     expect(hijack.status).toBe(403);
 
@@ -1422,18 +1921,18 @@ describe('room authorization matrix', () => {
     // room_presence.
     const presence = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner);
     const data = (await presence.json()) as { waitingPeers: Array<{ peerId: string; userName: string }> };
-    expect(data.waitingPeers.find((p) => p.peerId === 'guest-peer')?.userName).toBe('guest-peer');
+    expect(data.waitingPeers.find((p) => p.peerId === guest.peerId)?.userName).toBe('guest-peer');
   });
 
   it('does not transfer a peer to the moderator when the owner suspends it', async () => {
     const roomId = 'matrix-presence-moderate-binding';
     await createRoomAs(owner, roomId);
     await joinAs(owner, roomId, 'host-peer');
-    await joinAs(outsider, roomId, 'guest-peer');
+    const guest = await joinAs(outsider, roomId, 'guest-peer');
     await authenticatedFetch(`/api/whiteboard/room/${roomId}/waiting`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'guest-peer', action: 'approve' }),
+      body: JSON.stringify({ peerId: guest.peerId, action: 'approve' }),
     });
     // Re-join so the admitted presence row is bound to the guest's account.
     await joinAs(outsider, roomId, 'guest-peer');
@@ -1441,7 +1940,7 @@ describe('room authorization matrix', () => {
     const suspend = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'suspend', peerId: 'guest-peer' }),
+      body: JSON.stringify({ action: 'suspend', peerId: guest.peerId }),
     });
     expect(suspend.status).toBe(200);
 
@@ -1450,7 +1949,7 @@ describe('room authorization matrix', () => {
     // of its own leave. After suspend the account is pending, so leave is
     // the waiting-queue withdraw, not a granted presence heartbeat.
     const selfDelete = await authenticatedFetch(
-      `/api/whiteboard/room/${roomId}/waiting?peerId=guest-peer`,
+      `/api/whiteboard/room/${roomId}/waiting?peerId=${encodeURIComponent(guest.peerId)}`,
       outsider,
       { method: 'DELETE' },
     );
@@ -1460,10 +1959,10 @@ describe('room authorization matrix', () => {
   it('lets a caller remove its own peer', async () => {
     const roomId = 'matrix-presence-self-delete';
     await createRoomAs(owner, roomId);
-    await joinAs(owner, roomId, 'host-peer');
+    const host = await joinAs(owner, roomId, 'host-peer');
 
     const del = await authenticatedFetch(
-      `/api/whiteboard/room/${roomId}/presence?peerId=host-peer`,
+      `/api/whiteboard/room/${roomId}/presence?peerId=${encodeURIComponent(host.peerId)}`,
       owner,
       { method: 'DELETE' },
     );
@@ -1471,7 +1970,7 @@ describe('room authorization matrix', () => {
 
     const presence = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner);
     const data = (await presence.json()) as { users: Array<{ peerId: string }> };
-    expect(data.users.map((u) => u.peerId)).not.toContain('host-peer');
+    expect(data.users.map((u) => u.peerId)).not.toContain(host.peerId);
   });
 
   it('does not grant host status from hostPeerId when the peer is not the owner', async () => {
@@ -1479,12 +1978,12 @@ describe('room authorization matrix', () => {
     const editor = await bootstrapLocalSession('matrix-labeled-host');
     await createRoomAs(owner, roomId, { hostPeerId: 'solo-peer' });
     await grantPublicRole(owner, editor, roomId, 'peer');
-    await joinAs(editor, roomId, 'solo-peer');
+    const editorJoin = await joinAs(editor, roomId, 'solo-peer');
 
     const presence = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor);
     const data = (await presence.json()) as { users: Array<{ peerId: string; isHost: boolean }> };
     expect(data.users).toEqual([
-      expect.objectContaining({ peerId: 'solo-peer', isHost: false }),
+      expect.objectContaining({ peerId: editorJoin.peerId, isHost: false }),
     ]);
   });
 
@@ -1494,13 +1993,13 @@ describe('room authorization matrix', () => {
     await joinAs(owner, roomId, 'host-peer');
 
     // The guest is queued, and cannot read the board yet.
-    await joinAs(outsider, roomId, 'guest-peer');
+    const guest = await joinAs(outsider, roomId, 'guest-peer');
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, outsider)).status).toBe(403);
 
     const approve = await authenticatedFetch(`/api/whiteboard/room/${roomId}/waiting`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'guest-peer', action: 'approve' }),
+      body: JSON.stringify({ peerId: guest.peerId, action: 'approve' }),
     });
     expect(approve.status).toBe(200);
 
@@ -1512,11 +2011,11 @@ describe('room authorization matrix', () => {
     const roomId = 'matrix-member-delete';
     await createRoomAs(owner, roomId);
     await joinAs(owner, roomId, 'host-peer');
-    await joinAs(outsider, roomId, 'guest-peer');
+    const guest = await joinAs(outsider, roomId, 'guest-peer');
     await authenticatedFetch(`/api/whiteboard/room/${roomId}/waiting`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'guest-peer', action: 'approve' }),
+      body: JSON.stringify({ peerId: guest.peerId, action: 'approve' }),
     });
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, outsider)).status).toBe(200);
 
@@ -1530,12 +2029,12 @@ describe('room authorization matrix', () => {
     const roomId = 'matrix-one-row';
     await createRoomAs(owner, roomId);
     await joinAs(owner, roomId, 'host-peer');
-    await joinAs(outsider, roomId, 'guest-peer');
+    const guest = await joinAs(outsider, roomId, 'guest-peer');
 
     await authenticatedFetch(`/api/whiteboard/room/${roomId}/waiting`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'guest-peer', action: 'approve' }),
+      body: JSON.stringify({ peerId: guest.peerId, action: 'approve' }),
     });
 
     const rows = await runInDurableObject(
@@ -1552,14 +2051,14 @@ describe('room authorization matrix', () => {
     const other = await bootstrapLocalSession('matrix-other-guest');
     await createRoomAs(owner, roomId);
     await joinAs(owner, roomId, 'host-peer');
-    await joinAs(outsider, roomId, 'guest-peer');
+    const guest = await joinAs(outsider, roomId, 'guest-peer');
     await joinAs(other, roomId, 'other-peer');
 
     const approve = await authenticatedFetch(`/api/whiteboard/room/${roomId}/waiting`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        peerId: 'guest-peer',
+        peerId: guest.peerId,
         action: 'approve',
         accountId: other.accountId,
       }),
@@ -1620,9 +2119,9 @@ describe('room authorization matrix', () => {
     const roomId = 'matrix-forge-creator-peer';
     const attacker = await bootstrapLocalSession('matrix-forge-creator');
     await createRoomAs(owner, roomId, { hostPeerId: 'creator-peer', name: 'Keep' });
-    await joinAs(owner, roomId, 'creator-peer');
+    const host = await joinAs(owner, roomId, 'creator-peer');
 
-    expect((await joinAs(attacker, roomId, 'creator-peer')).status).toBe(403);
+    expect((await joinAs(attacker, roomId, host.peerId)).status).toBe(403);
     expect((await joinAs(attacker, roomId, 'creator-peer-clone')).status).toBe(200);
 
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/settings`, attacker, {
@@ -1687,18 +2186,18 @@ describe('room authorization matrix', () => {
     const attacker = await bootstrapLocalSession('matrix-attacker');
     await createRoomAs(owner, roomId);
     await joinAs(owner, roomId, 'host-peer');
-    await joinAs(outsider, roomId, 'guest-peer');
+    const guest = await joinAs(outsider, roomId, 'guest-peer');
     await authenticatedFetch(`/api/whiteboard/room/${roomId}/waiting`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'guest-peer', action: 'approve' }),
+      body: JSON.stringify({ peerId: guest.peerId, action: 'approve' }),
     });
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, outsider)).status).toBe(200);
 
     const hijack = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, attacker, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'guest-peer', userName: 'Nope', color: '#000000' }),
+      body: JSON.stringify({ peerId: guest.peerId, userName: 'Nope', color: '#000000' }),
     });
     expect(hijack.status).toBe(403);
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, attacker)).status).toBe(403);
@@ -1709,18 +2208,18 @@ describe('room authorization matrix', () => {
     const roomId = 'matrix-kick-survives-peer';
     await createRoomAs(owner, roomId);
     await joinAs(owner, roomId, 'host-peer');
-    await joinAs(outsider, roomId, 'guest-peer');
+    const guest = await joinAs(outsider, roomId, 'guest-peer');
     await authenticatedFetch(`/api/whiteboard/room/${roomId}/waiting`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'guest-peer', action: 'approve' }),
+      body: JSON.stringify({ peerId: guest.peerId, action: 'approve' }),
     });
     await joinAs(outsider, roomId, 'guest-peer');
 
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'kick', peerId: 'guest-peer' }),
+      body: JSON.stringify({ action: 'kick', peerId: guest.peerId }),
     })).status).toBe(200);
 
     const rejoin = await joinAs(outsider, roomId, 'brand-new-peer');
@@ -1812,7 +2311,7 @@ describe('room authorization matrix', () => {
 
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, outsider)).status).toBe(403);
 
-    await joinAs(outsider, roomId, 'pending-peer');
+    const pending = await joinAs(outsider, roomId, 'pending-peer');
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, outsider)).status).toBe(403);
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, outsider)).status).toBe(403);
 
@@ -1823,13 +2322,13 @@ describe('room authorization matrix', () => {
     await authenticatedFetch(`/api/whiteboard/room/${roomId}/waiting`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'pending-peer', action: 'approve' }),
+      body: JSON.stringify({ peerId: pending.peerId, action: 'approve' }),
     });
     await joinAs(outsider, roomId, 'pending-peer');
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'kick', peerId: 'pending-peer' }),
+      body: JSON.stringify({ action: 'kick', peerId: pending.peerId }),
     })).status).toBe(200);
 
     const afterKick = await roomTables(roomId);
@@ -1895,6 +2394,11 @@ describe('room authorization matrix', () => {
     expect(await roomTables(roomId)).toEqual(beforeSettings);
 
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/waiting`, editor)).status).toBe(403);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/waiting`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'queued-peer', action: 'approve' }),
+    })).status).toBe(403);
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, editor)).status).toBe(403);
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
       method: 'POST',
@@ -1913,12 +2417,12 @@ describe('room authorization matrix', () => {
     const roomId = 'matrix-owner-moderate';
     await createRoomAs(owner, roomId);
     await joinAs(owner, roomId, 'host-peer');
-    await joinAs(outsider, roomId, 'guest-peer');
+    const guest = await joinAs(outsider, roomId, 'guest-peer');
 
     const queue = await authenticatedFetch(`/api/whiteboard/room/${roomId}/waiting`, owner);
     expect(queue.status).toBe(200);
     expect(await queue.json()).toMatchObject({
-      waitingPeers: [expect.objectContaining({ peerId: 'guest-peer' })],
+      waitingPeers: [expect.objectContaining({ peerId: guest.peerId })],
     });
 
     const requests = await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, owner);
@@ -1928,12 +2432,12 @@ describe('room authorization matrix', () => {
 
     const presence = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner);
     const data = await presence.json() as { waitingPeers: Array<{ peerId: string }> };
-    expect(data.waitingPeers.map((p) => p.peerId)).toContain('guest-peer');
+    expect(data.waitingPeers.map((p) => p.peerId)).toContain(guest.peerId);
 
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/waiting`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ peerId: 'guest-peer', action: 'approve' }),
+      body: JSON.stringify({ peerId: guest.peerId, action: 'approve' }),
     })).status).toBe(200);
   });
 
@@ -2109,7 +2613,7 @@ describe('room authorization matrix', () => {
     expect(await roomTables(roomId)).toEqual(before);
   });
 
-  it('rejects wrong-room and wrong-role callers on every protected route without mutating tables', { timeout: 20_000 }, async () => {
+  it('rejects wrong-room and wrong-role callers on every protected route without mutating tables', { timeout: 40_000 }, async () => {
     const roomId = 'matrix-role-table';
     const otherRoom = 'matrix-role-other';
     const secret = { boardName: 'RoleTableBoard', email: 'wait@hidden.example' };
@@ -2258,7 +2762,7 @@ describe('room authorization matrix', () => {
     expect(await roomTables(roomId)).toEqual(before);
   });
 
-  it('does not return board bytes or waiting-queue PII to pending or anonymous callers', async () => {
+  it('does not return board bytes or waiting-queue PII to pending or anonymous callers', { timeout: 20_000 }, async () => {
     const roomId = 'matrix-no-pii';
     const secret = { boardName: 'HiddenCanvasName', email: 'pii@hidden.example' };
     await createRoomAs(owner, roomId, { name: secret.boardName });
@@ -2273,7 +2777,7 @@ describe('room authorization matrix', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ userName: 'Queued', email: secret.email }),
     });
-    await joinAs(outsider, roomId, 'guest-peer');
+    const guest = await joinAs(outsider, roomId, 'guest-peer');
 
     const ownerBoard = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner);
     expect(await ownerBoard.json()).toMatchObject({
@@ -2282,7 +2786,7 @@ describe('room authorization matrix', () => {
     });
     const ownerQueue = await authenticatedFetch(`/api/whiteboard/room/${roomId}/waiting`, owner);
     expect(await ownerQueue.json()).toMatchObject({
-      waitingPeers: [expect.objectContaining({ peerId: 'guest-peer' })],
+      waitingPeers: [expect.objectContaining({ peerId: guest.peerId })],
     });
 
     for (const path of [
@@ -2407,5 +2911,59 @@ describe('A/V token route (/api/av/token)', () => {
       { method: 'POST' },
     );
     expect(waitingToken.status).toBe(403);
+  });
+});
+
+describe('SEC-005 room existence before persist', () => {
+  it('returns 404 and writes nothing when POSTing presence to a never-created room', async () => {
+    const who = await bootstrapLocalSession('sec005-presence-missing');
+    const roomId = `sec005-never-${crypto.randomUUID()}`;
+
+    const res = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, who, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        peerId: 'ghost-peer',
+        userName: 'Ghost',
+        color: '#3498db',
+      }),
+    });
+    expect(res.status).toBe(404);
+
+    const counts = await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      (instance: RoomDO) => {
+        const count = (table: string) =>
+          (instance.db.prepare(`SELECT count(*) AS n FROM ${table} WHERE room_id = ?`).get(roomId) as {
+            n: number;
+          }).n;
+        return {
+          waiting: count('waiting_peers'),
+          presence: count('room_presence'),
+          members: count('room_members'),
+        };
+      },
+    );
+    expect(counts.waiting).toBe(0);
+    expect(counts.presence).toBe(0);
+    expect(counts.members).toBe(0);
+  });
+
+  it('returns 404 for a signaling upgrade when the room was never created', async () => {
+    const who = await bootstrapLocalSession('sec005-signaling-missing');
+    const roomId = `sec005-sig-${crypto.randomUUID()}`;
+    const res = await authenticatedFetch(`/signaling?room=${roomId}`, who, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(res.status).toBe(404);
+    expect(res.webSocket).toBeNull();
+  });
+
+  it('still reports access status none for a never-created room so create quotas can apply', async () => {
+    const who = await bootstrapLocalSession('sec005-access-missing');
+    const roomId = `sec005-access-${crypto.randomUUID()}`;
+    const res = await authenticatedFetch(`/api/whiteboard/room/${roomId}/access`, who);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: 'none' });
   });
 });

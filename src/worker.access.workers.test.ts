@@ -7,6 +7,9 @@ import { resetAuthEventWriterForTests, setAuthEventWriterForTests } from './work
 
 const BASE = 'https://example.com';
 const ROOM_CREATE_RATE_MAX = 10;
+const ACCESS_REQUEST_RATE_MAX = 20;
+const PRESENCE_POST_RATE_MAX = 30;
+const SCENE_WRITE_RATE_MAX = 120;
 
 describe('real local Access boundary through workerd', () => {
   afterEach(() => {
@@ -39,6 +42,41 @@ describe('real local Access boundary through workerd', () => {
     expect(logout.status).toBe(204);
     expect(logout.headers.get('cache-control')).toBe('no-store');
     expect(logout.headers.get('set-cookie')).toContain('Max-Age=0');
+  });
+
+  it('exports only the caller account after Access and a local session', async () => {
+    const session = await bootstrapLocalSession('export-own-account');
+    const other = await bootstrapLocalSession('export-other-account');
+    const rawToken = session.cookie.split('=', 2)[1];
+
+    const missingSession = await accessFetch('/auth/account/export', 'export-own-account');
+    expect(missingSession.status).toBe(401);
+
+    const exported = await authenticatedFetch('/auth/account/export', session);
+    expect(exported.status).toBe(200);
+    expect(exported.headers.get('cache-control')).toBe('no-store');
+    const body = await exported.json() as {
+      accountId: string;
+      createdAt: number;
+      sessions: Array<{ sessionHash: string }>;
+      accessSubjects: Array<{ issuer: string; subject: string }>;
+    };
+    expect(body.accountId).toBe(session.accountId);
+    expect(body.sessions[0]?.sessionHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(body.accessSubjects).toEqual([
+      expect.objectContaining({ subject: 'export-own-account' }),
+    ]);
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain(rawToken);
+    expect(serialized).not.toContain(other.accountId);
+
+    const mixed = await authenticatedFetch(
+      '/auth/account/export',
+      session,
+      {},
+      other.token,
+    );
+    expect(mixed.status).toBe(401);
   });
 
   it('accepts an empty browser-style POST body for session bootstrap', async () => {
@@ -267,6 +305,220 @@ describe('real local Access boundary through workerd', () => {
     expect(read.status).toBe(200);
   });
 
+  it('logs rate_limit on 429 without cookie or JWT', async () => {
+    const lines: string[] = [];
+    setAuthEventWriterForTests((line) => lines.push(line));
+    const session = await bootstrapLocalSession('boundary-rate-limit-log');
+    const createRoom = (index: number) => authenticatedFetch(
+      `/api/whiteboard/room/rate-log-${index}`,
+      session,
+      {
+        method: 'POST',
+        headers: {
+          Origin: BASE,
+          'content-type': 'application/json',
+          'x-test-strict-rate-limit': '1',
+        },
+        body: JSON.stringify({ elements: [] }),
+      },
+    );
+
+    for (let index = 0; index < ROOM_CREATE_RATE_MAX; index += 1) {
+      const response = await createRoom(index);
+      expect(response.status, `create ${index}`).toBe(200);
+    }
+
+    const limited = await createRoom(ROOM_CREATE_RATE_MAX);
+    expect(limited.status).toBe(429);
+
+    const rateLimitLines = lines.filter((line) => {
+      const logged = JSON.parse(line) as { type?: string };
+      return logged.type === 'rate_limit';
+    });
+    expect(rateLimitLines.length).toBeGreaterThanOrEqual(1);
+    for (const line of rateLimitLines) {
+      const logged = JSON.parse(line);
+      expect(logged).toMatchObject({ event: 'auth_event', type: 'rate_limit' });
+      expect(line).not.toContain(session.token);
+      expect(line).not.toContain(session.cookie);
+      expect(line).not.toMatch(/Bearer\s+eyJ/i);
+      expect(line).not.toMatch(/__Host-teacher-session=/);
+    }
+  });
+
+  it('rate-limits access requests per account with 429 and Retry-After', async () => {
+    const owner = await bootstrapLocalSession('boundary-access-rate-owner');
+    const requester = await bootstrapLocalSession('boundary-access-rate-requester');
+    const roomId = 'rate-access-request';
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const requestAccess = () => authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests`,
+      requester,
+      {
+        method: 'POST',
+        headers: {
+          Origin: BASE,
+          'content-type': 'application/json',
+          'x-test-strict-rate-limit': '1',
+        },
+        body: JSON.stringify({ userName: 'Student' }),
+      },
+    );
+
+    for (let index = 0; index < ACCESS_REQUEST_RATE_MAX; index += 1) {
+      const response = await requestAccess();
+      expect(response.status, `request ${index}`).toBe(201);
+    }
+
+    const limited = await requestAccess();
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('cache-control')).toBe('no-store');
+    const retryAfter = limited.headers.get('retry-after');
+    expect(retryAfter).not.toBeNull();
+    expect(Number(retryAfter)).toBeGreaterThan(0);
+    expect(await limited.json()).toEqual({ error: 'Too many requests' });
+
+    const approve = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${requester.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    );
+    expect(approve.status).toBe(200);
+
+    for (let index = 0; index <= ACCESS_REQUEST_RATE_MAX; index += 1) {
+      const heartbeat = await authenticatedFetch(
+        `/api/whiteboard/room/${roomId}/presence`,
+        requester,
+        {
+          method: 'POST',
+          headers: {
+            Origin: BASE,
+            'content-type': 'application/json',
+            'x-test-strict-rate-limit': '1',
+          },
+          body: JSON.stringify({ peerId: 'rate-access-editor', userName: 'Student' }),
+        },
+      );
+      expect(heartbeat.status, `heartbeat ${index}`).toBe(200);
+    }
+  });
+
+  it('rate-limits presence POSTs per account with 429 and Retry-After', async () => {
+    const owner = await bootstrapLocalSession('boundary-presence-rate-owner');
+    const joiner = await bootstrapLocalSession('boundary-presence-rate-joiner');
+    const roomId = 'rate-presence-join';
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, joiner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Student' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${joiner.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    )).status).toBe(200);
+
+    const postPresence = (userName: string) => authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/presence`,
+      joiner,
+      {
+        method: 'POST',
+        headers: {
+          Origin: BASE,
+          'content-type': 'application/json',
+          'x-test-strict-rate-limit': '1',
+        },
+        body: JSON.stringify({ peerId: 'rate-presence-peer', userName }),
+      },
+    );
+
+    for (let index = 0; index < PRESENCE_POST_RATE_MAX; index += 1) {
+      const response = await postPresence(`Name-${index}`);
+      expect(response.status, `presence ${index}`).toBe(200);
+    }
+
+    const limited = await postPresence('Name-flood');
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('cache-control')).toBe('no-store');
+    const retryAfter = limited.headers.get('retry-after');
+    expect(retryAfter).not.toBeNull();
+    expect(Number(retryAfter)).toBeGreaterThan(0);
+    expect(await limited.json()).toEqual({ error: 'Too many requests' });
+
+    const list = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, joiner);
+    expect(list.status).toBe(200);
+  });
+
+  it('rate-limits existing-room scene writes per account with 429 and Retry-After', async () => {
+    const session = await bootstrapLocalSession('boundary-scene-write-rate');
+    const roomId = 'rate-scene-write';
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const writeScene = (index: number) => authenticatedFetch(
+      `/api/whiteboard/room/${roomId}`,
+      session,
+      {
+        method: 'POST',
+        headers: {
+          Origin: BASE,
+          'content-type': 'application/json',
+          'x-test-strict-rate-limit': '1',
+        },
+        body: JSON.stringify({ elements: [] }),
+      },
+    );
+
+    for (let index = 0; index < SCENE_WRITE_RATE_MAX; index += 1) {
+      const response = await writeScene(index);
+      expect(response.status, `scene ${index}`).toBe(200);
+    }
+
+    const limited = await writeScene(SCENE_WRITE_RATE_MAX);
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('cache-control')).toBe('no-store');
+    const retryAfter = limited.headers.get('retry-after');
+    expect(retryAfter).not.toBeNull();
+    expect(Number(retryAfter)).toBeGreaterThan(0);
+    expect(await limited.json()).toEqual({ error: 'Too many requests' });
+
+    const createStillAllowed = await authenticatedFetch(
+      '/api/whiteboard/room/rate-scene-write-new',
+      session,
+      {
+        method: 'POST',
+        headers: {
+          Origin: BASE,
+          'content-type': 'application/json',
+          'x-test-strict-rate-limit': '1',
+        },
+        body: JSON.stringify({ elements: [] }),
+      },
+    );
+    expect(createStillAllowed.status).toBe(200);
+  }, 20_000);
+
   it('logs auth_failure without tokens when the local session is missing', async () => {
     const lines: string[] = [];
     setAuthEventWriterForTests((line) => lines.push(line));
@@ -317,6 +569,33 @@ describe('real local Access boundary through workerd', () => {
     expect(lines[0]).not.toContain(session.cookie);
   });
 
+  it('rejects a foreign Origin on an otherwise valid session mutation without changing the room', async () => {
+    const session = await bootstrapLocalSession('boundary-csrf-session');
+    const roomId = 'csrf-session-room';
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/settings`, session, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Kept' }),
+    })).status).toBe(200);
+
+    const hijack = await authenticatedFetch(`/api/whiteboard/room/${roomId}/settings`, session, {
+      method: 'POST',
+      headers: { Origin: 'https://attacker.example', 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Stolen' }),
+    });
+    expect(hijack.status).toBe(403);
+    expect(await hijack.json()).toEqual({ error: 'Origin required' });
+
+    const still = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session);
+    expect(still.status).toBe(200);
+    expect(await still.json()).toMatchObject({ name: 'Kept' });
+  });
+
   it('denies a locally disabled account while its signed Access assertion remains valid', async () => {
     const session = await bootstrapLocalSession('boundary-disabled');
     const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
@@ -330,4 +609,174 @@ describe('real local Access boundary through workerd', () => {
     expect(denied.status).toBe(401);
     expect(denied.headers.get('set-cookie')).toContain('Max-Age=0');
   });
+
+  it('still serves a room API after identity headers are present on the Worker request', async () => {
+    const session = await bootstrapLocalSession('boundary-strip-owner');
+    const roomId = 'strip-identity-headers';
+    const create = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session, {
+      method: 'POST',
+      headers: {
+        Origin: BASE,
+        'content-type': 'application/json',
+        'X-Account-Id': 'acct-injected',
+        'X-User-Id': 'user-injected',
+        'X-Forwarded-User': 'forwarded-injected',
+        Authorization: 'Bearer forged',
+      },
+      body: JSON.stringify({ elements: [] }),
+    });
+    expect(create.status).toBe(200);
+
+    const read = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session, {
+      headers: { 'X-Account-Id': 'acct-injected' },
+    });
+    expect(read.status).toBe(200);
+  });
+
+  it('does not let a forged X-Account-Id or Cookie select another account in RoomDO', async () => {
+    const owner = await bootstrapLocalSession('boundary-strip-owner-neg');
+    const outsider = await bootstrapLocalSession('boundary-strip-outsider-neg');
+    const roomId = 'strip-identity-forge';
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const forged = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}?accountId=${encodeURIComponent(owner.accountId)}`,
+      outsider,
+      {
+        headers: {
+          'X-Account-Id': owner.accountId,
+          Cookie: `${outsider.cookie}; ${owner.cookie}`,
+        },
+      },
+    );
+    expect(forged.status).toBe(403);
+
+    const stillOwner = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}?accountId=${encodeURIComponent(outsider.accountId)}`,
+      owner,
+      { headers: { 'X-Account-Id': outsider.accountId } },
+    );
+    expect(stillOwner.status).toBe(200);
+  });
+
+  it('rejects GET /api/whiteboard/rooms without a local session as 401', async () => {
+    const response = await accessFetch('/api/whiteboard/rooms', 'rooms-list-missing-session');
+    expect(response.status).toBe(401);
+    expect(response.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('lists only the authenticated teacher rooms after create and delete', async () => {
+    const teacherA = await bootstrapLocalSession('rooms-list-teacher-a');
+    const teacherB = await bootstrapLocalSession('rooms-list-teacher-b');
+    const roomId = `rooms-list-${crypto.randomUUID()}`;
+
+    const created = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, teacherA, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    });
+    expect(created.status).toBe(200);
+    expect(await created.json()).toMatchObject({ hasCreatorGrant: true });
+
+    const listA = await waitForTeacherRooms(teacherA);
+    expect(listA.status).toBe(200);
+    expect(listA.headers.get('cache-control')).toBe('no-store');
+    expect(teacherRoomIds(listA.body)).toContain(roomId);
+
+    const listB = await waitForTeacherRooms(
+      teacherB,
+      `?accountId=${encodeURIComponent(teacherA.accountId)}`,
+    );
+    expect(listB.status).toBe(200);
+    expect(teacherRoomIds(listB.body)).not.toContain(roomId);
+
+    const deleted = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, teacherA, {
+      method: 'DELETE',
+    });
+    expect(deleted.status).toBe(200);
+
+    const afterDelete = await waitForTeacherRooms(teacherA);
+    if (afterDelete.status === 404) return;
+    expect(afterDelete.status).toBe(200);
+    expect(teacherRoomIds(afterDelete.body)).not.toContain(roomId);
+  });
+
+  it('syncs owner room name from settings into GET /api/whiteboard/rooms', async () => {
+    const owner = await bootstrapLocalSession('rooms-list-settings-name');
+    const roomId = `rooms-name-${crypto.randomUUID()}`;
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const settings = await authenticatedFetch(`/api/whiteboard/room/${roomId}/settings`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Algebra' }),
+    });
+    expect(settings.status).toBe(200);
+
+    const named = await waitForTeacherRoomName(owner, roomId, 'Algebra');
+    expect(named).toEqual(expect.objectContaining({ roomId, name: 'Algebra' }));
+  });
 });
+
+function teacherRoomIds(body: unknown): string[] {
+  if (typeof body !== 'object' || body === null) return [];
+  const rooms = (body as { rooms?: unknown }).rooms;
+  if (!Array.isArray(rooms)) return [];
+  return rooms.flatMap((entry) => {
+    if (typeof entry === 'string') return [entry];
+    if (typeof entry === 'object' && entry !== null && 'roomId' in entry) {
+      const id = (entry as { roomId: unknown }).roomId;
+      return typeof id === 'string' ? [id] : [];
+    }
+    return [];
+  });
+}
+
+async function waitForTeacherRooms(
+  session: Awaited<ReturnType<typeof bootstrapLocalSession>>,
+  query = '',
+): Promise<{ status: number; headers: Headers; body: unknown }> {
+  let last: { status: number; headers: Headers; body: unknown } | null = null;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const response = await authenticatedFetch(`/api/whiteboard/rooms${query}`, session);
+    const body = await response.json().catch(() => null);
+    last = { status: response.status, headers: response.headers, body };
+    if (response.status !== 404 && response.ok) return last;
+    if (response.status === 404 && attempt === 7) return last;
+  }
+  return last!;
+}
+
+async function waitForTeacherRoomName(
+  session: Awaited<ReturnType<typeof bootstrapLocalSession>>,
+  roomId: string,
+  name: string,
+): Promise<{ roomId: string; name: unknown } | undefined> {
+  let last: { roomId: string; name: unknown } | undefined;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const listed = await waitForTeacherRooms(session);
+    const rooms = typeof listed.body === 'object' && listed.body !== null
+      ? (listed.body as { rooms?: unknown }).rooms
+      : null;
+    if (Array.isArray(rooms)) {
+      const match = rooms.find((entry) => (
+        typeof entry === 'object'
+        && entry !== null
+        && (entry as { roomId?: unknown }).roomId === roomId
+      )) as { roomId: string; name: unknown } | undefined;
+      last = match;
+      if (match?.name === name) return match;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return last;
+}

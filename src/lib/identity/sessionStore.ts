@@ -12,6 +12,7 @@ export const SESSION_COOKIE_NAME = '__Host-teacher-session';
 export const SESSION_IDLE_TTL_MS = 30 * 60 * 1_000;
 export const SESSION_ABSOLUTE_TTL_MS = 12 * 60 * 60 * 1_000;
 export const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1_000;
+export const DESTRUCTIVE_FRESH_MS = 5 * 60 * 1_000;
 
 const SESSION_TOKEN_BYTES = 32;
 const SESSION_TOKEN_LENGTH = 43;
@@ -36,9 +37,12 @@ export interface IssuedSession {
 
 export interface ValidatedSession {
   accountId: string;
+  sessionId: string;
   authorizationEpoch: number;
   idleExpiresAt: number;
   absoluteExpiresAt: number;
+  createdAt: number;
+  confirmedAt: number | null;
   touched: boolean;
 }
 
@@ -60,6 +64,7 @@ interface SessionAuthorityRow {
   idleExpiresAt: number;
   absoluteExpiresAt: number;
   revokedAt: number | null;
+  confirmedAt: number | null;
 }
 
 export class SessionUnauthorizedError extends Error {
@@ -114,12 +119,40 @@ function findSessionAuthority(
            s.last_seen_at AS lastSeenAt,
            s.idle_expires_at AS idleExpiresAt,
            s.absolute_expires_at AS absoluteExpiresAt,
-           s.revoked_at AS revokedAt
+           s.revoked_at AS revokedAt,
+           s.confirmed_at AS confirmedAt
          FROM sessions s
          JOIN accounts a ON a.account_id = s.account_id
          WHERE s.session_hash = ?`,
       )
       .get(sessionHash) as SessionAuthorityRow | undefined) ?? null
+  );
+}
+
+function toValidatedSession(
+  row: SessionAuthorityRow,
+  idleExpiresAt: number,
+  touched: boolean,
+): ValidatedSession {
+  return {
+    accountId: row.accountId,
+    sessionId: row.sessionHash,
+    authorizationEpoch: row.accountEpoch,
+    idleExpiresAt,
+    absoluteExpiresAt: row.absoluteExpiresAt,
+    createdAt: row.createdAt,
+    confirmedAt: row.confirmedAt,
+    touched,
+  };
+}
+
+export function sessionAllowsDestructiveAction(
+  session: ValidatedSession,
+  now = Date.now(),
+): boolean {
+  return (
+    now - session.createdAt < DESTRUCTIVE_FRESH_MS
+    || (session.confirmedAt !== null && now - session.confirmedAt < DESTRUCTIVE_FRESH_MS)
   );
 }
 
@@ -248,13 +281,7 @@ export async function validateSession(
     }
 
     if (now - row.lastSeenAt < SESSION_TOUCH_INTERVAL_MS) {
-      return {
-        accountId: row.accountId,
-        authorizationEpoch: row.accountEpoch,
-        idleExpiresAt: row.idleExpiresAt,
-        absoluteExpiresAt: row.absoluteExpiresAt,
-        touched: false,
-      };
+      return toValidatedSession(row, row.idleExpiresAt, false);
     }
 
     const idleExpiresAt = Math.min(
@@ -265,14 +292,22 @@ export async function validateSession(
       `UPDATE sessions SET last_seen_at = ?, idle_expires_at = ?
        WHERE session_hash = ? AND revoked_at IS NULL`,
     ).run(now, idleExpiresAt, sessionHash);
-    return {
-      accountId: row.accountId,
-      authorizationEpoch: row.accountEpoch,
-      idleExpiresAt,
-      absoluteExpiresAt: row.absoluteExpiresAt,
-      touched: true,
-    };
+    return toValidatedSession(row, idleExpiresAt, true);
   })();
+}
+
+export async function confirmSession(
+  db: RoomDatabase,
+  token: unknown,
+  now = Date.now(),
+): Promise<ValidatedSession | null> {
+  const session = await validateSession(db, token, now);
+  if (!session) return null;
+  db.prepare(
+    `UPDATE sessions SET confirmed_at = ?
+     WHERE session_hash = ? AND revoked_at IS NULL`,
+  ).run(now, session.sessionId);
+  return { ...session, confirmedAt: now };
 }
 
 /**
@@ -334,6 +369,76 @@ export async function rotateSession(
     }
   }
   return null;
+}
+
+export interface AccountDataExport {
+  accountId: string;
+  createdAt: number;
+  updatedAt: number;
+  sessions: Array<{
+    sessionHash: string;
+    createdAt: number;
+  }>;
+  accessSubjects: Array<{
+    issuer: string;
+    subject: string;
+    createdAt: number;
+  }>;
+}
+
+/**
+ * Portable dump of the account that owns a valid session. The caller is
+ * identified only by the opaque token; another account's rows never appear,
+ * and session tokens themselves are never included.
+ */
+export async function exportOwnAccountData(
+  db: RoomDatabase,
+  token: unknown,
+  now = Date.now(),
+): Promise<AccountDataExport | null> {
+  const session = await validateSession(db, token, now);
+  if (!session) return null;
+
+  const account = db
+    .prepare(
+      `SELECT
+         account_id AS accountId,
+         created_at AS createdAt,
+         updated_at AS updatedAt
+       FROM accounts WHERE account_id = ?`,
+    )
+    .get(session.accountId) as
+    | { accountId: string; createdAt: number; updatedAt: number }
+    | undefined;
+  if (!account) return null;
+
+  const sessions = db
+    .prepare(
+      `SELECT session_hash AS sessionHash, created_at AS createdAt
+       FROM sessions WHERE account_id = ?
+       ORDER BY created_at ASC, session_hash ASC`,
+    )
+    .all(session.accountId) as Array<{ sessionHash: string; createdAt: number }>;
+
+  const accessSubjects = db
+    .prepare(
+      `SELECT issuer, subject, created_at AS createdAt
+       FROM access_subjects WHERE account_id = ?
+       ORDER BY created_at ASC, issuer ASC, subject ASC`,
+    )
+    .all(session.accountId) as Array<{
+    issuer: string;
+    subject: string;
+    createdAt: number;
+  }>;
+
+  return {
+    accountId: account.accountId,
+    createdAt: account.createdAt,
+    updatedAt: account.updatedAt,
+    sessions,
+    accessSubjects,
+  };
 }
 
 export async function logoutSession(

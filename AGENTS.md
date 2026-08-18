@@ -122,13 +122,20 @@ latest verdicts. Do not leave the canvas describing the previous phase.
 
 ## Delegation
 
-Spawn implementation subagents on a cheaper model variant (Sonnet-class, or
-Haiku for mechanical edits) to save tokens; the orchestrating session stays on
-the stronger model and does what cheap models are bad at:
+**Always spawn Task/subagents on a cheaper model.** Do not pass `inherit` and
+do not run implementers or verifiers on the orchestrating session's model.
+In this Cursor workspace the cheap slugs are `composer-2.5-fast` (mechanical
+edits, checkbox evidence, git-status-only passes) and
+`cursor-grok-4.6-medium` (implementation slices and independent verifiers).
+Pick the cheapest that can follow TDD; default implementers and verifiers to
+`cursor-grok-4.6-medium` unless the slice is purely mechanical.
 
-- Write the task prompt with the failing test named, the files in scope, and
-  the AGENTS.md rules restated (TDD, no mocks, mutation step) — subagents do
-  not inherit this file automatically.
+The orchestrating session stays on the stronger model and does what cheap
+models are bad at:
+
+- Write the task prompt with the failing test named, the files in scope, the
+  **model slug to use**, and the AGENTS.md rules restated (TDD, no mocks,
+  mutation step) — subagents do not inherit this file automatically.
 - Verify every deliverable yourself: re-run the suites, read the diff, and
   attempt one mutant on any new guard. Cheap-model output has previously
   fabricated verification results, installed broken tooling, and deleted an
@@ -143,6 +150,8 @@ files in parallel.
 ## Verifiers
 
 After an implementation task, a separate read-only verifier must re-run the
-same commands and attempt at least one mutant on the new guards. Verdict is
+same commands and attempt at least one mutant on the new guards. Spawn that
+verifier on a cheap slug (`cursor-grok-4.6-medium`, not `inherit`). Verdict is
 `APPROVE`, `REJECT`, or `APPROVE-AS-BLOCKED`. Do not check `security.md` `[x]`
-until `APPROVE`.
+until `APPROVE`. The orchestrator still re-runs or spot-checks; a cheap
+verifier is not a substitute for that.

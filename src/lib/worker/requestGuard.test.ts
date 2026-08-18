@@ -7,6 +7,7 @@ import {
   MAX_BODY_BYTES,
   isPublicPath,
   MARKETING_PAGES,
+  stripForwardedIdentityHeaders,
 } from './requestGuard';
 
 describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
@@ -61,12 +62,28 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(wrapped.headers.get('X-Frame-Options')).toBe('DENY');
     });
 
-    it('marks HTML responses noindex and announces a report-only CSP', () => {
+    it('marks HTML responses noindex and sends an enforced CSP', () => {
       const wrapped = withSecurityHeaders(
         new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
       );
       expect(wrapped.headers.get('X-Robots-Tag')).toBe('noindex');
-      expect(wrapped.headers.get('Content-Security-Policy-Report-Only')).toContain("frame-ancestors 'none'");
+      expect(wrapped.headers.get('Content-Security-Policy')).toContain("frame-ancestors 'none'");
+    });
+
+    it('enforces Content-Security-Policy on HTML and does not rely only on Report-Only', () => {
+      const wrapped = withSecurityHeaders(
+        new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
+      );
+      const csp = wrapped.headers.get('Content-Security-Policy') ?? '';
+      expect(csp).toContain("default-src 'self'");
+      expect(csp).toContain("frame-ancestors 'none'");
+      expect(csp).toContain("object-src 'none'");
+      expect(csp).toContain("base-uri 'self'");
+      expect(csp).toContain("connect-src 'self' wss:");
+      expect(csp).toContain("img-src 'self' data:");
+      expect(csp).toContain("style-src 'self' 'unsafe-inline'");
+      expect(csp).toContain("script-src 'self'");
+      expect(wrapped.headers.get('Content-Security-Policy-Report-Only')).toBeNull();
     });
 
     it('marks non-HTML responses no-store', () => {
@@ -117,7 +134,8 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
         { indexable: true },
       );
       expect(wrapped.headers.get('X-Robots-Tag')).toBeNull();
-      expect(wrapped.headers.get('Content-Security-Policy-Report-Only')).toContain("frame-ancestors 'none'");
+      expect(wrapped.headers.get('Content-Security-Policy')).toContain("frame-ancestors 'none'");
+      expect(wrapped.headers.get('Content-Security-Policy-Report-Only')).toBeNull();
       expect(wrapped.headers.get('X-Content-Type-Options')).toBe('nosniff');
     });
 
@@ -126,6 +144,55 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
         new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
       );
       expect(wrapped.headers.get('X-Robots-Tag')).toBe('noindex');
+    });
+  });
+
+  describe('stripForwardedIdentityHeaders (SEC-004)', () => {
+    it('removes cookies, Authorization, Access assertion, and client identity headers', () => {
+      const incoming = new Headers({
+        Cookie: '__Host-teacher-session=session-secret',
+        Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig',
+        'Cf-Access-Jwt-Assertion': 'access-jwt-value',
+        'Cf-Access-Authenticated-User-Email': 'teacher@school.edu',
+        'X-Account-Id': 'acct-forged',
+        'X-User-Id': 'user-forged',
+        'X-Forwarded-User': 'forwarded-forged',
+        'Content-Type': 'application/json',
+      });
+
+      const stripped = stripForwardedIdentityHeaders(incoming);
+
+      expect(stripped.get('Cookie')).toBeNull();
+      expect(stripped.get('Authorization')).toBeNull();
+      expect(stripped.get('Cf-Access-Jwt-Assertion')).toBeNull();
+      expect(stripped.get('Cf-Access-Authenticated-User-Email')).toBeNull();
+      expect(stripped.get('X-Account-Id')).toBeNull();
+      expect(stripped.get('X-User-Id')).toBeNull();
+      expect(stripped.get('X-Forwarded-User')).toBeNull();
+      expect(stripped.get('Content-Type')).toBe('application/json');
+      expect(incoming.get('Cookie')).toBe('__Host-teacher-session=session-secret');
+    });
+
+    it('keeps WebSocket upgrade headers and Origin', () => {
+      const incoming = new Headers({
+        Upgrade: 'websocket',
+        Connection: 'Upgrade',
+        'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
+        'Sec-WebSocket-Version': '13',
+        'Sec-WebSocket-Protocol': 'y-webrtc',
+        Origin: 'https://example.com',
+        Cookie: '__Host-teacher-session=session-secret',
+      });
+
+      const stripped = stripForwardedIdentityHeaders(incoming);
+
+      expect(stripped.get('Upgrade')).toBe('websocket');
+      expect(stripped.get('Connection')).toBe('Upgrade');
+      expect(stripped.get('Sec-WebSocket-Key')).toBe('dGhlIHNhbXBsZSBub25jZQ==');
+      expect(stripped.get('Sec-WebSocket-Version')).toBe('13');
+      expect(stripped.get('Sec-WebSocket-Protocol')).toBe('y-webrtc');
+      expect(stripped.get('Origin')).toBe('https://example.com');
+      expect(stripped.get('Cookie')).toBeNull();
     });
   });
 

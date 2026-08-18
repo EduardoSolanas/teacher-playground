@@ -53,6 +53,9 @@ export function useCollaboration(roomId: string) {
   const [roomReloadKey, setRoomReloadKey] = useState(0);
   const wasWaitingRef = useRef(false);
   const [wasKicked, setWasKicked] = useState(false);
+  const [wasRejected, setWasRejected] = useState(false);
+  const [wasSuspended, setWasSuspended] = useState(false);
+  const admittedRef = useRef(false);
   const [roomGranted, setRoomGranted] = useState(false);
   const [accessStatus, setAccessStatus] = useState<RoomAccessStatus | null>(null);
   const [grantRole, setGrantRole] = useState<GrantedPublicRole | null>(null);
@@ -186,6 +189,9 @@ export function useCollaboration(roomId: string) {
           const access = await accessRes.json();
           setAccessStatus(access.status ?? null);
           setGrantRole(access.role ?? null);
+          if (access.status === 'rejected') {
+            setWasRejected(true);
+          }
         }
 
         setRoomGranted(res.ok);
@@ -391,6 +397,8 @@ export function useCollaboration(roomId: string) {
     hasJoinedRef.current = true;
     setHasJoined(true);
     setWasKicked(false);
+    setWasRejected(false);
+    setWasSuspended(false);
     setLocalUserName(name);
     collaborationRef.current?.setLocalUserName(name);
     collaborationRef.current?.setLocalCursor(0, 0);
@@ -416,10 +424,12 @@ export function useCollaboration(roomId: string) {
           : await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`);
 
         if (!cancelled && res.status === 403) {
+          const rejectedFromQueue = !admittedRef.current;
           hasJoinedRef.current = false;
           setHasJoined(false);
           setIsWaiting(false);
-          setWasKicked(true);
+          if (rejectedFromQueue) setWasRejected(true);
+          else setWasKicked(true);
           setUsers([]);
           setWaitingPeers([]);
           return;
@@ -455,6 +465,8 @@ export function useCollaboration(roomId: string) {
             return;
           }
           if (typeof data.isWaiting === 'boolean') {
+            if (!data.isWaiting) admittedRef.current = true;
+            else if (admittedRef.current) setWasSuspended(true);
             setIsWaiting(data.isWaiting);
           }
         }
@@ -512,6 +524,8 @@ export function useCollaboration(roomId: string) {
         );
       }
       if (typeof data.isWaiting === 'boolean') {
+        if (!data.isWaiting) admittedRef.current = true;
+        else if (admittedRef.current) setWasSuspended(true);
         setIsWaiting(data.isWaiting);
       }
     } catch {
@@ -652,6 +666,8 @@ export function useCollaboration(roomId: string) {
     waitingPeers,
     isWaiting,
     wasKicked,
+    wasRejected,
+    wasSuspended,
     approvePeer,
     rejectPeer,
     leaveWaitingRoom,

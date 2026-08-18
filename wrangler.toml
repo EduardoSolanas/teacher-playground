@@ -2,7 +2,7 @@ name = "teacher-playground"
 main = "src/worker.ts"
 compatibility_date = "2024-12-10"
 compatibility_flags = ["nodejs_compat"]
-workers_dev = false
+workers_dev = true  # TODO: set false once a custom domain is configured
 preview_urls = false
 
 [assets]
@@ -28,7 +28,10 @@ new_sqlite_classes = ["RoomDO"]
 tag = "v2"
 new_sqlite_classes = ["IdentityDO"]
 
+[vars]
+ACCESS_ISSUER = "https://ha-smart-home.cloudflareaccess.com"
+ACCESS_AUDIENCE = "2dabab17621803a68a8a67a0db2dfe0133d29e73a448618c1743945743847621"
+ACCESS_JWKS_URL = "https://ha-smart-home.cloudflareaccess.com/cdn-cgi/access/certs"
 # LiveKit A/V (optional). Prefer `wrangler secret put LIVEKIT_*` in production.
 # When unset, POST /api/av/token returns 503 and the UI degrades gracefully.
-# [vars]
 # LIVEKIT_URL = "wss://your-project.livekit.cloud"

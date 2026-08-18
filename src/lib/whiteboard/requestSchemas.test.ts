@@ -33,6 +33,53 @@ describe('requestSchemas hardening (SEC-005)', () => {
       expect(result.success).toBe(false);
     });
 
+    it('rejects non-finite viewport numbers', () => {
+      expect(roomSceneSchema.safeParse({
+        viewport: { x: Number.POSITIVE_INFINITY, y: 0, zoom: 1 },
+      }).success).toBe(false);
+      expect(roomSceneSchema.safeParse({
+        viewport: { x: 0, y: Number.NaN, zoom: 1 },
+      }).success).toBe(false);
+      expect(roomSceneSchema.safeParse({
+        viewport: { x: 0, y: 0, zoom: Number.NEGATIVE_INFINITY },
+      }).success).toBe(false);
+    });
+
+    it('rejects iframe, embeddable, magicframe, and image element types', () => {
+      for (const type of ['iframe', 'embeddable', 'magicframe', 'image', 'IFRAME']) {
+        expect(roomSceneSchema.safeParse({
+          elements: [{ id: 'el-1', type }],
+        }).success).toBe(false);
+      }
+    });
+
+    it('rejects element links that are not https or relative', () => {
+      expect(roomSceneSchema.safeParse({
+        elements: [{ id: 'el-1', type: 'rectangle', link: 'javascript:alert(1)' }],
+      }).success).toBe(false);
+      expect(roomSceneSchema.safeParse({
+        elements: [{ id: 'el-1', type: 'rectangle', link: 'data:text/html,<script>' }],
+      }).success).toBe(false);
+      expect(roomSceneSchema.safeParse({
+        elements: [{ id: 'el-1', type: 'rectangle', link: 'http://example.com' }],
+      }).success).toBe(false);
+      expect(roomSceneSchema.safeParse({
+        elements: [{ id: 'el-1', type: 'rectangle', link: '//evil.example/board' }],
+      }).success).toBe(false);
+    });
+
+    it('accepts https and relative element links', () => {
+      expect(roomSceneSchema.safeParse({
+        elements: [{ id: 'el-1', type: 'rectangle', link: 'https://example.com/doc' }],
+      }).success).toBe(true);
+      expect(roomSceneSchema.safeParse({
+        elements: [{ id: 'el-1', type: 'rectangle', link: '/assets/handout.pdf' }],
+      }).success).toBe(true);
+      expect(roomSceneSchema.safeParse({
+        elements: [{ id: 'el-1', type: 'rectangle', link: './notes' }],
+      }).success).toBe(true);
+    });
+
     it('rejects oversized element lists', () => {
       const result = roomSceneSchema.safeParse({
         elements: new Array(MAX_ELEMENTS + 1).fill({ id: 'el-1' }),
@@ -119,6 +166,26 @@ describe('requestSchemas hardening (SEC-005)', () => {
       expect(roomSettingsSchema.safeParse({ name: '   \u007F  ' }).success).toBe(false);
     });
 
+    it('strips zero-width characters from room names', () => {
+      const result = roomSettingsSchema.safeParse({ name: 'Teacher\u200b' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.name).toBe('Teacher');
+      }
+    });
+
+    it('collapses confusable whitespace in room names', () => {
+      const result = roomSettingsSchema.safeParse({ name: '  A   B  ' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.name).toBe('A B');
+      }
+    });
+
+    it('rejects room names that are empty after stripping zero-width characters', () => {
+      expect(roomSettingsSchema.safeParse({ name: '\u200b\u200c\u200d\uFEFF' }).success).toBe(false);
+    });
+
     it('rejects non-conforming hostPeerId', () => {
       expect(roomSettingsSchema.safeParse({ hostPeerId: 'bad peer id!' }).success).toBe(false);
     });
@@ -180,6 +247,34 @@ describe('requestSchemas hardening (SEC-005)', () => {
       expect(presencePostSchema.safeParse({ peerId: 'user-1', userName: '   \u007F  ' }).success).toBe(false);
     });
 
+    it('strips zero-width characters from display names', () => {
+      const result = presencePostSchema.safeParse({
+        peerId: 'user-1',
+        userName: 'Teacher\u200b',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.userName).toBe('Teacher');
+      }
+    });
+
+    it('collapses confusable whitespace in display names', () => {
+      const result = presencePostSchema.safeParse({
+        peerId: 'user-1',
+        userName: '  A   B  ',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.userName).toBe('A B');
+      }
+    });
+
+    it('rejects display names that are empty after stripping zero-width characters', () => {
+      expect(
+        presencePostSchema.safeParse({ peerId: 'user-1', userName: '\u200b\uFEFF' }).success,
+      ).toBe(false);
+    });
+
     it('accepts a 6-digit hex color', () => {
       expect(COLOR_RE.test('#3498db')).toBe(true);
       expect(presencePostSchema.safeParse({ peerId: 'user-1', color: '#3498db' }).success).toBe(true);
@@ -233,6 +328,11 @@ describe('requestSchemas hardening (SEC-005)', () => {
     it('parses an action and an optional role', () => {
       expect(requestActionPostSchema.safeParse({ action: 'approve', role: 'peer' }).success).toBe(true);
       expect(requestActionPostSchema.safeParse({ action: 'deny' }).success).toBe(true);
+    });
+
+    it('rejects roles outside the allowed set', () => {
+      expect(requestActionPostSchema.safeParse({ action: 'approve', role: 'owner' }).success).toBe(false);
+      expect(requestActionPostSchema.safeParse({ action: 'approve', role: 'admin' }).success).toBe(false);
     });
   });
 });

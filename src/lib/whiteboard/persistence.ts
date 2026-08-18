@@ -156,6 +156,16 @@ export function clearOnLeave(roomId: string): void {
   clearRoomSessionMaterial(roomId);
 }
 
+/** Host rejected this waiting peer: same retention policy as kick. */
+export function clearOnReject(roomId: string): void {
+  clearRoomSessionMaterial(roomId);
+}
+
+/** Host suspended this granted peer: same retention policy as kick. */
+export function clearOnSuspend(roomId: string): void {
+  clearRoomSessionMaterial(roomId);
+}
+
 export function cleanupStaleRooms(): void {
   if (typeof window === 'undefined') return;
 

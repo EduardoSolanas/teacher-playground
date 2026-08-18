@@ -8,11 +8,15 @@ import {
   clearSessionCookie,
   disableAccount,
   enableAccount,
+  confirmSession,
+  DESTRUCTIVE_FRESH_MS,
+  exportOwnAccountData,
   issueSessionForVerifiedPrincipal,
   logoutSession,
   parseSessionCookie,
   revokeAllSessions,
   rotateSession,
+  sessionAllowsDestructiveAction,
   sessionCookie,
   validateSession,
 } from './sessionStore';
@@ -88,6 +92,18 @@ describe('opaque application session store', () => {
       authorizationEpoch: 0,
       touched: false,
     });
+    expect(beforeTouch?.sessionId).toMatch(/^[0-9a-f]{64}$/);
+    const expectedHash = Array.from(
+      new Uint8Array(
+        await crypto.subtle.digest(
+          'SHA-256',
+          new TextEncoder().encode(issued.token),
+        ),
+      ),
+      (byte) => byte.toString(16).padStart(2, '0'),
+    ).join('');
+    expect(beforeTouch?.sessionId).toBe(expectedHash);
+    expect(JSON.stringify(beforeTouch)).not.toContain(issued.token);
 
     const touchedAt = T0 + SESSION_TOUCH_INTERVAL_MS;
     const afterTouch = await validateSession(db, issued.token, touchedAt);
@@ -259,6 +275,97 @@ describe('opaque application session store', () => {
     ).toBeNull();
     expect(parseSessionCookie(`${SESSION_COOKIE_NAME}=short`)).toBeNull();
     expect(parseSessionCookie(undefined)).toBeNull();
+  });
+
+  it('exposes session createdAt on validation and records confirm timestamps', async () => {
+    const issued = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+    const current = await validateSession(db, issued.token, T0);
+    expect(current).toMatchObject({
+      createdAt: T0,
+      confirmedAt: null,
+    });
+
+    const confirmed = await confirmSession(
+      db,
+      issued.token,
+      T0 + DESTRUCTIVE_FRESH_MS + 1,
+    );
+    expect(confirmed).toMatchObject({
+      createdAt: T0,
+      confirmedAt: T0 + DESTRUCTIVE_FRESH_MS + 1,
+    });
+  });
+
+  it('exports only the caller account and session hashes, never raw tokens or another account', async () => {
+    const mine = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+    const other = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: 'https://access.example.com', subject: 'other-subject' },
+      T0 + 1,
+    );
+    const expectedHash = Array.from(
+      new Uint8Array(
+        await crypto.subtle.digest(
+          'SHA-256',
+          new TextEncoder().encode(mine.token),
+        ),
+      ),
+      (byte) => byte.toString(16).padStart(2, '0'),
+    ).join('');
+
+    expect(await exportOwnAccountData(db, 'a'.repeat(43), T0)).toBeNull();
+    const exported = await exportOwnAccountData(db, mine.token, T0);
+    const accountRow = db
+      .prepare(
+        `SELECT created_at AS createdAt FROM accounts WHERE account_id = ?`,
+      )
+      .get(mine.accountId) as { createdAt: number };
+    const subjectRow = db
+      .prepare(
+        `SELECT created_at AS createdAt FROM access_subjects WHERE account_id = ?`,
+      )
+      .get(mine.accountId) as { createdAt: number };
+    expect(exported).toMatchObject({
+      accountId: mine.accountId,
+      createdAt: accountRow.createdAt,
+    });
+    expect(exported?.accessSubjects).toEqual([
+      {
+        issuer: PRINCIPAL.issuer,
+        subject: PRINCIPAL.subject,
+        createdAt: subjectRow.createdAt,
+      },
+    ]);
+    expect(exported?.sessions).toEqual([
+      expect.objectContaining({
+        sessionHash: expectedHash,
+        createdAt: T0,
+      }),
+    ]);
+    const serialized = JSON.stringify(exported);
+    expect(serialized).not.toContain(mine.token);
+    expect(serialized).not.toContain(other.token);
+    expect(serialized).not.toContain(other.accountId);
+    expect(exported?.accessSubjects.some((row) => row.subject === 'other-subject')).toBe(
+      false,
+    );
+  });
+
+  it('allows destructive actions only while the session or step-up is fresh', async () => {
+    const issued = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+    const fresh = await validateSession(db, issued.token, T0);
+    expect(sessionAllowsDestructiveAction(fresh!, T0 + DESTRUCTIVE_FRESH_MS - 1)).toBe(true);
+    expect(sessionAllowsDestructiveAction(fresh!, T0 + DESTRUCTIVE_FRESH_MS)).toBe(false);
+
+    const aged = T0 + DESTRUCTIVE_FRESH_MS + 60_000;
+    expect(sessionAllowsDestructiveAction(
+      { ...fresh!, createdAt: T0, confirmedAt: null },
+      aged,
+    )).toBe(false);
+
+    const stepped = await confirmSession(db, issued.token, aged);
+    expect(sessionAllowsDestructiveAction(stepped!, aged)).toBe(true);
+    expect(sessionAllowsDestructiveAction(stepped!, aged + DESTRUCTIVE_FRESH_MS)).toBe(false);
   });
 });
 

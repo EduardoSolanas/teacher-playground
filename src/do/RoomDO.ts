@@ -41,7 +41,21 @@ import {
 } from '../lib/whiteboard/handlers/requests';
 import { handleRequestsIdPost } from '../lib/whiteboard/handlers/requestsId';
 import { issueAvTokenResponse } from '../lib/av/handleAvToken';
-import { MAX_BODY_BYTES } from '../lib/worker/requestGuard';
+import {
+  removeLiveKitParticipant,
+  type RemoveLiveKitParticipantInput,
+  type RemoveLiveKitParticipantResult,
+} from '../lib/av/livekitRoomService';
+import {
+  MAX_BODY_BYTES,
+  SIGNALING_MAX_MESSAGES_PER_WINDOW,
+  SIGNALING_MAX_SOCKETS_PER_ACCOUNT,
+  SIGNALING_MAX_SOCKETS_PER_ROOM,
+  SIGNALING_RATE_WINDOW_MS,
+} from '../lib/worker/requestGuard';
+import { SIGNALING_ALLOWED_TOPIC } from '../lib/worker/signalingPolicy';
+import { createRateLimiter } from '../lib/http/rateLimit';
+import { logSocketClose } from '../lib/security/authEvents';
 
 /**
  * How often live sockets are re-checked against the identity store. This is the
@@ -105,6 +119,7 @@ function stringField(body: Record<string, unknown> | null, field: string): strin
 
 interface SocketIdentity {
   accountId: string;
+  sessionId: string;
   authorizationEpoch: number;
   roomId: string;
   grantVersion: number;
@@ -128,6 +143,21 @@ export class RoomDO extends DurableObject {
   readonly db: RoomDatabase;
   private readonly roomEnv: RoomEnv;
   private readonly checkIntervalMs: number;
+  private readonly signalingMessageRate = createRateLimiter({
+    windowMs: SIGNALING_RATE_WINDOW_MS,
+    max: SIGNALING_MAX_MESSAGES_PER_WINDOW,
+  });
+
+  /** Injectable hook; defaults to {@link removeLiveKitParticipant}. */
+  evictLiveKitParticipant: (
+    input: RemoveLiveKitParticipantInput,
+  ) => Promise<RemoveLiveKitParticipantResult> = removeLiveKitParticipant;
+
+  /** Populated by tests when {@link evictLiveKitParticipant} is replaced with a spy. */
+  liveKitEvictCalls?: { roomId: string; identity: string }[];
+
+  /** Test-only override for the per-room socket cap; production always uses 32. */
+  static signalingMaxSocketsPerRoomForTests: number | null = null;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
@@ -135,14 +165,6 @@ export class RoomDO extends DurableObject {
     this.checkIntervalMs = resolveCheckInterval(this.roomEnv);
     this.db = new DODatabase(ctx.storage.sql, ctx.storage);
     applySchema(this.db);
-
-    // Answer y-webrtc keepalives without waking the object from hibernation.
-    ctx.setWebSocketAutoResponse(
-      new WebSocketRequestResponsePair(
-        JSON.stringify({ type: 'ping' }),
-        JSON.stringify({ type: 'pong' }),
-      ),
-    );
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -165,6 +187,18 @@ export class RoomDO extends DurableObject {
 
     if (!assertNotTombstoned(createSqlTombstoneStore(this.db), roomId).ok) {
       return tombstonedJsonResponse();
+    }
+
+    // Subroutes must not persist into a room that was never created. POST on
+    // the room root is the create path and is allowed to insert the rooms row.
+    // GET /access on a missing room must still return `{ status: 'none' }` so
+    // the Worker can apply create quotas without enumerating rooms.
+    if (
+      section !== ''
+      && !(section === 'access' && (method === 'GET' || method === 'HEAD'))
+      && !roomExists(this.db, roomId)
+    ) {
+      return Response.json({ error: 'Not found' }, { status: 404 });
     }
 
     // Grant role only — no board, queue, or request PII. Discriminators that
@@ -204,7 +238,7 @@ export class RoomDO extends DurableObject {
         const targetAccountId = payload.kickedPeer?.accountId ?? payload.suspendedPeer?.accountId;
         if (targetAccountId) {
           incrementGrantVersion(this.db, roomId);
-          this.closeAccountSockets(targetAccountId);
+          this.closeAccountSockets(targetAccountId, roomId);
         }
       }
     }
@@ -419,13 +453,24 @@ export class RoomDO extends DurableObject {
   }
 
   /** Closes live signaling sockets for one account (kick/suspend/revoke). */
-  private closeAccountSockets(accountId: string): void {
+  private closeAccountSockets(accountId: string, roomId: string): void {
     for (const socket of this.ctx.getWebSockets()) {
       const attachment = socket.deserializeAttachment() as SocketIdentity | null;
       if (attachment?.accountId === accountId) {
-        this.closeRevoked(socket);
+        this.closeRevoked(socket, attachment);
       }
     }
+    this.scheduleLiveKitEviction(accountId, roomId);
+  }
+
+  /** Drops the account from LiveKit without blocking the caller on HTTP errors. */
+  private scheduleLiveKitEviction(accountId: string, roomId: string): void {
+    const promise = this.evictLiveKitParticipant({
+      env: this.roomEnv,
+      roomId,
+      identity: accountId,
+    });
+    this.ctx.waitUntil(promise);
   }
 
   // --- y-webrtc signaling ---
@@ -433,6 +478,16 @@ export class RoomDO extends DurableObject {
   // Replaces the previous in-process signaling topic map. Because this object
   // is the room, every socket held here is subscribed to the same topic, so a
   // publish fans out to the other sockets on this object.
+
+  /** Counts open signaling sockets for one account on this object. */
+  private countAccountSockets(accountId: string): number {
+    let count = 0;
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = socket.deserializeAttachment() as SocketIdentity | null;
+      if (attachment?.accountId === accountId) count += 1;
+    }
+    return count;
+  }
 
   private async handleSignalingUpgrade(request: Request, url: URL): Promise<Response> {
     if (request.headers.get('Upgrade') !== 'websocket') {
@@ -442,8 +497,9 @@ export class RoomDO extends DurableObject {
     // The Worker overwrites these on the internal request after verifying the
     // session, so they cannot be supplied by the client.
     const accountId = url.searchParams.get('accountId');
+    const sessionId = url.searchParams.get('sessionId');
     const epoch = Number(url.searchParams.get('accountEpoch'));
-    if (!accountId || !Number.isInteger(epoch) || epoch < 0) {
+    if (!accountId || !sessionId || !Number.isInteger(epoch) || epoch < 0) {
       return new Response('Unauthorized', { status: 401 });
     }
 
@@ -456,9 +512,23 @@ export class RoomDO extends DurableObject {
       return tombstonedJsonResponse();
     }
 
+    if (!roomExists(this.db, roomId)) {
+      return Response.json({ error: 'Not found' }, { status: 404 });
+    }
+
     const role = getGrantRole(this.db, roomId, accountId);
     if (!isGrantedRole(role)) {
       return forbidden();
+    }
+
+    const maxSocketsPerRoom =
+      RoomDO.signalingMaxSocketsPerRoomForTests ?? SIGNALING_MAX_SOCKETS_PER_ROOM;
+    if (this.ctx.getWebSockets().length >= maxSocketsPerRoom) {
+      return forbidden('Too many connections');
+    }
+
+    if (this.countAccountSockets(accountId) >= SIGNALING_MAX_SOCKETS_PER_ACCOUNT) {
+      return forbidden('Too many connections');
     }
 
     const pair = new WebSocketPair();
@@ -467,6 +537,7 @@ export class RoomDO extends DurableObject {
     this.ctx.acceptWebSocket(server);
     const identity: SocketIdentity = {
       accountId,
+      sessionId,
       authorizationEpoch: epoch,
       roomId,
       grantVersion: getGrantVersion(this.db, roomId),
@@ -537,12 +608,19 @@ export class RoomDO extends DurableObject {
       return;
     }
 
+    const evictedLiveKitAccounts = new Set<string>();
     for (const [socket, identity] of identities) {
       const status = statuses[identity.accountId];
       const revoked = !status
         || status.state !== 'active'
         || status.authorizationEpoch !== identity.authorizationEpoch;
-      if (revoked) this.closeRevoked(socket);
+      if (revoked) {
+        this.closeRevoked(socket, identity);
+        if (!evictedLiveKitAccounts.has(identity.accountId)) {
+          evictedLiveKitAccounts.add(identity.accountId);
+          this.scheduleLiveKitEviction(identity.accountId, identity.roomId);
+        }
+      }
     }
 
     if (this.ctx.getWebSockets().length > 0) {
@@ -550,7 +628,24 @@ export class RoomDO extends DurableObject {
     }
   }
 
-  private closeRevoked(socket: WebSocket): void {
+  private closeRevoked(socket: WebSocket, identity?: SocketIdentity | null): void {
+    let attachment = identity;
+    if (attachment === undefined) {
+      try {
+        attachment = socket.deserializeAttachment() as SocketIdentity | null;
+      } catch {
+        attachment = null;
+      }
+    }
+    try {
+      logSocketClose({
+        code: SOCKET_REVOKED_CLOSE_CODE,
+        accountId: attachment?.accountId,
+        roomId: attachment?.roomId,
+      });
+    } catch {
+      // Logging must not block the close.
+    }
     try {
       socket.close(SOCKET_REVOKED_CLOSE_CODE, 'Session revoked');
     } catch {
@@ -572,7 +667,7 @@ export class RoomDO extends DurableObject {
       || this.isStaleGrant(attachment)
       || !isGrantedRole(getGrantRole(this.db, attachment.roomId, attachment.accountId))
     ) {
-      this.closeRevoked(ws);
+      this.closeRevoked(ws, attachment);
       return;
     }
 
@@ -581,7 +676,34 @@ export class RoomDO extends DurableObject {
       : raw.byteLength;
     if (payloadBytes > MAX_BODY_BYTES) {
       try {
+        logSocketClose({
+          code: 1009,
+          accountId: attachment.accountId,
+          roomId: attachment.roomId,
+        });
+      } catch {
+        // Logging must not block the close.
+      }
+      try {
         ws.close(1009);
+      } catch {
+        // Already closed.
+      }
+      return;
+    }
+
+    if (!this.signalingMessageRate.take(attachment.accountId).ok) {
+      try {
+        logSocketClose({
+          code: 1008,
+          accountId: attachment.accountId,
+          roomId: attachment.roomId,
+        });
+      } catch {
+        // Logging must not block the close.
+      }
+      try {
+        ws.close(1008);
       } catch {
         // Already closed.
       }
@@ -619,7 +741,9 @@ export class RoomDO extends DurableObject {
     } catch {
       return;
     }
-    if (!msg?.type) return;
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg) || typeof msg.type !== 'string') {
+      return;
+    }
 
     switch (msg.type) {
       case 'subscribe':
@@ -630,14 +754,17 @@ export class RoomDO extends DurableObject {
 
       case 'publish': {
         if (typeof msg.topic !== 'string') return;
+        if (msg.topic !== SIGNALING_ALLOWED_TOPIC) return;
         const role = getGrantRole(this.db, attachment.roomId, attachment.accountId);
         if (!canWriteBoard(role)) return;
 
         const peers = this.ctx.getWebSockets();
-        // The publisher receives its own message too.
-        // y-webrtc filters by peer id, and changing this breaks peer discovery.
         const payload = JSON.stringify({ ...msg, clients: peers.length });
         for (const peer of peers) {
+          const peerAttachment = peer.deserializeAttachment() as SocketIdentity | null;
+          if (!peerAttachment?.accountId) continue;
+          const peerRole = getGrantRole(this.db, attachment.roomId, peerAttachment.accountId);
+          if (!canWriteBoard(peerRole)) continue;
           try {
             peer.send(payload);
           } catch {
@@ -654,6 +781,9 @@ export class RoomDO extends DurableObject {
       case 'ping':
         ws.send(JSON.stringify({ type: 'pong' }));
         break;
+
+      default:
+        return;
     }
   }
 

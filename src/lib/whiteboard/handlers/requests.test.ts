@@ -79,6 +79,52 @@ describe('access request API', () => {
       expect(getMembership(getRoomDb(), roomId, accountId)?.role).toBe('pending');
     });
 
+    it('returns 429 and does not persist when pending requests reach maxUsers', async () => {
+      const roomId = `requests-queue-cap-${crypto.randomUUID()}`;
+      const owner = `acc-owner-${crypto.randomUUID()}`;
+      await handleRoomPost(
+        getRoomDb(),
+        roomId,
+        new Request(roomUrl(roomId, '', owner), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ elements: [], viewport: { x: 0, y: 0, zoom: 1 } }),
+        }),
+      );
+
+      for (let i = 1; i <= 3; i += 1) {
+        const response = await handleRequestsPost(
+          getRoomDb(),
+          roomId,
+          new Request(roomUrl(roomId, '/requests', `acc-wait-${i}`), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userName: `Waiter${i}` }),
+          }),
+        );
+        expect(response.status).toBe(201);
+      }
+
+      const overflowId = `acc-wait-overflow`;
+      const overflow = await handleRequestsPost(
+        getRoomDb(),
+        roomId,
+        new Request(roomUrl(roomId, '/requests', overflowId), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userName: 'Overflow' }),
+        }),
+      );
+      expect(overflow.status).toBe(429);
+      expect(await overflow.json()).toEqual({ error: 'Waiting queue is full' });
+      expect(getMembership(getRoomDb(), roomId, overflowId)).toBeNull();
+
+      const pending = getRoomDb().prepare(
+        `SELECT COUNT(*) AS n FROM room_members WHERE room_id = ? AND role = 'pending'`,
+      ).get(roomId) as { n: number };
+      expect(pending.n).toBe(3);
+    });
+
     it('returns approved status if the account already owns the room', async () => {
       const roomId = `requests-already-approved-${crypto.randomUUID()}`;
       const accountId = `acc-${crypto.randomUUID()}`;

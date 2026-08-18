@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { logAuthEvent, type AuthEventInput } from './authEvents';
+import { logAuthEvent, logSocketClose, type AuthEventInput } from './authEvents';
 
 const JWT =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
@@ -29,6 +29,32 @@ describe('logAuthEvent', () => {
       roomId: 'room-abc123',
       outcome: 'denied',
       reason: 'missing session',
+    });
+  });
+
+  it('never logs the session cookie or Access JWT on auth_failure lines', () => {
+    const sessionCookie = '__Host-teacher-session=abcdefghijklmnopqrstuvwxyz0123456789ABCDE';
+    const lines: string[] = [];
+    logAuthEvent(
+      {
+        type: 'auth_failure',
+        outcome: 'denied',
+        reason: [
+          'Cookie: ' + sessionCookie,
+          'Cf-Access-Jwt-Assertion: ' + JWT,
+        ].join('; '),
+      },
+      (line) => lines.push(line),
+    );
+
+    const serialized = lines[0]!;
+    expect(serialized).not.toContain(sessionCookie);
+    expect(serialized).not.toContain('__Host-teacher-session=');
+    expect(serialized).not.toContain(JWT);
+    expect(JSON.parse(serialized)).toMatchObject({
+      event: 'auth_event',
+      type: 'auth_failure',
+      outcome: 'denied',
     });
   });
 
@@ -110,6 +136,54 @@ describe('logAuthEvent', () => {
       event: 'auth_event',
       type: 'rate_limit',
       outcome: 'blocked',
+    });
+  });
+});
+
+describe('logSocketClose', () => {
+  it('emits socket_close with reason rate for 1008', () => {
+    const lines: string[] = [];
+    logSocketClose(
+      { code: 1008, accountId: 'acct-rate', roomId: 'room-rate' },
+      (line) => lines.push(line),
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!)).toMatchObject({
+      event: 'auth_event',
+      type: 'socket_close',
+      outcome: 'closed',
+      reason: 'rate',
+      accountId: 'acct-rate',
+      roomId: 'room-rate',
+    });
+  });
+
+  it('emits socket_close with reason oversized for 1009', () => {
+    const lines: string[] = [];
+    logSocketClose({ code: 1009, roomId: 'room-size' }, (line) => lines.push(line));
+
+    expect(JSON.parse(lines[0]!)).toMatchObject({
+      type: 'socket_close',
+      outcome: 'closed',
+      reason: 'oversized',
+      roomId: 'room-size',
+    });
+  });
+
+  it('emits socket_close with reason revoke for 4401', () => {
+    const lines: string[] = [];
+    logSocketClose(
+      { code: 4401, accountId: 'acct-revoked', roomId: 'room-revoked' },
+      (line) => lines.push(line),
+    );
+
+    expect(JSON.parse(lines[0]!)).toMatchObject({
+      type: 'socket_close',
+      outcome: 'closed',
+      reason: 'revoke',
+      accountId: 'acct-revoked',
+      roomId: 'room-revoked',
     });
   });
 });

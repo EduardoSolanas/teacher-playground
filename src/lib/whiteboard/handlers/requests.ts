@@ -36,6 +36,9 @@ export async function handleRequestsPost(
     });
 
     if (!result.ok) {
+      if (result.reason === 'queue_full') {
+        return Response.json({ error: 'Waiting queue is full' }, { status: 429 });
+      }
       return Response.json({ error: 'Forbidden' }, { status: 403 });
     }
     if (result.status === 'approved') {

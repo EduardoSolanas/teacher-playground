@@ -7,8 +7,8 @@ import {
   handleRoomDelete,
 } from './room';
 import { getRoomDb } from '../roomDb';
-import { getRoomAllowFirstUserHost, deleteRoomScopedData } from '../roomSchema';
-import { approveAccount, requestAccess } from '../membership';
+import { getRoomAllowFirstUserHost, getRoomHostPeerId, deleteRoomScopedData } from '../roomSchema';
+import { approveAccount, getGrantRole, requestAccess } from '../membership';
 
 const ROOM_SCOPED_TABLES = [
   'rooms',
@@ -244,6 +244,120 @@ describe('room allowFirstUserHost setting', () => {
     expect(JSON.stringify(body)).not.toContain('SQLITE_ERROR');
     expect(JSON.stringify(body)).not.toContain('teacher@school.edu');
     expect(JSON.stringify(body)).not.toContain('el-1');
+  });
+});
+
+describe('duplicate room creation', () => {
+  it('does not transfer ownership when a second account posts a scene to an existing room', async () => {
+    const db = getRoomDb();
+    const roomId = `room-preclaimed-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const outsider = `acc-outsider-${crypto.randomUUID()}`;
+
+    const created = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [{ id: 'original' }] }, owner),
+    );
+    expect(created.status).toBe(200);
+    await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { hostPeerId: 'host-owner' }, owner),
+    );
+
+    const denied = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [{ id: 'stolen' }] }, outsider),
+    );
+    expect(denied.status).toBe(409);
+
+    expect(getGrantRole(db, roomId, owner)).toBe('owner');
+    expect(getGrantRole(db, roomId, outsider)).toBeNull();
+    expect(getRoomHostPeerId(db, roomId)).toBe('host-owner');
+    const read = await handleRoomGet(
+      db,
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`),
+    );
+    expect(await read.json()).toMatchObject({
+      elements: [{ id: 'original' }],
+      hostPeerId: 'host-owner',
+    });
+  });
+
+  it('lets the owner update the scene on the same route', async () => {
+    const db = getRoomDb();
+    const roomId = `room-owner-scene-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }, owner));
+    const updated = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [{ id: 'keep' }] }, owner),
+    );
+
+    expect(updated.status).toBe(200);
+    expect(getGrantRole(db, roomId, owner)).toBe('owner');
+    const read = await handleRoomGet(
+      db,
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`),
+    );
+    expect(await read.json()).toMatchObject({ elements: [{ id: 'keep' }] });
+  });
+
+  it('lets an editor update the scene without becoming owner', async () => {
+    const db = getRoomDb();
+    const roomId = `room-editor-scene-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const editor = `acc-editor-${crypto.randomUUID()}`;
+
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }, owner));
+    requestAccess(db, { roomId, accountId: editor, userName: 'Ed' });
+    approveAccount(db, roomId, editor, { role: 'editor' });
+
+    const updated = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [{ id: 'from-editor' }] }, editor),
+    );
+
+    expect(updated.status).toBe(200);
+    expect(getGrantRole(db, roomId, owner)).toBe('owner');
+    expect(getGrantRole(db, roomId, editor)).toBe('editor');
+  });
+
+  it('returns 409 when a create INSERT collides with an existing rooms row', async () => {
+    const inner = getRoomDb();
+    const roomId = `room-insert-race-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const outsider = `acc-outsider-${crypto.randomUUID()}`;
+
+    await handleRoomPost(inner, roomId, postRequest('', { elements: [{ id: 'original' }] }, owner));
+
+    const db = {
+      prepare(sql: string) {
+        const stmt = inner.prepare(sql);
+        if (sql.includes('SELECT created_at FROM rooms')) {
+          return { get: () => undefined };
+        }
+        return stmt;
+      },
+      exec: inner.exec.bind(inner),
+      transaction: inner.transaction.bind(inner),
+    };
+
+    const denied = await handleRoomPost(
+      db as never,
+      roomId,
+      postRequest('', { elements: [{ id: 'stolen' }] }, outsider),
+    );
+    expect(denied.status).toBe(409);
+    expect(getGrantRole(inner, roomId, owner)).toBe('owner');
+    expect(getGrantRole(inner, roomId, outsider)).toBeNull();
   });
 });
 

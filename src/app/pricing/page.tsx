@@ -39,7 +39,7 @@ const TIERS = [
 export default function Pricing() {
   return (
     <div className="min-h-screen flex flex-col bg-amber-50/40">
-      <header className="max-w-5xl w-full mx-auto px-6 pt-6 flex items-center justify-between">
+      <header className="max-w-5xl w-full mx-auto px-8 sm:px-6 pt-6 flex items-center justify-between">
         <Link href="/" className="font-semibold text-slate-900">
           Teacher Playground
         </Link>
@@ -53,7 +53,7 @@ export default function Pricing() {
         </nav>
       </header>
 
-      <main className="flex-1 max-w-4xl mx-auto px-6 py-16 w-full">
+      <main className="flex-1 max-w-4xl mx-auto px-8 sm:px-6 py-16 w-full">
         <h1 className="text-3xl sm:text-4xl font-bold text-slate-900 text-center">
           Simple pricing for tutors
         </h1>
@@ -104,7 +104,7 @@ export default function Pricing() {
       </main>
 
       <footer className="border-t border-slate-200 bg-white py-8">
-        <div className="max-w-5xl mx-auto px-6 flex flex-wrap items-center justify-center gap-6 text-sm text-slate-500">
+        <div className="max-w-5xl mx-auto px-8 sm:px-6 flex flex-wrap items-center justify-center gap-6 text-sm text-slate-500">
           <Link href="/" className="hover:text-slate-800">Home</Link>
           <Link href="/terms" className="hover:text-slate-800">Terms</Link>
           <Link href="/privacy" className="hover:text-slate-800">Privacy</Link>

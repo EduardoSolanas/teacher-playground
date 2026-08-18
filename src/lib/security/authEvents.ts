@@ -94,3 +94,31 @@ export function logAuthEvent(
 ): void {
   write(JSON.stringify(serializeAuthEvent(input)));
 }
+
+export type PolicySocketCloseCode = 1008 | 1009 | 4401;
+
+const SOCKET_CLOSE_REASON: Record<PolicySocketCloseCode, string> = {
+  1008: 'rate',
+  1009: 'oversized',
+  4401: 'revoke',
+};
+
+export function logSocketClose(
+  input: {
+    code: PolicySocketCloseCode;
+    accountId?: string;
+    roomId?: string;
+  },
+  write?: (line: string) => void,
+): void {
+  logAuthEvent(
+    {
+      type: 'socket_close',
+      outcome: 'closed',
+      reason: SOCKET_CLOSE_REASON[input.code],
+      accountId: input.accountId,
+      roomId: input.roomId,
+    },
+    write,
+  );
+}

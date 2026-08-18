@@ -477,6 +477,42 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     ]);
   });
 
+  it('exports the caller account through GET /accounts/export and nobody else', async () => {
+    const mine = await issueSession('do-export-mine');
+    const mineBody = await mine.json() as { accountId: string };
+    const mineCookie = cookiePair(mine);
+    const rawToken = mineCookie.split('=', 2)[1];
+    const other = await issueSession('do-export-other');
+    const otherBody = await other.json() as { accountId: string };
+
+    expect((await identityStub().fetch('https://identity/accounts/export')).status).toBe(401);
+    expect((await sessionRequest('/accounts/export', mineCookie, 'POST')).status).toBe(405);
+
+    const exported = await sessionRequest('/accounts/export', mineCookie);
+    expect(exported.status).toBe(200);
+    expect(exported.headers.get('cache-control')).toBe('no-store');
+    const body = await exported.json() as {
+      accountId: string;
+      createdAt: number;
+      sessions: Array<{ sessionHash: string; createdAt: number }>;
+      accessSubjects: Array<{ issuer: string; subject: string }>;
+    };
+    expect(body.accountId).toBe(mineBody.accountId);
+    expect(body.sessions).toEqual([
+      expect.objectContaining({ sessionHash: expect.stringMatching(/^[0-9a-f]{64}$/) }),
+    ]);
+    expect(body.accessSubjects).toEqual([
+      expect.objectContaining({
+        issuer: 'https://access.example.com',
+        subject: 'do-export-mine',
+      }),
+    ]);
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain(rawToken);
+    expect(serialized).not.toContain(otherBody.accountId);
+    expect(body.accessSubjects.some((row) => row.subject === 'do-export-other')).toBe(false);
+  });
+
   it('authorizes a local session only for its exact Access issuer and subject', async () => {
     const issued = await issueSession('do-bound-principal');
     const cookie = cookiePair(issued);
@@ -608,6 +644,145 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
       nextState: 'disabled',
       previousEpoch: 0,
       nextEpoch: 1,
+    });
+  });
+
+  it('lists no owned rooms until the session account records some', async () => {
+    const issued = await issueSession('do-rooms-empty');
+    const cookie = cookiePair(issued);
+
+    const listed = await sessionRequest('/accounts/rooms', cookie);
+    expect(listed.status).toBe(200);
+    expect(listed.headers.get('cache-control')).toBe('no-store');
+    expect(await listed.json()).toEqual({ rooms: [] });
+  });
+
+  it('returns 401 for owned-room routes without a session cookie', async () => {
+    expect((await identityStub().fetch('https://identity/accounts/rooms')).status).toBe(401);
+
+    const posted = await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId: 'room-one' }),
+    });
+    expect(posted.status).toBe(401);
+
+    const deleted = await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId: 'room-one' }),
+    });
+    expect(deleted.status).toBe(401);
+  });
+
+  it('records two owned rooms and lists newest updated first', async () => {
+    const issued = await issueSession('do-rooms-order');
+    const cookie = cookiePair(issued);
+
+    const first = await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-older', name: 'Older' }),
+    });
+    expect([200, 204]).toContain(first.status);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const second = await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-newer', name: 'Newer' }),
+    });
+    expect([200, 204]).toContain(second.status);
+
+    const listed = await sessionRequest('/accounts/rooms', cookie);
+    expect(listed.status).toBe(200);
+    const body = await listed.json() as {
+      rooms: Array<{ roomId: string; name: string | null; role: string }>;
+    };
+    expect(body.rooms.map((room) => room.roomId)).toEqual(['room-newer', 'room-older']);
+    expect(body.rooms[0]).toEqual(
+      expect.objectContaining({
+        roomId: 'room-newer',
+        name: 'Newer',
+        role: 'owner',
+      }),
+    );
+  });
+
+  it('cannot list another account\'s owned rooms', async () => {
+    const mine = await issueSession('do-rooms-mine');
+    const mineCookie = cookiePair(mine);
+    const other = await issueSession('do-rooms-other');
+    const otherCookie = cookiePair(other);
+
+    await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: otherCookie },
+      body: JSON.stringify({ roomId: 'secret-room', name: 'Secret', accountId: 'ignored' }),
+    });
+
+    const listed = await sessionRequest('/accounts/rooms', mineCookie);
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toEqual({ rooms: [] });
+
+    const otherListed = await sessionRequest('/accounts/rooms', otherCookie);
+    const otherBody = await otherListed.json() as { rooms: Array<{ roomId: string }> };
+    expect(otherBody.rooms.map((room) => room.roomId)).toEqual(['secret-room']);
+  });
+
+  it('rejects an invalid roomId and ignores body accountId on POST', async () => {
+    const issued = await issueSession('do-rooms-invalid');
+    const cookie = cookiePair(issued);
+    const { accountId } = await issued.json() as { accountId: string };
+
+    const invalid = await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: '../etc/passwd' }),
+    });
+    expect(invalid.status).toBe(400);
+
+    const spoof = await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'owned-room', accountId: 'someone-else' }),
+    });
+    expect([200, 204]).toContain(spoof.status);
+
+    const listed = await sessionRequest('/accounts/rooms', cookie);
+    const body = await listed.json() as { rooms: Array<{ roomId: string }> };
+    expect(body.rooms.map((room) => room.roomId)).toEqual(['owned-room']);
+    expect(JSON.stringify(body)).not.toContain('someone-else');
+    expect(JSON.stringify(body)).not.toContain(accountId);
+  });
+
+  it('deletes an owned room for the session account even when missing', async () => {
+    const issued = await issueSession('do-rooms-delete');
+    const cookie = cookiePair(issued);
+
+    await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'to-drop' }),
+    });
+
+    const missing = await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'never-existed' }),
+    });
+    expect(missing.status).toBe(204);
+
+    const dropped = await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'to-drop' }),
+    });
+    expect(dropped.status).toBe(204);
+
+    expect(await (await sessionRequest('/accounts/rooms', cookie)).json()).toEqual({
+      rooms: [],
     });
   });
 

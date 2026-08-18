@@ -55,6 +55,7 @@ export async function authenticatedFetch(
     || (method !== 'GET' && method !== 'HEAD' && (
       path === '/auth/session'
       || path === '/auth/session/logout'
+      || path === '/auth/session/confirm'
       || path.startsWith('/api/')
     ));
   if (needsOrigin && !headers.has('Origin')) headers.set('Origin', BASE);

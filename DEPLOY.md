@@ -123,8 +123,7 @@ real `workerd` runtime with real Durable Objects. This is the only local mode
 that exercises the production code path.
 
 `npm run dev` invokes `npm run dev:worker`, so it uses the same real Worker and
-Durable Object path as production. The unreferenced `signaling-server.mjs` file
-is not started by any supported script and is not a supported runtime.
+Durable Object path as production. The legacy Node `signaling-server.mjs` was removed; Cloudflare Worker `/signaling` is the only signaling path.
 
 ### Local Access verification harness
 
@@ -178,6 +177,6 @@ deletes keep working.
 
 Cloudflare Worker + Durable Objects is the only supported production
 deployment. The removed Node and Docker/GHCR paths are not supported. The
-unreferenced `signaling-server.mjs` file is not a supported runtime. The
-`better-sqlite3` path in `src/lib/whiteboard/roomDb.ts` remains for the test
-suite only.
+legacy Node `signaling-server.mjs` was removed; Cloudflare Worker `/signaling`
+is the only signaling path. The `better-sqlite3` path in
+`src/lib/whiteboard/roomDb.ts` remains for the test suite only.
