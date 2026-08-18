@@ -5,6 +5,8 @@
  * unit-testable without the workerd harness.
  */
 
+import { randomHexId } from '../crypto/randomId';
+
 /** Room identifiers are short alphanumeric codes plus `_`/`-`. */
 export const ROOM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -59,6 +61,26 @@ export function bodyTooLarge(contentLength: string | null): boolean {
   return Number.isFinite(parsed) && parsed > MAX_BODY_BYTES;
 }
 
+export type BoundedJsonBody =
+  | { ok: false; tooLarge: true }
+  | { ok: true; buffer: ArrayBuffer };
+
+/**
+ * Reads the request body and rejects when the actual byte length exceeds
+ * {@link MAX_BODY_BYTES}, including when Content-Length is omitted.
+ * Does not log the body.
+ */
+export async function readBoundedJsonBody(request: Request): Promise<BoundedJsonBody> {
+  if (bodyTooLarge(request.headers.get('content-length'))) {
+    return { ok: false, tooLarge: true };
+  }
+  const buffer = await request.arrayBuffer();
+  if (buffer.byteLength > MAX_BODY_BYTES) {
+    return { ok: false, tooLarge: true };
+  }
+  return { ok: true, buffer };
+}
+
 /** JSON API mutations must declare a JSON content type. */
 export function isJsonContentType(contentType: string | null): boolean {
   if (contentType === null) return false;
@@ -96,9 +118,16 @@ export function isPublicPath(pathname: string): boolean {
  * Pass `indexable: true` (SEC-015 marketing pages) to keep the CSP and every
  * other header but omit `X-Robots-Tag` so search engines may index the page.
  */
+export function applyCspNonceToHtml(html: string, nonce: string): string {
+  return html.replace(/<script\b([^>]*)>/gi, (full, attrs: string) => {
+    if (/\bnonce\s*=/i.test(attrs)) return full;
+    return `<script nonce="${nonce}"${attrs}>`;
+  });
+}
+
 export function withSecurityHeaders(
   response: Response,
-  options?: { indexable?: boolean },
+  options?: { indexable?: boolean; scriptNonce?: string },
 ): Response {
   const headers = new Headers(response.headers);
   const contentType = response.headers.get('content-type') ?? '';
@@ -114,6 +143,8 @@ export function withSecurityHeaders(
     'camera=(), microphone=(), geolocation=(), payment=(), usb=(), midi=(), serial=()',
   );
 
+  headers.set('Cache-Control', 'no-store');
+
   if (isHtml) {
     if (!options?.indexable) headers.set('X-Robots-Tag', 'noindex');
     headers.set(
@@ -126,15 +157,12 @@ export function withSecurityHeaders(
         "connect-src 'self' wss:",
         "img-src 'self' data:",
         "style-src 'self' 'unsafe-inline'",
-        "script-src 'self'",
+        options?.scriptNonce
+          ? `script-src 'self' 'nonce-${options.scriptNonce}' 'strict-dynamic'`
+          : "script-src 'self'",
       ].join('; '),
     );
   } else {
-    headers.set('Cache-Control', 'no-store');
-    // These responses are selected by the session cookie and the origin check,
-    // so any cache between here and the browser must key on both. `no-store`
-    // should already prevent caching; `Vary` is the backstop if a proxy
-    // ignores it.
     const existingVary = headers.get('Vary');
     headers.set('Vary', existingVary ? `${existingVary}, Cookie, Origin` : 'Cookie, Origin');
   }
@@ -144,4 +172,33 @@ export function withSecurityHeaders(
     statusText: response.statusText,
     headers,
   });
+}
+
+/**
+ * HTML pages from Next's static export include inline bootstraps. Stamp every
+ * script with a per-response nonce and put that nonce in CSP so `script-src
+ * 'self'` does not freeze the SPA on "Loading secure session…".
+ */
+export async function withNonceHtmlSecurityHeaders(
+  response: Response,
+  options?: { indexable?: boolean },
+): Promise<Response> {
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.toLowerCase().includes('text/html')) {
+    return withSecurityHeaders(response, options);
+  }
+  const nonce = randomHexId();
+  const html = applyCspNonceToHtml(await response.text(), nonce);
+  const headers = new Headers(response.headers);
+  if (!headers.has('content-type')) {
+    headers.set('content-type', 'text/html; charset=utf-8');
+  }
+  return withSecurityHeaders(
+    new Response(html, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    }),
+    { ...options, scriptNonce: nonce },
+  );
 }
