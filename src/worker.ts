@@ -236,12 +236,15 @@ export default {
     // Short-lived LiveKit join token. RoomDO enforces admission (owner/member
     // only; waiting peers get 403) and mints the JWT when LIVEKIT_* is set.
     if (url.pathname === AV_TOKEN) {
-      if (request.method !== 'POST' && request.method !== 'GET') {
-        return Response.json({ error: 'Method not allowed' }, { status: 405, headers: { Allow: 'GET, POST' } });
+      // POST-only: SameSite=Lax sends the session cookie on top-level GET
+      // navigations and the origin guard deliberately exempts GETs, so a GET
+      // that mints a credential would combine both exemptions.
+      if (request.method !== 'POST') {
+        return withSecurityHeaders(Response.json({ error: 'Method not allowed' }, { status: 405, headers: { Allow: 'POST' } }));
       }
       const roomId = url.searchParams.get('roomId');
-      if (!roomId) {
-        return Response.json({ error: 'Missing roomId' }, { status: 400 });
+      if (!roomId || !isValidRoomId(roomId)) {
+        return withSecurityHeaders(Response.json({ error: 'Missing or invalid roomId' }, { status: 400 }));
       }
       return forward(env, roomId, '/room/av', request, url, session);
     }

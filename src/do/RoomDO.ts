@@ -345,7 +345,7 @@ export class RoomDO extends DurableObject {
         if (method === 'GET') return handleAccessGet(this.db, roomId, request);
         break;
       case 'av': {
-        if (method !== 'POST' && method !== 'GET') break;
+        if (method !== 'POST') break;
         const accountId = url.searchParams.get('accountId');
         if (!accountId) {
           return Promise.resolve(forbidden('Account required'));

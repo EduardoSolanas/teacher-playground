@@ -557,6 +557,16 @@ describe('A/V token route (/api/av/token)', () => {
     expect(unauthed.status).toBe(401);
   });
 
+  it('refuses GET: join tokens are minted only via origin-guarded POST', async () => {
+    // SameSite=Lax sends the session cookie on top-level GET navigations, and
+    // the origin guard deliberately exempts GETs. A GET that mints a
+    // credential would combine those two exemptions, so the route is
+    // POST-only.
+    await createRoom('av-room-get');
+    const viaGet = await authenticatedFetch('/api/av/token?roomId=av-room-get', session);
+    expect(viaGet.status).toBe(405);
+  });
+
   it('returns 403 for outsiders and 503 for admitted peers when LiveKit is unset', async () => {
     const owner = session;
     const outsider = await bootstrapLocalSession('av-outsider');
