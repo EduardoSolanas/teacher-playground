@@ -366,4 +366,15 @@ describe('Cloudflare Access request verification', () => {
     );
     expect(principal.subject).toBe('human-1');
   });
+
+  it('accepts a JWT whose header omits the optional typ field (RFC 7519 §5.1)', async () => {
+    const token = await signToken(privateKey, claims(), { typ: undefined });
+    const principal = await verifyAccessRequest(
+      new Request('https://app.example.test', { headers: { 'Cf-Access-Jwt-Assertion': token } }),
+      context(),
+      { ACCESS_ISSUER: ISSUER, ACCESS_AUDIENCE: AUDIENCE, ACCESS_JWKS_URL: jwksUrl, ENVIRONMENT: 'local-test' },
+      { now, fetch: globalThis.fetch },
+    );
+    expect(principal.subject).toBe('human-1');
+  });
 });
