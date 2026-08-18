@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -87,6 +87,19 @@ describe('tracked-tree security scan', () => {
     expect(output).toContain('known credential token: openai.txt');
     expect(output).not.toContain(cloudflareToken);
     expect(output).not.toContain(openAiToken);
+  });
+
+  it('does not embed ws:// literals in production LiveKit and signaling modules', () => {
+    const productionModules = [
+      'src/lib/av/livekitRoomService.ts',
+      'src/lib/whiteboard/yWebsocketProvider.ts',
+      'src/lib/whiteboard/ywebrtcProvider.ts',
+    ];
+
+    for (const relativePath of productionModules) {
+      const source = readFileSync(join(repositoryRoot, relativePath), 'utf8');
+      expect(source, relativePath).not.toMatch(/ws:\/\//);
+    }
   });
 
   it('does not skip forbidden content when a tracked file contains NUL bytes', () => {

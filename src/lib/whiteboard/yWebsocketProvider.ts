@@ -29,9 +29,9 @@ class SignalingWebsocketProvider extends WebsocketProvider {
   private readonly signalingUrl: string;
 
   constructor(doc: Y.Doc, roomId: string) {
-    super('ws://unused', '_', doc, { disableBc: true });
+    super('wss://unused.invalid', '_', doc, { disableBc: true });
     const urls = getSignalingUrls(roomId);
-    this.signalingUrl = urls[0] ?? 'ws://localhost:3001/signaling';
+    this.signalingUrl = urls[0] ?? '';
   }
 
   override get url(): string {

@@ -15,13 +15,16 @@ export type RemoveLiveKitParticipantResult =
 
 /** Converts a LiveKit WebSocket URL to the HTTPS host used by Room Service APIs. */
 export function liveKitHttpHost(liveKitUrl: string): string {
-  if (liveKitUrl.startsWith('wss://')) {
-    return `https://${liveKitUrl.slice('wss://'.length)}`;
+  try {
+    const parsed = new URL(liveKitUrl);
+    if (parsed.protocol === 'wss:') parsed.protocol = 'https:';
+    else if (parsed.protocol === 'ws:') parsed.protocol = 'http:';
+    else return liveKitUrl;
+    const path = parsed.pathname === '/' ? '' : parsed.pathname;
+    return `${parsed.origin}${path}${parsed.search}`;
+  } catch {
+    return liveKitUrl;
   }
-  if (liveKitUrl.startsWith('ws://')) {
-    return `http://${liveKitUrl.slice('ws://'.length)}`;
-  }
-  return liveKitUrl;
 }
 
 /**

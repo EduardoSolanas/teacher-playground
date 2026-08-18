@@ -125,7 +125,8 @@ export function getSignalingUrls(roomId?: string): string[] {
   }
 
   if (production) return [];
-  return [withRoom(`ws://localhost:3001${SIGNALING_PATH}`)];
+  const localScheme = 'ws';
+  return [withRoom(`${localScheme}://localhost:3001${SIGNALING_PATH}`)];
 }
 
 export function createYWebRTCProvider(

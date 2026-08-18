@@ -1,13 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { verifyLiveKitToken } from './livekitToken';
-import { removeLiveKitParticipant } from './livekitRoomService';
+import { liveKitHttpHost, removeLiveKitParticipant } from './livekitRoomService';
 
 const LIVEKIT_ENV = {
   LIVEKIT_URL: 'wss://example.livekit.cloud',
   LIVEKIT_API_KEY: 'key_abc',
   LIVEKIT_API_SECRET: 'secret_xyz_long_enough',
 };
+
+describe('liveKitHttpHost', () => {
+  it('converts wss LiveKit URLs to https and ws URLs to http', () => {
+    expect(liveKitHttpHost('wss://example.livekit.cloud')).toBe(
+      'https://example.livekit.cloud',
+    );
+    expect(liveKitHttpHost('ws://127.0.0.1:7880')).toBe('http://127.0.0.1:7880');
+    expect(liveKitHttpHost('https://example.livekit.cloud')).toBe(
+      'https://example.livekit.cloud',
+    );
+  });
+});
 
 describe('removeLiveKitParticipant', () => {
   const fetchMock = vi.fn();
