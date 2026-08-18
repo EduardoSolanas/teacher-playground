@@ -163,10 +163,12 @@ approve, join, refresh, expiry, revoke, and denial.
 
 ### SEC-003 — authenticate and bound WebSocket admission
 
-**Evidence:** `/signaling` routes solely on `?room=` in
-`src/worker.ts:35-42`; `src/do/RoomDO.ts:113-161` accepts any upgrade and
-broadcasts any string `publish`. No `Origin`, room existence, credential,
-message-size, connection-count, or publish-rate check exists.
+**Evidence (updated 2026-08-18):** `/signaling` requires Access + local
+session, exact Origin, Worker-stamped `accountId`, and a granted room role
+(`owner`/`editor`/`viewer`) before `acceptWebSocket`; pending, banned, and
+non-members get 403. Independent verifier APPROVE; skipping `isGrantedRole`
+gave outsiders 101. Residual: no frame-size/rate/socket-cap; string `publish`
+still fans out to every room socket; Yjs after grant is still y-webrtc P2P.
 
 - [ ] Prefer a same-origin, hostname-protected upgrade authenticated by Access
   and the local application session. Add a short-lived, single-use,
@@ -1072,6 +1074,10 @@ acceptance tests and evidence are satisfied.
 - [ ] Use a same-origin, hostname-protected WebSocket upgrade carrying the local
   session unless a documented cross-origin requirement proves that a separate
   one-time ticket is necessary (SEC-003).
+  - Evidence: independent verifier APPROVE for grant-gated `/signaling`
+    upgrades (pending/outsider 403, owner 101). Origin + session were
+    already required. Residual: the socket still only signals y-webrtc;
+    document sync is not on this WebSocket.
 - [ ] Bind every socket attachment to `account_id`, `session_id`, room grant
   version, role, and expiry; validate exact `Origin`, protocol, topic, schema,
   message size, connection count, rate, and bounded fan-out.

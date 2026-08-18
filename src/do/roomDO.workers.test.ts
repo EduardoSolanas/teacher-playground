@@ -131,8 +131,45 @@ describe('Worker routing into RoomDO', () => {
   });
 });
 
+describe('signaling requires granted membership', () => {
+  async function signalingUpgrade(who: LocalAuthSession, roomId: string) {
+    return authenticatedFetch(`/signaling?room=${roomId}`, who, {
+      headers: { Upgrade: 'websocket' },
+    });
+  }
+
+  it('returns 403 for pending and outsider upgrades; 101 for the owner', async () => {
+    const owner = await bootstrapLocalSession('signaling-grant-owner');
+    const outsider = await bootstrapLocalSession('signaling-grant-outsider');
+    const roomId = 'signaling-grant-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const outsiderRes = await signalingUpgrade(outsider, roomId);
+    expect(outsiderRes.status).toBe(403);
+    expect(outsiderRes.webSocket).toBeNull();
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, outsider, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'pending-peer', userName: 'Guest', color: '#3498db' }),
+    })).status).toBe(200);
+
+    const pendingRes = await signalingUpgrade(outsider, roomId);
+    expect(pendingRes.status).toBe(403);
+    expect(pendingRes.webSocket).toBeNull();
+
+    const ownerRes = await signalingUpgrade(owner, roomId);
+    expect(ownerRes.status).toBe(101);
+    expect(ownerRes.webSocket).not.toBeNull();
+    ownerRes.webSocket?.accept();
+    ownerRes.webSocket?.close();
+  });
+});
+
 describe('y-webrtc signaling over Durable Object WebSockets', () => {
   async function connect(roomId: string): Promise<WebSocket> {
+    expect((await createRoom(roomId)).status).toBe(200);
     const res = await authenticatedFetch(`/signaling?room=${roomId}`, session, {
       headers: { Upgrade: 'websocket' },
     });
@@ -285,7 +322,15 @@ describe('revocation closes live signaling sockets', () => {
     });
   }
 
-  async function openSocket(roomId: string, authSession: LocalAuthSession) {
+  async function openSocket(
+    roomId: string,
+    authSession: LocalAuthSession,
+    options: { create?: boolean } = {},
+  ) {
+    if (options.create !== false) {
+      const created = await writeRoom(roomId, authSession);
+      if (created.status !== 403) expect(created.status).toBe(200);
+    }
     const res = await authenticatedFetch(`/signaling?room=${roomId}`, authSession, {
       headers: { Upgrade: 'websocket' },
     });
@@ -337,8 +382,24 @@ describe('revocation closes live signaling sockets', () => {
     const target = await bootstrapLocalSession('revoke-isolated-target');
     const other = await bootstrapLocalSession('revoke-isolated-other');
 
-    const revokedWs = await openSocket(roomId, target);
-    const survivorWs = await openSocket(roomId, other);
+    expect((await writeRoom(roomId, target)).status).toBe(200);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, other, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Other' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${other.accountId}`,
+      target,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'viewer' }),
+      },
+    )).status).toBe(200);
+
+    const revokedWs = await openSocket(roomId, target, { create: false });
+    const survivorWs = await openSocket(roomId, other, { create: false });
     const revoked = closeSignal(revokedWs);
     const survivor = closeSignal(survivorWs);
 
@@ -354,6 +415,7 @@ describe('revocation check runs without being triggered by hand', () => {
   it('closes a revoked socket on its own scheduled alarm', async () => {
     const roomId = 'revoke-room-selfscheduled';
     const subject = await bootstrapLocalSession('revoke-self-scheduled');
+    expect((await writeRoom(roomId, subject)).status).toBe(200);
 
     const res = await authenticatedFetch(`/signaling?room=${roomId}`, subject, {
       headers: { Upgrade: 'websocket' },

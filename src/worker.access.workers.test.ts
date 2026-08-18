@@ -203,6 +203,11 @@ describe('real local Access boundary through workerd', () => {
     }
 
     const session = await bootstrapLocalSession(subject);
+    expect((await authenticatedFetch('/api/whiteboard/room/origin-accepted', session, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: BASE },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
     const accepted = await authenticatedFetch('/signaling?room=origin-accepted', session, {
       headers: { Upgrade: 'websocket', Origin: BASE },
     });

@@ -409,6 +409,16 @@ export class RoomDO extends DurableObject {
       return new Response('Unauthorized', { status: 401 });
     }
 
+    const roomId = url.searchParams.get('roomId');
+    if (!roomId) {
+      return new Response('Missing or invalid room', { status: 400 });
+    }
+
+    const role = getGrantRole(this.db, roomId, accountId);
+    if (!isGrantedRole(role)) {
+      return forbidden();
+    }
+
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
