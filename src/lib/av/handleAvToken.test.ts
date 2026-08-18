@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 
 import { applySchema } from '../whiteboard/roomSchema';
-import { approveAccount, insertOwner, requestAccess } from '../whiteboard/membership';
+import {
+  approveAccount,
+  banAccount,
+  insertOwner,
+  requestAccess,
+} from '../whiteboard/membership';
 import type { RoomDatabase } from '../whiteboard/db';
 import { issueAvTokenResponse } from './handleAvToken';
 import { verifyLiveKitToken } from './livekitToken';
@@ -60,6 +65,46 @@ describe('issueAvTokenResponse', () => {
     });
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ reason: 'waiting' });
+  });
+
+  it('returns 403 for a banned account', async () => {
+    const db = memoryDb();
+    insertOwner(db, 'room-1', 'acct-owner');
+    requestAccess(db, { roomId: 'room-1', accountId: 'acct-banned', userName: 'Peer' });
+    approveAccount(db, 'room-1', 'acct-banned', { role: 'editor' });
+    banAccount(db, 'room-1', 'acct-banned');
+
+    const res = await issueAvTokenResponse({
+      db,
+      env: LIVEKIT_ENV,
+      roomId: 'room-1',
+      accountId: 'acct-banned',
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ reason: 'not-a-member' });
+  });
+
+  it('returns 403 for a banned account even when still in waiting_peers', async () => {
+    const db = memoryDb();
+    insertOwner(db, 'room-1', 'acct-owner');
+    requestAccess(db, { roomId: 'room-1', accountId: 'acct-banned', userName: 'Peer' });
+    approveAccount(db, 'room-1', 'acct-banned', { role: 'editor' });
+    banAccount(db, 'room-1', 'acct-banned');
+    db.prepare(
+      `INSERT INTO waiting_peers (room_id, peer_id, user_name, color, requested_at, account_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run('room-1', 'peer-b', 'Peer', '#fff', Date.now(), 'acct-banned');
+
+    const res = await issueAvTokenResponse({
+      db,
+      env: LIVEKIT_ENV,
+      roomId: 'room-1',
+      accountId: 'acct-banned',
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { reason: string };
+    expect(['not-a-member', 'banned']).toContain(body.reason);
+    expect(body.reason).not.toBe('waiting');
   });
 
   it('returns 403 when a member is back in the waiting queue', async () => {

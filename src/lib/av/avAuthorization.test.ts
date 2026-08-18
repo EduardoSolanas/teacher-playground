@@ -14,9 +14,10 @@ describe('isAdmittedRole', () => {
     expect(isAdmittedRole('viewer')).toBe(true);
     expect(isAdmittedRole('member')).toBe(true);
   });
-  it('rejects pending, waiting, and unknown', () => {
+  it('rejects pending, waiting, banned, and unknown', () => {
     expect(isAdmittedRole('pending')).toBe(false);
     expect(isAdmittedRole('waiting')).toBe(false);
+    expect(isAdmittedRole('banned')).toBe(false);
     expect(isAdmittedRole('unknown')).toBe(false);
     expect(isAdmittedRole(null)).toBe(false);
   });
@@ -49,6 +50,11 @@ describe('avEligible', () => {
   it('is not eligible for non-members', () => {
     expect(avEligible('unknown').eligible).toBe(false);
     expect(avEligible(null).reason).toBe('not-a-member');
+  });
+  it('is not eligible for banned accounts', () => {
+    const result = avEligible('banned');
+    expect(result.eligible).toBe(false);
+    expect(result.reason).toBe('not-a-member');
   });
 });
 

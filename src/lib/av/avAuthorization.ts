@@ -34,6 +34,9 @@ export function avEligible(role: unknown): AvEligibility {
   if (role === 'waiting' || role === 'pending') {
     return { eligible: false, reason: 'waiting' };
   }
+  if (role === 'banned') {
+    return { eligible: false, reason: 'not-a-member' };
+  }
   return { eligible: false, reason: 'not-a-member' };
 }
 

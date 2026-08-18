@@ -43,11 +43,14 @@ export async function issueAvTokenResponse(
   const role = getGrantRole(input.db, input.roomId, input.accountId);
   const waiting = isWaitingAccount(input.db, input.roomId, input.accountId);
 
-  // Waiting overrides membership: a suspended member back in the queue must
-  // not receive A/V until they are admitted again.
-  const eligibility = waiting
-    ? { eligible: false as const, reason: 'waiting' as const }
-    : avEligible(role);
+  // Banned overrides waiting_peers: a revoked account must not receive A/V
+  // even if a stale waiting row remains.
+  const eligibility =
+    role === 'banned'
+      ? avEligible('banned')
+      : waiting
+        ? { eligible: false as const, reason: 'waiting' as const }
+        : avEligible(role);
 
   const status = avEligibilityStatus(eligibility.eligible, config !== null);
   if (status !== 200 || !config) {
