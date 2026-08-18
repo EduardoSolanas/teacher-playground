@@ -209,30 +209,48 @@ export default {
     let principal: VerifiedAccessPrincipal;
     const debugSteps: string[] = [];
     try {
-      // Step 1: Try JWKS fetch directly to check reachability
-      const jwksUrl = env.ACCESS_JWKS_URL;
-      if (jwksUrl) {
+      // Decode JWT claims for debug
+      const token = request.headers.get('Cf-Access-Jwt-Assertion') ?? '';
+      const parts = token.split('.');
+      if (parts.length === 3) {
         try {
-          const jwksResp = await fetch(jwksUrl, { headers: { Accept: 'application/json' } });
-          const jwksBody = await jwksResp.text();
-          const jwksData = JSON.parse(jwksBody);
-          const keyCount = Array.isArray(jwksData.keys) ? jwksData.keys.length : 0;
-          const token = request.headers.get('Cf-Access-Jwt-Assertion') ?? '';
-          const headerPart = token.split('.')[0];
-          let kid = 'n/a';
-          try { kid = JSON.parse(atob(headerPart.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - headerPart.length % 4) % 4))).kid; } catch {}
-          const kidMatch = Array.isArray(jwksData.keys) && jwksData.keys.some((k: Record<string, unknown>) => k.kid === kid);
-          debugSteps.push(`jwks:${jwksResp.status},keys:${keyCount},kidMatch:${kidMatch}`);
-        } catch (e) {
-          debugSteps.push(`jwks-err:${e instanceof Error ? e.message : String(e)}`);
-        }
+          const decoded = atob(parts[1].replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - parts[1].length % 4) % 4));
+          const claims = JSON.parse(decoded);
+          const aud = Array.isArray(claims.aud) ? claims.aud.map((a: string) => a.slice(0, 16)) : claims.aud;
+          debugSteps.push(`aud:${JSON.stringify(aud)}`);
+          debugSteps.push(`envAud:${env.ACCESS_AUDIENCE?.slice(0, 16)}`);
+          const audMatch = Array.isArray(claims.aud)
+            ? claims.aud.includes(env.ACCESS_AUDIENCE)
+            : claims.aud === env.ACCESS_AUDIENCE;
+          debugSteps.push(`audMatch:${audMatch}`);
+          debugSteps.push(`nbf:${claims.nbf},iat:${claims.iat},exp:${claims.exp},now:${Math.floor(Date.now() / 1000)}`);
+          debugSteps.push(`type:${claims.type}`);
+        } catch { debugSteps.push('claims:parse-err'); }
       }
-      // Step 2: actual verification
       principal = await verifyAccessRequest(request, ctx.access, env);
       debugSteps.push('verify:ok');
     } catch (error) {
       if (error instanceof AccessVerificationError) {
         debugSteps.push('verify:FAIL');
+        // Try signature verification manually
+        try {
+          const token = request.headers.get('Cf-Access-Jwt-Assertion') ?? '';
+          const parts = token.split('.');
+          const headerJson = JSON.parse(atob(parts[0].replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - parts[0].length % 4) % 4)));
+          const jwksResp = await fetch(env.ACCESS_JWKS_URL!, { headers: { Accept: 'application/json' } });
+          const jwksData = await jwksResp.json() as { keys: Array<Record<string, unknown>> };
+          const jwk = jwksData.keys.find((k: Record<string, unknown>) => k.kid === headerJson.kid);
+          if (jwk) {
+            const key = await crypto.subtle.importKey('jwk', jwk as JsonWebKey, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+            const sig = Uint8Array.from(atob(parts[2].replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - parts[2].length % 4) % 4)), c => c.charCodeAt(0));
+            const valid = await crypto.subtle.verify({ name: 'RSASSA-PKCS1-v1_5' }, key, sig, new TextEncoder().encode(`${parts[0]}.${parts[1]}`));
+            debugSteps.push(`sigValid:${valid}`);
+          } else {
+            debugSteps.push('sigCheck:noKey');
+          }
+        } catch (e) {
+          debugSteps.push(`sigCheck:${e instanceof Error ? e.message : 'err'}`);
+        }
         const resp = unauthorized();
         resp.headers.set('X-Debug-Steps', debugSteps.join('|'));
         return resp;
