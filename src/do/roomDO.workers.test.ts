@@ -96,7 +96,7 @@ describe('Worker routing into RoomDO', () => {
     })).status).toBe(200);
 
     const res = await authenticatedFetch('/api/whiteboard/room/deleted-but-member', session);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(410);
   });
 
   it('isolates state between rooms', async () => {
@@ -116,7 +116,7 @@ describe('Worker routing into RoomDO', () => {
     expect(del.status).toBe(200);
 
     const after = await authenticatedFetch('/api/whiteboard/room/doomed', session);
-    expect(after.status).toBe(403);
+    expect(after.status).toBe(410);
   });
 
   it('routes the presence sub-path', async () => {
@@ -1968,8 +1968,8 @@ describe('room authorization matrix', () => {
     expect(text).not.toMatch(/"elements"/);
   }
 
-  it('rejects missing, malformed, and expired credentials on every room HTTP route without mutating tables', async () => {
-    const roomId = 'matrix-cred-table';
+  it('rejects missing, malformed, and expired credentials on every room HTTP route without mutating tables', { timeout: 20_000 }, async () => {
+    const roomId = `matrix-cred-table-${crypto.randomUUID()}`;
     const secret = { boardName: 'SecretBoardBytes', email: 'queued@hidden.example' };
     await createRoomAs(owner, roomId, { name: secret.boardName });
     await joinAs(owner, roomId, 'host-peer');

@@ -2,6 +2,11 @@ import { DurableObject } from 'cloudflare:workers';
 import { DODatabase } from '../lib/whiteboard/doDatabase';
 import { applySchema, getGrantVersion, incrementGrantVersion, roomExists } from '../lib/whiteboard/roomSchema';
 import {
+  assertNotTombstoned,
+  createSqlTombstoneStore,
+  tombstonedJsonResponse,
+} from '../lib/whiteboard/tombstone';
+import {
   bindPeerAccount,
   canWriteBoard,
   getGrantRole,
@@ -156,6 +161,10 @@ export class RoomDO extends DurableObject {
     const method = request.method;
     const accountId = url.searchParams.get('accountId');
     if (!accountId) return unauthorized('Account required');
+
+    if (!assertNotTombstoned(createSqlTombstoneStore(this.db), roomId).ok) {
+      return tombstonedJsonResponse();
+    }
 
     // Grant role only — no board, queue, or request PII. Discriminators that
     // share a route (kick vs heartbeat) are read from a bounded JSON object
@@ -440,6 +449,10 @@ export class RoomDO extends DurableObject {
     const roomId = url.searchParams.get('roomId');
     if (!roomId) {
       return new Response('Missing or invalid room', { status: 400 });
+    }
+
+    if (!assertNotTombstoned(createSqlTombstoneStore(this.db), roomId).ok) {
+      return tombstonedJsonResponse();
     }
 
     const role = getGrantRole(this.db, roomId, accountId);

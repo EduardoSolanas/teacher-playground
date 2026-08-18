@@ -70,6 +70,13 @@ export function applySchema(db: RoomDatabase): void {
     )
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS room_tombstones (
+      room_id TEXT PRIMARY KEY,
+      deleted_at INTEGER NOT NULL
+    )
+  `);
+
   migrateRoomMembers(db);
 
   db.exec(`DROP TABLE IF EXISTS room_access`);

@@ -9,6 +9,11 @@ import {
   roomSettingsSchema,
 } from '../requestSchemas';
 import { deleteRoomScopedData } from '../roomSchema';
+import {
+  assertNotTombstoned,
+  createSqlTombstoneStore,
+  tombstonedJsonResponse,
+} from '../tombstone';
 import { internalErrorResponse } from '../../http/safeError';
 
 const DEFAULT_MAX_USERS = 3;
@@ -98,6 +103,9 @@ export async function handleRoomPost(
     if (!parseResult.ok) {
       return Response.json({ error: parseResult.error }, { status: 400 });
     }
+
+    const tombstone = assertNotTombstoned(createSqlTombstoneStore(db), roomId);
+    if (!tombstone.ok) return tombstonedJsonResponse();
 
     const { elements, viewport } = parseResult.data;
     const accountId = verifiedAccountId(request);
@@ -297,6 +305,7 @@ export async function handleRoomDelete(
 ): Promise<Response> {
   try {
     deleteRoomScopedData(db, roomId);
+    createSqlTombstoneStore(db).add(roomId);
     return Response.json({ success: true });
   } catch (e) {
     return internalErrorResponse(e, 'handleRoomDelete');

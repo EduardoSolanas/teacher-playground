@@ -1147,10 +1147,11 @@ acceptance tests and evidence are satisfied.
 - [ ] Implement creator-only atomic deletion across every room table, close all
   sockets, and prevent old grants from authorizing recreated rooms (SEC-007).
   - Evidence: independent verifier APPROVE for the atomic SQL slice and
-    socket close 4404. Tombstone helper APPROVE (in-memory
-    `createTombstoneStore` / `assertNotTombstoned`; add-noop mutant killed
-    3 tests). Residual: not wired into RoomDO; `storage.deleteAll` and
-    recreate-vs-old-grant proof are not done.
+    socket close 4404. Independent verifier APPROVE for SQL
+    `room_tombstones` (not in `deleteRoomScopedData`): delete then
+    recreate/GET/signaling are **410**. Mutants skip-insert and skip
+    `assertNotTombstoned` killed the recreate test. Residual:
+    `storage.deleteAll` is not wired; the DO instance remains.
 - [ ] Add TTLs and scheduled cleanup for rooms, sessions, grants, requests,
   waiting entries, kicks, PII, and tombstones.
   - Evidence: independent verifier APPROVE for editor-row purge only.

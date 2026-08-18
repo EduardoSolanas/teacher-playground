@@ -103,4 +103,48 @@ describe('atomic room deletion in RoomDO', () => {
     expect(closed.done).toBe(true);
     expect(closed.code).toBe(4404);
   });
+
+  it('rejects recreate after delete so old grants cannot be restored', async () => {
+    const roomId = `tombstone-recreate-${crypto.randomUUID()}`;
+
+    const created = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    });
+    expect(created.status).toBe(200);
+    expect(await created.json()).toMatchObject({ hasCreatorGrant: true });
+
+    const del = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'DELETE',
+    });
+    expect(del.status).toBe(200);
+
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      expect(
+        instance.db
+          .prepare(`SELECT 1 FROM room_tombstones WHERE room_id = ?`)
+          .get(roomId),
+      ).toBeDefined();
+    });
+
+    const recreate = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    });
+    expect(recreate.status).toBe(410);
+    expect(await recreate.json()).not.toMatchObject({ hasCreatorGrant: true });
+
+    const get = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner);
+    expect(get.status).toBe(410);
+
+    const other = await bootstrapLocalSession(`tombstone-other-${crypto.randomUUID()}`);
+    const otherRecreate = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, other, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    });
+    expect(otherRecreate.status).toBe(410);
+  });
 });
