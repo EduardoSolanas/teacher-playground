@@ -16,11 +16,13 @@ import { logAuthEvent, type AuthEventInput } from './lib/security/authEvents';
 import {
   bodyTooLarge,
   isJsonContentType,
+  readBoundedJsonBody,
   isPublicPath,
   isValidRoomId,
   MARKETING_PAGES,
   stripForwardedIdentityHeaders,
   withSecurityHeaders,
+  withNonceHtmlSecurityHeaders,
 } from './lib/worker/requestGuard';
 
 export interface Env {
@@ -48,6 +50,7 @@ const SESSION_CURRENT = '/auth/session/current';
 const SESSION_CONFIRM = '/auth/session/confirm';
 const SESSION_LOGOUT = '/auth/session/logout';
 const ACCOUNT_EXPORT = '/auth/account/export';
+const ACCOUNT_ERASE = '/auth/account';
 const ACCOUNT_ROOMS = '/api/whiteboard/rooms';
 const IDENTITY_ACCOUNT_ROOMS = 'https://identity/accounts/rooms';
 
@@ -324,6 +327,33 @@ async function accountExport(
   return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
 }
 
+async function accountErase(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'DELETE') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'DELETE' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  if (!sessionAllowsDestructiveAction(outcome.session)) {
+    return withSecurityHeaders(Response.json(
+      { error: 'Reauthentication required' },
+      { status: 403, headers: { 'Cache-Control': 'no-store' } },
+    ));
+  }
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const result = await identity.fetch(new Request('https://identity/accounts', {
+    method: 'DELETE',
+    headers: { cookie: request.headers.get('cookie') ?? '' },
+  }));
+  return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
+}
+
 async function listAccountRooms(
   env: Env,
   request: Request,
@@ -476,7 +506,7 @@ export default {
       && isPublicPath(url.pathname)
     ) {
       const response = await env.ASSETS.fetch(request);
-      return withSecurityHeaders(response, {
+      return withNonceHtmlSecurityHeaders(response, {
         indexable: (MARKETING_PAGES as readonly string[]).includes(url.pathname),
       });
     }
@@ -509,6 +539,9 @@ export default {
     }
     if (url.pathname === ACCOUNT_EXPORT) {
       return accountExport(env, request, principal);
+    }
+    if (url.pathname === ACCOUNT_ERASE) {
+      return accountErase(env, request, principal);
     }
     if (url.pathname === ACCOUNT_ROOMS) {
       return listAccountRooms(env, request, principal);
@@ -571,6 +604,11 @@ export default {
         if (contentLength !== null && contentLength !== '0' && !isJsonContentType(request.headers.get('content-type'))) {
           return withSecurityHeaders(new Response('Content type must be application/json', { status: 415 }));
         }
+        const bounded = await readBoundedJsonBody(request);
+        if (!bounded.ok) {
+          return withSecurityHeaders(new Response('Body too large', { status: 413 }));
+        }
+        request = new Request(request, { body: bounded.buffer });
       }
       const subpath = match[2] ?? '';
       if (
@@ -633,9 +671,9 @@ export default {
     if (ROOM_PAGE.test(url.pathname) && url.pathname !== ROOM_PLACEHOLDER) {
       const rewritten = new URL(request.url);
       rewritten.pathname = ROOM_PLACEHOLDER;
-      return withSecurityHeaders(await env.ASSETS.fetch(new Request(rewritten, request)));
+      return withNonceHtmlSecurityHeaders(await env.ASSETS.fetch(new Request(rewritten, request)));
     }
 
-    return withSecurityHeaders(await env.ASSETS.fetch(request));
+    return withNonceHtmlSecurityHeaders(await env.ASSETS.fetch(request));
   },
 };
