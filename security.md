@@ -1091,6 +1091,13 @@ acceptance tests and evidence are satisfied.
   message size, connection count, rate, and bounded fan-out.
 - [ ] Implement room kick/revoke by incrementing the grant version and closing
   matching live and hibernating sockets.
+  - Evidence: independent verifier APPROVE for immediate close of matching
+    `/signaling` sockets on kick (4401 `SOCKET_REVOKED_CLOSE_CODE`) in
+    `RoomDO.fetch` via `kickedPeer.accountId`. Empty `closeAccountSockets`
+    killed both new workers tests. Residual: no grant-version increment;
+    identity-wide disable still uses the ~30s alarm; hibernating ping
+    auto-response does not wake the DO; suspend shares the hook but has
+    no dedicated socket-close test.
 - [ ] Revalidate hibernated-socket attachments on wake against current grant
   version, epoch, and expiry (SEC-003).
 - [ ] Choose and document account-wide revocation: reliable active-room fan-out,
@@ -1104,8 +1111,8 @@ acceptance tests and evidence are satisfied.
     gated with live `getGrantRole` + `canWriteBoard`; missing attachment
     fails closed. Mutants (skip each guard) killed the matching workers
     tests. Residual: ping/subscribe from viewers; viewer awareness binary
-    is also dropped. Kick still uses the 30s alarm, not an immediate
-    socket close.
+    is also dropped. Room kick now closes matching sockets immediately
+    (4401); identity-wide disable still uses the ~30s alarm.
 
 **Phase gate**
 

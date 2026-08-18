@@ -182,6 +182,20 @@ export class RoomDO extends DurableObject {
       bindPeerAccount(this.db, roomId, joiningPeerId, accountId);
     }
 
+    if (response.ok && section === 'presence' && method === 'POST') {
+      const action = stringField(body, 'action');
+      if (action === 'kick' || action === 'suspend') {
+        const payload = await response.clone().json() as {
+          kickedPeer?: { accountId?: string };
+          suspendedPeer?: { accountId?: string };
+        };
+        const targetAccountId = payload.kickedPeer?.accountId ?? payload.suspendedPeer?.accountId;
+        if (targetAccountId) {
+          this.closeAccountSockets(targetAccountId);
+        }
+      }
+    }
+
     return response;
   }
 
@@ -387,6 +401,16 @@ export class RoomDO extends DurableObject {
         socket.close(SOCKET_ROOM_DELETED_CLOSE_CODE, 'Room deleted');
       } catch {
         // Already gone.
+      }
+    }
+  }
+
+  /** Closes live signaling sockets for one account (kick/suspend/revoke). */
+  private closeAccountSockets(accountId: string): void {
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = socket.deserializeAttachment() as SocketIdentity | null;
+      if (attachment?.accountId === accountId) {
+        this.closeRevoked(socket);
       }
     }
   }

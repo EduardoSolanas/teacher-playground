@@ -592,6 +592,118 @@ describe('revocation closes live signaling sockets', () => {
   });
 });
 
+describe('kick closes live signaling sockets', () => {
+  async function connectGranted(who: LocalAuthSession, roomId: string): Promise<WebSocket> {
+    const res = await authenticatedFetch(`/signaling?room=${roomId}`, who, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(res.status).toBe(101);
+    const ws = res.webSocket;
+    if (!ws) throw new Error('no webSocket on response');
+    ws.accept();
+    return ws;
+  }
+
+  async function grantEditor(
+    owner: LocalAuthSession,
+    editor: LocalAuthSession,
+    roomId: string,
+  ) {
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Editor' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${editor.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    )).status).toBe(200);
+  }
+
+  function closeSignal(ws: WebSocket): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error('socket was not closed immediately after kick')),
+        2_000,
+      );
+      ws.addEventListener('close', (event: CloseEvent) => {
+        clearTimeout(timer);
+        resolve(event.code);
+      }, { once: true });
+    });
+  }
+
+  it('closes the kicked account signaling socket immediately without waiting for alarm', async () => {
+    const owner = await bootstrapLocalSession('kick-signal-owner');
+    const editor = await bootstrapLocalSession('kick-signal-editor');
+    const roomId = 'kick-signal-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'editor-peer', userName: 'Editor', color: '#3498db' }),
+    })).status).toBe(200);
+
+    const ownerSocket = await connectGranted(owner, roomId);
+    const editorSocket = await connectGranted(editor, roomId);
+    const editorClosed = closeSignal(editorSocket);
+
+    const kick = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'kick', peerId: 'editor-peer' }),
+    });
+    expect(kick.status).toBe(200);
+
+    expect(await editorClosed).toBe(4401);
+    expect(ownerSocket.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it('does not relay binary frames from a kicked peer after its socket closes', async () => {
+    const owner = await bootstrapLocalSession('kick-binary-owner');
+    const editor = await bootstrapLocalSession('kick-binary-editor');
+    const roomId = 'kick-binary-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'editor-peer', userName: 'Editor', color: '#3498db' }),
+    })).status).toBe(200);
+
+    const ownerSocket = await connectGranted(owner, roomId);
+    const editorSocket = await connectGranted(editor, roomId);
+    const editorClosed = closeSignal(editorSocket);
+
+    const kick = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'kick', peerId: 'editor-peer' }),
+    });
+    expect(kick.status).toBe(200);
+    expect(await editorClosed).toBe(4401);
+
+    let received = false;
+    ownerSocket.addEventListener('message', () => { received = true; }, { once: true });
+    const payload = new Uint8Array([0x01, 0x02, 0x03, 0x04]);
+    try {
+      editorSocket.send(payload.buffer);
+    } catch {
+      // Closed socket may reject send; either way the owner must not receive it.
+    }
+    await new Promise((r) => setTimeout(r, 200));
+    expect(received).toBe(false);
+  });
+});
+
 describe('revocation check runs without being triggered by hand', () => {
   it('closes a revoked socket on its own scheduled alarm', async () => {
     const roomId = 'revoke-room-selfscheduled';
