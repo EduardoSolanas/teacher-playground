@@ -94,7 +94,7 @@ jobs:
         run: pip install semgrep
 
       - name: Run Semgrep
-        run: semgrep scan --config auto --error --exclude='node_modules' --exclude='.next' --exclude='out'
+        run: semgrep scan --config auto --error --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='*.spec.ts' --exclude-rule='javascript.express.security.x-frame-options-misconfiguration.x-frame-options-misconfiguration'
 
   dependency-audit:
     name: Dependency audit

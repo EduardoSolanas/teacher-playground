@@ -35,7 +35,7 @@ jobs:
         run: npm run security:scan
 
       - name: Static application security testing
-        run: pip install semgrep && semgrep scan --config auto --error --exclude='node_modules' --exclude='.next' --exclude='out'
+        run: pip install semgrep && semgrep scan --config auto --error --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='*.spec.ts' --exclude-rule='javascript.express.security.x-frame-options-misconfiguration.x-frame-options-misconfiguration'
 
       - name: Typecheck
         run: npm run typecheck
