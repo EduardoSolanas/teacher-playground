@@ -29,6 +29,8 @@ import {
   handleRequestsPost,
 } from '../lib/whiteboard/handlers/requests';
 import { handleRequestsIdPost } from '../lib/whiteboard/handlers/requestsId';
+import { issueAvTokenResponse } from '../lib/av/handleAvToken';
+import { isAdmittedRole } from '../lib/av/avAuthorization';
 
 /**
  * How often live sockets are re-checked against the identity store. This is the
@@ -89,6 +91,10 @@ export interface RoomEnv {
   IDENTITY: DurableObjectNamespace;
   /** Test-only override; production uses REVOCATION_CHECK_INTERVAL_MS. */
   REVOCATION_CHECK_INTERVAL_MS?: string;
+  /** LiveKit SFU — optional; A/V token route returns 503 when unset. */
+  LIVEKIT_URL?: string;
+  LIVEKIT_API_KEY?: string;
+  LIVEKIT_API_SECRET?: string;
 }
 
 /**
@@ -246,6 +252,12 @@ export class RoomDO extends DurableObject {
       return null;
     }
 
+    // A/V tokens are only for admitted participants (owner/member). Waiting
+    // peers and outsiders get the same 403 shape so room membership cannot be
+    // probed through this route.
+    if (section === 'av') {
+      return isAdmittedRole(role) ? null : forbidden();
+    }
     return null;
   }
 
@@ -332,6 +344,25 @@ export class RoomDO extends DurableObject {
       case 'access':
         if (method === 'GET') return handleAccessGet(this.db, roomId, request);
         break;
+      case 'av': {
+        if (method !== 'POST' && method !== 'GET') break;
+        const accountId = url.searchParams.get('accountId');
+        if (!accountId) {
+          return Promise.resolve(forbidden('Account required'));
+        }
+        // Identity is always the verified account. A client-chosen identity
+        // would let one admitted participant join as another and bump that
+        // participant's live session off the call (LiveKit enforces one
+        // session per identity by disconnecting the earlier one).
+        const name = url.searchParams.get('name') ?? undefined;
+        return issueAvTokenResponse({
+          db: this.db,
+          env: this.roomEnv,
+          roomId,
+          accountId,
+          name,
+        });
+      }
       case 'requests': {
         const requestId = segments[2];
         if (requestId) {

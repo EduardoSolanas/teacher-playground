@@ -22,6 +22,7 @@
     "@excalidraw/excalidraw": "^0.18.1",
     "@tailwindcss/postcss": "^4.1.18",
     "better-sqlite3": "^12.10.0",
+    "livekit-client": "^2.22.0",
     "next": "^16.3.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

@@ -27,3 +27,8 @@ new_sqlite_classes = ["RoomDO"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["IdentityDO"]
+
+# LiveKit A/V (optional). Prefer `wrangler secret put LIVEKIT_*` in production.
+# When unset, POST /api/av/token returns 503 and the UI degrades gracefully.
+# [vars]
+# LIVEKIT_URL = "wss://your-project.livekit.cloud"

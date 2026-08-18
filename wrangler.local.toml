@@ -13,6 +13,8 @@ ENVIRONMENT = "local-test"
 ACCESS_ISSUER = "http://127.0.0.1:8790"
 ACCESS_AUDIENCE = "teacher-playground-local"
 ACCESS_JWKS_URL = "http://127.0.0.1:8790/jwks"
+# LiveKit (optional for local A/V smoke). Prefer secrets via `.dev.vars`:
+# LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET
 
 [assets]
 directory = "./out"
