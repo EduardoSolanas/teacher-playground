@@ -5,7 +5,7 @@ import {
   debouncedSaveBoardState,
   loadBoardState,
   clearBoardState,
-  clearRoomSessionMaterial,
+  clearOnLeave,
   cancelDebouncedSave,
   cleanupStaleRooms,
 } from '@/lib/whiteboard/persistence';
@@ -66,7 +66,7 @@ export function usePersistence(roomId: string | null, elements: CanvasElement[],
 
   const clearSession = useCallback(() => {
     if (!roomId) return;
-    clearRoomSessionMaterial(roomId);
+    clearOnLeave(roomId);
   }, [roomId]);
 
   return {

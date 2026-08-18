@@ -151,6 +151,11 @@ export function clearRoomSessionMaterial(roomId: string): void {
   clearSessionIdentity();
 }
 
+/** Voluntary in-room leave: same retention policy as kick/revoke. */
+export function clearOnLeave(roomId: string): void {
+  clearRoomSessionMaterial(roomId);
+}
+
 export function cleanupStaleRooms(): void {
   if (typeof window === 'undefined') return;
 

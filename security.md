@@ -1146,8 +1146,10 @@ acceptance tests and evidence are satisfied.
 - [ ] Remove plaintext shared-room persistence by default and clear all local
   room/session material on leave, kick, revoke, or expiry (SEC-011).
   - Evidence: independent verifier APPROVE for default-off cache and
-    kick/waiting-leave/expiry clearing. The Phase 5 task stays open because
-    revoke, in-room leave, reject/suspend, and TURN/relay are not done.
+    kick/waiting-leave/expiry clearing. In-room leave `clearOnLeave` is
+    APPROVE-AS-BLOCKED: unit mutant killed peer-id clear; no Playwright
+    spec asserts localStorage wipe on `whiteboard-leave-room-btn`. Residual:
+    revoke/reject/suspend paths and TURN/relay.
 - [ ] Add CSP, framing, content-type, referrer, permissions, cache, and indexing
   protections across assets and API responses (SEC-012).
 - [ ] Minimize PII responses, replace internal error disclosure, and add
@@ -1381,10 +1383,13 @@ it (milestone M1).
     route is POST-only — GET minting sat in the intersection of the
     SameSite=Lax cookie (sent on top-level GET navigations) and the origin
     guard's GET exemption — with roomId grammar validation and the shared
-    security headers; mutation-tested. **Open gap:** a kick or ban revokes
-    future joins but does not evict an already-connected media participant —
-    wire server-side eviction through LiveKit's room service API
-    (`RemoveParticipant`) into the same paths that close room sockets.
+    security headers; mutation-tested. Independent verifier APPROVE
+    (2026-08-18): `banned` is `not-a-member` and is checked before the
+    `waiting_peers` override; treating banned as admitted killed 3 tests.
+    **Open gap:** a kick or ban revokes future joins but does not evict an
+    already-connected media participant — wire server-side eviction through
+    LiveKit's room service API (`RemoveParticipant`) into the same paths
+    that close room sockets.
 - [ ] Screen share is host-approved per instance for students, on by right
   only for the owner.
 - [ ] Recording requires explicit, visible, per-session consent; a recording

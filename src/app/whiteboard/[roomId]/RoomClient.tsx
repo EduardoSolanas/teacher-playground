@@ -69,6 +69,7 @@ function RoomContent({ roomId }: { roomId: string }) {
     approvePeer,
     rejectPeer,
     leaveWaitingRoom,
+    leaveRoom,
     kickPeer,
     sendToWaitingRoom,
     reloadPresence,
@@ -138,6 +139,13 @@ function RoomContent({ roomId }: { roomId: string }) {
     setUserName(name);
     syncUserName(name);
   };
+
+  const handleLeaveRoom = useCallback(() => {
+    clearSession();
+    av.leave();
+    leaveRoom();
+    setUserName(null);
+  }, [av, clearSession, leaveRoom]);
 
   // Calculate this user's position in the waiting queue
   const waitingPosition = isWaiting
@@ -238,6 +246,14 @@ function RoomContent({ roomId }: { roomId: string }) {
           title="Clear board"
         >
           Clear
+        </button>
+        <button
+          data-testid="whiteboard-leave-room-btn"
+          onClick={handleLeaveRoom}
+          className="flex h-7 cursor-pointer items-center justify-center rounded-lg border border-slate-700 px-2 text-[11px] font-medium text-slate-300 transition-colors duration-150 hover:bg-slate-700 hover:text-slate-100"
+          title="Leave room"
+        >
+          Leave
         </button>
       </div>
       <ClearBoardModal

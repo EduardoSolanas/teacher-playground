@@ -557,6 +557,20 @@ export function useCollaboration(roomId: string) {
     setIsWaiting(false);
   }, [roomId, localPeerId]);
 
+  const leaveRoom = useCallback(async () => {
+    try {
+      await ajaxFetch(
+        `/api/whiteboard/room/${roomId}/presence?peerId=${encodeURIComponent(localPeerIdRef.current)}`,
+        { method: 'DELETE' },
+      );
+    } catch {
+      // still drop local join state so the prompt can return
+    }
+    destroyCollaboration();
+    hasJoinedRef.current = false;
+    setHasJoined(false);
+  }, [roomId]);
+
   const kickPeer = useCallback(async (peerId: string, accountId?: string | null) => {
     try {
       await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
@@ -631,6 +645,7 @@ export function useCollaboration(roomId: string) {
     approvePeer,
     rejectPeer,
     leaveWaitingRoom,
+    leaveRoom,
     kickPeer,
     sendToWaitingRoom,
     reloadPresence,
