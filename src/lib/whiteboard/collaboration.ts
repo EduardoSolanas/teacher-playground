@@ -6,12 +6,12 @@ import {
   updateElementInArray,
   getElementsFromArray,
 } from './yjsDoc';
-import { createYWebRTCProvider, destroyProvider } from './ywebrtcProvider';
+import { createYWebsocketProvider, destroyProvider } from './yWebsocketProvider';
 import type { CanvasElement, WhiteboardUser, RemoteCursor } from '@/types/whiteboard';
 
 type ChangeCallback = (type: string, data: any) => void;
 
-function readProviderStatus(provider: ReturnType<typeof createYWebRTCProvider>['provider']) {
+function readProviderStatus(provider: ReturnType<typeof createYWebsocketProvider>['provider']) {
   const shouldConnect = (provider as any).shouldConnect !== false;
   return {
     status: provider.connected ? 'connected' : shouldConnect ? 'connecting' : 'disconnected',
@@ -21,7 +21,7 @@ function readProviderStatus(provider: ReturnType<typeof createYWebRTCProvider>['
 
 export function createCollaboration(roomId: string, peerId?: string) {
   const { doc, elementsArray, viewportMap, cursorsMap } = createWhiteboardDoc(roomId);
-  const { provider, status } = createYWebRTCProvider(doc, roomId);
+  const { provider, status } = createYWebsocketProvider(doc, roomId);
 
   const localPeerId = peerId || `user-${Math.random().toString(36).substring(2, 9)}`;
   let localUserName = 'Anonymous';

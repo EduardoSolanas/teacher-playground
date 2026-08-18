@@ -252,6 +252,88 @@ describe('y-webrtc signaling over Durable Object WebSockets', () => {
   });
 });
 
+describe('y-websocket document bytes over RoomDO WebSockets', () => {
+  async function connectGranted(who: LocalAuthSession, roomId: string): Promise<WebSocket> {
+    const res = await authenticatedFetch(`/signaling?room=${roomId}`, who, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(res.status).toBe(101);
+    const ws = res.webSocket;
+    if (!ws) throw new Error('no webSocket on response');
+    ws.accept();
+    return ws;
+  }
+
+  async function grantEditor(
+    owner: LocalAuthSession,
+    editor: LocalAuthSession,
+    roomId: string,
+  ) {
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Editor' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${editor.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    )).status).toBe(200);
+  }
+
+  function nextBinaryMessage(ws: WebSocket): Promise<ArrayBuffer> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timed out waiting for binary frame')), 2000);
+      ws.addEventListener('message', (event: MessageEvent) => {
+        clearTimeout(timer);
+        if (typeof event.data === 'string') {
+          reject(new Error('expected binary frame, got string'));
+          return;
+        }
+        if (event.data instanceof ArrayBuffer) {
+          resolve(event.data);
+          return;
+        }
+        const view = event.data as ArrayBufferView;
+        const copy = new Uint8Array(view.byteLength);
+        copy.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+        resolve(copy.buffer);
+      }, { once: true });
+    });
+  }
+
+  it('relays binary ArrayBuffer frames to other granted peers in the same room', async () => {
+    const owner = await bootstrapLocalSession('binary-relay-owner');
+    const editor = await bootstrapLocalSession('binary-relay-editor');
+    const roomId = 'binary-relay-room';
+    const otherRoomId = 'binary-relay-other-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    expect((await writeRoom(otherRoomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+
+    const sender = await connectGranted(owner, roomId);
+    const receiver = await connectGranted(editor, roomId);
+    const otherRoomSocket = await connectGranted(owner, otherRoomId);
+
+    const payload = new Uint8Array([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+    const received = nextBinaryMessage(receiver);
+    sender.send(payload.buffer);
+
+    expect(Array.from(new Uint8Array(await received))).toEqual(Array.from(payload));
+
+    let leaked = false;
+    otherRoomSocket.addEventListener('message', () => { leaked = true; }, { once: true });
+    sender.send(payload.buffer);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(leaked).toBe(false);
+  });
+});
+
 describe('static asset serving', () => {
   it('serves the app shell at the root', async () => {
     const res = await accessFetch('/', 'room-worker-test');

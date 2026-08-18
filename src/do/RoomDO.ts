@@ -506,6 +506,26 @@ export class RoomDO extends DurableObject {
   }
 
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
+    // y-websocket sends Yjs updates as binary; relay to other peers, not back to sender.
+    if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
+      const bytes = raw instanceof ArrayBuffer
+        ? new Uint8Array(raw)
+        : new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+      for (const peer of this.ctx.getWebSockets()) {
+        if (peer === ws) continue;
+        try {
+          peer.send(bytes);
+        } catch {
+          try {
+            peer.close();
+          } catch {
+            // Already gone.
+          }
+        }
+      }
+      return;
+    }
+
     if (typeof raw !== 'string') return;
 
     let msg: { type?: string; topics?: unknown; topic?: unknown; clients?: number };

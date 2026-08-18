@@ -1062,6 +1062,13 @@ acceptance tests and evidence are satisfied.
 
 - [ ] Move Yjs synchronization from direct `y-webrtc` peers to authenticated,
   server-authoritative Durable Object WebSockets (SEC-001).
+  - Evidence: independent verifier APPROVE-AS-BLOCKED (do not check).
+    RoomDO relays binary frames to other granted sockets (sender excluded);
+    dropping the ArrayBuffer branch timed out the workers test (reverted).
+    Browser collaboration uses `y-websocket` `SignalingWebsocketProvider`
+    against `/signaling?room=` (`url` getter is live in y-websocket 3).
+    Residual: no Playwright proof of Y.Doc convergence on this path;
+    viewers can still send binary; JSON y-webrtc `publish` remains.
 - [ ] Do not create a collaboration provider before approval and authorization.
   - Evidence: independent verifier APPROVE-AS-BLOCKED (do not check).
     `shouldStartCollaboration` blocks pending/waiting/kicked; the hook
@@ -1070,14 +1077,15 @@ acceptance tests and evidence are satisfied.
     unit test failed; reverted). `npm test` 289, workers 99, typecheck
     clean. E2E 91/93: two `waitForPresence` failures are waiting-queue
     isolation (join-via-code / never-created URL), not a canvas grant.
-    Residual: after grant, sync is still y-webrtc P2P (SEC-001).
+    Residual: after grant, the client now opens y-websocket on `/signaling`
+    (see Yjs move item); Phase 3 gate still needs e2e convergence.
 - [ ] Use a same-origin, hostname-protected WebSocket upgrade carrying the local
   session unless a documented cross-origin requirement proves that a separate
   one-time ticket is necessary (SEC-003).
   - Evidence: independent verifier APPROVE for grant-gated `/signaling`
     upgrades (pending/outsider 403, owner 101). Origin + session were
-    already required. Residual: the socket still only signals y-webrtc;
-    document sync is not on this WebSocket.
+    already required. Residual: JSON y-webrtc `publish` is still accepted;
+    Yjs binary now shares this socket (see Yjs move item).
 - [ ] Bind every socket attachment to `account_id`, `session_id`, room grant
   version, role, and expiry; validate exact `Origin`, protocol, topic, schema,
   message size, connection count, rate, and bounded fan-out.
