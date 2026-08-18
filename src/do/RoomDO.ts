@@ -41,6 +41,7 @@ import {
 } from '../lib/whiteboard/handlers/requests';
 import { handleRequestsIdPost } from '../lib/whiteboard/handlers/requestsId';
 import { issueAvTokenResponse } from '../lib/av/handleAvToken';
+import { MAX_BODY_BYTES } from '../lib/worker/requestGuard';
 
 /**
  * How often live sockets are re-checked against the identity store. This is the
@@ -572,6 +573,18 @@ export class RoomDO extends DurableObject {
       || !isGrantedRole(getGrantRole(this.db, attachment.roomId, attachment.accountId))
     ) {
       this.closeRevoked(ws);
+      return;
+    }
+
+    const payloadBytes = typeof raw === 'string'
+      ? new TextEncoder().encode(raw).byteLength
+      : raw.byteLength;
+    if (payloadBytes > MAX_BODY_BYTES) {
+      try {
+        ws.close(1009);
+      } catch {
+        // Already closed.
+      }
       return;
     }
 

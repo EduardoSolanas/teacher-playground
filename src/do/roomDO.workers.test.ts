@@ -4,6 +4,7 @@ import { runDurableObjectAlarm, runInDurableObject, SELF } from 'cloudflare:test
 import { getIdentityObject, type IdentityDO } from './IdentityDO';
 import type { RoomDO } from './RoomDO';
 import { ROOM_SETTINGS_KEYS } from '../lib/whiteboard/requestSchemas';
+import { MAX_BODY_BYTES } from '../lib/worker/requestGuard';
 import {
   accessFetch,
   authenticatedFetch,
@@ -430,6 +431,118 @@ describe('y-websocket document bytes over RoomDO WebSockets', () => {
     const receivedFromOwner = nextBinaryMessage(viewerSocket);
     ownerSocket.send(ownerPayload.buffer);
     expect(Array.from(new Uint8Array(await receivedFromOwner))).toEqual(Array.from(ownerPayload));
+  });
+});
+
+describe('signaling message size limit', () => {
+  async function connectGranted(who: LocalAuthSession, roomId: string): Promise<WebSocket> {
+    const res = await authenticatedFetch(`/signaling?room=${roomId}`, who, {
+      headers: { Upgrade: 'websocket' },
+    });
+    expect(res.status).toBe(101);
+    const ws = res.webSocket;
+    if (!ws) throw new Error('no webSocket on response');
+    ws.accept();
+    return ws;
+  }
+
+  async function grantEditor(
+    owner: LocalAuthSession,
+    editor: LocalAuthSession,
+    roomId: string,
+  ) {
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Editor' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${editor.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    )).status).toBe(200);
+  }
+
+  function closeSignal(ws: WebSocket): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('socket was not closed')), 2000);
+      ws.addEventListener('close', (event: CloseEvent) => {
+        clearTimeout(timer);
+        resolve(event.code);
+      }, { once: true });
+    });
+  }
+
+  function nextBinaryMessage(ws: WebSocket): Promise<ArrayBuffer> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timed out waiting for binary frame')), 2000);
+      ws.addEventListener('message', (event: MessageEvent) => {
+        clearTimeout(timer);
+        if (typeof event.data === 'string') {
+          reject(new Error('expected binary frame, got string'));
+          return;
+        }
+        if (event.data instanceof ArrayBuffer) {
+          resolve(event.data);
+          return;
+        }
+        const view = event.data as ArrayBufferView;
+        const copy = new Uint8Array(view.byteLength);
+        copy.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+        resolve(copy.buffer);
+      }, { once: true });
+    });
+  }
+
+  it('closes with 1009 when a granted owner sends a binary frame over MAX_BODY_BYTES', async () => {
+    const owner = await bootstrapLocalSession('oversized-binary-owner');
+    const roomId = 'oversized-binary-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const ws = await connectGranted(owner, roomId);
+    const closed = closeSignal(ws);
+
+    const oversized = new Uint8Array(MAX_BODY_BYTES + 1);
+    ws.send(oversized.buffer);
+
+    expect(await closed).toBe(1009);
+  });
+
+  it('closes with 1009 when a granted owner sends a string frame over MAX_BODY_BYTES', async () => {
+    const owner = await bootstrapLocalSession('oversized-string-owner');
+    const roomId = 'oversized-string-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const ws = await connectGranted(owner, roomId);
+    const closed = closeSignal(ws);
+
+    ws.send('x'.repeat(MAX_BODY_BYTES + 1));
+
+    expect(await closed).toBe(1009);
+  });
+
+  it('still relays a 1-byte binary frame to other granted peers', async () => {
+    const owner = await bootstrapLocalSession('small-binary-owner');
+    const editor = await bootstrapLocalSession('small-binary-editor');
+    const roomId = 'small-binary-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+
+    const sender = await connectGranted(owner, roomId);
+    const receiver = await connectGranted(editor, roomId);
+
+    const payload = new Uint8Array([0x42]);
+    const received = nextBinaryMessage(receiver);
+    sender.send(payload.buffer);
+
+    expect(Array.from(new Uint8Array(await received))).toEqual([0x42]);
   });
 });
 

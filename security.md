@@ -167,8 +167,9 @@ approve, join, refresh, expiry, revoke, and denial.
 session, exact Origin, Worker-stamped `accountId`, and a granted room role
 (`owner`/`editor`/`viewer`) before `acceptWebSocket`; pending, banned, and
 non-members get 403. Independent verifier APPROVE; skipping `isGrantedRole`
-gave outsiders 101. Residual: no frame-size/rate/socket-cap; string `publish`
-still fans out to every room socket; Yjs after grant is still y-webrtc P2P.
+gave outsiders 101. Residual: no per-socket rate or connection cap.
+    Frame size is 1 MiB → close 1009 (see below). JSON `publish` is
+    write-gated; Yjs uses y-websocket on this socket.
 
 - [ ] Prefer a same-origin, hostname-protected upgrade authenticated by Access
   and the local application session. Add a short-lived, single-use,
@@ -178,11 +179,11 @@ still fans out to every room socket; Yjs after grant is still y-webrtc P2P.
 - [ ] Require an existing room and bind the connection attachment to its room.
 - [ ] Enforce protocol schemas, expected topic, frame size, sockets per room and
   principal, message rate, and bounded fan-out.
-  - Verified live in code (review round 2, `RoomDO.webSocketMessage`): no
-    frame-size cap, no message-rate limit, no per-principal socket cap, and a
-    `publish` is broadcast to every room socket — an admitted peer can send
-    arbitrarily large frames at any rate with room-sized amplification. This
-    is a standing weakness on main today, not merely planned work.
+  - Evidence: independent verifier APPROVE-AS-BLOCKED then type-fixed:
+    payloads over `MAX_BODY_BYTES` (1 MiB) close **1009** after grant
+    checks. Mutant `false &&` size check left the socket open. String and
+    binary oversized tests pass. Residual: no message-rate limit, no
+    per-principal socket cap, no protocol/topic schema.
 - [ ] Redact credentials/tickets from logs and metrics.
 - [ ] Revalidate on hibernation wake: a WebSocket attachment written at accept
   time is a snapshot, not a session. On wake (message or alarm after
