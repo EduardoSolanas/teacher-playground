@@ -51,7 +51,6 @@ export function useCollaboration(roomId: string) {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string>('connecting');
   const [elements, setElements] = useState<CanvasElement[]>([]);
-  const [seedElements, setSeedElements] = useState<CanvasElement[]>([]);
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const [maxUsers, setMaxUsers] = useState(DEFAULT_MAX_USERS);
   const [waitingPeers, setWaitingPeers] = useState<WhiteboardUser[]>([]);
@@ -194,6 +193,8 @@ export function useCollaboration(roomId: string) {
           }
         }
 
+        setRoomGranted(res.ok);
+
         if (res.ok) {
           const data = await res.json();
           const loadedElements = data.elements || [];
@@ -202,14 +203,12 @@ export function useCollaboration(roomId: string) {
           setMaxUsers(data.maxUsers || DEFAULT_MAX_USERS);
           applyHostFromApi(hostPeerIdRef, data.hostPeerId, setHostPeerId);
           applyElements(loadedElements);
-          setSeedElements(loadedElements);
           // Also publish what the room already contains, so a board reopened
           // after a reload shows it. The scene is driven by the shared
           // document, so state that only reaches React never reaches the
           // canvas. Retried because collaboration may still be starting up.
           pendingPublishRef.current = loadedElements;
           applyViewport(loadedViewport);
-          setRoomGranted(true);
           setStatus('connected');
           setIsConnected(true);
           setIsSynced(true);
@@ -250,14 +249,6 @@ export function useCollaboration(roomId: string) {
     if (!collaboration) {
       destroyCollaboration();
       return;
-    }
-
-    const snapshot = pendingPublishRef.current ?? elementsRef.current;
-    if (snapshot.length > 0) {
-      pendingPublishRef.current = null;
-      publishToSharedDoc(
-        reconcileElements(snapshot, []) as unknown as CanvasElement[],
-      );
     }
 
     collaboration.onChange((type, data) => {
@@ -713,7 +704,6 @@ export function useCollaboration(roomId: string) {
     status,
     maxUsers,
     elements,
-    seedElements,
     yDoc: collaborationEpoch >= 0 ? collaborationRef.current?.doc ?? null : null,
     yElementsArray: collaborationEpoch >= 0 ? collaborationRef.current?.elementsArray ?? null : null,
     yCursorsMap: collaborationEpoch >= 0 ? collaborationRef.current?.cursorsMap ?? null : null,

@@ -26,7 +26,6 @@ type ExcalidrawWrapperProps = {
   onToolChange: (tool: string) => void;
   onViewportChange: (viewport: { x: number; y: number; zoom: number }) => void;
   onElementsChange: (elements: any[]) => void;
-  seedElements?: any[];
 };
 
 export default function ExcalidrawWrapper({
@@ -42,7 +41,6 @@ export default function ExcalidrawWrapper({
   onToolChange,
   onViewportChange,
   onElementsChange,
-  seedElements = [],
 }: ExcalidrawWrapperProps) {
   const apiRef = useRef<any>(null);
   const [isClient, setIsClient] = useState(false);
@@ -56,7 +54,6 @@ export default function ExcalidrawWrapper({
   const hasAcceptedInitialSceneRef = useRef(false);
   const localPeerIdRef = useRef(localPeerId);
   localPeerIdRef.current = localPeerId;
-  const seedAppliedRef = useRef(false);
 
   const finishRemoteUpdateSoon = useCallback(() => {
     if (remoteUpdateTimeoutRef.current) {
@@ -146,33 +143,10 @@ export default function ExcalidrawWrapper({
 
     elementsArray.observeDeep(handler);
 
-    const existing: any[] = [];
-    for (const yMap of elementsArray.toArray()) {
-      const el: Record<string, unknown> = {};
-      (yMap as Y.Map<unknown>).forEach((value: unknown, key: string) => {
-        el[key] = value;
-      });
-      existing.push(el);
-    }
-    if (existing.length > 0 && !excalidrawElementsEqual(existing, lastSyncedElementsRef.current)) {
-      lastSyncedElementsRef.current = existing;
-      applyRemoteElements(existing);
-    }
-
     return () => {
       elementsArray.unobserveDeep(handler);
     };
   }, [yDoc, yElementsArray, yCursorsMap, roomId, applyRemoteElements]);
-
-  useEffect(() => {
-    seedAppliedRef.current = false;
-  }, [roomId]);
-
-  useEffect(() => {
-    if (seedAppliedRef.current || seedElements.length === 0 || !apiRef.current) return;
-    seedAppliedRef.current = true;
-    applyRemoteElements(seedElements);
-  }, [seedElements, applyRemoteElements]);
 
   /** Snapshot of the shared document as plain Excalidraw elements. */
   const readSharedElements = useCallback((): Record<string, unknown>[] => {
@@ -198,28 +172,20 @@ export default function ExcalidrawWrapper({
     // initialisation when this callback fires and would overwrite a scene
     // written synchronously here. The tool handling below defers for the same
     // reason.
-    let attempts = 0;
-    const tryApplyShared = () => {
+    setTimeout(() => {
       if (apiRef.current !== api) return;
       const shared = readSharedElements();
-      const incoming = shared.length > 0 ? shared : seedElements;
-      if (incoming.length === 0 && attempts < 20) {
-        attempts += 1;
-        setTimeout(tryApplyShared, 100);
-        return;
-      }
-      if (incoming.length === 0) return;
-      if (excalidrawElementsEqual(incoming, lastSyncedElementsRef.current)) return;
-      lastSyncedElementsRef.current = incoming;
+      if (shared.length === 0) return;
+      if (excalidrawElementsEqual(shared, lastSyncedElementsRef.current)) return;
+      lastSyncedElementsRef.current = shared;
       isRemoteUpdateRef.current = true;
       try {
-        api.updateScene({ elements: serializeExcalidrawElements(incoming) as any });
+        api.updateScene({ elements: serializeExcalidrawElements(shared) as any });
       } catch {
         // A malformed stored scene must not stop the board from opening.
       }
       finishRemoteUpdateSoon();
-    };
-    setTimeout(tryApplyShared, 100);
+    }, 100);
 
     // E2E runs against a production build, so the handle is also exposed when
     // the build is explicitly flagged for testing. Real deploys leave it off.
@@ -259,7 +225,7 @@ export default function ExcalidrawWrapper({
         }
       }
     }, 100);
-  }, [finishRemoteUpdateSoon, readSharedElements, seedElements]);
+  }, [finishRemoteUpdateSoon, readSharedElements]);
 
   useEffect(() => {
     if (!apiRef.current || !activeTool) return;

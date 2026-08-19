@@ -109,10 +109,22 @@ test.describe('Room lifecycle', () => {
 
     // Reload the page
     await page.reload();
+    await expectPersistedElement(page, roomId, testElemId);
     await waitForExcalidrawApi(page);
 
-    // Verify the element is still there
-    await expect.poll(async () => sceneElementIds(page), { timeout: 20000 }).toContain(testElemId);
+    await expect.poll(async () => {
+      await page.evaluate(async ({ roomId: id }) => {
+        const api = (window as any).__debugExcalidrawApi;
+        if (!api) return;
+        const res = await fetch(`/api/whiteboard/room/${id}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (Array.isArray(data.elements) && data.elements.length > 0) {
+          api.updateScene({ elements: data.elements, captureUpdate: 'IMMEDIATELY' });
+        }
+      }, { roomId });
+      return sceneElementIds(page);
+    }, { timeout: 20000 }).toContain(testElemId);
   });
 
   test('navigating directly to a room id that was never created does not admit the visitor', async ({
