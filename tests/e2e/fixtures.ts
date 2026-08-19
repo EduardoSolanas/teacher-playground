@@ -26,8 +26,8 @@ async function uniqueAccessStorageState() {
  * account's presence/create rate-limit bucket.
  */
 export const test = base.extend({
-  storageState: async ({}, use) => {
-    await use(await uniqueAccessStorageState());
+  storageState: async ({}, provide) => {
+    await provide(await uniqueAccessStorageState());
   },
 });
 

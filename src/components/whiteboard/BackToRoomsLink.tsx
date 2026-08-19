@@ -1,12 +1,14 @@
 'use client';
 
+import Link from 'next/link';
+
 export default function BackToRoomsLink({
   onNavigate,
 }: {
   onNavigate?: () => void;
 }) {
   return (
-    <a
+    <Link
       href="/whiteboard"
       data-testid="whiteboard-back-to-rooms"
       onClick={(event) => {
@@ -29,6 +31,6 @@ export default function BackToRoomsLink({
         <path d="m15 18-6-6 6-6" />
       </svg>
       Back to rooms
-    </a>
+    </Link>
   );
 }
