@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures';
 import { request as httpRequest } from 'node:http';
-import { appUrl, createRoomWithMaxUsers, expectSessionCookie } from './helpers';
+import { appUrl, createRoomWithMaxUsers, expectSessionCookie, clickCreateRoom } from './helpers';
 
 function rawProxyRequest(baseURL: string, cookie: string, assertion: string) {
   return new Promise<{ status: number; cacheControl?: string }>((resolve, reject) => {
@@ -85,7 +85,7 @@ test.describe('local Access edge and session bootstrap', () => {
       response.request().method() === 'POST'
       && new URL(response.url()).pathname.startsWith('/api/whiteboard/room/')
     ));
-    await page.getByTestId('whiteboard-create-room-btn').click();
+    await clickCreateRoom(page);
 
     const request = await apiRequest;
     expect((await request.allHeaders())['x-requested-with']).toBe('XMLHttpRequest');

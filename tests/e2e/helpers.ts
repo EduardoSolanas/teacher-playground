@@ -33,6 +33,31 @@ function roomIdFromPageUrl(page: Page): string {
   return roomIdFromWhiteboardUrl(page.url());
 }
 
+async function deleteOwnedRoomsFromLanding(page: Page) {
+  const items = page.locator('[data-testid^="whiteboard-room-list-item-"]');
+  const count = await items.count();
+  for (let i = 0; i < count; i += 1) {
+    const testId = await items.nth(0).getAttribute('data-testid');
+    const roomId = testId?.replace('whiteboard-room-list-item-', '');
+    if (!roomId) continue;
+    await page.getByTestId(`whiteboard-room-menu-${roomId}`).click();
+    await page.getByTestId(`whiteboard-room-delete-${roomId}`).click();
+    await page.getByTestId(`whiteboard-room-delete-confirm-${roomId}`).click();
+    await expect(page.getByTestId(`whiteboard-room-list-item-${roomId}`)).toHaveCount(0);
+  }
+}
+
+async function clickCreateRoom(page: Page) {
+  const create = page.getByTestId('whiteboard-create-room-btn');
+  await expect(create).toBeVisible({ timeout: 20000 });
+  if (await create.isDisabled()) {
+    await expect(page.getByTestId('whiteboard-room-list-loading')).toHaveCount(0);
+    await deleteOwnedRoomsFromLanding(page);
+  }
+  await expect(create).toBeEnabled({ timeout: 15000 });
+  await create.click({ timeout: 15000 });
+}
+
 async function createRoomWithMaxUsers(page: Page, name: string, maxUsers: number) {
   await page.goto(appUrl('/whiteboard'));
   await expectSessionCookie(page);
@@ -42,7 +67,7 @@ async function createRoomWithMaxUsers(page: Page, name: string, maxUsers: number
   await maxUsersInput.clear();
   await maxUsersInput.fill(String(maxUsers));
 
-  await page.getByTestId('whiteboard-create-room-btn').click();
+  await clickCreateRoom(page);
   await expect(page.getByTestId('whiteboard-username-input')).toBeVisible();
   await page.getByTestId('whiteboard-username-input').fill(name);
   await page.getByTestId('whiteboard-join-room-btn').click();
@@ -236,6 +261,7 @@ async function joinRoomApprovedViaUrl(peerPage: Page, hostPage: Page, roomUrl: s
 export {
   appUrl,
   expectSessionCookie,
+  clickCreateRoom,
   newAuthenticatedContext,
   createRoomWithMaxUsers,
   roomIdFromPageUrl,

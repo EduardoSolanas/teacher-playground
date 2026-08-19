@@ -137,6 +137,14 @@ describe('WhiteboardRoute room list', () => {
     expect(push).not.toHaveBeenCalled();
   });
 
+  it('keeps Create Room enabled while the room list is still loading', () => {
+    ajaxFetch.mockImplementation(() => new Promise(() => {}));
+
+    render(<WhiteboardRoute />);
+
+    expect(screen.getByTestId('whiteboard-create-room-btn')).toHaveProperty('disabled', false);
+  });
+
   it('creates a room then assigns the real room URL', async () => {
     ajaxFetch.mockImplementation((url: string, init?: RequestInit) => {
       if (url === '/api/whiteboard/rooms') {

@@ -1,29 +1,9 @@
 import { test, expect } from './fixtures';
 import { Page } from '@playwright/test';
-import { newAuthenticatedContext, expandPresenceIfCollapsed } from './helpers';
+import { newAuthenticatedContext, expandPresenceIfCollapsed, createRoomWithMaxUsers } from './helpers';
 
 function appUrl(path: string) {
   return new URL(path, process.env.PLAYWRIGHT_BASE_URL).toString();
-}
-
-async function createRoomWithMaxUsers(page: Page, name: string, maxUsers: number) {
-  await page.goto(appUrl('/whiteboard'));
-  await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
-
-  const maxUsersInput = page.locator('input[type="number"]');
-  await maxUsersInput.clear();
-  await maxUsersInput.fill(String(maxUsers));
-
-  await page.getByTestId('whiteboard-create-room-btn').click();
-  await expect(page.getByTestId('whiteboard-username-input')).toBeVisible();
-  await page.getByTestId('whiteboard-username-input').fill(name);
-  await page.getByTestId('whiteboard-join-room-btn').click();
-  await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
-  await expect(page).toHaveURL(/\/whiteboard\/[A-Za-z0-9_-]{8,}(?:\/)?$/);
-  const roomId = new URL(page.url()).pathname.split('/').pop()!;
-  expect(roomId).not.toBe('_room');
-  expect(roomId).not.toBe('undefined');
-  return roomId;
 }
 
 async function joinExistingRoom(page: Page, roomId: string, name = 'Peer') {

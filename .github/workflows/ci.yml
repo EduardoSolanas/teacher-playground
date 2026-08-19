@@ -49,11 +49,13 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      - name: Worker Durable Object tests
-        run: npm run test:workers
-
+      # Worker ASSETS bind to ./out. The nonce and marketing HTML tests 404
+      # unless the Next export exists before workerd starts.
       - name: Build
         run: npm run build
+
+      - name: Worker Durable Object tests
+        run: npm run test:workers
 
   e2e:
     name: E2E tests

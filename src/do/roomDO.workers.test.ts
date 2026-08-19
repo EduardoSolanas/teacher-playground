@@ -881,8 +881,12 @@ describe('static asset serving', () => {
   });
 
   it('serves the same page regardless of room id', async () => {
-    const a = await (await accessFetch('/whiteboard/room-aaa', 'room-worker-test')).text();
-    const b = await (await accessFetch('/whiteboard/room-bbb', 'room-worker-test')).text();
+    const aRes = await accessFetch('/whiteboard/room-aaa', 'room-worker-test');
+    const bRes = await accessFetch('/whiteboard/room-bbb', 'room-worker-test');
+    expect(aRes.status).toBe(200);
+    expect(bRes.status).toBe(200);
+    const a = await aRes.text();
+    const b = await bRes.text();
     // Per-response CSP nonces differ; the placeholder document is otherwise identical.
     const withoutNonce = (html: string) => html.replace(/\snonce="[a-f0-9]+"/g, '');
     expect(withoutNonce(a)).toBe(withoutNonce(b));

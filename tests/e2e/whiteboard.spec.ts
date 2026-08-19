@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures';
 import { Page, Browser } from '@playwright/test';
-import { createRoomWithMaxUsers, newAuthenticatedContext, expandPresenceIfCollapsed, roomIdFromPageUrl } from './helpers';
+import { createRoomWithMaxUsers, newAuthenticatedContext, expandPresenceIfCollapsed, roomIdFromPageUrl, clickCreateRoom, expectSessionCookie } from './helpers';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -27,12 +27,8 @@ async function cleanContextAndJoin(
     await page.goto(appUrl(`/whiteboard/${joinCode}`));
   } else {
     await page.goto(appUrl('/whiteboard'));
-  }
-  await expect(page.locator('h1')).toContainText('Collaborative Whiteboard', { timeout: 5000 }).catch(() => {
-    // Already on the room page (direct navigation with joinCode).
-  });
-
-  if (!joinCode) {
+    await expectSessionCookie(page);
+    await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
     await page.evaluate(() => {
       localStorage.removeItem('whiteboard_username');
       localStorage.setItem(
@@ -40,7 +36,7 @@ async function cleanContextAndJoin(
         '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0'),
       );
     });
-    await page.getByTestId('whiteboard-create-room-btn').click();
+    await clickCreateRoom(page);
   }
 
   const canvasArea = page.getByTestId('whiteboard-canvas-area');

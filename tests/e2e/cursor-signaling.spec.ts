@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures';
 import { Page } from '@playwright/test';
+import { clickCreateRoom } from './helpers';
 
 function appUrl(path: string) {
   return new URL(path, process.env.PLAYWRIGHT_BASE_URL).toString();
@@ -8,7 +9,7 @@ function appUrl(path: string) {
 async function createRoom(page: Page, name: string) {
   await page.goto(appUrl('/whiteboard'));
   await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
-  await page.getByTestId('whiteboard-create-room-btn').click();
+  await clickCreateRoom(page);
   await expect(page.getByTestId('whiteboard-username-input')).toBeVisible();
   await page.getByTestId('whiteboard-username-input').fill(name);
   await page.getByTestId('whiteboard-join-room-btn').click();

@@ -92,11 +92,11 @@ export default function WhiteboardRoute() {
     };
   }, []);
 
-  const atRoomLimit = rooms.length >= FREE_MAX_ROOMS;
-  const createDisabled = isCreatingRoom || roomsLoading || atRoomLimit;
+  const atRoomLimit = !roomsLoading && rooms.length >= FREE_MAX_ROOMS;
+  const createDisabled = isCreatingRoom || atRoomLimit;
 
   const handleCreateRoom = useCallback(async () => {
-    if (isCreatingRoom || roomsLoading || rooms.length >= FREE_MAX_ROOMS) return;
+    if (isCreatingRoom || rooms.length >= FREE_MAX_ROOMS) return;
 
     const now = Date.now();
     const recent = creationTimes.filter(t => now - t < 60000);
@@ -153,7 +153,7 @@ export default function WhiteboardRoute() {
       setIsCreatingRoom(false);
       setCreateError('Room creation failed. Please try again.');
     }
-  }, [creationTimes, isCreatingRoom, maxUsers, roomName, rooms.length, roomsLoading]);
+  }, [creationTimes, isCreatingRoom, maxUsers, roomName, rooms.length]);
 
   const refreshRooms = useCallback(async () => {
     const response = await ajaxFetch('/api/whiteboard/rooms');

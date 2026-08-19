@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures';
 import { Page } from '@playwright/test';
-import { newAuthenticatedContext, expandPresenceIfCollapsed } from './helpers';
+import { newAuthenticatedContext, expandPresenceIfCollapsed, clickCreateRoom } from './helpers';
 
 function appUrl(path: string) {
   return new URL(path, process.env.PLAYWRIGHT_BASE_URL).toString();
@@ -17,7 +17,7 @@ async function joinRoom(page: Page, name: string) {
 
   await page.goto(appUrl('/whiteboard'));
   await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
-  await page.getByTestId('whiteboard-create-room-btn').click();
+  await clickCreateRoom(page);
   const canvasArea = page.getByTestId('whiteboard-canvas-area');
   const usernameInput = page.getByTestId('whiteboard-username-input');
   const nextView = await Promise.race([

@@ -1,9 +1,19 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { resolve } from 'node:path';
 
 const root = resolve(process.cwd());
+const exportedIndex = resolve(root, 'out/index.html');
+const exportedWhiteboard = resolve(root, 'out/whiteboard.html');
+if (!existsSync(exportedIndex) || !existsSync(exportedWhiteboard)) {
+  console.error(
+    'Worker tests serve HTML from ./out. Run `npm run build` first so ASSETS is not empty.',
+  );
+  process.exit(1);
+}
+
 const port = await new Promise((resolvePort, reject) => {
   const server = createServer();
   server.once('error', reject);
