@@ -94,6 +94,20 @@ export async function handlePresencePost(
       return Response.json({ error: 'Account required' }, { status: 401 });
     }
 
+    if (action === 'raise-hand' || action === 'lower-hand') {
+      const grantRole = getGrantRole(db, roomId, caller);
+      if (!isGrantedRole(grantRole)) {
+        return Response.json({ error: 'Forbidden' }, { status: 403 });
+      }
+      const result = db.prepare(
+        `UPDATE room_presence SET hand_raised = ? WHERE room_id = ? AND account_id = ?`,
+      ).run(action === 'raise-hand' ? 1 : 0, roomId, caller);
+      if (result.changes === 0) {
+        return Response.json({ error: 'Forbidden' }, { status: 403 });
+      }
+      return Response.json(presencePayload(db, roomId, request));
+    }
+
     if (action === 'kick' || action === 'suspend') {
       if (!isOwnerRole(getGrantRole(db, roomId, caller))) {
         return Response.json({ error: 'Forbidden' }, { status: 403 });
@@ -273,8 +287,8 @@ function upsertPresence(
   accountId: string,
 ): void {
   db.prepare(
-    `INSERT INTO room_presence (room_id, peer_id, user_name, color, first_seen, last_seen, account_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO room_presence (room_id, peer_id, user_name, color, first_seen, last_seen, account_id, hand_raised)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0)
      ON CONFLICT(room_id, peer_id) DO UPDATE SET
       user_name = excluded.user_name,
       color = excluded.color,

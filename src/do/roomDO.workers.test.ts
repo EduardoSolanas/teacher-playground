@@ -3058,3 +3058,72 @@ describe('SEC-005 room existence before persist', () => {
     expect(await res.json()).toEqual({ status: 'none' });
   });
 });
+
+describe('raise hand presence action', () => {
+  async function grantEditor(
+    owner: LocalAuthSession,
+    editor: LocalAuthSession,
+    roomId: string,
+  ) {
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Editor' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${editor.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    )).status).toBe(200);
+  }
+
+  it('lets an admitted editor raise a hand that GET presence and heartbeats still report', async () => {
+    const owner = await bootstrapLocalSession(`raise-owner-${crypto.randomUUID()}`);
+    const editor = await bootstrapLocalSession(`raise-editor-${crypto.randomUUID()}`);
+    const roomId = `raise-hand-${crypto.randomUUID()}`;
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+    const editorPeerId = await joinEditorPeer(editor, roomId);
+    await joinPresence(owner, roomId, 'host-peer', { userName: 'Host' });
+
+    const raised = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'raise-hand' }),
+    });
+    expect(raised.status).toBe(200);
+    const raisedBody = await raised.json() as { users: Array<{ peerId: string; handRaised?: boolean }> };
+    expect(raisedBody.users.find((user) => user.peerId === editorPeerId)?.handRaised).toBe(true);
+
+    const listed = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner);
+    expect(listed.status).toBe(200);
+    const listedBody = await listed.json() as { users: Array<{ peerId: string; handRaised?: boolean }> };
+    expect(listedBody.users.find((user) => user.peerId === editorPeerId)?.handRaised).toBe(true);
+
+    const heartbeat = await joinPresence(editor, roomId, 'editor-peer', { userName: 'Editor' });
+    expect(heartbeat.status).toBe(200);
+    const heartbeatBody = await heartbeat.res.json() as {
+      users: Array<{ peerId: string; handRaised?: boolean }>;
+    };
+    expect(heartbeatBody.users.find((user) => user.peerId === editorPeerId)?.handRaised).toBe(true);
+  });
+
+  it('rejects raise-hand from an outsider', async () => {
+    const owner = await bootstrapLocalSession(`raise-out-owner-${crypto.randomUUID()}`);
+    const outsider = await bootstrapLocalSession(`raise-out-${crypto.randomUUID()}`);
+    const roomId = `raise-out-${crypto.randomUUID()}`;
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const raised = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, outsider, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'raise-hand' }),
+    });
+    expect(raised.status).toBe(403);
+  });
+});

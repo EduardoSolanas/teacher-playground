@@ -50,6 +50,7 @@ export function applySchema(db: RoomDatabase): void {
       color TEXT NOT NULL,
       first_seen INTEGER NOT NULL,
       last_seen INTEGER NOT NULL,
+      hand_raised INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (room_id, peer_id)
     )
   `);
@@ -97,6 +98,13 @@ export function applySchema(db: RoomDatabase): void {
     if (!peerColumns.some((column) => column.name === 'account_id')) {
       db.exec(`ALTER TABLE ${table} ADD COLUMN account_id TEXT`);
     }
+  }
+
+  const presenceColumns = db
+    .prepare(`PRAGMA table_info(room_presence)`)
+    .all() as Array<{ name: string }>;
+  if (!presenceColumns.some((column) => column.name === 'hand_raised')) {
+    db.exec(`ALTER TABLE room_presence ADD COLUMN hand_raised INTEGER NOT NULL DEFAULT 0`);
   }
 }
 

@@ -85,6 +85,7 @@ function RoomContent({ roomId }: { roomId: string }) {
     leaveRoom,
     kickPeer,
     sendToWaitingRoom,
+    setHandRaised,
     moderationError,
     reloadPresence,
     setCursor,
@@ -304,6 +305,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         onReject={rejectPeer}
         onKick={kickPeer}
         onSuspend={sendToWaitingRoom}
+        onRaiseHand={setHandRaised}
         mutedPeerIds={new Set(
           av.participants.filter((p) => p.micMuted).map((p) => (p.identity === '__local__' ? localPeerId : p.identity)),
         )}

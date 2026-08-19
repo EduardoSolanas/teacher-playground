@@ -19,6 +19,7 @@ interface PresencePanelProps {
   onReject: (peerId: string, accountId?: string | null) => void;
   onKick: (peerId: string, accountId?: string | null) => void;
   onSuspend: (peerId: string, accountId?: string | null) => void;
+  onRaiseHand?: (raised: boolean) => void;
   /** Peer ids whose microphone is currently muted in the voice session. */
   mutedPeerIds?: ReadonlySet<string>;
 }
@@ -34,6 +35,7 @@ export default function PresencePanel({
   onReject,
   onKick,
   onSuspend,
+  onRaiseHand,
   mutedPeerIds,
 }: PresencePanelProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -262,6 +264,21 @@ export default function PresencePanel({
                 {waitingPeers.length}
               </span>
             )}
+            {onRaiseHand && users.some((user) => user.peerId === localPeerId && !user.isWaiting) && (
+              <button
+                type="button"
+                data-testid="whiteboard-raise-hand"
+                className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+                onClick={() => {
+                  const local = users.find((user) => user.peerId === localPeerId);
+                  onRaiseHand(!local?.handRaised);
+                }}
+              >
+                {users.find((user) => user.peerId === localPeerId)?.handRaised
+                  ? 'Lower hand'
+                  : 'Raise hand'}
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -341,6 +358,14 @@ export default function PresencePanel({
                     )}
                     {isWaiting && (
                       <span className="text-[10px] font-semibold text-amber-600">Waiting</span>
+                    )}
+                    {!isWaiting && user.handRaised && (
+                      <span
+                        data-testid={`whiteboard-user-hand-${user.peerId}`}
+                        className="text-[10px] font-semibold text-amber-600"
+                      >
+                        Hand raised
+                      </span>
                     )}
                     {!isWaiting && mutedPeerIds?.has(user.peerId) && (
                       <span

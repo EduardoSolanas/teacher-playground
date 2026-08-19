@@ -10,7 +10,7 @@ export function readActiveUsers(db: RoomDatabase, roomId: string) {
   const allowFirstUserHost = getRoomAllowFirstUserHost(db, roomId);
 
   const rows = db.prepare(
-    `SELECT p.peer_id, p.user_name, p.color, p.first_seen, p.account_id,
+    `SELECT p.peer_id, p.user_name, p.color, p.first_seen, p.account_id, p.hand_raised,
             m.role AS grant_role
      FROM room_presence p
      LEFT JOIN room_members m
@@ -23,6 +23,7 @@ export function readActiveUsers(db: RoomDatabase, roomId: string) {
     color: string;
     first_seen: number;
     account_id: string | null;
+    hand_raised: number | null;
     grant_role: string | null;
   }>;
 
@@ -39,6 +40,7 @@ export function readActiveUsers(db: RoomDatabase, roomId: string) {
     isHost: row.grant_role === 'owner'
       || (!hasOwnerPresent && allowFirstUserHost && index === 0),
     isWaiting: false,
+    handRaised: row.hand_raised === 1,
   }));
 }
 

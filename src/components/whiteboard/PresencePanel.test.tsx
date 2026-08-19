@@ -280,3 +280,86 @@ describe('PresencePanel moderation menu', () => {
     expect(onSuspend).toHaveBeenCalledWith('peer-student', 'acct-peer');
   });
 });
+
+describe('PresencePanel raise hand', () => {
+  it('shows a Raise hand control for the local admitted user', () => {
+    const onRaiseHand = vi.fn();
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-local', userName: 'Me', isHost: false, handRaised: false }),
+        ]}
+        waitingPeers={[]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={false}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+        onRaiseHand={onRaiseHand}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-raise-hand'));
+    expect(onRaiseHand).toHaveBeenCalledWith(true);
+  });
+
+  it('shows Lower hand when the local user already has a raised hand', () => {
+    const onRaiseHand = vi.fn();
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-local', userName: 'Me', isHost: false, handRaised: true }),
+        ]}
+        waitingPeers={[]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={false}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+        onRaiseHand={onRaiseHand}
+      />,
+    );
+
+    expect(screen.getByTestId('whiteboard-raise-hand').textContent).toMatch(/lower/i);
+    fireEvent.click(screen.getByTestId('whiteboard-raise-hand'));
+    expect(onRaiseHand).toHaveBeenCalledWith(false);
+  });
+
+  it('shows a Hand raised badge for users whose hand is up', () => {
+    renderPanel([
+      makeUser({ peerId: 'peer-local', userName: 'Me', handRaised: false }),
+      makeUser({ peerId: 'peer-student', userName: 'Student', handRaised: true }),
+    ], { localPeerId: 'peer-local' });
+
+    expect(screen.getByTestId('whiteboard-user-hand-peer-student').textContent).toMatch(/hand raised/i);
+    expect(screen.queryByTestId('whiteboard-user-hand-peer-local')).toBeNull();
+  });
+
+  it('does not show a raise control for waiting-room users', () => {
+    render(
+      <PresencePanel
+        users={[]}
+        waitingPeers={[
+          makeUser({ peerId: 'peer-local', userName: 'Me', isWaiting: true }),
+        ]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={false}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+        onRaiseHand={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId('whiteboard-raise-hand')).toBeNull();
+  });
+});

@@ -347,6 +347,29 @@ describe('requestSchemas hardening (SEC-005)', () => {
     it('rejects malformed colors', () => {
       expect(presencePostSchema.safeParse({ peerId: 'user-1', color: 'red' }).success).toBe(false);
     });
+
+    it('accepts raise-hand and lower-hand without a target account', () => {
+      expect(presencePostSchema.safeParse({ action: 'raise-hand' }).success).toBe(true);
+      expect(presencePostSchema.safeParse({ action: 'lower-hand' }).success).toBe(true);
+    });
+
+    it('rejects unknown presence actions', () => {
+      expect(presencePostSchema.safeParse({ action: 'wave', peerId: 'user-1' }).success).toBe(false);
+    });
+
+    it('still requires peerId for a join heartbeat', () => {
+      expect(presencePostSchema.safeParse({ userName: 'Alice' }).success).toBe(false);
+      expect(presencePostSchema.safeParse({ peerId: 'user-1' }).success).toBe(true);
+    });
+
+    it('still requires a target for kick and suspend', () => {
+      expect(presencePostSchema.safeParse({ action: 'kick' }).success).toBe(false);
+      expect(presencePostSchema.safeParse({ action: 'suspend' }).success).toBe(false);
+      expect(presencePostSchema.safeParse({
+        action: 'kick',
+        accountId: '11111111-2222-3333-4444-555555555555',
+      }).success).toBe(true);
+    });
   });
 
   describe('waitingPostSchema', () => {

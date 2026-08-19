@@ -26,6 +26,33 @@ describe('roomDb schema', () => {
       }).not.toThrow();
     });
 
+    it('adds hand_raised to an existing room_presence table without clearing rows', () => {
+      db.exec(`
+        CREATE TABLE room_presence (
+          room_id TEXT NOT NULL,
+          peer_id TEXT NOT NULL,
+          user_name TEXT NOT NULL,
+          color TEXT NOT NULL,
+          first_seen INTEGER NOT NULL,
+          last_seen INTEGER NOT NULL,
+          PRIMARY KEY (room_id, peer_id)
+        )
+      `);
+      db.prepare(
+        `INSERT INTO room_presence (room_id, peer_id, user_name, color, first_seen, last_seen)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run('room-1', 'peer-1', 'Alice', '#3498db', 1, 2);
+
+      applySchema(db);
+
+      const columns = db.prepare(`PRAGMA table_info(room_presence)`).all() as Array<{ name: string }>;
+      expect(columns.some((column) => column.name === 'hand_raised')).toBe(true);
+      const row = db.prepare(
+        `SELECT hand_raised AS handRaised FROM room_presence WHERE room_id = ? AND peer_id = ?`,
+      ).get('room-1', 'peer-1') as { handRaised: number };
+      expect(row.handRaised).toBe(0);
+    });
+
     it('migration path: adds name column to existing rooms table', () => {
       db.exec(`
         CREATE TABLE rooms (

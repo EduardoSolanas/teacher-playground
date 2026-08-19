@@ -148,4 +148,5 @@ export type WhiteboardUser = {
   color: string;
   isHost: boolean;
   isWaiting?: boolean;
+  handRaised?: boolean;
 };

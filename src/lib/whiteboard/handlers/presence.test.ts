@@ -652,4 +652,83 @@ describe('room presence API', () => {
       outcome: 'approved',
     });
   });
+
+  it('lets an admitted member raise and lower their own hand', async () => {
+    const roomId = `presence-raise-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const editor = `acc-editor-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+    requestAccess(getRoomDb(), { roomId, accountId: editor, userName: 'Ed' });
+    approveAccount(getRoomDb(), roomId, editor, { role: 'editor' });
+
+    const join = await postPresence(roomId, editor, { peerId: 'peer-ed', userName: 'Ed' });
+    const raised = await postPresence(roomId, editor, { action: 'raise-hand' });
+    expect(raised.response.status).toBe(200);
+    expect(raised.data.users).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ peerId: join.data.peerId, handRaised: true }),
+      ]),
+    );
+
+    const lowered = await postPresence(roomId, editor, { action: 'lower-hand' });
+    expect(lowered.response.status).toBe(200);
+    expect(lowered.data.users).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ peerId: join.data.peerId, handRaised: false }),
+      ]),
+    );
+  });
+
+  it('rejects raise-hand from a waiting account', async () => {
+    const roomId = `presence-raise-wait-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const guest = `acc-guest-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+    await postPresence(roomId, guest, { peerId: 'peer-student', userName: 'Student' });
+
+    const raised = await postPresence(roomId, guest, { action: 'raise-hand' });
+    expect(raised.response.status).toBe(403);
+  });
+
+  it('does not raise another account hand even when the body names their peerId', async () => {
+    const roomId = `presence-raise-other-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const editor = `acc-editor-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+    requestAccess(getRoomDb(), { roomId, accountId: editor, userName: 'Ed' });
+    approveAccount(getRoomDb(), roomId, editor, { role: 'editor' });
+
+    const ownerJoin = await postPresence(roomId, owner, { peerId: 'peer-owner', userName: 'Teacher' });
+    const editorJoin = await postPresence(roomId, editor, { peerId: 'peer-ed', userName: 'Ed' });
+
+    const raised = await postPresence(roomId, editor, {
+      action: 'raise-hand',
+      peerId: ownerJoin.data.peerId,
+    });
+    expect(raised.response.status).toBe(200);
+    expect(raised.data.users).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ peerId: editorJoin.data.peerId, handRaised: true }),
+        expect.objectContaining({ peerId: ownerJoin.data.peerId, handRaised: false }),
+      ]),
+    );
+  });
+
+  it('keeps handRaised true across a join heartbeat', async () => {
+    const roomId = `presence-raise-hb-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+    const join = await postPresence(roomId, owner, { peerId: 'peer-owner', userName: 'Teacher' });
+    await postPresence(roomId, owner, { action: 'raise-hand' });
+
+    const heartbeat = await postPresence(roomId, owner, {
+      peerId: 'peer-owner',
+      userName: 'Teacher',
+    });
+    expect(heartbeat.data.users).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ peerId: join.data.peerId, handRaised: true }),
+      ]),
+    );
+  });
 });

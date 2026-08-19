@@ -225,7 +225,7 @@ export const roomSettingsSchema = z.object({
 export const roomPostSchema = roomSceneSchema;
 
 export const presencePostSchema = z.object({
-  action: z.enum(['kick', 'suspend']).optional(),
+  action: z.enum(['kick', 'suspend', 'raise-hand', 'lower-hand']).optional(),
   peerId: z.string().regex(PEER_ID_RE).optional(),
   accountId: z.string().regex(ACCOUNT_ID_RE).optional(),
   userName: normalizedNameBase.optional(),
@@ -236,6 +236,9 @@ export const presencePostSchema = z.object({
     if (!hasTarget) {
       ctx.addIssue({ code: 'custom', message: 'accountId or peerId is required' });
     }
+    return;
+  }
+  if (data.action === 'raise-hand' || data.action === 'lower-hand') {
     return;
   }
   if (!data.peerId) {

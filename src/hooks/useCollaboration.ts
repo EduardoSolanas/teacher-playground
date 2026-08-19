@@ -673,6 +673,20 @@ export function useCollaboration(roomId: string) {
     }
   }, [roomId, reloadPresence]);
 
+  const setHandRaised = useCallback(async (raised: boolean) => {
+    try {
+      const res = await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: raised ? 'raise-hand' : 'lower-hand' }),
+      });
+      if (res.ok) await reloadPresence();
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }, [roomId, reloadPresence]);
+
   const sendToWaitingRoom = useCallback(async (peerId: string, accountId?: string | null) => {
     try {
       const res = await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
@@ -736,6 +750,7 @@ export function useCollaboration(roomId: string) {
     leaveRoom,
     kickPeer,
     sendToWaitingRoom,
+    setHandRaised,
     moderationError,
     reloadPresence,
   };

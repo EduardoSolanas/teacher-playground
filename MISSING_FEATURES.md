@@ -34,7 +34,7 @@ Baseline comparison date: 2026-08-17.
 - [ ] Virtual backgrounds
 - [ ] Noise cancellation
 - [ ] In-space chat (1:1 + group, persisted)
-- [ ] Raise hand
+- [x] Raise hand
 - [ ] Session timer
 - [ ] Follow-me / view lock (“lead students”)
 - [ ] Idle / tab-switch distraction alerts
@@ -119,7 +119,7 @@ Goal: real persistence + a non-stub library so later classroom features have som
 Goal: session feel without A/V yet.
 
 - [ ] In-space chat (group first; then 1:1)
-- [ ] Raise hand
+- [x] Raise hand
 - [ ] Session timer
 - [ ] Connection quality indicators
 - [ ] Tech-check / system status
