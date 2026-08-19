@@ -88,7 +88,7 @@ async function sceneElementIds(page: Page): Promise<string[]> {
 
 test.describe('Excalidraw scene sync', () => {
   test('exposes the Excalidraw api once the board is open', async ({ page }) => {
-    await createRoomWithMaxUsers(page, 'ApiHost', 3);
+    await createRoomWithMaxUsers(page, 'ApiHost', 2);
 
     await expect
       .poll(async () => page.evaluate(() => !!(window as any).__debugExcalidrawApi), { timeout: 15000 })
@@ -101,7 +101,7 @@ test.describe('Excalidraw scene sync', () => {
     await installWebRtcSentinel(page);
     const hostSockets = trackWebsocketUrls(page);
 
-    const roomId = await createRoomWithMaxUsers(page, 'SyncHost', 3);
+    const roomId = await createRoomWithMaxUsers(page, 'SyncHost', 2);
 
     const peerContext = await newAuthenticatedContext(browser);
     const peerPage = await peerContext.newPage();
@@ -141,7 +141,7 @@ test.describe('Excalidraw scene sync', () => {
   // Late joiners catch up from the room API after persist (expectPersistedElement),
   // not from Yjs history replay on the signaling socket.
   test('a peer sees elements that already existed before it was approved', async ({ page, browser }) => {
-    const roomId = await createRoomWithMaxUsers(page, 'BacklogHost', 3);
+    const roomId = await createRoomWithMaxUsers(page, 'BacklogHost', 2);
 
     await appendElement(page, rectangle('backlog-rect-1', 120, 120));
     await expect.poll(async () => sceneElementIds(page), { timeout: 10000 }).toContain('backlog-rect-1');
@@ -167,7 +167,7 @@ test.describe('Excalidraw scene sync', () => {
   });
 
   test('an unapproved peer waits and sees no board', async ({ page, browser }) => {
-    const roomId = await createRoomWithMaxUsers(page, 'GateHost', 3);
+    const roomId = await createRoomWithMaxUsers(page, 'GateHost', 2);
 
     await appendElement(page, rectangle('gated-rect-1', 90, 90));
 

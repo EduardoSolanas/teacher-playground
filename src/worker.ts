@@ -411,7 +411,7 @@ function syncOwnedRoom(
   cookie: string,
   method: 'POST' | 'DELETE',
   body: { roomId: string; name?: string | null },
-): Promise<void> {
+): Promise<Response> {
   const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
   return identity.fetch(new Request(IDENTITY_ACCOUNT_ROOMS, {
     method,
@@ -420,27 +420,29 @@ function syncOwnedRoom(
       cookie,
     },
     body: JSON.stringify(body),
-  })).then((response) => {
-    if (!response.ok) {
-      console.error('identity account rooms sync failed', response.status);
-    }
-  }).catch(() => {
-    console.error('identity account rooms sync failed');
-  });
+  }));
 }
 
-async function recordCreatedRoomIfGranted(
+async function reserveOwnedRoomSlot(
   env: Env,
   cookie: string,
   roomId: string,
-  response: Response,
+): Promise<Response> {
+  return syncOwnedRoom(env, cookie, 'POST', { roomId, name: null });
+}
+
+async function releaseOwnedRoomSlot(
+  env: Env,
+  cookie: string,
+  roomId: string,
 ): Promise<void> {
   try {
-    const payload = await response.json() as { hasCreatorGrant?: unknown };
-    if (payload.hasCreatorGrant !== true) return;
-    await syncOwnedRoom(env, cookie, 'POST', { roomId, name: null });
+    const released = await syncOwnedRoom(env, cookie, 'DELETE', { roomId });
+    if (!released.ok && released.status !== 204) {
+      console.error('identity account rooms release failed', released.status);
+    }
   } catch {
-    console.error('identity account rooms create sync failed');
+    console.error('identity account rooms release failed');
   }
 }
 
@@ -682,9 +684,32 @@ export default {
       if (session && subpath === '') {
         const cookie = request.headers.get('cookie') ?? '';
         if (request.method === 'POST' && response.ok) {
-          ctx.waitUntil(recordCreatedRoomIfGranted(env, cookie, roomId, response.clone()));
+          let hasCreatorGrant = false;
+          try {
+            const payload = await response.clone().json() as { hasCreatorGrant?: unknown };
+            hasCreatorGrant = payload.hasCreatorGrant === true;
+          } catch {
+            hasCreatorGrant = false;
+          }
+          if (hasCreatorGrant) {
+            const recorded = await reserveOwnedRoomSlot(env, cookie, roomId);
+            if (!recorded.ok) {
+              await forward(
+                env,
+                roomId,
+                '/room',
+                new Request('https://room/room', { method: 'DELETE' }),
+                url,
+                session,
+              );
+              return withSecurityHeaders(new Response(recorded.body, {
+                status: recorded.status,
+                headers: recorded.headers,
+              }));
+            }
+          }
         } else if (request.method === 'DELETE' && response.status === 200) {
-          ctx.waitUntil(syncOwnedRoom(env, cookie, 'DELETE', { roomId }));
+          await releaseOwnedRoomSlot(env, cookie, roomId);
         }
       }
       if (session && settingsClone && response.ok) {

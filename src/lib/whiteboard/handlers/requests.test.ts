@@ -92,7 +92,7 @@ describe('access request API', () => {
         }),
       );
 
-      for (let i = 1; i <= 3; i += 1) {
+      for (let i = 1; i <= 2; i += 1) {
         const response = await handleRequestsPost(
           getRoomDb(),
           roomId,
@@ -122,7 +122,7 @@ describe('access request API', () => {
       const pending = getRoomDb().prepare(
         `SELECT COUNT(*) AS n FROM room_members WHERE room_id = ? AND role = 'pending'`,
       ).get(roomId) as { n: number };
-      expect(pending.n).toBe(3);
+      expect(pending.n).toBe(2);
     });
 
     it('returns approved status if the account already owns the room', async () => {

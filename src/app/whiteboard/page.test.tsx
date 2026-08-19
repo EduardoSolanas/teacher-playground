@@ -149,11 +149,72 @@ describe('WhiteboardRoute room list', () => {
     });
 
     render(<WhiteboardRoute />);
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-create-room-btn')).toHaveProperty('disabled', false);
+    });
     fireEvent.click(screen.getByTestId('whiteboard-create-room-btn'));
 
     await waitFor(() => {
       expect(assign).toHaveBeenCalledWith('/whiteboard/new-room');
     });
     expect(push).not.toHaveBeenCalled();
+  });
+
+  it('defaults people allowed to host plus one student', async () => {
+    ajaxFetch.mockResolvedValue(jsonResponse({ rooms: [] }));
+    render(<WhiteboardRoute />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-create-room-btn')).toBeTruthy();
+    });
+
+    const people = screen.getByLabelText('People allowed') as HTMLInputElement;
+    expect(people.value).toBe('2');
+    expect(people.max).toBe('2');
+    expect(screen.getByRole('button', { name: 'More people' })).toHaveProperty('disabled', true);
+  });
+
+  it('posts maxUsers 2 when creating a room', async () => {
+    ajaxFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/whiteboard/rooms') {
+        return Promise.resolve(jsonResponse({ rooms: [] }));
+      }
+      if (init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      return Promise.resolve(jsonResponse({}, false));
+    });
+
+    render(<WhiteboardRoute />);
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-create-room-btn')).toHaveProperty('disabled', false);
+    });
+    fireEvent.click(screen.getByTestId('whiteboard-create-room-btn'));
+
+    await waitFor(() => {
+      expect(assign).toHaveBeenCalledWith('/whiteboard/new-room');
+    });
+
+    const settingsCall = ajaxFetch.mock.calls.find(
+      (call) => typeof call[0] === 'string' && String(call[0]).endsWith('/settings'),
+    );
+    expect(JSON.parse(String(settingsCall?.[1]?.body))).toMatchObject({ maxUsers: 2 });
+  });
+
+  it('disables creating another room when the free plan already has one', async () => {
+    ajaxFetch.mockResolvedValue(
+      jsonResponse({
+        rooms: [{ roomId: 'room-alpha', name: 'Algebra' }],
+      }),
+    );
+
+    render(<WhiteboardRoute />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-room-list-item-room-alpha')).toBeTruthy();
+    });
+
+    expect(screen.getByTestId('whiteboard-create-room-btn')).toHaveProperty('disabled', true);
+    expect(screen.getByTestId('whiteboard-create-room-error').textContent).toMatch(/one room/i);
   });
 });

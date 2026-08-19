@@ -103,7 +103,7 @@ test.describe('Waiting Room', () => {
     const peerPage = await context2.newPage();
 
     try {
-      const roomId = await createRoomWithMaxUsers(hostPage, 'HostBadgeHost', 3);
+      const roomId = await createRoomWithMaxUsers(hostPage, 'HostBadgeHost', 2);
       await expect(hostPage.locator('[data-testid^="whiteboard-user-host-"]')).toBeVisible({
         timeout: 15000,
       });
@@ -129,7 +129,7 @@ test.describe('Waiting Room', () => {
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
 
-    const roomId = await createRoomWithMaxUsers(page1, 'CapacityHost', 3);
+    const roomId = await createRoomWithMaxUsers(page1, 'CapacityHost', 2);
 
     await joinExistingRoom(page2, roomId, 'CapacityPeer');
     await expectWaiting(page2);
@@ -359,7 +359,7 @@ test.describe('Waiting Room', () => {
     const approvedPeerPage = await context2.newPage();
     const waitingPeerPage = await context3.newPage();
 
-    const roomId = await createRoomWithMaxUsers(hostPage, 'OnlyHost', 3);
+    const roomId = await createRoomWithMaxUsers(hostPage, 'OnlyHost', 2);
 
     await joinExistingRoom(approvedPeerPage, roomId, 'ApprovedPeer');
     await expectWaiting(approvedPeerPage);
@@ -390,7 +390,7 @@ test.describe('Waiting Room', () => {
     const context = await newAuthenticatedContext(browser);
     const page = await context.newPage();
 
-    await createRoomWithMaxUsers(page, 'CollapseHost', 3);
+    await createRoomWithMaxUsers(page, 'CollapseHost', 2);
     await expect(page.getByText(/users online/)).toBeVisible({ timeout: 15000 });
 
     await page.getByTestId('whiteboard-presence-toggle').click();
@@ -411,7 +411,7 @@ test.describe('Waiting Room', () => {
     const hostPage = await context1.newPage();
     const peerPage = await context2.newPage();
 
-    const roomId = await createRoomWithMaxUsers(hostPage, 'LeftClickHost', 3);
+    const roomId = await createRoomWithMaxUsers(hostPage, 'LeftClickHost', 2);
 
     await joinExistingRoom(peerPage, roomId, 'LeftClickPeer');
     await expectWaiting(peerPage);
@@ -435,7 +435,7 @@ test.describe('Waiting Room', () => {
     const hostPage = await context1.newPage();
     const peerPage = await context2.newPage();
 
-    const roomId = await createRoomWithMaxUsers(hostPage, 'OptionsHost', 3);
+    const roomId = await createRoomWithMaxUsers(hostPage, 'OptionsHost', 2);
 
     await joinExistingRoom(peerPage, roomId, 'OptionsPeer');
     await expectWaiting(peerPage);
@@ -458,7 +458,7 @@ test.describe('Waiting Room', () => {
     const hostPage = await context1.newPage();
     const peerPage = await context2.newPage();
 
-    const roomId = await createRoomWithMaxUsers(hostPage, 'InlineKickHost', 3);
+    const roomId = await createRoomWithMaxUsers(hostPage, 'InlineKickHost', 2);
 
     await joinExistingRoom(peerPage, roomId, 'InlineKickPeer');
     await expectWaiting(peerPage);
@@ -487,7 +487,7 @@ test.describe('Waiting Room', () => {
     const hostPage = await context1.newPage();
     const peerPage = await context2.newPage();
 
-    const roomId = await createRoomWithMaxUsers(hostPage, 'WaitingMenuHost', 3);
+    const roomId = await createRoomWithMaxUsers(hostPage, 'WaitingMenuHost', 2);
 
     await joinExistingRoom(peerPage, roomId, 'WaitingMenuPeer');
     await expectWaiting(peerPage);
@@ -508,7 +508,7 @@ test.describe('Waiting Room', () => {
     const hostPage = await context1.newPage();
     const peerPage = await context2.newPage();
 
-    const roomId = await createRoomWithMaxUsers(hostPage, 'CursorHost', 3);
+    const roomId = await createRoomWithMaxUsers(hostPage, 'CursorHost', 2);
 
     await joinExistingRoom(peerPage, roomId, 'CursorPeer');
     await expectWaiting(peerPage);
@@ -556,7 +556,7 @@ test.describe('Waiting Room', () => {
     const hostPage = await context1.newPage();
     const peerPage = await context2.newPage();
 
-    const roomId = await createRoomWithMaxUsers(hostPage, 'ToolsHost', 3);
+    const roomId = await createRoomWithMaxUsers(hostPage, 'ToolsHost', 2);
 
     await joinExistingRoom(peerPage, roomId, 'ToolsPeer');
     await expectWaiting(peerPage);

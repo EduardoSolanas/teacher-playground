@@ -9,6 +9,12 @@ import TeacherRoomList, {
   type TeacherRoomSummary,
 } from '@/components/whiteboard/TeacherRoomList';
 import { completeSignOut } from '@/lib/identity/completeSignOut';
+import {
+  DEFAULT_MAX_USERS,
+  FREE_MAX_ROOMS,
+  FREE_MAX_USERS,
+  MIN_MAX_USERS,
+} from '@/lib/plan/limits';
 
 const ADJECTIVES = [
   'Bright', 'Calm', 'Swift', 'Warm', 'Bold',
@@ -22,8 +28,8 @@ const NOUNS = [
   'Atelier', 'Haven', 'Nook', 'Forum', 'Stage',
 ];
 
-const MIN_USERS = 1;
-const MAX_USERS = 10;
+const MIN_USERS = MIN_MAX_USERS;
+const MAX_USERS = FREE_MAX_USERS;
 
 function generateRoomName(): string {
   const bytes = new Uint8Array(2);
@@ -57,7 +63,7 @@ function parseTeacherRooms(payload: unknown): TeacherRoomSummary[] {
 
 export default function WhiteboardRoute() {
   const [roomName, setRoomName] = useState(() => generateRoomName());
-  const [maxUsers, setMaxUsers] = useState(3);
+  const [maxUsers, setMaxUsers] = useState(DEFAULT_MAX_USERS);
   const [creationTimes, setCreationTimes] = useState<number[]>([]);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -86,8 +92,11 @@ export default function WhiteboardRoute() {
     };
   }, []);
 
+  const atRoomLimit = rooms.length >= FREE_MAX_ROOMS;
+  const createDisabled = isCreatingRoom || roomsLoading || atRoomLimit;
+
   const handleCreateRoom = useCallback(async () => {
-    if (isCreatingRoom) return;
+    if (isCreatingRoom || roomsLoading || rooms.length >= FREE_MAX_ROOMS) return;
 
     const now = Date.now();
     const recent = creationTimes.filter(t => now - t < 60000);
@@ -113,6 +122,12 @@ export default function WhiteboardRoute() {
       });
 
       if (!created.ok) {
+        if (created.status === 402) {
+          setCreateError('Free accounts can keep one room. Delete it to create another.');
+          setCreationTimes(recent);
+          setIsCreatingRoom(false);
+          return;
+        }
         throw new Error('Failed to create room');
       }
 
@@ -123,6 +138,12 @@ export default function WhiteboardRoute() {
       });
 
       if (!settings.ok) {
+        if (settings.status === 402) {
+          setCreateError('Free accounts allow the host plus one student.');
+          setCreationTimes(recent);
+          setIsCreatingRoom(false);
+          return;
+        }
         throw new Error('Failed to create room');
       }
 
@@ -132,7 +153,7 @@ export default function WhiteboardRoute() {
       setIsCreatingRoom(false);
       setCreateError('Room creation failed. Please try again.');
     }
-  }, [creationTimes, isCreatingRoom, maxUsers, roomName]);
+  }, [creationTimes, isCreatingRoom, maxUsers, roomName, rooms.length, roomsLoading]);
 
   const refreshRooms = useCallback(async () => {
     const response = await ajaxFetch('/api/whiteboard/rooms');
@@ -299,15 +320,19 @@ export default function WhiteboardRoute() {
                   +
                 </button>
               </div>
+              <p className="mt-2 text-[12px] text-slate-500">
+                Includes you. Free accounts allow one student.
+              </p>
             </div>
 
-            {createError && (
+            {(createError || atRoomLimit) && (
               <p
                 role="alert"
                 data-testid="whiteboard-create-room-error"
                 className="mt-4 rounded-xl bg-red-50 px-3 py-2.5 text-[13px] font-medium text-red-700 ring-1 ring-red-200"
               >
-                {createError}
+                {createError
+                  ?? 'Free accounts can keep one room. Delete it to create another.'}
               </p>
             )}
 
@@ -315,7 +340,7 @@ export default function WhiteboardRoute() {
               type="button"
               data-testid="whiteboard-create-room-btn"
               onClick={handleCreateRoom}
-              disabled={isCreatingRoom}
+              disabled={createDisabled}
               aria-busy={isCreatingRoom}
               className="mt-5 inline-flex h-12 w-full items-center justify-center gap-2.5 rounded-xl bg-[linear-gradient(135deg,#667eea_0%,#764ba2_100%)] text-[15px] font-semibold text-white shadow-lg shadow-indigo-500/25 transition-opacity hover:opacity-95 disabled:cursor-wait disabled:bg-[linear-gradient(135deg,#94a3b8_0%,#64748b_100%)] disabled:opacity-85 disabled:shadow-none"
             >

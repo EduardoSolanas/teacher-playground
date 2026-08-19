@@ -10,6 +10,7 @@ import {
   readAccountAuthorizations,
   recordOwnedRoom,
   removeOwnedRoom,
+  ownedRoomExists,
   resolveAccountForSubject,
 } from '../lib/identity/identityStore';
 import {
@@ -31,6 +32,11 @@ import {
   sessionCookie,
   validateSession,
 } from '../lib/identity/sessionStore';
+import {
+  PLAN_LIMIT_ERROR,
+  PLAN_LIMIT_STATUS,
+  canAddOwnedRoom,
+} from '../lib/plan/limits';
 
 const RESOLVE_PATH = '/subjects/resolve';
 const ISSUE_SESSION_PATH = '/sessions/issue';
@@ -339,6 +345,17 @@ export class IdentityDO extends DurableObject {
         const parsed = await readExactJson(request, isOwnedRoomBody);
         if ('response' in parsed) return parsed.response;
         try {
+          if (
+            !canAddOwnedRoom(
+              listOwnedRooms(this.db, session.accountId).length,
+              ownedRoomExists(this.db, session.accountId, parsed.body.roomId),
+            )
+          ) {
+            return Response.json(
+              { error: PLAN_LIMIT_ERROR },
+              { status: PLAN_LIMIT_STATUS, headers: noStore() },
+            );
+          }
           const room = recordOwnedRoom(this.db, {
             accountId: session.accountId,
             roomId: parsed.body.roomId,

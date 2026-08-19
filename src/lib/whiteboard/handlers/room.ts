@@ -15,16 +15,19 @@ import {
   tombstonedJsonResponse,
 } from '../tombstone';
 import { internalErrorResponse } from '../../http/safeError';
+import {
+  DEFAULT_MAX_USERS,
+  MIN_MAX_USERS,
+  maxUsersAllowedOnFreePlan,
+  planLimitJsonResponse,
+} from '../../plan/limits';
 
-const DEFAULT_MAX_USERS = 3;
-const MIN_MAX_USERS = 1;
-const MAX_MAX_USERS = 10;
 const MAX_NAME_LENGTH = 100;
 
 function normalizeMaxUsers(value: unknown): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return DEFAULT_MAX_USERS;
-  return Math.max(MIN_MAX_USERS, Math.min(MAX_MAX_USERS, Math.floor(parsed)));
+  return Math.max(MIN_MAX_USERS, Math.min(DEFAULT_MAX_USERS, Math.floor(parsed)));
 }
 
 function normalizeName(value: unknown): string | null {
@@ -214,6 +217,10 @@ export async function handleRoomSettings(
 
     if (accountId && !isOwnerRole(getGrantRole(db, roomId, accountId))) {
       return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    if (maxUsers !== undefined && !maxUsersAllowedOnFreePlan(maxUsers)) {
+      return planLimitJsonResponse();
     }
 
     const now = Date.now();

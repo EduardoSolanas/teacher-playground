@@ -299,7 +299,7 @@ describe('room presence API', () => {
       new Request(accountUrl(roomId, '/settings', owner), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ maxUsers: 3, hostPeerId: 'peer-host' }),
+        body: JSON.stringify({ maxUsers: 2, hostPeerId: 'peer-host' }),
       }),
     );
 

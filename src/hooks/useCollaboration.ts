@@ -24,8 +24,7 @@ import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 import { roomSceneSaveDebounceMs } from '@/lib/whiteboard/persistDebounce';
 import { cursorPublishDelay } from '@/lib/whiteboard/cursorPublishRate';
 import { moderationTargetBody } from '@/lib/whiteboard/moderationTarget';
-
-const DEFAULT_MAX_USERS = 3;
+import { DEFAULT_MAX_USERS } from '@/lib/plan/limits';
 
 function elementsEqual(a: CanvasElement[], b: CanvasElement[]) {
   return JSON.stringify(a) === JSON.stringify(b);

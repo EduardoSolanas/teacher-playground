@@ -279,9 +279,9 @@ describe('real local Access boundary through workerd', () => {
     // is absent. Creating it instead can: only the first writer of a room that
     // does not yet exist becomes its owner, so a 200 here proves the rejected
     // cross-origin POSTs never created anything.
-    const session = await bootstrapLocalSession(subject);
     for (let index = 0; index < origins.length; index += 1) {
-      const claimed = await authenticatedFetch(`/api/whiteboard/room/origin-post-${index}`, session, {
+      const claimer = await bootstrapLocalSession(`${subject}-claim-${index}`);
+      const claimed = await authenticatedFetch(`/api/whiteboard/room/origin-post-${index}`, claimer, {
         method: 'POST',
         headers: { Origin: BASE, 'content-type': 'application/json' },
         body: JSON.stringify({ elements: [] }),
@@ -372,6 +372,9 @@ describe('real local Access boundary through workerd', () => {
     for (let index = 0; index < ROOM_CREATE_RATE_MAX; index += 1) {
       const response = await createRoom(index);
       expect(response.status, `create ${index}`).toBe(200);
+      expect((await authenticatedFetch(`/api/whiteboard/room/rate-create-${index}`, session, {
+        method: 'DELETE',
+      })).status).toBe(200);
     }
 
     const limited = await createRoom(ROOM_CREATE_RATE_MAX);
@@ -381,9 +384,6 @@ describe('real local Access boundary through workerd', () => {
     expect(retryAfter).not.toBeNull();
     expect(Number(retryAfter)).toBeGreaterThan(0);
     expect(await limited.json()).toEqual({ error: 'Too many requests' });
-
-    const read = await authenticatedFetch('/api/whiteboard/room/rate-create-0', session);
-    expect(read.status).toBe(200);
   });
 
   it('logs rate_limit on 429 without cookie or JWT', async () => {
@@ -407,6 +407,9 @@ describe('real local Access boundary through workerd', () => {
     for (let index = 0; index < ROOM_CREATE_RATE_MAX; index += 1) {
       const response = await createRoom(index);
       expect(response.status, `create ${index}`).toBe(200);
+      expect((await authenticatedFetch(`/api/whiteboard/room/rate-log-${index}`, session, {
+        method: 'DELETE',
+      })).status).toBe(200);
     }
 
     const limited = await createRoom(ROOM_CREATE_RATE_MAX);
@@ -583,6 +586,10 @@ describe('real local Access boundary through workerd', () => {
     expect(retryAfter).not.toBeNull();
     expect(Number(retryAfter)).toBeGreaterThan(0);
     expect(await limited.json()).toEqual({ error: 'Too many requests' });
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session, {
+      method: 'DELETE',
+    })).status).toBe(200);
 
     const createStillAllowed = await authenticatedFetch(
       '/api/whiteboard/room/rate-scene-write-new',
@@ -839,6 +846,52 @@ describe('real local Access boundary through workerd', () => {
 
     const named = await waitForTeacherRoomName(owner, roomId, 'Algebra');
     expect(named).toEqual(expect.objectContaining({ roomId, name: 'Algebra' }));
+  });
+
+  it('rejects a second owned room with the plan-limit status and does not create it', async () => {
+    const owner = await bootstrapLocalSession('rooms-plan-second');
+    const firstId = `plan-room-a-${crypto.randomUUID()}`;
+    const secondId = `plan-room-b-${crypto.randomUUID()}`;
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${firstId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const second = await authenticatedFetch(`/api/whiteboard/room/${secondId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    });
+    expect(second.status).toBe(402);
+    expect(await second.json()).toEqual({ error: 'Plan limit reached' });
+
+    const listed = await waitForTeacherRooms(owner);
+    expect(teacherRoomIds(listed.body)).toEqual([firstId]);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${secondId}`, owner)).status).toBe(410);
+  });
+
+  it('rejects occupancy above host plus one student with the plan-limit status', async () => {
+    const owner = await bootstrapLocalSession('rooms-plan-seats');
+    const roomId = `plan-seats-${crypto.randomUUID()}`;
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const settings = await authenticatedFetch(`/api/whiteboard/room/${roomId}/settings`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ maxUsers: 3 }),
+    });
+    expect(settings.status).toBe(402);
+    expect(await settings.json()).toEqual({ error: 'Plan limit reached' });
+
+    const read = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner);
+    expect(await read.json()).toMatchObject({ maxUsers: 2 });
   });
 });
 

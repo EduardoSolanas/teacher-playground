@@ -82,7 +82,7 @@ async function writeRoom(
 let session: LocalAuthSession;
 
 beforeEach(async () => {
-  session = await bootstrapLocalSession('room-worker-test');
+  session = await bootstrapLocalSession(`room-worker-test-${crypto.randomUUID()}`);
 });
 
 async function createRoom(roomId: string, body: Record<string, unknown> = {}) {
@@ -91,12 +91,12 @@ async function createRoom(roomId: string, body: Record<string, unknown> = {}) {
 
 describe('Worker routing into RoomDO', () => {
   it('creates a room and reads it back', async () => {
-    const created = await createRoom('alpha', { name: 'Algebra', maxUsers: 4 });
+    const created = await createRoom('alpha', { name: 'Algebra', maxUsers: 2 });
     expect(created.status).toBe(200);
     expect(await created.json()).toMatchObject({
       success: true,
       name: 'Algebra',
-      maxUsers: 4,
+      maxUsers: 2,
     });
 
     const fetched = await authenticatedFetch('/api/whiteboard/room/alpha', session);
@@ -104,7 +104,7 @@ describe('Worker routing into RoomDO', () => {
     expect(await fetched.json()).toMatchObject({
       room_id: 'alpha',
       name: 'Algebra',
-      maxUsers: 4,
+      maxUsers: 2,
       elements: [],
     });
   });
@@ -136,11 +136,12 @@ describe('Worker routing into RoomDO', () => {
   });
 
   it('isolates state between rooms', async () => {
+    const other = await bootstrapLocalSession(`room-isolate-b-${crypto.randomUUID()}`);
     await createRoom('room-a', { name: 'A' });
-    await createRoom('room-b', { name: 'B' });
+    expect((await writeRoom('room-b', other, { name: 'B' })).status).toBe(200);
 
     const a = await (await authenticatedFetch('/api/whiteboard/room/room-a', session)).json();
-    const b = await (await authenticatedFetch('/api/whiteboard/room/room-b', session)).json();
+    const b = await (await authenticatedFetch('/api/whiteboard/room/room-b', other)).json();
 
     expect((a as { name: string }).name).toBe('A');
     expect((b as { name: string }).name).toBe('B');
@@ -269,7 +270,9 @@ describe('y-webrtc signaling over Durable Object WebSockets', () => {
 
   it('does not leak a publish across rooms', async () => {
     const a = await connect('room-one');
-    const outsider = await connect('room-two');
+    const other = await bootstrapLocalSession(`signal-leak-${crypto.randomUUID()}`);
+    expect((await writeRoom('room-two', other)).status).toBe(200);
+    const outsider = await connectGranted(other, 'room-two');
 
     let leaked = false;
     outsider.addEventListener('message', () => { leaked = true; }, { once: true });
@@ -502,17 +505,18 @@ describe('y-websocket document bytes over RoomDO WebSockets', () => {
 
   it('relays binary ArrayBuffer frames to other granted peers in the same room', async () => {
     const owner = await bootstrapLocalSession('binary-relay-owner');
+    const otherOwner = await bootstrapLocalSession('binary-relay-other-owner');
     const editor = await bootstrapLocalSession('binary-relay-editor');
     const roomId = 'binary-relay-room';
     const otherRoomId = 'binary-relay-other-room';
 
     expect((await writeRoom(roomId, owner)).status).toBe(200);
-    expect((await writeRoom(otherRoomId, owner)).status).toBe(200);
+    expect((await writeRoom(otherRoomId, otherOwner)).status).toBe(200);
     await grantEditor(owner, editor, roomId);
 
     const sender = await connectGranted(owner, roomId);
     const receiver = await connectGranted(editor, roomId);
-    const otherRoomSocket = await connectGranted(owner, otherRoomId);
+    const otherRoomSocket = await connectGranted(otherOwner, otherRoomId);
 
     const payload = new Uint8Array([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
     const received = nextBinaryMessage(receiver);
@@ -1849,8 +1853,8 @@ describe('room authorization matrix', () => {
   let outsider: LocalAuthSession;
 
   beforeEach(async () => {
-    owner = await bootstrapLocalSession('matrix-owner');
-    outsider = await bootstrapLocalSession('matrix-outsider');
+    owner = await bootstrapLocalSession(`matrix-owner-${crypto.randomUUID()}`);
+    outsider = await bootstrapLocalSession(`matrix-outsider-${crypto.randomUUID()}`);
   });
 
   async function createRoomAs(who: LocalAuthSession, roomId: string, body: Record<string, unknown> = {}) {
@@ -2410,7 +2414,7 @@ describe('room authorization matrix', () => {
   it('lets a viewer read the board but not publish scene or settings', async () => {
     const roomId = 'matrix-viewer-write';
     const viewer = await bootstrapLocalSession('matrix-viewer');
-    await createRoomAs(owner, roomId, { name: 'Original', maxUsers: 3 });
+    await createRoomAs(owner, roomId, { name: 'Original', maxUsers: 2 });
     await grantPublicRole(owner, viewer, roomId, 'viewer');
 
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, viewer)).status).toBe(200);
@@ -2437,7 +2441,7 @@ describe('room authorization matrix', () => {
   it('lets an editor publish scene writes but not settings, queue PII, or moderation', async () => {
     const roomId = 'matrix-editor-write';
     const editor = await bootstrapLocalSession('matrix-editor');
-    await createRoomAs(owner, roomId, { name: 'Original', maxUsers: 3 });
+    await createRoomAs(owner, roomId, { name: 'Original', maxUsers: 2 });
     await grantPublicRole(owner, editor, roomId, 'peer');
     await joinAs(owner, roomId, 'host-peer');
     await joinAs(outsider, roomId, 'queued-peer');
@@ -2514,7 +2518,7 @@ describe('room authorization matrix', () => {
 
   it('lets the owner read settings without scene fields', async () => {
     const roomId = 'matrix-owner-get-settings';
-    await createRoomAs(owner, roomId, { name: 'Readable', maxUsers: 6, allowFirstUserHost: true });
+    await createRoomAs(owner, roomId, { name: 'Readable', maxUsers: 2, allowFirstUserHost: true });
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -2527,7 +2531,7 @@ describe('room authorization matrix', () => {
     expect(body).toMatchObject({
       success: true,
       name: 'Readable',
-      maxUsers: 6,
+      maxUsers: 2,
       allowFirstUserHost: true,
     });
     expect(body).toHaveProperty('updated_at');
@@ -2540,18 +2544,18 @@ describe('room authorization matrix', () => {
   it('lets the owner change settings and rejects mixed scene/settings bodies', async () => {
     const roomId = 'matrix-settings-split';
     const editor = await bootstrapLocalSession('matrix-settings-editor');
-    await createRoomAs(owner, roomId, { name: 'Original', maxUsers: 3 });
+    await createRoomAs(owner, roomId, { name: 'Original', maxUsers: 2 });
     await grantPublicRole(owner, editor, roomId, 'peer');
 
     const ownerPatch = await authenticatedFetch(`/api/whiteboard/room/${roomId}/settings`, owner, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'Renamed', maxUsers: 5, allowFirstUserHost: true }),
+      body: JSON.stringify({ name: 'Renamed', maxUsers: 1, allowFirstUserHost: true }),
     });
     expect(ownerPatch.status).toBe(200);
     expect(await ownerPatch.json()).toMatchObject({
       name: 'Renamed',
-      maxUsers: 5,
+      maxUsers: 1,
       allowFirstUserHost: true,
     });
 

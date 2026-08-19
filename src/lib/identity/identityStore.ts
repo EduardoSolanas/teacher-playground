@@ -471,6 +471,19 @@ export function listOwnedRooms(
   }));
 }
 
+export function ownedRoomExists(
+  db: RoomDatabase,
+  accountId: string,
+  roomId: string,
+): boolean {
+  const row = db
+    .prepare(
+      `SELECT 1 AS present FROM account_rooms WHERE account_id = ? AND room_id = ?`,
+    )
+    .get(accountId, requireValidRoomId(roomId)) as { present: number } | undefined;
+  return row !== undefined;
+}
+
 export function removeOwnedRoom(
   db: RoomDatabase,
   accountId: string,

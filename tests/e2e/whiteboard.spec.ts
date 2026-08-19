@@ -223,7 +223,7 @@ test.describe('Room Connection Lifecycle', () => {
         body: JSON.stringify({
           success: true,
           updated_at: Date.now(),
-          maxUsers: 3,
+          maxUsers: 2,
           hostPeerId: 'test-host',
         }),
       });
@@ -231,6 +231,8 @@ test.describe('Room Connection Lifecycle', () => {
 
     await page.goto(appUrl('/whiteboard'));
     await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
+
+    await expect(page.getByTestId('whiteboard-create-room-btn')).toBeEnabled();
 
     const createButton = page.getByTestId('whiteboard-create-room-btn');
     await createButton.click();
@@ -326,9 +328,10 @@ test.describe('Room Connection Lifecycle', () => {
     await page.goto(appUrl('/whiteboard'));
     await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
 
-    // Creating another room reuses the remembered name: the user is taken
-    // straight to the board instead of being asked who they are again.
-    await page.getByTestId('whiteboard-create-room-btn').click();
+    // Opening the same room again reuses the remembered name: the user is
+    // taken straight to the board instead of being asked who they are again.
+    await expect(page.getByTestId('whiteboard-create-room-btn')).toBeDisabled();
+    await page.locator('[data-testid^="whiteboard-room-list-item-"]').first().click();
     await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
     await expect(page.getByTestId('whiteboard-username-input')).toHaveCount(0);
 
@@ -394,9 +397,9 @@ test.describe('Room Connection Lifecycle', () => {
     expect(['connecting', 'connected', 'synced'].includes(collab1.status)).toBeTruthy();
 
     // After some time, should be connected or synced
-    await page.waitForTimeout(3000);
-    const collab2 = await getCollabState(page);
-    expect(['connected', 'synced'].includes(collab2.status)).toBeTruthy();
+    await expect
+      .poll(async () => (await getCollabState(page)).status, { timeout: 15000 })
+      .toMatch(/^(connected|synced)$/);
   });
 
   test('navigating to a room id that was never created stays in the waiting room', async ({ page }) => {
@@ -621,9 +624,7 @@ test.describe('Multi-Peer Sync', () => {
     await circleIcon.click();
     await dragOnCanvas(page, { x: 400, y: 400 }, { x: 500, y: 500 });
 
-    await page.waitForTimeout(1000);
-    const aliceState = await getStoreState(page);
-    expect(aliceState.elements?.length).toBeGreaterThanOrEqual(3);
+    await waitForSync(page, 3, 10000);
 
     // Bob joins late
     const bobContext = await newAuthenticatedContext(browser);
@@ -748,16 +749,20 @@ test.describe('Reconnection & Resilience', () => {
       await page.getByTestId('whiteboard-clear-btn').click();
       await expect(page.getByTestId('whiteboard-clear-confirm-btn')).toBeVisible();
       await page.getByTestId('whiteboard-clear-confirm-btn').click();
-      await page.waitForTimeout(500);
 
-      // Alice's board is empty
-      const aliceState = await getStoreState(page);
-      expect(aliceState.elements?.length).toBe(0);
+      // Alice's board is empty. Polled, not slept on: the clear runs through a
+      // Yjs transaction and back out to React, which a fixed delay races.
+      await waitForSync(page, 0, 10000);
 
       // Bob should also see empty board (Yjs sync deletes elements)
       await waitForSync(bobPage, 0, 10000);
-      const bobState = await getStoreState(bobPage);
-      expect(bobState.elements?.length).toBe(0);
+
+      // And it has to stay cleared. The HTTP snapshot fallback republishes
+      // whatever the room API still holds, so a stale save landing after the
+      // clear would quietly bring the element back on both peers.
+      await page.waitForTimeout(1500);
+      expect((await getStoreState(page)).elements?.length ?? 0).toBe(0);
+      expect((await getStoreState(bobPage)).elements?.length ?? 0).toBe(0);
     } finally {
       await bobContext.close();
     }
@@ -766,11 +771,16 @@ test.describe('Reconnection & Resilience', () => {
 });
 
 test.describe('Edge Cases', () => {
-  test('creating many rooms in succession works', async ({ page }) => {
+  test('creating many rooms in succession works', async ({ browser }) => {
     for (let i = 0; i < 5; i++) {
-      await cleanContextAndJoin(page, `User${i}`);
-      await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 10000 });
-      await page.waitForTimeout(500);
+      const ctx = await newAuthenticatedContext(browser);
+      const page = await ctx.newPage();
+      try {
+        await cleanContextAndJoin(page, `User${i}`);
+        await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 10000 });
+      } finally {
+        await ctx.close();
+      }
     }
   });
 

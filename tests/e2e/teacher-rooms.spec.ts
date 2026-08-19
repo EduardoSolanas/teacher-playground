@@ -29,6 +29,7 @@ test.describe('teacher room list on landing', () => {
     await page.getByTestId('whiteboard-back-to-rooms').click();
     await expect(page).toHaveURL(/\/whiteboard\/?$/);
     await expect(page.getByRole('heading', { name: 'Your rooms' })).toBeVisible();
+    await expect(page.getByTestId('whiteboard-create-room-btn')).toBeDisabled();
   });
 
   test('renames a listed room from the landing list', async ({ page }) => {

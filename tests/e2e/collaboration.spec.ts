@@ -453,20 +453,14 @@ test.describe('Excalidraw Collaboration', () => {
 
   test('tool switch on one peer highlights the correct button locally', async ({ browser }) => {
     const context = await newAuthenticatedContext(browser);
-
     const page1 = await context.newPage();
-    const page2 = await context.newPage();
 
     await joinRoom(page1, 'ToolA');
-    await joinRoom(page2, 'ToolB');
 
     await page1.waitForTimeout(3000);
-    await page2.waitForTimeout(3000);
 
     const selectBtn1 = page1.getByTestId('whiteboard-tool-select');
-    const selectBtn2 = page2.getByTestId('whiteboard-tool-select');
     await expect(selectBtn1).toHaveClass(/bg-blue-500/);
-    await expect(selectBtn2).toHaveClass(/bg-blue-500/);
 
     const penBtn1 = page1.getByTestId('whiteboard-tool-pen');
     await penBtn1.click();
@@ -481,15 +475,11 @@ test.describe('Excalidraw Collaboration', () => {
 
   test('presence panel shows at least one user', async ({ browser }) => {
     const context = await newAuthenticatedContext(browser);
-
     const page1 = await context.newPage();
-    const page2 = await context.newPage();
 
     await joinRoom(page1, 'PresenceA');
-    await joinRoom(page2, 'PresenceB');
 
     await page1.waitForTimeout(5000);
-    await page2.waitForTimeout(5000);
 
     const presenceToggle1 = page1.getByTestId('whiteboard-presence-toggle');
     await expect(presenceToggle1).toBeVisible();

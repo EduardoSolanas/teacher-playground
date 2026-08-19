@@ -607,11 +607,6 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     })).status).toBe(200);
     expect((await identityStub().fetch('https://identity/accounts/rooms', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', cookie: mineCookie },
-      body: JSON.stringify({ roomId: 'erase-room-b' }),
-    })).status).toBe(200);
-    expect((await identityStub().fetch('https://identity/accounts/rooms', {
-      method: 'POST',
       headers: { 'content-type': 'application/json', cookie: otherCookie },
       body: JSON.stringify({ roomId: 'erase-room-other' }),
     })).status).toBe(200);
@@ -620,7 +615,7 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     expect(erased.status).toBe(200);
     const body = await erased.json() as { ok: boolean; roomIds: string[] };
     expect(body.ok).toBe(true);
-    expect(body.roomIds.sort()).toEqual(['erase-room-a', 'erase-room-b']);
+    expect(body.roomIds.sort()).toEqual(['erase-room-a']);
 
     expect(await (await sessionRequest('/accounts/rooms', otherCookie)).json()).toEqual({
       rooms: [
@@ -806,39 +801,88 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     expect(deleted.status).toBe(401);
   });
 
-  it('records two owned rooms and lists newest updated first', async () => {
+  it('records one owned room and upserts its name', async () => {
     const issued = await issueSession('do-rooms-order');
     const cookie = cookiePair(issued);
 
     const first = await identityStub().fetch('https://identity/accounts/rooms', {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie },
-      body: JSON.stringify({ roomId: 'room-older', name: 'Older' }),
+      body: JSON.stringify({ roomId: 'room-one', name: 'Older' }),
     });
     expect([200, 204]).toContain(first.status);
 
-    await new Promise((resolve) => setTimeout(resolve, 5));
-
-    const second = await identityStub().fetch('https://identity/accounts/rooms', {
+    const renamed = await identityStub().fetch('https://identity/accounts/rooms', {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie },
-      body: JSON.stringify({ roomId: 'room-newer', name: 'Newer' }),
+      body: JSON.stringify({ roomId: 'room-one', name: 'Newer' }),
     });
-    expect([200, 204]).toContain(second.status);
+    expect([200, 204]).toContain(renamed.status);
 
     const listed = await sessionRequest('/accounts/rooms', cookie);
     expect(listed.status).toBe(200);
     const body = await listed.json() as {
       rooms: Array<{ roomId: string; name: string | null; role: string }>;
     };
-    expect(body.rooms.map((room) => room.roomId)).toEqual(['room-newer', 'room-older']);
+    expect(body.rooms.map((room) => room.roomId)).toEqual(['room-one']);
     expect(body.rooms[0]).toEqual(
       expect.objectContaining({
-        roomId: 'room-newer',
+        roomId: 'room-one',
         name: 'Newer',
         role: 'owner',
       }),
     );
+  });
+
+  it('rejects a second owned room with the plan-limit status', async () => {
+    const issued = await issueSession('do-rooms-plan-limit');
+    const cookie = cookiePair(issued);
+
+    const first = await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-free-one' }),
+    });
+    expect(first.status).toBe(200);
+
+    const second = await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-free-two' }),
+    });
+    expect(second.status).toBe(402);
+    expect(await second.json()).toEqual({ error: 'Plan limit reached' });
+
+    const listed = await sessionRequest('/accounts/rooms', cookie);
+    const body = await listed.json() as { rooms: Array<{ roomId: string }> };
+    expect(body.rooms.map((room) => room.roomId)).toEqual(['room-free-one']);
+  });
+
+  it('allows another owned room after the first is deleted', async () => {
+    const issued = await issueSession('do-rooms-replace');
+    const cookie = cookiePair(issued);
+
+    expect((await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-old' }),
+    })).status).toBe(200);
+
+    expect((await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-old' }),
+    })).status).toBe(204);
+
+    expect((await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-new' }),
+    })).status).toBe(200);
+
+    const listed = await sessionRequest('/accounts/rooms', cookie);
+    const body = await listed.json() as { rooms: Array<{ roomId: string }> };
+    expect(body.rooms.map((room) => room.roomId)).toEqual(['room-new']);
   });
 
   it('cannot list another account\'s owned rooms', async () => {

@@ -167,7 +167,7 @@ describe('room allowFirstUserHost setting', () => {
       roomId,
       new Request(`http://localhost/api/whiteboard/room/${roomId}`),
     );
-    expect(await read.json()).toMatchObject({ name: null, maxUsers: 3, elements: [] });
+    expect(await read.json()).toMatchObject({ name: null, maxUsers: 2, elements: [] });
   });
 
   it('rejects scene fields on the settings route with 400', async () => {
@@ -187,7 +187,7 @@ describe('room allowFirstUserHost setting', () => {
       roomId,
       new Request(`http://localhost/api/whiteboard/room/${roomId}`),
     );
-    expect(await read.json()).toMatchObject({ maxUsers: 3, elements: [{ id: 'keep' }] });
+    expect(await read.json()).toMatchObject({ maxUsers: 2, elements: [{ id: 'keep' }] });
   });
 
   it('refuses settings changes from a non-owner when an account is present', async () => {
@@ -204,7 +204,7 @@ describe('room allowFirstUserHost setting', () => {
     await handleRoomSettings(
       db,
       roomId,
-      postRequest('/settings', { name: 'Original', maxUsers: 3 }, owner),
+      postRequest('/settings', { name: 'Original', maxUsers: 2 }, owner),
     );
     requestAccess(db, { roomId, accountId: editor, userName: 'Ed' });
     approveAccount(db, roomId, editor, { role: 'editor' });
@@ -221,7 +221,7 @@ describe('room allowFirstUserHost setting', () => {
       roomId,
       new Request(`http://localhost/api/whiteboard/room/${roomId}`),
     );
-    expect(await read.json()).toMatchObject({ name: 'Original', maxUsers: 3 });
+    expect(await read.json()).toMatchObject({ name: 'Original', maxUsers: 2 });
   });
 
   it('returns a generic 500 body when storage throws', async () => {
@@ -372,7 +372,7 @@ describe('GET room settings', () => {
     await handleRoomSettings(
       db,
       roomId,
-      postRequest('/settings', { name: 'Lesson', maxUsers: 4, allowFirstUserHost: true }, owner),
+      postRequest('/settings', { name: 'Lesson', maxUsers: 2, allowFirstUserHost: true }, owner),
     );
 
     const before = scopedCounts(db, roomId);
@@ -383,7 +383,7 @@ describe('GET room settings', () => {
     expect(body).toMatchObject({
       success: true,
       name: 'Lesson',
-      maxUsers: 4,
+      maxUsers: 2,
       allowFirstUserHost: true,
     });
     expect(body).toHaveProperty('updated_at');
@@ -540,3 +540,37 @@ describe('account erasure handler', () => {
     });
   });
 });
+
+describe('free plan occupancy', () => {
+  it('inserts a new room with host plus one student', async () => {
+    const db = getRoomDb();
+    const roomId = `room-free-default-${crypto.randomUUID()}`;
+
+    const created = await handleRoomPost(db, roomId, postRequest('', { elements: [] }));
+    expect(created.status).toBe(200);
+    expect(await created.json()).toMatchObject({ maxUsers: 2 });
+  });
+
+  it('rejects occupancy above host plus one student with a plan-limit status', async () => {
+    const db = getRoomDb();
+    const roomId = `room-free-cap-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }, owner));
+    const denied = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { maxUsers: 3 }, owner),
+    );
+    expect(denied.status).toBe(402);
+    expect(await denied.json()).toEqual({ error: 'Plan limit reached' });
+
+    const read = await handleRoomGet(
+      db,
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`),
+    );
+    expect(await read.json()).toMatchObject({ maxUsers: 2 });
+  });
+});
+

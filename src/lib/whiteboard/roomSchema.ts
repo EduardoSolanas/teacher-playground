@@ -10,7 +10,7 @@ export function applySchema(db: RoomDatabase): void {
       room_id TEXT PRIMARY KEY,
       elements TEXT NOT NULL DEFAULT '[]',
       viewport TEXT NOT NULL DEFAULT '{"x":0,"y":0,"zoom":1}',
-      max_users INTEGER NOT NULL DEFAULT 3,
+      max_users INTEGER NOT NULL DEFAULT 2,
       host_peer_id TEXT,
       name TEXT,
       allow_first_user_host INTEGER NOT NULL DEFAULT 0,
