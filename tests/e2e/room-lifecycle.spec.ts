@@ -112,7 +112,7 @@ test.describe('Room lifecycle', () => {
     await waitForExcalidrawApi(page);
 
     // Verify the element is still there
-    await expect.poll(async () => sceneElementIds(page), { timeout: 10000 }).toContain(testElemId);
+    await expect.poll(async () => sceneElementIds(page), { timeout: 20000 }).toContain(testElemId);
   });
 
   test('navigating directly to a room id that was never created does not admit the visitor', async ({

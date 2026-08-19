@@ -69,6 +69,7 @@ function RoomContent({ roomId }: { roomId: string }) {
     status,
     maxUsers,
     elements,
+    seedElements,
     localPeerId,
     isHost,
     provider,
@@ -259,6 +260,7 @@ function RoomContent({ roomId }: { roomId: string }) {
           onToolChange={handleToolChange}
           onViewportChange={() => {}}
           onElementsChange={setElements}
+          seedElements={seedElements}
         />
         {elements.length === 0 && activeTool === 'select' && <EmptyState />}
       </div>
