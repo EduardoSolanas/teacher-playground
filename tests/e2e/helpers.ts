@@ -9,7 +9,7 @@ function appUrl(path: string) {
 async function expectSessionCookie(page: Page) {
   await expect.poll(
     async () => (await page.context().cookies()).find((cookie) => cookie.name === '__Host-teacher-session'),
-    { timeout: 15000, message: 'secure local session bootstrap did not set its cookie' },
+    { timeout: 25000, message: 'secure local session bootstrap did not set its cookie' },
   ).toMatchObject({
     name: '__Host-teacher-session',
     secure: true,

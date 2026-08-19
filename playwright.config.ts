@@ -15,16 +15,17 @@ if (!accessIssuer || !accessToken) {
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  timeout: 30_000,
+  timeout: process.env.CI ? 60_000 : 30_000,
   expect: {
     timeout: 5_000,
   },
-  // Tests are independent: each creates its own room id and authenticates as
-  // its own Access subject, and rooms are separate Durable Objects.
+  // Rooms are independent Durable Objects, but IdentityDO is a singleton.
+  // CI GitHub runners queue session issue past the bootstrap abort if several
+  // Playwright workers mint new Access subjects at once.
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  workers: process.env.CI ? 4 : 4,
+  workers: process.env.CI ? 1 : 4,
   reporter: "html",
   use: {
     ...devices["Desktop Chrome"],

@@ -152,6 +152,11 @@ describe('production deployment policy', () => {
     expect(ciWorkflow).not.toContain('npm run security:scan || true');
   });
 
+  it('caps CI Playwright workers so the singleton IdentityDO is not queued past session bootstrap', () => {
+    const playwrightConfig = readRepositoryFile('playwright.config.ts');
+    expect(playwrightConfig).toMatch(/workers:\s*process\.env\.CI\s*\?\s*1\s*:/);
+  });
+
   it('runs Durable Object worker tests in CI without continue-on-error', () => {
     const ciWorkflow = readRepositoryFile('.github/workflows/ci.yml');
     expect(ciWorkflow).toMatch(/^\s+run:\s+npm run test:workers\s*$/m);
