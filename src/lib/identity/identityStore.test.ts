@@ -8,6 +8,8 @@ import {
   recordOwnedRoom,
   listOwnedRooms,
   removeOwnedRoom,
+  readPreferredDisplayName,
+  setPreferredDisplayName,
 } from './identityStore';
 import { applySchema as applyRoomSchema } from '../whiteboard/roomSchema';
 
@@ -449,5 +451,38 @@ describe('account owned-room index', () => {
     expect(listOwnedRooms(db, owner.accountId)).toEqual([
       expect.objectContaining({ roomId: 'keep-me' }),
     ]);
+  });
+
+  it('stores a preferred display name on the account without using it as a lookup key', () => {
+    const first = resolveAccountForSubject(db, {
+      issuer: 'https://access.example.com',
+      subject: 'google-one',
+    });
+    const second = resolveAccountForSubject(db, {
+      issuer: 'https://access.example.com',
+      subject: 'google-two',
+    });
+
+    expect(readPreferredDisplayName(db, first.account.accountId)).toBeNull();
+    expect(setPreferredDisplayName(db, first.account.accountId, 'Ada Lovelace')).toBe(
+      'Ada Lovelace',
+    );
+    expect(readPreferredDisplayName(db, first.account.accountId)).toBe('Ada Lovelace');
+    expect(readPreferredDisplayName(db, second.account.accountId)).toBeNull();
+
+    const sameNameOtherSubject = resolveAccountForSubject(db, {
+      issuer: 'https://access.example.com',
+      subject: 'google-three',
+    });
+    expect(sameNameOtherSubject.account.accountId).not.toBe(first.account.accountId);
+    setPreferredDisplayName(db, sameNameOtherSubject.account.accountId, 'Ada Lovelace');
+    expect(sameNameOtherSubject.account.accountId).not.toBe(first.account.accountId);
+
+    const accountColumns = db
+      .prepare(`PRAGMA table_info(accounts)`)
+      .all()
+      .map((row) => (row as { name: string }).name);
+    expect(accountColumns).toContain('preferred_display_name');
+    expect(accountColumns).not.toContain('email');
   });
 });

@@ -1,5 +1,6 @@
 import type { RoomDatabase } from '../whiteboard/db';
 import { isValidRoomId } from '../worker/requestGuard';
+import { MAX_NAME_LENGTH, stripAsciiControls } from '../whiteboard/requestSchemas';
 
 const MAX_SUBJECT_KEY_LENGTH = 2048;
 
@@ -152,6 +153,20 @@ export function applyIdentitySchema(db: RoomDatabase): void {
     CREATE INDEX IF NOT EXISTS idx_account_rooms_account_updated
       ON account_rooms(account_id, updated_at DESC)
   `);
+
+  const accountColumns = db
+    .prepare(`PRAGMA table_info(accounts)`)
+    .all() as Array<{ name: string }>;
+  if (!accountColumns.some((column) => column.name === 'preferred_display_name')) {
+    db.exec(
+      `ALTER TABLE accounts ADD COLUMN preferred_display_name TEXT
+         CHECK (
+           preferred_display_name IS NULL OR (
+             length(preferred_display_name) BETWEEN 1 AND 100
+           )
+         )`,
+    );
+  }
 }
 
 export interface AuditContext {
@@ -493,4 +508,40 @@ export function removeOwnedRoom(
   db.prepare(
     `DELETE FROM account_rooms WHERE account_id = ? AND room_id = ?`,
   ).run(accountId, roomId);
+}
+
+export function readPreferredDisplayName(
+  db: RoomDatabase,
+  accountId: string,
+): string | null {
+  const row = db
+    .prepare(
+      `SELECT preferred_display_name AS preferredDisplayName
+       FROM accounts WHERE account_id = ?`,
+    )
+    .get(accountId) as { preferredDisplayName: string | null } | undefined;
+  return row?.preferredDisplayName ?? null;
+}
+
+export function setPreferredDisplayName(
+  db: RoomDatabase,
+  accountId: string,
+  displayName: string,
+  now = Date.now(),
+): string {
+  const cleaned = stripAsciiControls(displayName);
+  if (!cleaned || cleaned.length > MAX_NAME_LENGTH) {
+    throw new IdentityInputError(
+      `displayName must be between 1 and ${MAX_NAME_LENGTH} characters`,
+    );
+  }
+  const updated = db
+    .prepare(
+      `UPDATE accounts
+       SET preferred_display_name = ?, updated_at = ?
+       WHERE account_id = ?`,
+    )
+    .run(cleaned, now, accountId).changes;
+  if (updated !== 1) throw new IdentityInputError('account not found');
+  return cleaned;
 }

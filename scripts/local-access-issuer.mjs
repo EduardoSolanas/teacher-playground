@@ -16,10 +16,11 @@ function encode(value) {
   return Buffer.from(JSON.stringify(value)).toString('base64url');
 }
 
-function token(subject = 'local-human', variant = 'valid') {
+function token(subject = 'local-human', variant = 'valid', name) {
   const now = Math.floor(Date.now() / 1_000);
   const header = encode({ alg: 'RS256', kid: 'local-key-1' });
   const claims = { iss: issuer, aud: [audience], sub: subject, type: 'app', iat: now, nbf: now, exp: now + 3_600 };
+  if (typeof name === 'string' && name.length > 0) claims.name = name;
   if (variant === 'expired') claims.exp = now - 1;
   if (variant === 'wrong-issuer') claims.iss = 'http://evil-access.invalid';
   if (variant === 'wrong-audience') claims.aud = ['wrong-audience'];
@@ -43,11 +44,12 @@ const server = createServer((request, response) => {
     const tokenUrl = new URL(request.url, issuer);
     const subject = tokenUrl.searchParams.get('sub') || 'local-human';
     const variant = tokenUrl.searchParams.get('variant') || 'valid';
+    const name = tokenUrl.searchParams.get('name') || '';
     if (variant === 'malformed') {
       response.end(JSON.stringify({ token: 'not-a-jwt' }));
       return;
     }
-    response.end(JSON.stringify({ token: token(subject, variant) }));
+    response.end(JSON.stringify({ token: token(subject, variant, name) }));
     return;
   }
   if (request.url === '/health') {

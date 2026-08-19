@@ -6,6 +6,8 @@
  * before any local account or session operation is attempted.
  */
 
+import { displayNameFromAccessClaims } from './accessDisplayName';
+
 export interface AccessRequestContext {
   readonly aud: string;
   getIdentity(): Promise<Record<string, unknown> | undefined>;
@@ -22,6 +24,8 @@ export interface AccessEnvironment {
 export interface VerifiedAccessPrincipal {
   readonly issuer: string;
   readonly subject: string;
+  /** IdP profile label only. Never used to select or merge an account. */
+  readonly displayName?: string;
 }
 
 export class AccessVerificationError extends Error {
@@ -236,7 +240,7 @@ function validateClaims(
   issuer: string,
   audience: string,
   now: number,
-): { issuer: string; subject: string } {
+): VerifiedAccessPrincipal {
   if (claims.iss !== issuer || !audienceContains(claims.aud, audience)) fail();
   if (typeof claims.sub !== 'string' || claims.sub.trim().length === 0 || claims.sub.length > 512) fail();
   if (claims.type !== 'app' || claims.service_token_id !== undefined || claims.token_type !== undefined) fail();
@@ -246,7 +250,10 @@ function validateClaims(
   if (exp <= current || iat > current + CLOCK_SKEW_SECONDS || iat >= exp) fail();
   const nbf = asFiniteNumber(claims.nbf);
   if (nbf > current + CLOCK_SKEW_SECONDS || nbf >= exp) fail();
-  return { issuer, subject: claims.sub };
+  const displayName = displayNameFromAccessClaims(claims as Record<string, unknown>);
+  return displayName
+    ? { issuer, subject: claims.sub, displayName }
+    : { issuer, subject: claims.sub };
 }
 
 /** Clears a process-local cache in tests or during an explicit key-rotation hook. */

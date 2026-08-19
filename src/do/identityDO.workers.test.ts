@@ -536,6 +536,57 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     expect(body.accessSubjects.some((row) => row.subject === 'do-export-other')).toBe(false);
   });
 
+  it('saves a preferred display name on PATCH /accounts/profile for the caller only', async () => {
+    const mine = await issueSession('do-profile-mine');
+    const mineCookie = cookiePair(mine);
+    const other = await issueSession('do-profile-other');
+    const otherCookie = cookiePair(other);
+
+    expect((await identityStub().fetch('https://identity/accounts/profile', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ displayName: 'Ada Lovelace' }),
+    })).status).toBe(401);
+
+    const saved = await identityStub().fetch('https://identity/accounts/profile', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: mineCookie },
+      body: JSON.stringify({ displayName: 'Ada Lovelace' }),
+    });
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toEqual({ displayName: 'Ada Lovelace' });
+
+    const mineAuth = await identityStub().fetch('https://identity/sessions/authorize', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: mineCookie },
+      body: JSON.stringify({
+        issuer: 'https://access.example.com',
+        subject: 'do-profile-mine',
+      }),
+    });
+    expect(mineAuth.status).toBe(200);
+    expect(await mineAuth.json()).toMatchObject({ preferredDisplayName: 'Ada Lovelace' });
+
+    const otherAuth = await identityStub().fetch('https://identity/sessions/authorize', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: otherCookie },
+      body: JSON.stringify({
+        issuer: 'https://access.example.com',
+        subject: 'do-profile-other',
+      }),
+    });
+    expect(await otherAuth.json()).not.toMatchObject({
+      preferredDisplayName: 'Ada Lovelace',
+    });
+
+    const extras = await identityStub().fetch('https://identity/accounts/profile', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: otherCookie },
+      body: JSON.stringify({ displayName: 'Eve', accountId: 'ignored' }),
+    });
+    expect(extras.status).toBe(400);
+  });
+
   it('erases the caller through DELETE /accounts only with a fresh session cookie', async () => {
     const mine = await issueSession('do-erase-mine');
     const mineBody = await mine.json() as { accountId: string };

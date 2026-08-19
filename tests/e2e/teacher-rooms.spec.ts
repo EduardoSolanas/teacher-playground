@@ -10,7 +10,7 @@ test.describe('teacher room list on landing', () => {
     await expect(page.getByRole('heading', { name: 'Your rooms' })).toBeVisible();
     await expect(page.locator('select')).toHaveCount(0);
     await expect(page.getByTestId('whiteboard-create-room-btn')).toBeVisible();
-    await expect(page.getByTestId('whiteboard-room-name-input')).toBeVisible();
+    await expect(page.getByTestId('whiteboard-room-name-input')).toHaveCount(0);
 
     const roomId = await createRoomWithMaxUsers(page, 'ListHost', 2);
 

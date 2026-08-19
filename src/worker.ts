@@ -52,6 +52,7 @@ const SESSION_CONFIRM = '/auth/session/confirm';
 const SESSION_LOGOUT = '/auth/session/logout';
 const ACCOUNT_EXPORT = '/auth/account/export';
 const ACCOUNT_ERASE = '/auth/account';
+const ACCOUNT_PROFILE = '/auth/account/profile';
 const ACCOUNT_ROOMS = '/api/whiteboard/rooms';
 const IDENTITY_ACCOUNT_ROOMS = 'https://identity/accounts/rooms';
 
@@ -190,6 +191,7 @@ function originGuard(env: Env, request: Request, pathname: string): Response | n
       pathname === SESSION_ISSUE
       || pathname === SESSION_LOGOUT
       || pathname === SESSION_CONFIRM
+      || pathname === ACCOUNT_PROFILE
       || pathname.startsWith('/api/')
     ));
   if (!guarded || hasExactOrigin(request)) return null;
@@ -208,6 +210,10 @@ function internalJson(body: unknown): RequestInit {
   };
 }
 
+function accessAccountKey(principal: VerifiedAccessPrincipal): { issuer: string; subject: string } {
+  return { issuer: principal.issuer, subject: principal.subject };
+}
+
 type SessionOutcome =
   | { denied: Response }
   | { denied: null; session: ValidatedSession };
@@ -222,7 +228,7 @@ async function sessionAuthorized(
   const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
   const result = await identity.fetch(
     new Request('https://identity/sessions/authorize', {
-      ...internalJson(principal),
+      ...internalJson(accessAccountKey(principal)),
       headers: {
         'content-type': 'application/json',
         cookie: cookie!,
@@ -250,7 +256,7 @@ async function issueSession(
   }
   const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
   const result = await identity.fetch(
-    new Request('https://identity/sessions/issue', internalJson(principal)),
+    new Request('https://identity/sessions/issue', internalJson(accessAccountKey(principal))),
   );
   return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
 }
@@ -264,11 +270,22 @@ async function sessionCurrent(
   const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
   const result = await identity.fetch(
     new Request('https://identity/sessions/authorize', {
-      ...internalJson(principal),
+      ...internalJson(accessAccountKey(principal)),
       headers: { 'content-type': 'application/json', cookie: request.headers.get('cookie') ?? '' },
     }),
   );
-  return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
+  if (!result.ok) {
+    return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
+  }
+  const session = (await result.json()) as ValidatedSession & {
+    preferredDisplayName?: string | null;
+  };
+  const { preferredDisplayName, ...publicSession } = session;
+  const displayName = preferredDisplayName || principal.displayName;
+  return withSecurityHeaders(Response.json(
+    displayName ? { ...publicSession, displayName } : publicSession,
+    { status: 200, headers: result.headers },
+  ));
 }
 
 async function sessionConfirm(
@@ -282,7 +299,7 @@ async function sessionConfirm(
   const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
   const result = await identity.fetch(
     new Request('https://identity/sessions/confirm', {
-      ...internalJson(principal),
+      ...internalJson(accessAccountKey(principal)),
       headers: {
         'content-type': 'application/json',
         cookie: request.headers.get('cookie') ?? '',
@@ -303,6 +320,31 @@ async function sessionLogout(env: Env, request: Request): Promise<Response> {
   const result = await identity.fetch(new Request('https://identity/sessions/logout', {
     method: 'POST',
     headers: { cookie: request.headers.get('cookie') ?? '' },
+  }));
+  return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
+}
+
+async function accountProfile(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'PATCH') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'PATCH' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const result = await identity.fetch(new Request('https://identity/accounts/profile', {
+    method: 'PATCH',
+    headers: {
+      'content-type': 'application/json',
+      cookie: request.headers.get('cookie') ?? '',
+    },
+    body: request.body,
   }));
   return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
 }
@@ -570,6 +612,9 @@ export default {
     }
     if (url.pathname === SESSION_LOGOUT) {
       return sessionLogout(env, request);
+    }
+    if (url.pathname === ACCOUNT_PROFILE) {
+      return accountProfile(env, request, principal);
     }
     if (url.pathname === ACCOUNT_EXPORT) {
       return accountExport(env, request, principal);

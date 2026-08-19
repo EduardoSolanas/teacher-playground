@@ -121,6 +121,25 @@ describe('Cloudflare Access request verification', () => {
     };
   }
 
+  it('exposes the verified IdP full name and never uses email as the display name', async () => {
+    const token = await signToken(privateKey, claims({
+      name: 'Ada Lovelace',
+      email: 'ada@gmail.com',
+    }));
+    await expect(verifyAccessRequest(
+      new Request('https://app.example.test/api/data', {
+        headers: { 'Cf-Access-Jwt-Assertion': token },
+      }),
+      context(),
+      { ACCESS_ISSUER: ISSUER, ACCESS_AUDIENCE: AUDIENCE, ACCESS_JWKS_URL: jwksUrl, ENVIRONMENT: 'local-test' },
+      { now, fetch: globalThis.fetch },
+    )).resolves.toEqual({
+      issuer: ISSUER,
+      subject: 'human-1',
+      displayName: 'Ada Lovelace',
+    });
+  });
+
   it('accepts a signed human assertion only with matching runtime Access context', async () => {
     const token = await signToken(privateKey, claims());
     await expect(verifyAccessRequest(

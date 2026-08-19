@@ -26,6 +26,8 @@ import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import * as store from '@/lib/whiteboard/store';
 import { cleanupStaleRooms } from '@/lib/whiteboard/persistence';
 import { isWhiteboardDebugEnabled } from '@/lib/whiteboard/ywebrtcProvider';
+import { ajaxFetch } from '@/lib/http/ajaxFetch';
+import { resolveJoinDisplayName } from '@/lib/access/accessDisplayName';
 import { roomIdFromWhiteboardPath } from '@/lib/whiteboard/roomPath';
 import { shouldClearUsernameOnEviction } from '@/lib/whiteboard/evictionUi';
 import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
@@ -125,10 +127,38 @@ function RoomContent({ roomId }: { roomId: string }) {
   useEffect(() => {
     if (userName || typeof window === 'undefined') return;
     if (wasKicked || wasRejected) return;
+    let cancelled = false;
     const storedName = window.localStorage.getItem('whiteboard_username');
-    if (!storedName) return;
-    setUserName(storedName);
-    syncUserName(storedName);
+    void (async () => {
+      let accessDisplayName: string | null = null;
+      if (!storedName) {
+        try {
+          const response = await ajaxFetch('/auth/session/current');
+          if (response.ok) {
+            const session: unknown = await response.json();
+            const displayName = session && typeof session === 'object'
+              ? (session as { displayName?: unknown }).displayName
+              : undefined;
+            accessDisplayName = typeof displayName === 'string' ? displayName : null;
+          }
+        } catch {
+          // Fall through to the join prompt.
+        }
+      }
+      if (cancelled) return;
+      const resolved = resolveJoinDisplayName({ storedName, accessDisplayName });
+      if (!resolved) return;
+      try {
+        window.localStorage.setItem('whiteboard_username', resolved);
+      } catch {
+        // localStorage unavailable
+      }
+      setUserName(resolved);
+      syncUserName(resolved);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [syncUserName, userName, wasKicked, wasRejected]);
 
   useEffect(() => {

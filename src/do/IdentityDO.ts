@@ -12,6 +12,8 @@ import {
   removeOwnedRoom,
   ownedRoomExists,
   resolveAccountForSubject,
+  readPreferredDisplayName,
+  setPreferredDisplayName,
 } from '../lib/identity/identityStore';
 import {
   SessionUnauthorizedError,
@@ -48,6 +50,7 @@ const LOGOUT_SESSION_PATH = '/sessions/logout';
 const AUTHORIZATIONS_PATH = '/accounts/authorizations';
 const EXPORT_ACCOUNT_PATH = '/accounts/export';
 const ERASE_ACCOUNT_PATH = '/accounts';
+const ACCOUNT_PROFILE_PATH = '/accounts/profile';
 const ACCOUNT_ROOMS_PATH = '/accounts/rooms';
 const REVOKE_ALL_PATH = '/accounts/revoke-all';
 const DISABLE_ACCOUNT_PATH = '/accounts/disable';
@@ -106,6 +109,14 @@ function isAccountBody(value: unknown): value is {
     body.accountId.length >= 1 &&
     body.accountId.length <= 128
   );
+}
+
+function isProfileBody(value: unknown): value is { displayName: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return Object.keys(body).length === 1 && typeof body.displayName === 'string';
 }
 
 function isOwnedRoomBody(value: unknown): value is {
@@ -251,7 +262,14 @@ export class IdentityDO extends DurableObject {
       const current = token
         ? await authorizeSessionForPrincipal(this.db, token, parsed.body)
         : null;
-      return current ? Response.json(current, { headers: noStore() }) : unauthorized(true);
+      if (!current) return unauthorized(true);
+      return Response.json(
+        {
+          ...current,
+          preferredDisplayName: readPreferredDisplayName(this.db, current.accountId),
+        },
+        { headers: noStore() },
+      );
     }
 
     if (url.pathname === CONFIRM_SESSION_PATH) {
@@ -296,6 +314,28 @@ export class IdentityDO extends DurableObject {
         status: 204,
         headers: noStore({ 'Set-Cookie': clearSessionCookie() }),
       });
+    }
+
+    if (url.pathname === ACCOUNT_PROFILE_PATH) {
+      if (request.method !== 'PATCH') return methodNotAllowed('PATCH');
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      const parsed = await readExactJson(request, isProfileBody);
+      if ('response' in parsed) return parsed.response;
+      try {
+        const displayName = setPreferredDisplayName(
+          this.db,
+          session.accountId,
+          parsed.body.displayName,
+        );
+        return Response.json({ displayName }, { headers: noStore() });
+      } catch (error) {
+        if (error instanceof IdentityInputError) {
+          return Response.json({ error: error.message }, { status: 400 });
+        }
+        throw error;
+      }
     }
 
     if (url.pathname === EXPORT_ACCOUNT_PATH) {

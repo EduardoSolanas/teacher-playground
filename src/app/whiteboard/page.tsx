@@ -8,7 +8,8 @@ import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import TeacherRoomList, {
   type TeacherRoomSummary,
 } from '@/components/whiteboard/TeacherRoomList';
-import { completeSignOut } from '@/lib/identity/completeSignOut';
+import { UserProfileMenu } from '@/components/whiteboard/UserProfileMenu';
+import { roomNameForHostDisplayName } from '@/lib/access/accessDisplayName';
 import {
   DEFAULT_MAX_USERS,
   FREE_MAX_ROOMS,
@@ -62,25 +63,35 @@ function parseTeacherRooms(payload: unknown): TeacherRoomSummary[] {
 }
 
 export default function WhiteboardRoute() {
-  const [roomName, setRoomName] = useState(() => generateRoomName());
   const [maxUsers, setMaxUsers] = useState(DEFAULT_MAX_USERS);
   const [creationTimes, setCreationTimes] = useState<number[]>([]);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [rooms, setRooms] = useState<TeacherRoomSummary[]>([]);
   const [roomsLoading, setRoomsLoading] = useState(true);
+  const [hostDisplayName, setHostDisplayName] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const response = await ajaxFetch('/api/whiteboard/rooms');
-        if (!response.ok) {
-          if (!cancelled) setRooms([]);
-          return;
+        const [roomsResponse, sessionResponse] = await Promise.all([
+          ajaxFetch('/api/whiteboard/rooms'),
+          ajaxFetch('/auth/session/current'),
+        ]);
+        if (!cancelled && roomsResponse.ok) {
+          const payload: unknown = await roomsResponse.json();
+          setRooms(parseTeacherRooms(payload));
+        } else if (!cancelled) {
+          setRooms([]);
         }
-        const payload: unknown = await response.json();
-        if (!cancelled) setRooms(parseTeacherRooms(payload));
+        if (!cancelled && sessionResponse.ok) {
+          const session: unknown = await sessionResponse.json();
+          const displayName = session && typeof session === 'object'
+            ? (session as { displayName?: unknown }).displayName
+            : undefined;
+          setHostDisplayName(typeof displayName === 'string' ? displayName : null);
+        }
       } catch {
         if (!cancelled) setRooms([]);
       } finally {
@@ -134,7 +145,9 @@ export default function WhiteboardRoute() {
       const settings = await ajaxFetch(`/api/whiteboard/room/${roomId}/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ maxUsers, hostPeerId, name: roomName.trim() || null }),
+        body: JSON.stringify({ maxUsers, hostPeerId, name: hostDisplayName
+          ? roomNameForHostDisplayName(hostDisplayName)
+          : generateRoomName() }),
       });
 
       if (!settings.ok) {
@@ -153,7 +166,7 @@ export default function WhiteboardRoute() {
       setIsCreatingRoom(false);
       setCreateError('Room creation failed. Please try again.');
     }
-  }, [creationTimes, isCreatingRoom, maxUsers, roomName, rooms.length]);
+  }, [creationTimes, hostDisplayName, isCreatingRoom, maxUsers, rooms.length]);
 
   const refreshRooms = useCallback(async () => {
     const response = await ajaxFetch('/api/whiteboard/rooms');
@@ -189,15 +202,6 @@ export default function WhiteboardRoute() {
     [refreshRooms],
   );
 
-  const handleSignOut = useCallback(async () => {
-    await completeSignOut({
-      logout: () => ajaxFetch('/auth/session/logout', { method: 'POST' }),
-      navigate: (path) => {
-        window.location.assign(path);
-      },
-    });
-  }, []);
-
   const stepUsers = (delta: number) =>
     setMaxUsers((current) => Math.max(MIN_USERS, Math.min(MAX_USERS, current + delta)));
 
@@ -216,28 +220,10 @@ export default function WhiteboardRoute() {
           </span>
         </span>
 
-        <button
-          type="button"
-          data-testid="whiteboard-logout-btn"
-          onClick={handleSignOut}
-          className="inline-flex h-11 shrink-0 items-center gap-2 rounded-xl border border-white/30 bg-white/10 px-3 text-sm font-semibold text-white backdrop-blur-md transition-colors hover:bg-white/20 active:bg-white/25 sm:px-4"
-        >
-          <svg
-            aria-hidden="true"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="h-4 w-4"
-          >
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-            <path d="m16 17 5-5-5-5" />
-            <path d="M21 12H9" />
-          </svg>
-          Sign out
-        </button>
+        <UserProfileMenu
+          displayName={hostDisplayName}
+          onDisplayNameChange={setHostDisplayName}
+        />
       </header>
 
       <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col sm:justify-center">
@@ -261,24 +247,6 @@ export default function WhiteboardRoute() {
 
           <div className="mt-6 rounded-2xl bg-slate-50 p-4 ring-1 ring-slate-200/70 sm:p-5">
             <h2 className="text-base font-bold text-slate-900">New room</h2>
-
-            <div className="mt-4">
-              <label
-                htmlFor="whiteboard-new-room-name"
-                className="block text-[13px] font-semibold text-slate-600"
-              >
-                Room name
-              </label>
-              <input
-                id="whiteboard-new-room-name"
-                type="text"
-                data-testid="whiteboard-room-name-input"
-                value={roomName}
-                onChange={(e) => setRoomName(e.target.value.slice(0, 100))}
-                placeholder="e.g. Maths Lesson"
-                className="mt-1.5 h-11 w-full rounded-xl border-2 border-slate-200 bg-white px-3 text-base text-slate-900 outline-none transition-colors placeholder:text-slate-400 focus:border-indigo-500"
-              />
-            </div>
 
             <div className="mt-4">
               <label

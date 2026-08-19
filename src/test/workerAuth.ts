@@ -17,10 +17,11 @@ export interface LocalAuthSession {
 export async function localAccessToken(
   subject: string,
   variant = 'valid',
+  name?: string,
 ): Promise<string> {
-  const response = await fetch(
-    `${localIssuer()}/token?sub=${encodeURIComponent(subject)}&variant=${encodeURIComponent(variant)}`,
-  );
+  const params = new URLSearchParams({ sub: subject, variant });
+  if (name) params.set('name', name);
+  const response = await fetch(`${localIssuer()}/token?${params.toString()}`);
   if (!response.ok) throw new Error(`local issuer token failed: ${response.status}`);
   return ((await response.json()) as { token: string }).token;
 }
@@ -56,6 +57,7 @@ export async function authenticatedFetch(
       path === '/auth/session'
       || path === '/auth/session/logout'
       || path === '/auth/session/confirm'
+      || path === '/auth/account/profile'
       || path.startsWith('/api/')
     ));
   if (needsOrigin && !headers.has('Origin')) headers.set('Origin', BASE);

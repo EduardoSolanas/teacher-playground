@@ -61,7 +61,7 @@ describe('WhiteboardRoute room list', () => {
     expect(screen.queryByRole('combobox')).toBeNull();
     expect(container.querySelector('select')).toBeNull();
     expect(screen.getByTestId('whiteboard-create-room-btn')).toBeTruthy();
-    expect(screen.getByTestId('whiteboard-room-name-input')).toBeTruthy();
+    expect(screen.queryByTestId('whiteboard-room-name-input')).toBeNull();
   });
 
   it('opens a listed room via the router', async () => {
@@ -111,7 +111,7 @@ describe('WhiteboardRoute room list', () => {
     });
 
     expect(screen.getByTestId('whiteboard-create-room-btn')).toBeTruthy();
-    expect(screen.getByTestId('whiteboard-room-name-input')).toBeTruthy();
+    expect(screen.queryByTestId('whiteboard-room-name-input')).toBeNull();
 
     fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-beta'));
     fireEvent.click(screen.getByTestId('whiteboard-room-rename-room-beta'));
@@ -180,6 +180,43 @@ describe('WhiteboardRoute room list', () => {
     expect(people.value).toBe('2');
     expect(people.max).toBe('2');
     expect(screen.getByRole('button', { name: 'More people' })).toHaveProperty('disabled', true);
+  });
+
+  it('names a new room from the Access full name without a name field', async () => {
+    ajaxFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/whiteboard/rooms') {
+        return Promise.resolve(jsonResponse({ rooms: [] }));
+      }
+      if (url === '/auth/session/current') {
+        return Promise.resolve(jsonResponse({
+          accountId: 'acct-1',
+          displayName: 'Ada Lovelace',
+        }));
+      }
+      if (init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      return Promise.resolve(jsonResponse({}, false));
+    });
+
+    render(<WhiteboardRoute />);
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-create-room-btn')).toHaveProperty('disabled', false);
+    });
+    expect(screen.queryByLabelText('Room name')).toBeNull();
+    fireEvent.click(screen.getByTestId('whiteboard-create-room-btn'));
+
+    await waitFor(() => {
+      expect(assign).toHaveBeenCalledWith('/whiteboard/new-room');
+    });
+
+    const settingsCall = ajaxFetch.mock.calls.find(
+      (call) => typeof call[0] === 'string' && String(call[0]).endsWith('/settings'),
+    );
+    expect(JSON.parse(String(settingsCall?.[1]?.body))).toMatchObject({
+      maxUsers: 2,
+      name: "Ada Lovelace's room",
+    });
   });
 
   it('posts maxUsers 2 when creating a room', async () => {

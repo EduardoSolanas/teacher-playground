@@ -227,6 +227,7 @@ test.describe('local Access edge and session bootstrap', () => {
     await expectSessionCookie(page);
     await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
 
+    await page.getByTestId('whiteboard-profile-btn').click();
     await page.getByTestId('whiteboard-logout-btn').click();
 
     await expect(page).toHaveURL(appUrl('/'));

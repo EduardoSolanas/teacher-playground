@@ -28,6 +28,73 @@ describe('real local Access boundary through workerd', () => {
     }
   });
 
+  it('returns the verified Access full name on the current session and ignores email', async () => {
+    const token = await localAccessToken('session-display-name', 'valid', 'Ada Lovelace');
+    const issued = await SELF.fetch(`${BASE}/auth/session`, {
+      method: 'POST',
+      headers: {
+        Origin: BASE,
+        'Cf-Access-Jwt-Assertion': token,
+      },
+    });
+    expect(issued.status).toBe(201);
+    const cookie = issued.headers.get('set-cookie')!.split(';', 1)[0];
+    const current = await SELF.fetch(`${BASE}/auth/session/current`, {
+      headers: {
+        'Cf-Access-Jwt-Assertion': token,
+        Cookie: cookie,
+      },
+    });
+    expect(current.status).toBe(200);
+    const body = await current.json() as { displayName?: string; accountId?: string };
+    expect(body.displayName).toBe('Ada Lovelace');
+    expect(JSON.stringify(body)).not.toMatch(/@/);
+  });
+
+  it('lets the caller set a preferred display name that session current returns instead of the Access JWT name', async () => {
+    const token = await localAccessToken('profile-display-name', 'valid', 'Ada Lovelace');
+    const issued = await SELF.fetch(`${BASE}/auth/session`, {
+      method: 'POST',
+      headers: {
+        Origin: BASE,
+        'Cf-Access-Jwt-Assertion': token,
+      },
+    });
+    expect(issued.status).toBe(201);
+    const cookie = issued.headers.get('set-cookie')!.split(';', 1)[0];
+    const session = {
+      subject: 'profile-display-name',
+      token,
+      cookie,
+      accountId: ((await issued.json()) as { accountId: string }).accountId,
+    };
+
+    const missingOrigin = await SELF.fetch(`${BASE}/auth/account/profile`, {
+      method: 'PATCH',
+      headers: {
+        'Cf-Access-Jwt-Assertion': token,
+        Cookie: cookie,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ displayName: 'Ms Ada' }),
+    });
+    expect(missingOrigin.status).toBe(403);
+
+    const saved = await authenticatedFetch('/auth/account/profile', session, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ displayName: 'Ms Ada' }),
+    });
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toEqual({ displayName: 'Ms Ada' });
+
+    const current = await authenticatedFetch('/auth/session/current', session);
+    expect(current.status).toBe(200);
+    const body = await current.json() as Record<string, unknown>;
+    expect(body.displayName).toBe('Ms Ada');
+    expect(body).not.toHaveProperty('preferredDisplayName');
+  });
+
   it('bootstraps a signed local identity and reaches a protected API with its local session', async () => {
     const session = await bootstrapLocalSession('boundary-valid');
     const current = await authenticatedFetch('/auth/session/current', session);
