@@ -9,7 +9,7 @@ describe('displayNameFromAccessClaims', () => {
   it('uses the IdP name claim (Google full name)', () => {
     expect(displayNameFromAccessClaims({
       name: 'Ada Lovelace',
-      email: 'ada@gmail.com',
+      email: 'ada@example.test',
       sub: 'google-oidc|1',
     })).toBe('Ada Lovelace');
   });
@@ -18,13 +18,13 @@ describe('displayNameFromAccessClaims', () => {
     expect(displayNameFromAccessClaims({
       given_name: 'Ada',
       family_name: 'Lovelace',
-      email: 'ada@gmail.com',
+      email: 'ada@example.test',
     })).toBe('Ada Lovelace');
   });
 
   it('never treats email as a display name', () => {
     expect(displayNameFromAccessClaims({
-      email: 'ada@gmail.com',
+      email: 'ada@example.test',
       sub: 'google-oidc|1',
     })).toBeUndefined();
   });

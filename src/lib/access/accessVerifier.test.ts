@@ -124,7 +124,7 @@ describe('Cloudflare Access request verification', () => {
   it('exposes the verified IdP full name and never uses email as the display name', async () => {
     const token = await signToken(privateKey, claims({
       name: 'Ada Lovelace',
-      email: 'ada@gmail.com',
+      email: 'ada@example.test',
     }));
     await expect(verifyAccessRequest(
       new Request('https://app.example.test/api/data', {
