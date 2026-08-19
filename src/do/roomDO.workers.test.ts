@@ -2317,7 +2317,15 @@ describe('room authorization matrix', () => {
       createRoomAs(other, roomId, { name: 'B' }),
     ]);
     const statuses = [first.status, second.status].sort();
-    expect(statuses).toEqual([200, 403]);
+    expect(statuses[0]).toBe(200);
+    // Which refusal the loser gets depends on whether the two creates actually
+    // overlapped. A sequential second create is stopped by authorize(), which
+    // sees the room and returns 403. A genuine overlap passes that check --
+    // the room did not exist yet for either request -- and is stopped by the
+    // create path instead, which reports the collision as 409 (the documented
+    // "existing room -> 409" behaviour). Both are correct refusals; the
+    // invariant under test is that exactly one owner row survives.
+    expect([403, 409]).toContain(statuses[1]);
 
     const rows = await runInDurableObject(
       env.ROOMS.get(env.ROOMS.idFromName(roomId)),

@@ -9,6 +9,43 @@ room, and optional **LiveKit** video/voice for admitted participants.
 - One Durable Object per room (`RoomDO`) for board state + signaling
 - LiveKit SFU for A/V (server-issued short-lived JWTs)
 
+## Collaboration and signaling
+
+Board state is a Yjs document synced over a WebSocket to `RoomDO`. Three
+constraints are load-bearing and have each been broken at least once.
+
+**The Worker is a blind relay.** `RoomDO` forwards raw bytes between sockets and
+keeps no server-side Y.Doc, so nothing holds authoritative state. Whoever
+connects first sends sync step 1 into an empty room, and nobody ever asks a
+later joiner for its baseline. The provider therefore re-issues sync step 1 on
+an interval (`RESYNC_INTERVAL_MS` in `yWebsocketProvider.ts`). Without it a
+peer's updates arrive with a causal gap, Yjs parks them in `pendingStructs`,
+and their cursors and elements silently never appear on the other side — the
+socket looks perfectly healthy the whole time.
+
+**Signaling is capped at 60 messages/second per account**
+(`SIGNALING_MAX_MESSAGES_PER_WINDOW`); the Worker closes the socket with 1008
+above that. Every Yjs write is one message, so anything driven by pointer
+movement must be throttled. Cursors go through `cursorPublishDelay`
+(`cursorPublishRate.ts`) in *both* writers — the room pointer handler and
+Excalidraw's `onPointerUpdate`. Publishing on every `pointermove` measured 64
+msg/sec and closed the socket four times in two seconds, which the UI shows as
+a board stuck on "Connecting to room…".
+
+**Peer ids are minted by presence, not chosen by the client**
+(`peerIdForAccount`; clients may not pick their own — see the "issues a stable
+server peerId" test). An account with no `room_presence` or `waiting_peers` row
+gets a fresh one, so dropping that row mid-session silently re-identifies the
+peer and strands every id the host holds: roster rows, moderation targets,
+cursors. The row is released only when the room is actually left, never as a
+side effect of a re-render. Moderation targets the **account** rather than a
+peer id (`moderationTargetBody`), and `resolveModerationTarget` falls back to a
+known account when the peer id is stale.
+
+Regression coverage: `tests/e2e/cursor-signaling.spec.ts` for the rate budget,
+and "a peer keeps one peer id across admission" in
+`tests/e2e/waiting-room.spec.ts`.
+
 ## Video and voice (Phase 3)
 
 **Provider choice:** LiveKit (self-hostable SFU, Workers-friendly HS256 tokens).

@@ -59,6 +59,17 @@ the browser.”
 A verifier that did not see e2e output must not `APPROVE` a Phase 2 gate item
 that names an E2E flow.
 
+Never assert on state sampled once after `page.waitForTimeout(...)`. Playwright's
+`expect(locator)` assertions retry, but a value pulled out of `page.evaluate`
+does not, so a fixed sleep turns into a flake the moment CI is slower than the
+dev machine. Poll instead — `expect.poll`, or the `waitForSync` helper in
+`whiteboard.spec.ts`. Keep a short sleep only to prove something *stays* true
+(that a cleared board is still clear), not to wait for it to become true.
+
+Peer ids change when presence re-mints them, so a peer id captured before
+admission may not identify that peer afterwards. Re-resolve the row rather than
+reusing an id across an admission or suspend boundary.
+
 ## Mutation testing
 
 This repo treats mutation testing as proof that a test would fail if the guard
