@@ -41,15 +41,10 @@ describe('useClearSessionOnEviction (SEC-011)', () => {
     expect(clearSession).not.toHaveBeenCalled();
   });
 
-  it('clears session material once on window pagehide', () => {
+  it('does not clear on pagehide so navigating to the room list is not a leave', () => {
     const clearSession = vi.fn();
     render(<Probe clearSession={clearSession} />);
+    window.dispatchEvent(new Event('pagehide'));
     expect(clearSession).not.toHaveBeenCalled();
-
-    window.dispatchEvent(new Event('pagehide'));
-    expect(clearSession).toHaveBeenCalledTimes(1);
-
-    window.dispatchEvent(new Event('pagehide'));
-    expect(clearSession).toHaveBeenCalledTimes(1);
   });
 });

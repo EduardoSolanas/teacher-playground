@@ -33,6 +33,22 @@ export function peerIdWhenJoined(hasJoined: boolean, roomId: string): string | n
   return getStablePeerId(roomId);
 }
 
+export function rememberIssuedPeerId(roomId: string, issuedPeerId: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(peerIdStorageKey(roomId), issuedPeerId);
+  } catch {
+    // localStorage unavailable
+  }
+}
+
+/** Presence POST returns the server-minted label; cursors must use that id. */
+export function nextPeerIdFromPresence(current: string, issued: unknown): string | null {
+  if (typeof issued !== 'string' || issued.length === 0) return null;
+  if (issued === current) return null;
+  return issued;
+}
+
 export function clearStoredPeerId(roomId: string): void {
   if (typeof window === 'undefined') return;
   try {

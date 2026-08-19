@@ -1,4 +1,5 @@
-import { test, expect, Page } from '@playwright/test';
+import { test, expect } from './fixtures';
+import { Page } from '@playwright/test';
 import {
   appUrl,
   createRoomWithMaxUsers,
@@ -7,6 +8,7 @@ import {
   expectWaiting,
   expectPersistedElement,
   newAuthenticatedContext,
+  appendElement,
 } from './helpers';
 
 // ── Scene element helpers (copied from excalidraw-sync.spec.ts) ────────────
@@ -54,14 +56,6 @@ async function waitForExcalidrawApi(page: Page) {
     .toBe(true);
 }
 
-async function appendElement(page: Page, element: Record<string, unknown>) {
-  await waitForExcalidrawApi(page);
-  await page.evaluate((el) => {
-    const api = (window as any).__debugExcalidrawApi;
-    api.updateScene({ elements: [...api.getSceneElements(), el] });
-  }, element);
-}
-
 test.describe('Room lifecycle', () => {
   test('joining an existing room by code lands you in that room', async ({ page, browser }) => {
     // Host creates a room
@@ -77,8 +71,10 @@ test.describe('Room lifecycle', () => {
       await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
 
       // Verify peer is now in the same room by checking the URL room id
-      const peerRoomId = new URL(peerPage.url()).pathname.split('/').pop();
+      const peerRoomId = new URL(peerPage.url()).pathname.replace(/\/$/, '').split('/').pop();
       expect(peerRoomId).toBe(hostRoomId);
+      expect(peerRoomId).not.toBe('_room');
+      expect(peerRoomId).not.toBe('undefined');
     } finally {
       await peerContext.close();
     }

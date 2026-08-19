@@ -73,8 +73,39 @@ describe('createYWebsocketProvider', () => {
       connect: ReturnType<typeof vi.fn>;
     };
 
+    expect(websocketCtor).toHaveBeenCalledWith(
+      'wss://unused.invalid',
+      '_',
+      expect.any(Y.Doc),
+      expect.objectContaining({ connect: false, disableBc: true }),
+    );
     expect(instance?.connect).toHaveBeenCalled();
 
     destroyProvider('connect-room');
+  });
+  /**
+   * The Worker relays bytes between sockets and keeps no server-side Y.Doc, so
+   * nobody asks a late joiner for its baseline state. Without a periodic
+   * re-sync the first peer's updates arrive with a causal gap and Yjs parks
+   * them in pendingStructs forever, which is how a peer's cursor and elements
+   * silently never reach the host.
+   */
+  it('re-sends sync step 1 on an interval so a late joiner cannot leave peers with a causal gap', () => {
+    vi.stubGlobal('window', {
+      location: {
+        protocol: 'https:',
+        hostname: 'whiteboard.example.com',
+        host: 'whiteboard.example.com',
+      },
+    });
+
+    createYWebsocketProvider(new Y.Doc(), 'resync-room');
+
+    const options = websocketCtor.mock.calls.at(-1)?.[3] as { resyncInterval?: number };
+    expect(typeof options.resyncInterval).toBe('number');
+    expect(options.resyncInterval).toBeGreaterThan(0);
+    expect(options.resyncInterval).toBeLessThanOrEqual(5000);
+
+    destroyProvider('resync-room');
   });
 });

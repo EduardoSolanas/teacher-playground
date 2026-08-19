@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import { appUrl, createRoomWithMaxUsers, expectSessionCookie } from './helpers';
 
 test.describe('teacher room list on landing', () => {
@@ -10,7 +10,7 @@ test.describe('teacher room list on landing', () => {
     await expect(page.getByRole('heading', { name: 'Your rooms' })).toBeVisible();
     await expect(page.locator('select')).toHaveCount(0);
     await expect(page.getByTestId('whiteboard-create-room-btn')).toBeVisible();
-    await expect(page.getByTestId('whiteboard-room-code-input')).toBeVisible();
+    await expect(page.getByTestId('whiteboard-room-name-input')).toBeVisible();
 
     const roomId = await createRoomWithMaxUsers(page, 'ListHost', 2);
 
@@ -40,6 +40,7 @@ test.describe('teacher room list on landing', () => {
     const item = page.getByTestId(`whiteboard-room-list-item-${roomId}`);
     await expect(item).toBeVisible({ timeout: 15000 });
 
+    await page.getByTestId(`whiteboard-room-menu-${roomId}`).click();
     await page.getByTestId(`whiteboard-room-rename-${roomId}`).click();
     await page.getByTestId(`whiteboard-room-name-input-${roomId}`).fill('Geometry');
     await page.getByTestId(`whiteboard-room-name-save-${roomId}`).click();

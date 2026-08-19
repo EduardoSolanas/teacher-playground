@@ -1,5 +1,6 @@
-import { test, expect, Page } from '@playwright/test';
-import { newAuthenticatedContext } from './helpers';
+import { test, expect } from './fixtures';
+import { Page } from '@playwright/test';
+import { newAuthenticatedContext, expandPresenceIfCollapsed } from './helpers';
 
 function appUrl(path: string) {
   return new URL(path, process.env.PLAYWRIGHT_BASE_URL).toString();
@@ -18,8 +19,11 @@ async function createRoomWithMaxUsers(page: Page, name: string, maxUsers: number
   await page.getByTestId('whiteboard-username-input').fill(name);
   await page.getByTestId('whiteboard-join-room-btn').click();
   await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
-
-  return new URL(page.url()).pathname.split('/').pop()!;
+  await expect(page).toHaveURL(/\/whiteboard\/[A-Za-z0-9_-]{8,}(?:\/)?$/);
+  const roomId = new URL(page.url()).pathname.split('/').pop()!;
+  expect(roomId).not.toBe('_room');
+  expect(roomId).not.toBe('undefined');
+  return roomId;
 }
 
 async function joinExistingRoom(page: Page, roomId: string, name = 'Peer') {
@@ -50,7 +54,7 @@ async function expectWaiting(page: Page) {
   await expect
     .poll(async () => (await getCollabState(page)).isWaiting, { timeout: 15000 })
     .toBe(true);
-  await expect(page.getByRole('heading', { name: /Room is Full/ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Room is Full/ })).toBeVisible({ timeout: 15000 });
 }
 
 async function expectNotWaiting(page: Page) {
@@ -60,6 +64,7 @@ async function expectNotWaiting(page: Page) {
 }
 
 async function getFirstWaitingPeerId(hostPage: Page) {
+  await expandPresenceIfCollapsed(hostPage);
   const waitingUser = hostPage.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: 'Waiting' }).first();
   await expect(waitingUser).toBeVisible({ timeout: 15000 });
   const testId = await waitingUser.getAttribute('data-testid');
@@ -69,6 +74,7 @@ async function getFirstWaitingPeerId(hostPage: Page) {
 }
 
 async function openFirstWaitingPeerMenu(hostPage: Page) {
+  await expandPresenceIfCollapsed(hostPage);
   const waitingUser = hostPage.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: 'Waiting' }).first();
   await expect(waitingUser).toBeVisible({ timeout: 15000 });
   const testId = await waitingUser.getAttribute('data-testid');
@@ -79,12 +85,13 @@ async function openFirstWaitingPeerMenu(hostPage: Page) {
 }
 
 async function approveFirstWaitingPeer(hostPage: Page) {
+  await expandPresenceIfCollapsed(hostPage);
   const waitingUser = hostPage.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: 'Waiting' }).first();
   await expect(waitingUser).toBeVisible({ timeout: 15000 });
   const testId = await waitingUser.getAttribute('data-testid');
   const peerId = testId?.replace('whiteboard-user-', '');
   expect(peerId).toBeTruthy();
-  await waitingUser.getByRole('button', { name: 'Let in' }).click();
+  await waitingUser.getByRole('button', { name: 'Let in' }).click({ force: true });
   return peerId;
 }
 
@@ -208,6 +215,38 @@ test.describe('Waiting Room', () => {
     await context2.close();
   });
 
+  test('a peer keeps one peer id across admission', async ({ browser }) => {
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
+
+    const page1 = await context1.newPage();
+    const page2 = await context2.newPage();
+
+    const roomId = await createRoomWithMaxUsers(page1, 'StableHost', 1);
+
+    await joinExistingRoom(page2, roomId);
+    await expectWaiting(page2);
+    const queuedId = await page2.evaluate(() => (window as any).__whiteboardCollab?.localPeerId);
+    const approvedId = await approveFirstWaitingPeer(page1);
+    expect(approvedId).toBe(queuedId);
+
+    await expect(page2.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+    await expectNotWaiting(page2);
+
+    // The presence row must survive admission: deleting it makes the next
+    // heartbeat mint a fresh id, stranding every id the host already holds.
+    await expect
+      .poll(
+        async () => page2.evaluate(() => (window as any).__whiteboardCollab?.localPeerId),
+        { timeout: 15000, message: 'peer id changed after admission' },
+      )
+      .toBe(queuedId);
+    await expect(page1.getByTestId(`whiteboard-user-${queuedId}`)).toBeVisible({ timeout: 10000 });
+
+    await context1.close();
+    await context2.close();
+  });
+
   test('host can kick an accepted peer', async ({ browser }) => {
     const context1 = await newAuthenticatedContext(browser);
     const context2 = await newAuthenticatedContext(browser);
@@ -223,13 +262,9 @@ test.describe('Waiting Room', () => {
 
     await expect(page2.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
 
-    // Host right-clicks on peer to open context menu
-    const userItem = page1.locator(`[data-testid="whiteboard-user-${peerId}"]`);
-    await userItem.click({ button: 'right' });
-    await page1.waitForTimeout(300);
-
+    await page1.getByTestId(`whiteboard-user-options-${peerId}`).click();
     await expect(page1.getByTestId('whiteboard-context-kick')).toBeVisible();
-    await page1.getByTestId('whiteboard-context-kick').click();
+    await page1.getByRole('button', { name: 'Kick from Room' }).click({ force: true });
 
     await expectNotWaiting(page2);
     await expect(page2.getByTestId('whiteboard-username-input')).toBeVisible({ timeout: 10000 });
@@ -257,13 +292,9 @@ test.describe('Waiting Room', () => {
 
     await expect(page2.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
 
-    // Host right-clicks on peer
-    const userItem = page1.locator(`[data-testid="whiteboard-user-${peerId}"]`);
-    await userItem.click({ button: 'right' });
-    await page1.waitForTimeout(300);
-
+    await page1.getByTestId(`whiteboard-user-options-${peerId}`).click();
     await expect(page1.getByTestId('whiteboard-context-suspend')).toBeVisible();
-    await page1.getByTestId('whiteboard-context-suspend').click();
+    await page1.getByRole('button', { name: 'Send to Waiting Room' }).click({ force: true });
 
     await expectWaiting(page2);
 
@@ -288,10 +319,9 @@ test.describe('Waiting Room', () => {
     const peerId = await approveFirstWaitingPeer(page1);
     await expect(page2.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
 
-    const userItem = page1.locator(`[data-testid="whiteboard-user-${peerId}"]`);
-    await userItem.click({ button: 'right' });
-    await page1.waitForTimeout(300);
-    await page1.getByTestId('whiteboard-context-kick').click();
+    await page1.getByTestId(`whiteboard-user-options-${peerId}`).click();
+    await expect(page1.getByTestId('whiteboard-context-kick')).toBeVisible();
+    await page1.getByRole('button', { name: 'Kick from Room' }).click({ force: true });
 
     await expectNotWaiting(page2);
 
@@ -439,10 +469,10 @@ test.describe('Waiting Room', () => {
     await expect(hostPage.getByTestId(`whiteboard-inline-kick-${peerId}`)).toHaveCount(0);
     await expect(hostPage.getByTestId(`whiteboard-inline-wait-${peerId}`)).toHaveCount(0);
 
-    await hostPage.getByTestId(`whiteboard-user-${peerId}`).click({ position: { x: 12, y: 12 } });
+    await hostPage.getByTestId(`whiteboard-user-options-${peerId}`).click();
     await expect(hostPage.getByTestId('whiteboard-context-let-in')).toHaveCount(0);
     await expect(hostPage.getByTestId('whiteboard-context-kick')).toBeVisible({ timeout: 10000 });
-    await hostPage.getByTestId('whiteboard-context-kick').click();
+    await hostPage.getByRole('button', { name: 'Kick from Room' }).click({ force: true });
     await expectNotWaiting(peerPage);
     await expect(peerPage.getByTestId('whiteboard-username-input')).toBeVisible({ timeout: 10000 });
 
@@ -487,12 +517,16 @@ test.describe('Waiting Room', () => {
     await expectNotWaiting(peerPage);
 
     const peerCanvasArea = peerPage.getByTestId('whiteboard-canvas-area');
+    await expect(peerCanvasArea).toBeVisible();
     const peerBox = await peerCanvasArea.boundingBox();
     expect(peerBox).not.toBeNull();
 
     await peerPage.mouse.move(peerBox!.x + 240, peerBox!.y + 180);
+    await peerPage.mouse.move(peerBox!.x + 250, peerBox!.y + 190);
 
-    const peerCursor = hostPage.getByTestId(`whiteboard-peer-cursor-${peerId}`);
+    const peerCursor = hostPage.locator('[data-testid^="whiteboard-peer-cursor-"]').filter({
+      hasText: 'CursorPeer',
+    });
     await expect(peerCursor).toBeVisible({ timeout: 15000 });
     await expect(peerCursor).toContainText('CursorPeer');
 

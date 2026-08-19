@@ -264,11 +264,14 @@ export function enqueueWaitingPeer(
   },
 ): { ok: true } | { ok: false; reason: 'queue_full' } {
   const existing = db.prepare(
-    `SELECT 1 AS ok FROM waiting_peers WHERE room_id = ? AND peer_id = ?`,
-  ).get(params.roomId, params.peerId) as { ok: number } | undefined;
+    `SELECT 1 AS ok FROM waiting_peers WHERE room_id = ? AND (peer_id = ? OR account_id = ?)`,
+  ).get(params.roomId, params.peerId, params.accountId) as { ok: number } | undefined;
 
   if (!existing && isAccessQueueFull(db, params.roomId)) {
-    return { ok: false, reason: 'queue_full' };
+    const membership = getMembership(db, params.roomId, params.accountId);
+    if (effectiveRole(membership) !== 'pending') {
+      return { ok: false, reason: 'queue_full' };
+    }
   }
 
   const now = params.now ?? Date.now();
@@ -462,10 +465,14 @@ export function resolveModerationTarget(
   }
 
   const bound = peerId ? peerAccountId(db, roomId, peerId) : null;
-  if (peerId && !bound) {
+  // A peerId that resolves to nothing is a stale label, not a bad request, as
+  // long as the caller also named the account: presence rows come and go on
+  // admission, re-queue, and reconnect. Only a stale peerId with nothing to
+  // fall back on is a 404.
+  if (peerId && !bound && !accountId) {
     return { ok: false, status: 404, error: 'Peer not bound to an account' };
   }
-  if (accountId && peerId && bound !== accountId) {
+  if (accountId && peerId && bound && bound !== accountId) {
     return { ok: false, status: 409, error: 'peerId does not match account' };
   }
 
@@ -474,7 +481,10 @@ export function resolveModerationTarget(
     return { ok: false, status: 404, error: 'Account not found' };
   }
 
-  if (accountId && !peerId) {
+  // Verified whenever the account carries the target, which now includes the
+  // stale-peerId case, so an unknown account cannot be moderated by pairing it
+  // with a label that no longer exists.
+  if (accountId && !bound) {
     const known = db.prepare(
       `SELECT 1 AS present FROM room_members WHERE room_id = ? AND account_id = ?
        UNION
@@ -489,7 +499,9 @@ export function resolveModerationTarget(
     }
   }
 
-  return { ok: true, accountId: target, peerId };
+  // Never hand back a label that no longer resolves; callers use it to find the
+  // peer's row and would otherwise search for a ghost.
+  return { ok: true, accountId: target, peerId: bound ? peerId : null };
 }
 
 /** Drop every cursor row for a grant so a new peerId cannot dodge a ban. */

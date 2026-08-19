@@ -1,4 +1,5 @@
-import { test, expect, type Browser, type Page } from '@playwright/test';
+import { test, expect } from './fixtures';
+import type { Browser, Page } from '@playwright/test';
 import { appUrl, expectSessionCookie } from './helpers';
 
 /**
@@ -262,9 +263,15 @@ test.describe('room authorization across accounts', () => {
       });
       expect(await apiStatus(guest.page, `/api/whiteboard/room/${roomId}`)).toBe(403);
 
+      const queue = await apiJson(owner.page, `/api/whiteboard/room/${roomId}/waiting`) as {
+        waitingPeers?: Array<{ peerId?: string }>;
+      };
+      const waitingPeerId = queue.waitingPeers?.[0]?.peerId;
+      expect(waitingPeerId).toBeTruthy();
+
       expect(await apiStatus(owner.page, `/api/whiteboard/room/${roomId}/waiting`, {
         method: 'POST',
-        body: JSON.stringify({ peerId: 'guest-peer', action: 'approve' }),
+        body: JSON.stringify({ peerId: waitingPeerId, action: 'approve' }),
       })).toBe(200);
 
       expect(await apiJson(guest.page, `/api/whiteboard/room/${roomId}`))

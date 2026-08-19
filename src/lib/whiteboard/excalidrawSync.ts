@@ -45,6 +45,16 @@ export function serializeExcalidrawElement(element: unknown): Record<string, unk
   return JSON.parse(JSON.stringify(element)) as Record<string, unknown>;
 }
 
+/** Last write wins; insertion order follows the first time each id appears. */
+export function uniqueElementsById<T extends { id?: unknown }>(elements: readonly T[]): T[] {
+  const merged = new Map<string, T>();
+  for (const element of elements) {
+    if (typeof element.id !== 'string' || element.id.length === 0) continue;
+    merged.set(element.id, element);
+  }
+  return Array.from(merged.values());
+}
+
 export function serializeExcalidrawElements(elements: readonly unknown[]): Record<string, unknown>[] {
   return elements
     .map((element) => serializeExcalidrawElement(element))

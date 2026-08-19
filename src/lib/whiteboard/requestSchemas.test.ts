@@ -91,9 +91,73 @@ describe('requestSchemas hardening (SEC-005)', () => {
       expect(roomSceneSchema.safeParse({ elements: { not: 'an array' } }).success).toBe(false);
     });
 
-    it('accepts a minimal valid element object', () => {
+    it('accepts a typical Excalidraw rectangle including null link and boundElements', () => {
       const result = roomSceneSchema.safeParse({
-        elements: [{ id: 'rect-1', type: 'rectangle', x: 0, y: 0 }],
+        elements: [{
+          id: 'backlog-rect-1',
+          type: 'rectangle',
+          x: 120,
+          y: 120,
+          width: 200,
+          height: 120,
+          angle: 0,
+          strokeColor: '#1e1e1e',
+          backgroundColor: 'transparent',
+          fillStyle: 'solid',
+          strokeWidth: 2,
+          strokeStyle: 'solid',
+          roughness: 1,
+          opacity: 100,
+          groupIds: [],
+          frameId: null,
+          roundness: null,
+          seed: 12345,
+          version: 1,
+          versionNonce: 1,
+          isDeleted: false,
+          boundElements: null,
+          updated: Date.now(),
+          link: null,
+          locked: false,
+        }],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('accepts a typical Excalidraw freedraw including pressures and points', () => {
+      const result = roomSceneSchema.safeParse({
+        elements: [{
+          id: 'pen-stroke-1',
+          type: 'freedraw',
+          x: 100,
+          y: 100,
+          width: 150,
+          height: 100,
+          angle: 0,
+          strokeColor: '#1e1e1e',
+          backgroundColor: 'transparent',
+          fillStyle: 'solid',
+          strokeWidth: 2,
+          strokeStyle: 'solid',
+          roughness: 1,
+          opacity: 100,
+          groupIds: [],
+          frameId: null,
+          roundness: null,
+          seed: 1,
+          version: 1,
+          versionNonce: 1,
+          isDeleted: false,
+          boundElements: null,
+          updated: Date.now(),
+          link: null,
+          locked: false,
+          points: [[0, 0], [20, 30], [40, 35]],
+          pressures: [0.4, 0.5, 0.4],
+          simulatePressure: true,
+        }],
+        viewport: { x: 0, y: 0, zoom: 1 },
       });
       expect(result.success).toBe(true);
     });

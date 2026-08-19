@@ -8,7 +8,10 @@ import {
   excalidrawElementsEqual,
   serializeExcalidrawElements,
   toExcalidrawToolType,
+  uniqueElementsById,
 } from '@/lib/whiteboard/excalidrawSync';
+import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
+import { cursorPublishDelay } from '@/lib/whiteboard/cursorPublishRate';
 
 type ExcalidrawWrapperProps = {
   roomId: string;
@@ -46,8 +49,11 @@ export default function ExcalidrawWrapper({
   const activeToolRef = useRef(activeTool);
   const remoteUpdateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSyncedElementsRef = useRef<any[]>([]);
+  const lastPublishedIdsRef = useRef<string[]>([]);
   const pendingElementsRef = useRef<any[] | null>(null);
   const hasAcceptedInitialSceneRef = useRef(false);
+  const localPeerIdRef = useRef(localPeerId);
+  localPeerIdRef.current = localPeerId;
 
   const finishRemoteUpdateSoon = useCallback(() => {
     if (remoteUpdateTimeoutRef.current) {
@@ -61,10 +67,12 @@ export default function ExcalidrawWrapper({
 
   const applyRemoteElements = useCallback((remoteElements: any[]) => {
     const localElements = apiRef.current?.getSceneElements?.() ?? [];
-    const restoredElements = restoreElements(
-      serializeExcalidrawElements(remoteElements) as any,
-      localElements,
-      { repairBindings: true },
+    const restoredElements = uniqueElementsById(
+      restoreElements(
+        serializeExcalidrawElements(remoteElements) as any,
+        localElements,
+        { repairBindings: true },
+      ) as Array<{ id?: unknown }>,
     );
 
     onElementsChange(restoredElements);
@@ -192,10 +200,12 @@ export default function ExcalidrawWrapper({
       pendingElementsRef.current = null;
       isRemoteUpdateRef.current = true;
       try {
-        const restoredElements = restoreElements(
-          serializeExcalidrawElements(queuedElements) as any,
-          api.getSceneElements?.() ?? [],
-          { repairBindings: true },
+        const restoredElements = uniqueElementsById(
+          restoreElements(
+            serializeExcalidrawElements(queuedElements) as any,
+            api.getSceneElements?.() ?? [],
+            { repairBindings: true },
+          ) as Array<{ id?: unknown }>,
         );
         api.updateScene({
           elements: restoredElements,
@@ -226,10 +236,13 @@ export default function ExcalidrawWrapper({
     }
   }, [activeTool]);
 
+  const cursorSentAtRef = useRef<number | null>(null);
+  const cursorPendingRef = useRef<any>(null);
+  const cursorTimerRef = useRef<number | null>(null);
+
   const handleElementsChange = useCallback(
     (el: readonly any[], _appState: any) => {
       if (isRemoteUpdateRef.current) return;
-      if (!yElementsArray || !yDoc) return;
 
       if (!hasAcceptedInitialSceneRef.current && el.length === 0) {
         return;
@@ -244,46 +257,77 @@ export default function ExcalidrawWrapper({
       const same = excalidrawElementsEqual(serializedElements, lastSyncedElementsRef.current);
       if (same) return;
 
-      yDoc.transact(() => {
-        const collab = yElementsArray;
-        const len = collab.length;
-        if (len > 0) {
-          collab.delete(0, len);
-        }
-
-        for (const e of serializedElements) {
-          const yMap = new Y.Map();
-          for (const [key, value] of Object.entries(e)) {
-            yMap.set(key, value);
-          }
-          collab.push([yMap]);
-        }
-      }, 'local');
-
+      const previousIds = lastPublishedIdsRef.current;
       lastSyncedElementsRef.current = serializedElements;
+      lastPublishedIdsRef.current = serializedElements
+        .map((element) => element.id)
+        .filter((id): id is string => typeof id === 'string');
       onElementsChange(serializedElements);
+
+      if (yDoc && yElementsArray) {
+        try {
+          replaceSharedElements(yDoc, yElementsArray, serializedElements, 'local', {
+            previousIds,
+          });
+        } catch {
+          // HTTP persist already ran; a Yjs write must not roll that back.
+        }
+      }
     },
     [yDoc, yElementsArray, onElementsChange],
   );
 
-  const handlePointerUpdate = useCallback(
+  const publishPointer = useCallback(
     (payload: any) => {
-      if (!yCursorsMap || !localPeerId) return;
+      const peerId = localPeerIdRef.current;
+      if (!yCursorsMap || !peerId) return;
       const pointer = payload?.pointer ?? payload;
       const x = typeof pointer?.x === 'number' ? pointer.x : 0;
       const y = typeof pointer?.y === 'number' ? pointer.y : 0;
-      const user = users.find((entry) => entry.peerId === localPeerId);
-      yCursorsMap.set(localPeerId, {
+      const user = users.find((entry) => entry.peerId === peerId);
+      cursorSentAtRef.current = Date.now();
+      yCursorsMap.set(peerId, {
         x,
         y,
         cursor: payload,
         userName,
         color: user?.color || '#3498db',
-        peerId: localPeerId,
+        peerId,
       });
     },
-    [userName, localPeerId, users, yCursorsMap],
+    [userName, users, yCursorsMap],
   );
+
+  /**
+   * Excalidraw reports pointer updates at pointer rate and each one is a Yjs
+   * write, so publishing every update pushed past the Worker's 60 msg/sec
+   * signaling cap and had the socket closed mid-drag. The latest payload is
+   * kept and flushed when the window opens.
+   */
+  const handlePointerUpdate = useCallback(
+    (payload: any) => {
+      const delay = cursorPublishDelay(cursorSentAtRef.current, Date.now());
+      if (delay === 0) {
+        cursorPendingRef.current = null;
+        publishPointer(payload);
+        return;
+      }
+
+      cursorPendingRef.current = payload;
+      if (cursorTimerRef.current !== null) return;
+      cursorTimerRef.current = window.setTimeout(() => {
+        cursorTimerRef.current = null;
+        const pending = cursorPendingRef.current;
+        cursorPendingRef.current = null;
+        if (pending) publishPointer(pending);
+      }, delay);
+    },
+    [publishPointer],
+  );
+
+  useEffect(() => () => {
+    if (cursorTimerRef.current !== null) window.clearTimeout(cursorTimerRef.current);
+  }, []);
 
   const handlePointerDown = useCallback(() => {
     isPointerDownRef.current = true;

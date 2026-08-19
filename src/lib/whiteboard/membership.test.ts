@@ -108,6 +108,22 @@ describe('room membership state machine', () => {
 
     const byAccount = resolveModerationTarget(db, 'r', { accountId: 'a1' });
     expect(byAccount).toEqual({ ok: true, accountId: 'a1', peerId: null });
+
+    // Presence rows come and go (admission, re-queue, reconnect), so a host can
+    // hold a peerId that no longer resolves. The account is the real target, so
+    // a stale label must not 404 the whole moderation call.
+    const stalePeerKnownAccount = resolveModerationTarget(db, 'r', {
+      peerId: 'peer-long-gone',
+      accountId: 'a1',
+    });
+    expect(stalePeerKnownAccount).toEqual({ ok: true, accountId: 'a1', peerId: null });
+
+    // A stale peerId with nothing to fall back on is still a 404.
+    expect(resolveModerationTarget(db, 'r', { peerId: 'peer-long-gone' })).toEqual({
+      ok: false,
+      status: 404,
+      error: 'Peer not bound to an account',
+    });
   });
 
   it('purges expired editor rows only for the given room', () => {
@@ -201,6 +217,30 @@ describe('room membership state machine', () => {
       `SELECT COUNT(*) AS n FROM waiting_peers WHERE room_id = ?`,
     ).get('r') as { n: number };
     expect(waiting.n).toBe(2);
+  });
+
+  it('still enqueues a waiting peer after requestAccess when maxUsers is 1', () => {
+    db.prepare(
+      `INSERT INTO rooms (room_id, created_at, updated_at, max_users) VALUES (?, 1, 1, 1)`,
+    ).run('r');
+    insertOwner(db, 'r', 'owner', 1);
+
+    const requested = requestAccess(db, { roomId: 'r', accountId: 'guest', userName: 'Guest' });
+    expect(requested).toMatchObject({ ok: true, status: 'pending' });
+
+    const queued = enqueueWaitingPeer(db, {
+      roomId: 'r',
+      peerId: 'guest-peer',
+      userName: 'Guest',
+      color: '#e74c3c',
+      accountId: 'guest',
+    });
+    expect(queued).toEqual({ ok: true });
+
+    const waiting = db.prepare(
+      `SELECT peer_id AS peerId FROM waiting_peers WHERE room_id = ? AND account_id = ?`,
+    ).get('r', 'guest') as { peerId: string };
+    expect(waiting.peerId).toBe('guest-peer');
   });
 
   it('treats an expired editor grant as absent and keeps a viewer grant', () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 
 import PresencePanel from './PresencePanel';
 import type { WhiteboardUser } from '@/types/whiteboard';
@@ -119,6 +119,29 @@ describe('PresencePanel name discriminators', () => {
     expect(screen.getByTestId('whiteboard-user-disc-peer-waiting').textContent).toBe('6666');
   });
 
+  it('keeps Let in as a named button for a long waiting display name', () => {
+    renderPanel(
+      [makeUser({ peerId: 'peer-owner', userName: 'HostBadgeHost', isHost: true })],
+      {
+        isLocalHost: true,
+        waitingPeers: [
+          makeUser({
+            peerId: 'peer-waiting',
+            userName: 'HostBadgePeer',
+            isHost: false,
+            isWaiting: true,
+            accountId: 'acct-wait-1',
+          }),
+        ],
+      },
+    );
+
+    expect(
+      screen.getByTestId('whiteboard-user-peer-waiting').querySelector('button'),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Let in' })).toBeTruthy();
+  });
+
   it('does not show discs when names are unique', () => {
     renderPanel(
       [
@@ -163,5 +186,97 @@ describe('PresencePanel name discriminators', () => {
 
     expect(screen.queryByTestId('whiteboard-user-disc-peer-owner')).toBeNull();
     expect(screen.queryByTestId('whiteboard-user-disc-peer-impostor')).toBeNull();
+  });
+});
+
+describe('PresencePanel moderation menu', () => {
+  it('invokes onKick from a click on Kick from Room', () => {
+    const onKick = vi.fn();
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-owner', userName: 'KickHost', isHost: true }),
+          makeUser({
+            peerId: 'peer-student',
+            userName: 'Peer',
+            isHost: false,
+            accountId: 'acct-peer',
+          }),
+        ]}
+        waitingPeers={[]}
+        localPeerId="peer-owner"
+        isLocalHost={true}
+        collapsed={false}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={onKick}
+        onSuspend={noop}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-options-peer-student'));
+    fireEvent.click(screen.getByTestId('whiteboard-context-kick'));
+    expect(onKick).toHaveBeenCalledWith('peer-student', 'acct-peer');
+  });
+
+  it('invokes onKick from a native pointerdown on Kick from Room', () => {
+    const onKick = vi.fn();
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-owner', userName: 'KickHost', isHost: true }),
+          makeUser({
+            peerId: 'peer-student',
+            userName: 'Peer',
+            isHost: false,
+            accountId: 'acct-peer',
+          }),
+        ]}
+        waitingPeers={[]}
+        localPeerId="peer-owner"
+        isLocalHost={true}
+        collapsed={false}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={onKick}
+        onSuspend={noop}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-options-peer-student'));
+    fireEvent.pointerDown(screen.getByTestId('whiteboard-context-kick'));
+    expect(onKick).toHaveBeenCalledWith('peer-student', 'acct-peer');
+  });
+
+  it('invokes onSuspend from a click on Send to Waiting Room', () => {
+    const onSuspend = vi.fn();
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-owner', userName: 'SuspendHost', isHost: true }),
+          makeUser({
+            peerId: 'peer-student',
+            userName: 'Peer',
+            isHost: false,
+            accountId: 'acct-peer',
+          }),
+        ]}
+        waitingPeers={[]}
+        localPeerId="peer-owner"
+        isLocalHost={true}
+        collapsed={false}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={onSuspend}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-options-peer-student'));
+    fireEvent.click(screen.getByTestId('whiteboard-context-suspend'));
+    expect(onSuspend).toHaveBeenCalledWith('peer-student', 'acct-peer');
   });
 });

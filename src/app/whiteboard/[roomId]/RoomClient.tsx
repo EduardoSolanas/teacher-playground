@@ -11,6 +11,8 @@ import UserNamePrompt from '@/components/whiteboard/UserNamePrompt';
 import LoadingScreen from '@/components/whiteboard/LoadingScreen';
 import WaitingRoom from '@/components/whiteboard/WaitingRoom';
 import PresencePanel from '@/components/whiteboard/PresencePanel';
+import { shouldCollapsePresenceForViewport } from '@/lib/whiteboard/presenceViewport';
+import { shouldOverlayConnectingScreen } from '@/lib/whiteboard/connectingOverlay';
 import RemoteCursorOverlay from '@/components/whiteboard/RemoteCursorOverlay';
 import EmptyState from '@/components/whiteboard/EmptyState';
 import ClearBoardModal from '@/components/whiteboard/ClearBoardModal';
@@ -24,6 +26,9 @@ import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import * as store from '@/lib/whiteboard/store';
 import { cleanupStaleRooms } from '@/lib/whiteboard/persistence';
 import { isWhiteboardDebugEnabled } from '@/lib/whiteboard/ywebrtcProvider';
+import { roomIdFromWhiteboardPath } from '@/lib/whiteboard/roomPath';
+import { shouldClearUsernameOnEviction } from '@/lib/whiteboard/evictionUi';
+import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 
 const ExcalidrawWrapper = dynamic(
   () => import('@/components/whiteboard/ExcalidrawWrapper'),
@@ -78,6 +83,7 @@ function RoomContent({ roomId }: { roomId: string }) {
     leaveRoom,
     kickPeer,
     sendToWaitingRoom,
+    moderationError,
     reloadPresence,
     setCursor,
     setUserName: syncUserName,
@@ -105,23 +111,28 @@ function RoomContent({ roomId }: { roomId: string }) {
   // A 220px roster over a phone screen leaves almost no canvas, so phones start
   // with it collapsed. Set once on mount: after that it is the user's choice.
   useEffect(() => {
-    if (window.innerWidth < 640) setPresenceCollapsed(true);
+    if (shouldCollapsePresenceForViewport(window.innerWidth)) {
+      setPresenceCollapsed(true);
+    }
   }, []);
 
   useEffect(() => {
-    if (status === 'connected' || status === 'synced') setBoardEverShown(true);
+    if (status === 'connected' || status === 'synced' || status === 'connecting') {
+      setBoardEverShown(true);
+    }
   }, [status]);
 
   useEffect(() => {
     if (userName || typeof window === 'undefined') return;
+    if (wasKicked || wasRejected) return;
     const storedName = window.localStorage.getItem('whiteboard_username');
     if (!storedName) return;
     setUserName(storedName);
     syncUserName(storedName);
-  }, [syncUserName, userName]);
+  }, [syncUserName, userName, wasKicked, wasRejected]);
 
   useEffect(() => {
-    if (!wasKicked && !wasRejected && !wasSuspended) return;
+    if (!shouldClearUsernameOnEviction({ wasKicked, wasRejected, wasSuspended })) return;
     setUserName(null);
   }, [wasKicked, wasRejected, wasSuspended]);
 
@@ -267,10 +278,19 @@ function RoomContent({ roomId }: { roomId: string }) {
           av.participants.filter((p) => p.micMuted).map((p) => (p.identity === '__local__' ? localPeerId : p.identity)),
         )}
       />
+      {moderationError && (
+        <div
+          role="alert"
+          data-testid="whiteboard-moderation-error"
+          className="fixed left-1/2 top-[max(0.75rem,env(safe-area-inset-top))] z-[400] -translate-x-1/2 rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-[13px] font-medium text-red-700 shadow-lg"
+        >
+          {moderationError}
+        </div>
+      )}
       {avEnabled && (
         <AvSessionPanel av={av} localIdentity={localPeerId} isLocalHost={isLocalHost} />
       )}
-      {!isSynced && <LoadingScreen />}
+      {shouldOverlayConnectingScreen({ boardEverShown, isSynced }) && <LoadingScreen />}
       <LibraryPanel visible={isLocalHost && libraryOpen} onClose={() => setLibraryOpen(false)} />
       <ShortcutsHelp
         visible={isLocalHost && showShortcutsHelp}
@@ -304,9 +324,7 @@ function RoomContent({ roomId }: { roomId: string }) {
           // The Yjs array is the shared source of truth: emptying only the
           // local store left the drawing on every other peer's board.
           if (yDoc && yElementsArray) {
-            yDoc.transact(() => {
-              yElementsArray.delete(0, yElementsArray.length);
-            });
+            replaceSharedElements(yDoc, yElementsArray, [], 'board-clear');
           }
           setElements([]);
           store.setElements([]);
@@ -328,9 +346,7 @@ function useRoomIdFromPath(): string | null {
   const [roomId, setRoomId] = useState<string | null>(null);
 
   useEffect(() => {
-    const segments = window.location.pathname.split('/').filter(Boolean);
-    const last = segments[segments.length - 1];
-    setRoomId(last ? decodeURIComponent(last) : null);
+    setRoomId(roomIdFromWhiteboardPath(window.location.pathname));
   }, []);
 
   return roomId;

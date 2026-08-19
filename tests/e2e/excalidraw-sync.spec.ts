@@ -1,4 +1,5 @@
-import { test, expect, Page } from '@playwright/test';
+import { test, expect } from './fixtures';
+import { Page } from '@playwright/test';
 import {
   createRoomWithMaxUsers,
   joinExistingRoom,
@@ -6,6 +7,7 @@ import {
   approveFirstWaitingPeer,
   newAuthenticatedContext,
   expectPersistedElement,
+  appendElement,
 } from './helpers';
 
 async function installWebRtcSentinel(page: Page) {
@@ -82,20 +84,6 @@ async function sceneElementIds(page: Page): Promise<string[]> {
     const api = (window as any).__debugExcalidrawApi;
     return (api?.getSceneElements?.() ?? []).map((e: { id: string }) => e.id);
   });
-}
-
-async function waitForExcalidrawApi(page: Page) {
-  await expect
-    .poll(async () => page.evaluate(() => !!(window as any).__debugExcalidrawApi), { timeout: 15000 })
-    .toBe(true);
-}
-
-async function appendElement(page: Page, element: Record<string, unknown>) {
-  await waitForExcalidrawApi(page);
-  await page.evaluate((el) => {
-    const api = (window as any).__debugExcalidrawApi;
-    api.updateScene({ elements: [...api.getSceneElements(), el] });
-  }, element);
 }
 
 test.describe('Excalidraw scene sync', () => {

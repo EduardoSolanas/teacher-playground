@@ -6,7 +6,6 @@ import {
   USER_COLOR_STORAGE_KEY,
   USERNAME_STORAGE_KEY,
   isOfflineBoardCacheEnabled,
-  loadBoardState,
 } from '@/lib/whiteboard/persistence';
 import { usePersistence } from './usePersistence';
 
@@ -38,7 +37,7 @@ describe('usePersistence tab close (SEC-011)', () => {
     localStorage.clear();
   });
 
-  it('beforeunload and pagehide do not write board state when cache is default-off and clear session identity via clearOnLeave', () => {
+  it('beforeunload and pagehide do not wipe join identity so Back to rooms can reopen the board', () => {
     expect(isOfflineBoardCacheEnabled(ROOM)).toBe(false);
     const peerId = getStablePeerId(ROOM);
     localStorage.setItem(USERNAME_STORAGE_KEY, 'Ada');
@@ -47,22 +46,13 @@ describe('usePersistence tab close (SEC-011)', () => {
     render(<Probe />);
 
     window.dispatchEvent(new Event('beforeunload'));
-    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
-    expect(localStorage.getItem(`whiteboard:${ROOM}:timestamp`)).toBeNull();
-    expect(loadBoardState(ROOM)).toBeNull();
-    expect(localStorage.getItem(peerIdStorageKey(ROOM))).toBeNull();
-    expect(localStorage.getItem(USERNAME_STORAGE_KEY)).toBeNull();
-    expect(localStorage.getItem(USER_COLOR_STORAGE_KEY)).toBeNull();
-    expect(peerId).toMatch(/^user-/);
-
-    localStorage.setItem(USERNAME_STORAGE_KEY, 'Ada');
-    localStorage.setItem(USER_COLOR_STORAGE_KEY, '#3498db');
-    localStorage.setItem(peerIdStorageKey(ROOM), peerId);
+    expect(localStorage.getItem(USERNAME_STORAGE_KEY)).toBe('Ada');
+    expect(localStorage.getItem(USER_COLOR_STORAGE_KEY)).toBe('#3498db');
+    expect(localStorage.getItem(peerIdStorageKey(ROOM))).toBe(peerId);
 
     window.dispatchEvent(new Event('pagehide'));
-    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
-    expect(localStorage.getItem(peerIdStorageKey(ROOM))).toBeNull();
-    expect(localStorage.getItem(USERNAME_STORAGE_KEY)).toBeNull();
-    expect(localStorage.getItem(USER_COLOR_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(USERNAME_STORAGE_KEY)).toBe('Ada');
+    expect(localStorage.getItem(USER_COLOR_STORAGE_KEY)).toBe('#3498db');
+    expect(localStorage.getItem(peerIdStorageKey(ROOM))).toBe(peerId);
   });
 });

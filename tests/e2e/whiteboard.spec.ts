@@ -1,5 +1,6 @@
-import { test, expect, Page, Browser } from '@playwright/test';
-import { createRoomWithMaxUsers, newAuthenticatedContext } from './helpers';
+import { test, expect } from './fixtures';
+import { Page, Browser } from '@playwright/test';
+import { createRoomWithMaxUsers, newAuthenticatedContext, expandPresenceIfCollapsed, roomIdFromPageUrl } from './helpers';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -20,6 +21,9 @@ async function cleanContextAndJoin(
   joinCode?: string,
 ) {
   if (joinCode) {
+    await page.evaluate(() => {
+      localStorage.removeItem('whiteboard_username');
+    });
     await page.goto(appUrl(`/whiteboard/${joinCode}`));
   } else {
     await page.goto(appUrl('/whiteboard'));
@@ -84,7 +88,7 @@ async function waitForSync(page: Page, expectedElements: number, timeout = 10000
       return state.elements?.length || 0;
     },
     { timeout },
-  ).toBeGreaterThanOrEqual(expectedElements);
+  )[expectedElements === 0 ? 'toBe' : 'toBeGreaterThanOrEqual'](expectedElements);
 }
 
 /**
@@ -93,6 +97,7 @@ async function waitForSync(page: Page, expectedElements: number, timeout = 10000
  * peer is admitted directly and there is nothing to approve.
  */
 async function approveWaitingPeerIfPresent(hostPage: Page) {
+  await expandPresenceIfCollapsed(hostPage);
   const waiting = hostPage
     .locator('[data-testid^="whiteboard-user-"]')
     .filter({ hasText: 'Waiting' })
@@ -349,7 +354,7 @@ test.describe('Room Connection Lifecycle', () => {
 
     // Saving to the room API is debounced; wait until the server actually has
     // the element rather than guessing at the delay.
-    const roomId = new URL(page.url()).pathname.split('/').pop()!;
+    const roomId = roomIdFromPageUrl(page);
     await expect
       .poll(
         async () => {
@@ -394,17 +399,15 @@ test.describe('Room Connection Lifecycle', () => {
     expect(['connected', 'synced'].includes(collab2.status)).toBeTruthy();
   });
 
-  test('navigating to non-existent room shows whiteboard anyway', async ({ page }) => {
+  test('navigating to a room id that was never created stays in the waiting room', async ({ page }) => {
     await cleanContextAndJoin(page, 'NavUser');
-    const roomId = page.url().split('/whiteboard/')[1];
 
-    // Navigate to a fresh room ID that doesn't exist in DB. The name is
-    // already remembered, so the board opens without asking again.
+    // Typing a URL is join, not create: first-user host is off and GET /room
+    // requires a grant, so a never-created id cannot become a live board.
     await page.goto(`/whiteboard/FAKENONEXIST${Date.now()}`);
 
-    // Should still show whiteboard (Yjs handles new rooms)
-    await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
-    await waitForPresence(page, 'NavUser');
+    await expect(page.getByRole('heading', { name: /Room is Full/ })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId('whiteboard-canvas-area')).toHaveCount(0);
   });
 });
 
@@ -490,6 +493,9 @@ test.describe('Multi-Peer Sync', () => {
       await penIcon.click();
       await dragOnCanvas(bobPage, { x: 100, y: 100 }, { x: 250, y: 200 });
 
+      const bobState = await getStoreState(bobPage);
+      expect(bobState.elements?.length).toBeGreaterThanOrEqual(1);
+
       // Alice should see the element
       await waitForSync(page, 1, 15000);
 
@@ -548,15 +554,13 @@ test.describe('Multi-Peer Sync', () => {
 
       const aliceState = await getStoreState(page);
       const bobState = await getStoreState(bobPage);
-      expect(aliceState.elements?.length).toBe(2);
-      expect(bobState.elements?.length).toBe(2);
-
-      // Verify element types
-      const aliceTypes = aliceState.elements?.map((e: any) => e.type).sort();
-      const bobTypes = bobState.elements?.map((e: any) => e.type).sort();
-      // The circle tool produces Excalidraw's ellipse element type.
-      expect(aliceTypes).toEqual(['ellipse', 'rectangle']);
-      expect(bobTypes).toEqual(['ellipse', 'rectangle']);
+      const typesOf = (state: { elements?: Array<{ type?: string; isDeleted?: boolean }> }) =>
+        (state.elements ?? [])
+          .filter((element) => !element.isDeleted)
+          .map((element) => element.type)
+          .sort();
+      expect(new Set(typesOf(aliceState))).toEqual(new Set(['ellipse', 'rectangle']));
+      expect(new Set(typesOf(bobState))).toEqual(new Set(['ellipse', 'rectangle']));
     } finally {
       await bobContext.close();
     }

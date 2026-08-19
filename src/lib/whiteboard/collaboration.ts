@@ -7,14 +7,14 @@ import {
   getElementsFromArray,
 } from './yjsDoc';
 import { createYWebsocketProvider, destroyProvider } from './yWebsocketProvider';
+import { isYjsProviderConnected } from './providerStatus';
 import { randomHexId } from '@/lib/crypto/randomId';
 import type { CanvasElement, WhiteboardUser, RemoteCursor } from '@/types/whiteboard';
 
 type ChangeCallback = (type: string, data: any) => void;
 
 function isProviderConnected(provider: ReturnType<typeof createYWebsocketProvider>['provider']) {
-  const state = provider as { connected?: boolean; wsconnected?: boolean };
-  return Boolean(state.wsconnected ?? state.connected);
+  return isYjsProviderConnected(provider);
 }
 
 function readProviderStatus(provider: ReturnType<typeof createYWebsocketProvider>['provider']) {
@@ -30,9 +30,11 @@ export function createCollaboration(roomId: string, peerId?: string) {
   const { doc, elementsArray, viewportMap, cursorsMap } = createWhiteboardDoc(roomId);
   const { provider, status } = createYWebsocketProvider(doc, roomId);
 
-  const localPeerId = peerId || `user-${randomHexId()}`;
+  let localPeerId = peerId || `user-${randomHexId()}`;
   let localUserName = 'Anonymous';
   let localUserColor = '#3498db';
+  let lastCursorX = 0;
+  let lastCursorY = 0;
   const changeCallbacks: ChangeCallback[] = [];
   const reconnectInterval = setInterval(() => {
     if ((provider as any).shouldConnect !== false && !isProviderConnected(provider)) {
@@ -42,6 +44,8 @@ export function createCollaboration(roomId: string, peerId?: string) {
   }, 5_000);
 
   function setLocalCursor(x: number, y: number) {
+    lastCursorX = x;
+    lastCursorY = y;
     const cursorData = {
       x,
       y,
@@ -68,6 +72,19 @@ export function createCollaboration(roomId: string, peerId?: string) {
       (cursorData as any).color = color;
       cursorsMap.set(localPeerId, cursorData);
     }
+  }
+
+  function adoptLocalPeerId(nextPeerId: string) {
+    if (!nextPeerId || nextPeerId === localPeerId) return;
+    const cursorData = cursorsMap.get(localPeerId) as Record<string, unknown> | undefined;
+    cursorsMap.delete(localPeerId);
+    localPeerId = nextPeerId;
+    if (cursorData) {
+      cursorData.peerId = nextPeerId;
+      cursorsMap.set(nextPeerId, cursorData);
+      return;
+    }
+    setLocalCursor(lastCursorX, lastCursorY);
   }
 
   function getUsers(): WhiteboardUser[] {
@@ -154,9 +171,7 @@ export function createCollaboration(roomId: string, peerId?: string) {
     changeCallbacks.forEach((cb) => cb('viewport', vp));
   });
 
-  const observers: Set<string> = new Set();
-
-  cursorsMap.observe(() => {
+  cursorsMap.observeDeep(() => {
     changeCallbacks.forEach((cb) => cb('cursors', getRemoteCursors()));
   });
 
@@ -175,12 +190,15 @@ export function createCollaboration(roomId: string, peerId?: string) {
     cursorsMap,
     provider,
     status,
-    localPeerId,
     localUserName,
     localUserColor,
+    get localPeerId() {
+      return localPeerId;
+    },
     setLocalCursor,
     setLocalUserName,
     setLocalUserColor,
+    adoptLocalPeerId,
     getUsers,
     getElements,
     addElement,

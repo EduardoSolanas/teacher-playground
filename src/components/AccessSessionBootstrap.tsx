@@ -81,7 +81,7 @@ export function AccessSessionBootstrap({ children }: { children: React.ReactNode
         padding: 24,
         textAlign: 'center',
       }}>
-        <p style={{ margin: 0 }}>Session unavailable. Your login may have expired.</p>
+        <p style={{ margin: 0 }}>This secure session is unavailable. Sign in again to continue.</p>
         <button
           onClick={() => window.location.reload()}
           style={{

@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import * as Y from 'yjs';
 import type {
   WhiteboardUser,
   CanvasElement,
@@ -12,11 +11,19 @@ import {
   type GrantedPublicRole,
   type RoomAccessStatus,
 } from '@/lib/whiteboard/collaborationGate';
-import { getStablePeerId, peerIdWhenJoined } from '@/lib/whiteboard/peerId';
+import { getStablePeerId, peerIdWhenJoined, rememberIssuedPeerId } from '@/lib/whiteboard/peerId';
 import { randomHexId } from '@/lib/crypto/randomId';
 import * as store from '@/lib/whiteboard/store';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
-import { reconcileElements } from '@/lib/whiteboard/excalidrawSync';
+import { reconcileElements, uniqueElementsById } from '@/lib/whiteboard/excalidrawSync';
+import { isLocalRoomHost } from '@/lib/whiteboard/localHost';
+import { admissionFromPresenceStatus } from '@/lib/whiteboard/presenceAdmission';
+import { mergeCursorPresence } from '@/lib/whiteboard/mergeCursorPresence';
+import { shouldPollRoomApiFallback } from '@/lib/whiteboard/providerStatus';
+import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
+import { roomSceneSaveDebounceMs } from '@/lib/whiteboard/persistDebounce';
+import { cursorPublishDelay } from '@/lib/whiteboard/cursorPublishRate';
+import { moderationTargetBody } from '@/lib/whiteboard/moderationTarget';
 
 const DEFAULT_MAX_USERS = 3;
 
@@ -60,6 +67,7 @@ export function useCollaboration(roomId: string) {
   const [accessStatus, setAccessStatus] = useState<RoomAccessStatus | null>(null);
   const [grantRole, setGrantRole] = useState<GrantedPublicRole | null>(null);
   const [collaborationEpoch, setCollaborationEpoch] = useState(0);
+  const [moderationError, setModerationError] = useState<string | null>(null);
   const elementsRef = useRef<CanvasElement[]>([]);
   const viewportRef = useRef<Viewport>({ x: 0, y: 0, zoom: 1 });
   const lastRoomUpdatedAtRef = useRef(0);
@@ -118,21 +126,18 @@ export function useCollaboration(roomId: string) {
   const applyElements = useCallback((nextElements: CanvasElement[]) => {
     if (isRemoteUpdateRef.current) return;
     isRemoteUpdateRef.current = true;
-    if (!elementsEqual(elementsRef.current, nextElements)) {
-      elementsRef.current = nextElements;
-      setElements(nextElements);
-      store.setElements(nextElements);
+    const unique = uniqueElementsById(nextElements);
+    if (!elementsEqual(elementsRef.current, unique)) {
+      elementsRef.current = unique;
+      setElements(unique);
+      store.setElements(unique);
     }
     isRemoteUpdateRef.current = false;
   }, []);
 
   /**
-   * Publishes elements into the shared document so the canvas sees them: the
-   * Excalidraw scene is driven by the Yjs observer alone, so state that only
-   * reaches React never reaches the board.
-   *
-   * Safe to replace the array wholesale because callers pass a reconciled list
-   * that already contains every local element.
+   * Upserts an HTTP snapshot into the shared document. Pass `previousIds: []`
+   * so a partial persist cannot delete a peer's live Yjs elements.
    */
   const publishToSharedDoc = useCallback((nextElements: CanvasElement[]) => {
     const collaboration = collaborationRef.current;
@@ -140,18 +145,13 @@ export function useCollaboration(roomId: string) {
     const elementsArray = collaboration?.elementsArray;
     if (!doc || !elementsArray) return;
 
-    // Not the 'local' origin: the wrapper ignores that to avoid echoing its own
-    // edits, and this needs to reach the scene.
-    doc.transact(() => {
-      if (elementsArray.length > 0) elementsArray.delete(0, elementsArray.length);
-      for (const element of nextElements) {
-        const map = new Y.Map();
-        for (const [key, value] of Object.entries(element as Record<string, unknown>)) {
-          map.set(key, value);
-        }
-        elementsArray.push([map]);
-      }
-    }, 'api-fallback');
+    replaceSharedElements(
+      doc,
+      elementsArray,
+      nextElements as unknown as Record<string, unknown>[],
+      'api-fallback',
+      { previousIds: [] },
+    );
   }, []);
 
   /** Elements loaded from the room that still need publishing to the document. */
@@ -269,20 +269,7 @@ export function useCollaboration(roomId: string) {
         const all = data as RemoteCursor[];
         const selfId = localPeerIdRef.current;
         setCursors(all.filter((c) => c.peerId !== selfId));
-        setUsers((prev) => {
-          const merged = new Map(prev.map((u) => [u.peerId, { ...u }]));
-          for (const c of all) {
-            const existing = merged.get(c.peerId);
-            merged.set(c.peerId, {
-              peerId: c.peerId,
-              accountId: existing?.accountId,
-              userName: c.userName,
-              color: c.color,
-              isHost: Boolean(existing?.isHost),
-            });
-          }
-          return Array.from(merged.values());
-        });
+        setUsers((prev) => mergeCursorPresence(prev, all));
       }
     });
 
@@ -315,7 +302,7 @@ export function useCollaboration(roomId: string) {
         } catch {
           // Silently fail -- data is still in memory
         }
-      }, 3000);
+      }, roomSceneSaveDebounceMs());
     },
     [roomId]
   );
@@ -331,7 +318,7 @@ export function useCollaboration(roomId: string) {
       // suppresses the catch-up fallback. See the fixme'd
       // "disconnected peer catches up from API fallback" e2e test.
       const entry = collaborationRef.current;
-      if (entry?.provider?.connected) return;
+      if (!shouldPollRoomApiFallback(entry?.provider)) return;
 
       try {
         const res = await ajaxFetch(`/api/whiteboard/room/${roomId}`);
@@ -380,13 +367,49 @@ export function useCollaboration(roomId: string) {
   }, [roomId, applyElements, applyViewport]);
 
   // Broadcast local cursor
+  const cursorSentAtRef = useRef<number | null>(null);
+  const cursorPendingRef = useRef<{ x: number; y: number } | null>(null);
+  const cursorTimerRef = useRef<number | null>(null);
+
+  const publishCursor = useCallback((x: number, y: number) => {
+    cursorSentAtRef.current = Date.now();
+    collaborationRef.current?.setLocalCursor(x, y);
+  }, []);
+
+  /**
+   * Every cursor write is one signaling message, so publishing per pointermove
+   * exceeded the Worker's 60/sec cap and had it close the socket — a moving
+   * pointer sat in a reconnect loop showing "Connecting to room…". The newest
+   * position is kept and flushed when the window opens, so the cursor still
+   * ends up where the pointer stopped.
+   */
   const setCursor = useCallback(
     (x: number, y: number) => {
       if (!hasJoinedRef.current) return;
-      collaborationRef.current?.setLocalCursor(x, y);
+
+      const delay = cursorPublishDelay(cursorSentAtRef.current, Date.now());
+      if (delay === 0) {
+        cursorPendingRef.current = null;
+        publishCursor(x, y);
+        return;
+      }
+
+      cursorPendingRef.current = { x, y };
+      if (cursorTimerRef.current !== null) return;
+      cursorTimerRef.current = window.setTimeout(() => {
+        cursorTimerRef.current = null;
+        const pending = cursorPendingRef.current;
+        cursorPendingRef.current = null;
+        if (!pending || !hasJoinedRef.current) return;
+        publishCursor(pending.x, pending.y);
+      }, delay);
     },
-    []
+    [publishCursor]
   );
+
+  useEffect(() => () => {
+    if (cursorTimerRef.current !== null) window.clearTimeout(cursorTimerRef.current);
+  }, []);
 
   const setUserName = useCallback((name: string) => {
     const peerId = getStablePeerId(roomId);
@@ -423,7 +446,8 @@ export function useCollaboration(roomId: string) {
             })
           : await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`);
 
-        if (!cancelled && res.status === 403) {
+        const presenceAdmission = admissionFromPresenceStatus(res.status);
+        if (!cancelled && presenceAdmission === 'rejected') {
           const rejectedFromQueue = !admittedRef.current;
           hasJoinedRef.current = false;
           setHasJoined(false);
@@ -435,7 +459,12 @@ export function useCollaboration(roomId: string) {
           return;
         }
 
-        if (!cancelled && res.ok) {
+        if (!cancelled && presenceAdmission === 'waiting') {
+          setIsWaiting(true);
+          return;
+        }
+
+        if (!cancelled && presenceAdmission === 'ok') {
           const data = await res.json();
           if (data.hostPeerId != null) {
             applyHostFromApi(hostPeerIdRef, data.hostPeerId, setHostPeerId);
@@ -469,6 +498,26 @@ export function useCollaboration(roomId: string) {
             else if (admittedRef.current) setWasSuspended(true);
             setIsWaiting(data.isWaiting);
           }
+          // A heartbeat still in flight when the user leaves must not re-seed
+          // the session keys that leaving just cleared.
+          if (typeof data.peerId === 'string' && data.peerId.length > 0 && hasJoinedRef.current) {
+            rememberIssuedPeerId(roomId, data.peerId);
+            // Only when the label actually changes. Re-seeding the cursor on
+            // every heartbeat published a Yjs update every 2s per client.
+            if (data.peerId !== localPeerIdRef.current) {
+              localPeerIdRef.current = data.peerId;
+              setLocalPeerId(data.peerId);
+              const collab = collaborationRef.current;
+              collab?.adoptLocalPeerId(data.peerId);
+              if (collab) {
+                const entry = collab.cursorsMap.get(data.peerId) as { x?: number; y?: number } | undefined;
+                collab.setLocalCursor(
+                  typeof entry?.x === 'number' ? entry.x : 0,
+                  typeof entry?.y === 'number' ? entry.y : 0,
+                );
+              }
+            }
+          }
         }
       } catch {
         // WebRTC/Yjs can still provide presence when the API heartbeat is unavailable.
@@ -481,12 +530,24 @@ export function useCollaboration(roomId: string) {
     return () => {
       cancelled = true;
       window.clearInterval(interval);
-      if (hasJoined) {
-        const url = `/api/whiteboard/room/${roomId}/presence?peerId=${encodeURIComponent(localPeerIdRef.current)}`;
-        ajaxFetch(url, { method: 'DELETE', keepalive: true }).catch(() => {});
-      }
     };
   }, [roomLoaded, hasJoined, roomId, localUserName]);
+
+  /**
+   * Releases the presence row only when this room is actually left. Doing it in
+   * the heartbeat effect's cleanup dropped the row every time a dependency
+   * changed — admission and a rename both re-run it — and because presence
+   * mints a fresh peer id whenever an account has no row, the peer silently
+   * came back under a new id. Every id the host was already holding (roster
+   * rows, moderation targets, cursors) then pointed at nothing.
+   */
+  useEffect(() => {
+    return () => {
+      if (!hasJoinedRef.current) return;
+      const url = `/api/whiteboard/room/${roomId}/presence?peerId=${encodeURIComponent(localPeerIdRef.current)}`;
+      ajaxFetch(url, { method: 'DELETE', keepalive: true }).catch(() => {});
+    };
+  }, [roomId]);
 
   // Fallback presence while the collaboration provider is still initializing.
   useEffect(() => {
@@ -597,35 +658,35 @@ export function useCollaboration(roomId: string) {
 
   const kickPeer = useCallback(async (peerId: string, accountId?: string | null) => {
     try {
-      await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
+      const res = await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'kick',
-          peerId,
-          ...(accountId ? { accountId } : {}),
-        }),
+        body: JSON.stringify(moderationTargetBody('kick', peerId, accountId)),
       });
+      // ajaxFetch resolves for 403/404/409, so without this a rejected kick
+      // looked exactly like a successful one.
+      setModerationError(res.ok ? null : 'Could not remove that person. Please try again.');
       await reloadPresence();
+      return res.ok;
     } catch {
-      // silently fail
+      setModerationError('Could not remove that person. Please try again.');
+      return false;
     }
   }, [roomId, reloadPresence]);
 
   const sendToWaitingRoom = useCallback(async (peerId: string, accountId?: string | null) => {
     try {
-      await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
+      const res = await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'suspend',
-          peerId,
-          ...(accountId ? { accountId } : {}),
-        }),
+        body: JSON.stringify(moderationTargetBody('suspend', peerId, accountId)),
       });
+      setModerationError(res.ok ? null : 'Could not move that person to the waiting room.');
       await reloadPresence();
+      return res.ok;
     } catch {
-      // silently fail
+      setModerationError('Could not move that person to the waiting room.');
+      return false;
     }
   }, [roomId, reloadPresence]);
 
@@ -638,7 +699,7 @@ export function useCollaboration(roomId: string) {
     setCursor,
     setUserName,
     localPeerId,
-    isHost: users.some((user) => user.peerId === localPeerId && user.isHost),
+    isHost: isLocalRoomHost(grantRole, users, localPeerId),
     provider: collaborationEpoch >= 0 ? collaborationRef.current?.provider ?? null : null,
     elementsArray: elements,
     status,
@@ -648,11 +709,13 @@ export function useCollaboration(roomId: string) {
     yElementsArray: collaborationEpoch >= 0 ? collaborationRef.current?.elementsArray ?? null : null,
     yCursorsMap: collaborationEpoch >= 0 ? collaborationRef.current?.cursorsMap ?? null : null,
     setElements: (newElements: CanvasElement[]) => {
-      const sameElements = elementsEqual(elementsRef.current, newElements);
-      elementsRef.current = newElements;
-      setElements(newElements);
+      const unique = uniqueElementsById(newElements);
+      const sameElements = elementsEqual(elementsRef.current, unique);
+      elementsRef.current = unique;
+      setElements(unique);
+      store.setElements(unique);
       if (!sameElements) {
-        saveState(newElements, viewportRef.current);
+        saveState(unique, viewportRef.current);
       }
     },
     viewport,
@@ -674,6 +737,7 @@ export function useCollaboration(roomId: string) {
     leaveRoom,
     kickPeer,
     sendToWaitingRoom,
+    moderationError,
     reloadPresence,
   };
 }

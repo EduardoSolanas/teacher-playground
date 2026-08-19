@@ -6,7 +6,6 @@ import {
   loadBoardState,
   clearBoardState,
   clearOnLeave,
-  cancelDebouncedSave,
   cleanupStaleRooms,
 } from '@/lib/whiteboard/persistence';
 
@@ -29,18 +28,6 @@ export function usePersistence(roomId: string | null, elements: CanvasElement[],
     }
 
     cleanupStaleRooms();
-
-    const handleLeave = () => {
-      clearOnLeave(roomId);
-    };
-    window.addEventListener('beforeunload', handleLeave);
-    window.addEventListener('pagehide', handleLeave);
-
-    return () => {
-      window.removeEventListener('beforeunload', handleLeave);
-      window.removeEventListener('pagehide', handleLeave);
-      cancelDebouncedSave();
-    };
   }, [roomId]);
 
   useEffect(() => {

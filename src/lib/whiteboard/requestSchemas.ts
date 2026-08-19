@@ -179,11 +179,13 @@ export const sceneElementSchema = z
 
     if (Object.prototype.hasOwnProperty.call(element, 'link')) {
       const link = (element as { link?: unknown }).link;
-      if (typeof link !== 'string' || !isAllowedElementLink(link)) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'element link must be https or a relative URL',
-        });
+      if (link != null) {
+        if (typeof link !== 'string' || !isAllowedElementLink(link)) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'element link must be https or a relative URL',
+          });
+        }
       }
     }
 

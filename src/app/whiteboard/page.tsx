@@ -1,8 +1,8 @@
 'use client';
 
 import { useState, useCallback, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
 import { generateRoomId } from '@/lib/crypto/randomId';
+import { navigateToWhiteboardRoom } from '@/lib/whiteboard/roomPath';
 import { getStablePeerId } from '@/lib/whiteboard/peerId';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import TeacherRoomList, {
@@ -56,7 +56,6 @@ function parseTeacherRooms(payload: unknown): TeacherRoomSummary[] {
 }
 
 export default function WhiteboardRoute() {
-  const router = useRouter();
   const [roomName, setRoomName] = useState(() => generateRoomName());
   const [maxUsers, setMaxUsers] = useState(3);
   const [creationTimes, setCreationTimes] = useState<number[]>([]);
@@ -127,13 +126,13 @@ export default function WhiteboardRoute() {
         throw new Error('Failed to create room');
       }
 
-      router.push(`/whiteboard/${roomId}`);
+      navigateToWhiteboardRoom(roomId);
     } catch {
       setCreationTimes(recent);
       setIsCreatingRoom(false);
       setCreateError('Room creation failed. Please try again.');
     }
-  }, [creationTimes, isCreatingRoom, maxUsers, roomName, router]);
+  }, [creationTimes, isCreatingRoom, maxUsers, roomName]);
 
   const refreshRooms = useCallback(async () => {
     const response = await ajaxFetch('/api/whiteboard/rooms');
@@ -233,7 +232,7 @@ export default function WhiteboardRoute() {
             <TeacherRoomList
               rooms={rooms}
               loading={roomsLoading}
-              onOpen={(roomId) => router.push(`/whiteboard/${roomId}`)}
+              onOpen={navigateToWhiteboardRoom}
               onRename={handleRename}
               onDelete={handleDelete}
             />

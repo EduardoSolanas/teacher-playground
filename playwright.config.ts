@@ -5,8 +5,7 @@ if (!Number.isInteger(appPort)) {
   throw new Error("Run E2E tests through `npm run test:e2e` so dynamic ports are allocated.");
 }
 
-// Chromium permits Secure cookies on the loopback `localhost` origin. Keep
-// the cookie Secure/__Host- prefixed in local browser coverage.
+// Loopback only: run-e2e.mjs starts a local Access JWT issuer + cookie proxy.
 const baseURL = `http://localhost:${appPort}`;
 const accessIssuer = process.env.E2E_ACCESS_ISSUER;
 const accessToken = process.env.E2E_ACCESS_TOKEN;
@@ -29,6 +28,7 @@ export default defineConfig({
   reporter: "html",
   use: {
     ...devices["Desktop Chrome"],
+    viewport: { width: 1280, height: 720 },
     baseURL,
     // Defaults to 0, meaning an action waits until the whole test times out.
     // A prompt that unmounts mid-fill then costs 60s instead of failing fast.

@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const push = vi.fn();
+const assign = vi.fn();
 const ajaxFetch = vi.fn();
 
 vi.mock('next/navigation', () => ({
@@ -33,7 +34,9 @@ function jsonResponse(body: unknown, ok = true): Response {
 describe('WhiteboardRoute room list', () => {
   beforeEach(() => {
     push.mockReset();
+    assign.mockReset();
     ajaxFetch.mockReset();
+    vi.stubGlobal('location', { assign });
   });
 
   it('loads rooms from GET /api/whiteboard/rooms and keeps create/join', async () => {
@@ -75,7 +78,8 @@ describe('WhiteboardRoute room list', () => {
     });
 
     fireEvent.click(screen.getByRole('link', { name: /Algebra/ }));
-    expect(push).toHaveBeenCalledWith('/whiteboard/room-alpha');
+    expect(assign).toHaveBeenCalledWith('/whiteboard/room-alpha');
+    expect(push).not.toHaveBeenCalled();
   });
 
   it('renames an unnamed room via settings POST then refreshes the list', async () => {
@@ -130,6 +134,26 @@ describe('WhiteboardRoute room list', () => {
       headers: { 'Content-Type': 'application/json' },
     });
     expect(JSON.parse(String(settingsCall?.[1]?.body))).toEqual({ name: 'Geometry' });
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('creates a room then assigns the real room URL', async () => {
+    ajaxFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/whiteboard/rooms') {
+        return Promise.resolve(jsonResponse({ rooms: [] }));
+      }
+      if (init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      return Promise.resolve(jsonResponse({}, false));
+    });
+
+    render(<WhiteboardRoute />);
+    fireEvent.click(screen.getByTestId('whiteboard-create-room-btn'));
+
+    await waitFor(() => {
+      expect(assign).toHaveBeenCalledWith('/whiteboard/new-room');
+    });
     expect(push).not.toHaveBeenCalled();
   });
 });

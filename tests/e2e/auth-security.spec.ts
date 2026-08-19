@@ -1,4 +1,5 @@
-import { test, expect, type Cookie } from '@playwright/test';
+import { test, expect } from './fixtures';
+import type { Cookie } from '@playwright/test';
 import { appUrl, expectSessionCookie, newAuthenticatedContext, createRoomWithMaxUsers } from './helpers';
 
 /**

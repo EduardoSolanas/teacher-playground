@@ -1,4 +1,5 @@
-import { test, expect, Page } from '@playwright/test';
+import { test, expect } from './fixtures';
+import { Page } from '@playwright/test';
 import { newAuthenticatedContext } from './helpers';
 
 function appUrl(path: string) {

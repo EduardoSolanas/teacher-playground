@@ -72,40 +72,112 @@ export function updateElementInArray(
   }
 }
 
+function toYjsValue(value: unknown): unknown {
+  if (value === undefined) return undefined;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return undefined;
+  }
+}
+
+function valuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (left == null || right == null) return left === right;
+  if (typeof left !== 'object' || typeof right !== 'object') return false;
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
+
+type ReplaceSharedOptions = {
+  /** When set, only these ids may be deleted if they are missing from `nextElements`. */
+  previousIds?: readonly string[];
+};
+
+/**
+ * Sync a scene into the shared array by element id.
+ *
+ * Wholesale `delete(0, length)` + `push` races: two peers each replacing the
+ * whole array at once duplicate every shape. Updating the map for an existing
+ * id (and only inserting/removing the delta) keeps concurrent draws additive.
+ *
+ * Local Excalidraw `onChange` is a snapshot of *this* client's scene. It must
+ * not prune remote ids it has not observed yet — pass `previousIds` from the
+ * last scene this client published.
+ */
+export function replaceSharedElements(
+  doc: Y.Doc,
+  elementsArray: Y.Array<Y.Map<any>>,
+  nextElements: ReadonlyArray<Record<string, unknown>>,
+  origin: unknown = 'local',
+  options?: ReplaceSharedOptions,
+): void {
+  doc.transact(() => {
+    const byId = new Map<string, Y.Map<any>>();
+    for (const map of elementsArray.toArray()) {
+      const id = map.get('id');
+      if (typeof id === 'string') byId.set(id, map);
+    }
+
+    const seen = new Set<string>();
+    for (const element of nextElements) {
+      const id = element.id;
+      if (typeof id !== 'string' || id.length === 0) continue;
+      seen.add(id);
+
+      let map = byId.get(id);
+      if (!map) {
+        map = new Y.Map();
+        elementsArray.push([map]);
+        byId.set(id, map);
+      }
+
+      for (const [key, value] of Object.entries(element)) {
+        const encoded = toYjsValue(value);
+        if (encoded === undefined) continue;
+        if (!valuesEqual(map.get(key), encoded)) {
+          map.set(key, encoded);
+        }
+      }
+      for (const key of Array.from(map.keys())) {
+        if (!Object.prototype.hasOwnProperty.call(element, key)) {
+          map.delete(key);
+        }
+      }
+    }
+
+    const removable = options?.previousIds ? new Set(options.previousIds) : null;
+    const staleIndexes: number[] = [];
+    elementsArray.toArray().forEach((map, index) => {
+      const id = map.get('id');
+      if (typeof id !== 'string' || seen.has(id)) return;
+      if (removable && !removable.has(id)) return;
+      staleIndexes.push(index);
+    });
+    for (let i = staleIndexes.length - 1; i >= 0; i--) {
+      elementsArray.delete(staleIndexes[i], 1);
+    }
+  }, origin);
+}
+
 export function getElementsFromArray(
   elementsArray: Y.Array<Y.Map<any>>
 ): CanvasElement[] {
-  const items = elementsArray.toArray();
-  return items.map((yMap) => {
-    const type = yMap.get('type') as CanvasElement['type'];
-    const base = {
-      id: yMap.get('id'),
-      type,
-      x: yMap.get('x'),
-      y: yMap.get('y'),
-      width: yMap.get('width'),
-      height: yMap.get('height'),
-      color: yMap.get('color'),
-      strokeWidth: yMap.get('strokeWidth'),
-      fill: yMap.get('fill'),
-      stroke: yMap.get('stroke'),
-      text: yMap.get('text'),
-      fontSize: yMap.get('fontSize'),
-      fontFamily: yMap.get('fontFamily'),
-      bold: yMap.get('bold'),
-      italic: yMap.get('italic'),
-      content: yMap.get('content'),
-      backgroundColor: yMap.get('backgroundColor'),
-      borderColor: yMap.get('borderColor'),
-      borderRadius: yMap.get('borderRadius'),
-      rotation: yMap.get('rotation'),
-    };
-
-    if (type === 'pen' || type === 'line' || type === 'arrow') {
-      const pointsStr = yMap.get('points');
-      return { ...base, points: typeof pointsStr === 'string' ? JSON.parse(pointsStr) : pointsStr } as CanvasElement;
+  return elementsArray.toArray().map((yMap) => {
+    const element: Record<string, unknown> = {};
+    yMap.forEach((value: unknown, key: string) => {
+      element[key] = value;
+    });
+    if (typeof element.points === 'string') {
+      try {
+        element.points = JSON.parse(element.points);
+      } catch {
+        // Keep the raw string when a legacy row is not JSON.
+      }
     }
-
-    return base as CanvasElement;
+    return element as CanvasElement;
   });
 }

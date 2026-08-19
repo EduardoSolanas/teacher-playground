@@ -1,4 +1,5 @@
-import { test, expect, Page } from '@playwright/test';
+import { test, expect } from './fixtures';
+import { Page } from '@playwright/test';
 import {
   createRoomWithMaxUsers,
   joinExistingRoom,
@@ -7,6 +8,7 @@ import {
   approveFirstWaitingPeer,
   newAuthenticatedContext,
   expectPersistedElement,
+  appendElement,
 } from './helpers';
 
 function trackWebsocketUrls(page: Page) {
@@ -43,20 +45,6 @@ function rectangle(id: string, x: number, y: number) {
     link: null,
     locked: false,
   };
-}
-
-async function waitForExcalidrawApi(page: Page) {
-  await expect
-    .poll(async () => page.evaluate(() => !!(window as any).__debugExcalidrawApi), { timeout: 15000 })
-    .toBe(true);
-}
-
-async function appendElement(page: Page, element: Record<string, unknown>) {
-  await waitForExcalidrawApi(page);
-  await page.evaluate((el) => {
-    const api = (window as any).__debugExcalidrawApi;
-    api.updateScene({ elements: [...api.getSceneElements(), el] });
-  }, element);
 }
 
 test.describe('Pending peer signaling gate', () => {

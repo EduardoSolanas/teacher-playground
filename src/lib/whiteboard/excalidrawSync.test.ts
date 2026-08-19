@@ -5,6 +5,7 @@ import {
   serializeExcalidrawElement,
   serializeExcalidrawElements,
   toExcalidrawToolType,
+  uniqueElementsById,
 } from './excalidrawSync';
 
 describe('excalidraw sync helpers', () => {
@@ -37,6 +38,17 @@ describe('excalidraw sync helpers', () => {
       x: 0,
       y: 0,
     });
+  });
+
+  it('keeps the last copy when restoreElements repeats an id', () => {
+    expect(uniqueElementsById([
+      { id: 'rect', type: 'rectangle', width: 10 },
+      { id: 'ell', type: 'ellipse' },
+      { id: 'rect', type: 'rectangle', width: 20 },
+    ])).toEqual([
+      { id: 'rect', type: 'rectangle', width: 20 },
+      { id: 'ell', type: 'ellipse' },
+    ]);
   });
 
   it('compares elements after serialization', () => {

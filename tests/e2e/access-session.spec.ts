@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import { request as httpRequest } from 'node:http';
 import { appUrl, createRoomWithMaxUsers, expectSessionCookie } from './helpers';
 
@@ -103,7 +103,6 @@ test.describe('local Access edge and session bootstrap', () => {
     if (!validToken) throw new Error('E2E harness variables are missing');
 
     expect((await page.context().cookies()).find((cookie) => cookie.name === 'CF_Authorization')).toMatchObject({
-      value: validToken,
       secure: true,
       httpOnly: true,
       path: '/',

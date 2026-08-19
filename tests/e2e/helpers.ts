@@ -1,4 +1,4 @@
-import { test, expect, Page, Browser } from '@playwright/test';
+import { expect, Page, Browser } from '@playwright/test';
 
 // ── URL Helpers ──────────────────────────────────────────────────────────────
 
@@ -20,6 +20,19 @@ async function expectSessionCookie(page: Page) {
 
 // ── Room Creation & Joining ──────────────────────────────────────────────────
 
+function roomIdFromWhiteboardUrl(url: string): string {
+  const match = new URL(url).pathname.match(/^\/whiteboard\/([^/]+)$/);
+  const roomId = match?.[1] ? decodeURIComponent(match[1]) : '';
+  if (!roomId || roomId === 'undefined' || roomId === '_room') {
+    throw new Error(`expected a room URL, got ${url}`);
+  }
+  return roomId;
+}
+
+function roomIdFromPageUrl(page: Page): string {
+  return roomIdFromWhiteboardUrl(page.url());
+}
+
 async function createRoomWithMaxUsers(page: Page, name: string, maxUsers: number) {
   await page.goto(appUrl('/whiteboard'));
   await expectSessionCookie(page);
@@ -34,17 +47,15 @@ async function createRoomWithMaxUsers(page: Page, name: string, maxUsers: number
   await page.getByTestId('whiteboard-username-input').fill(name);
   await page.getByTestId('whiteboard-join-room-btn').click();
   await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
-
-  return new URL(page.url()).pathname.split('/').pop()!;
+  await expect(page).toHaveURL(/\/whiteboard\/[A-Za-z0-9_-]{8,}(?:\/)?$/);
+  return roomIdFromPageUrl(page);
 }
-
-let contextSubject = 0;
 
 /** Explicit contexts do not inherit Playwright `use` headers. */
 async function newAuthenticatedContext(browser: Browser, subject?: string) {
   const issuer = process.env.E2E_ACCESS_ISSUER;
   if (!issuer) throw new Error('E2E_ACCESS_ISSUER is missing; use npm run test:e2e');
-  const identity = subject ?? `e2e-peer-${contextSubject++}`;
+  const identity = subject ?? `e2e-peer-${crypto.randomUUID()}`;
   const response = await fetch(`${issuer}/token?sub=${encodeURIComponent(identity)}`);
   if (!response.ok) throw new Error(`E2E local Access token failed: ${response.status}`);
   const token = (await response.json()).token;
@@ -84,7 +95,26 @@ async function joinExistingRoom(page: Page, roomId: string, name = 'Peer') {
   }
 }
 
-/** Waits until the room API actually holds `elementId`, past the save debounce. */
+async function waitForExcalidrawApi(page: Page) {
+  await expect
+    .poll(async () => page.evaluate(() => !!(window as any).__debugExcalidrawApi), { timeout: 15000 })
+    .toBe(true);
+}
+
+async function appendElement(page: Page, element: Record<string, unknown>) {
+  await waitForExcalidrawApi(page);
+  // Excalidraw's API callback applies a remote snapshot ~100ms after mount and
+  // ignores onChange while that flag is set. Wait it out so this local scene
+  // write actually reaches Yjs and the room POST.
+  await page.waitForTimeout(400);
+  await page.evaluate((el) => {
+    const api = (window as any).__debugExcalidrawApi;
+    api.updateScene({
+      elements: [...api.getSceneElements(), el],
+      captureUpdate: 'IMMEDIATELY',
+    });
+  }, element);
+}
 async function expectPersistedElement(page: Page, roomId: string, elementId: string) {
   await expect
     .poll(
@@ -113,7 +143,7 @@ async function expectWaiting(page: Page) {
   await expect
     .poll(async () => (await getCollabState(page)).isWaiting, { timeout: 15000 })
     .toBe(true);
-  await expect(page.getByRole('heading', { name: /Room is Full/ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Room is Full/ })).toBeVisible({ timeout: 15000 });
 }
 
 async function expectNotWaiting(page: Page) {
@@ -125,6 +155,7 @@ async function expectNotWaiting(page: Page) {
 // ── Peer Approval Helpers ────────────────────────────────────────────────────
 
 async function getFirstWaitingPeerId(hostPage: Page) {
+  await expandPresenceIfCollapsed(hostPage);
   const waitingUser = hostPage.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: 'Waiting' }).first();
   await expect(waitingUser).toBeVisible({ timeout: 15000 });
   const testId = await waitingUser.getAttribute('data-testid');
@@ -133,17 +164,28 @@ async function getFirstWaitingPeerId(hostPage: Page) {
   return peerId!;
 }
 
+async function expandPresenceIfCollapsed(hostPage: Page) {
+  const toggle = hostPage.getByTestId('whiteboard-presence-toggle');
+  await toggle.waitFor({ state: 'visible', timeout: 15000 });
+  const title = await toggle.getAttribute('title');
+  if (title?.includes('Expand')) {
+    await toggle.click({ force: true });
+  }
+}
+
 async function approveFirstWaitingPeer(hostPage: Page) {
+  await expandPresenceIfCollapsed(hostPage);
   const waitingUser = hostPage.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: 'Waiting' }).first();
   await expect(waitingUser).toBeVisible({ timeout: 15000 });
   const testId = await waitingUser.getAttribute('data-testid');
   const peerId = testId?.replace('whiteboard-user-', '');
   expect(peerId).toBeTruthy();
-  await waitingUser.getByRole('button', { name: 'Let in' }).click();
+  await waitingUser.getByRole('button', { name: 'Let in' }).click({ force: true });
   return peerId;
 }
 
 async function openFirstWaitingPeerMenu(hostPage: Page) {
+  await expandPresenceIfCollapsed(hostPage);
   const waitingUser = hostPage.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: 'Waiting' }).first();
   await expect(waitingUser).toBeVisible({ timeout: 15000 });
   const testId = await waitingUser.getAttribute('data-testid');
@@ -151,6 +193,18 @@ async function openFirstWaitingPeerMenu(hostPage: Page) {
   expect(peerId).toBeTruthy();
   await waitingUser.getByRole('button', { name: '...' }).click();
   return peerId!;
+}
+
+async function moderateApprovedPeer(
+  hostPage: Page,
+  peerId: string,
+  action: 'kick' | 'suspend',
+) {
+  await expandPresenceIfCollapsed(hostPage);
+  await hostPage.getByTestId(`whiteboard-user-options-${peerId}`).click();
+  const testId = action === 'kick' ? 'whiteboard-context-kick' : 'whiteboard-context-suspend';
+  await expect(hostPage.getByTestId(testId)).toBeVisible({ timeout: 10000 });
+  await hostPage.getByTestId(testId).click();
 }
 
 // ── Combined Approval Flow ───────────────────────────────────────────────────
@@ -172,7 +226,7 @@ async function joinRoomApproved(peerPage: Page, hostPage: Page, roomId: string, 
  * Similar to joinRoomApproved but takes a full URL instead of roomId.
  */
 async function joinRoomApprovedViaUrl(peerPage: Page, hostPage: Page, roomUrl: string, peerName: string) {
-  const roomId = new URL(roomUrl).pathname.split('/').pop()!;
+  const roomId = roomIdFromWhiteboardUrl(roomUrl);
   await joinRoomApproved(peerPage, hostPage, roomId, peerName);
 }
 
@@ -184,6 +238,7 @@ export {
   expectSessionCookie,
   newAuthenticatedContext,
   createRoomWithMaxUsers,
+  roomIdFromPageUrl,
   joinExistingRoom,
   getCollabState,
   expectWaiting,
@@ -192,6 +247,10 @@ export {
   getFirstWaitingPeerId,
   approveFirstWaitingPeer,
   openFirstWaitingPeerMenu,
+  moderateApprovedPeer,
   joinRoomApproved,
   joinRoomApprovedViaUrl,
+  expandPresenceIfCollapsed,
+  waitForExcalidrawApi,
+  appendElement,
 };

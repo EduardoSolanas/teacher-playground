@@ -1,5 +1,4 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { createPortal } from 'react-dom';
 import type { WhiteboardUser } from '@/types/whiteboard';
 
 function accountNameDisc(accountId: string | null | undefined): string | null {
@@ -64,17 +63,6 @@ export default function PresencePanel({
     setMenuPeerId(null);
   }, []);
 
-  useEffect(() => {
-    if (menuOpen) {
-      const handler = (event: MouseEvent) => {
-        if (menuRef.current?.contains(event.target as Node)) return;
-        handleCloseMenu();
-      };
-      document.addEventListener('mousedown', handler);
-      return () => document.removeEventListener('mousedown', handler);
-    }
-  }, [menuOpen, handleCloseMenu]);
-
   const waitingPeerIds = new Set(waitingPeers.map((user) => user.peerId));
   const allUsers = [...waitingPeers, ...users.filter((user) => !waitingPeerIds.has(user.peerId))];
   const duplicateNames = new Set<string>();
@@ -116,12 +104,55 @@ export default function PresencePanel({
       handleCloseMenu();
     }
   }, [menuPeerId, menuPeer?.accountId, onSuspend, handleCloseMenu]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      const testId = target?.closest?.('[data-testid]')?.getAttribute('data-testid');
+      if (testId === 'whiteboard-context-kick') {
+        event.preventDefault();
+        event.stopPropagation();
+        handleKick();
+        return;
+      }
+      if (testId === 'whiteboard-context-suspend') {
+        event.preventDefault();
+        event.stopPropagation();
+        handleSuspend();
+        return;
+      }
+      if (testId === 'whiteboard-context-let-in') {
+        event.preventDefault();
+        event.stopPropagation();
+        handleApproveAction();
+        return;
+      }
+      if (testId === 'whiteboard-context-reject') {
+        event.preventDefault();
+        event.stopPropagation();
+        handleRejectAction();
+        return;
+      }
+      if (menuRef.current?.contains(event.target as Node)) return;
+      handleCloseMenu();
+    };
+    document.addEventListener('pointerdown', handler, true);
+    return () => document.removeEventListener('pointerdown', handler, true);
+  }, [
+    menuOpen,
+    handleKick,
+    handleSuspend,
+    handleApproveAction,
+    handleRejectAction,
+    handleCloseMenu,
+  ]);
   const menuPeerIsWaiting = Boolean(menuPeer?.isWaiting);
   const menu =
     isLocalHost && menuOpen && menuPeerId && menuPeer ? (
       <div
         ref={menuRef}
-        className="fixed bg-slate-800 border border-slate-700 rounded-lg p-1 z-[10000] min-w-[180px] shadow-xl"
+        className="fixed bg-slate-800 border border-slate-700 rounded-lg p-1 z-[100000] min-w-[180px] shadow-xl pointer-events-auto"
         style={{
           left: menuPosition.left,
           top: menuPosition.top,
@@ -133,7 +164,11 @@ export default function PresencePanel({
               data-testid="whiteboard-context-let-in"
               className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[13px] w-full text-left font-inherit transition-colors duration-150 hover:bg-emerald-600 rounded"
               style={{ color: '#e5e7eb' }}
-              onClick={handleApproveAction}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                handleApproveAction();
+              }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <polyline points="20 6 9 17 4 12" />
@@ -144,7 +179,11 @@ export default function PresencePanel({
               data-testid="whiteboard-context-reject"
               className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[13px] w-full text-left font-inherit transition-colors duration-150 hover:bg-red-600 rounded"
               style={{ color: '#e5e7eb' }}
-              onClick={handleRejectAction}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                handleRejectAction();
+              }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <line x1="18" y1="6" x2="6" y2="18" />
@@ -159,7 +198,11 @@ export default function PresencePanel({
               data-testid="whiteboard-context-suspend"
               className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[13px] w-full text-left font-inherit transition-colors duration-150 hover:bg-amber-600 rounded"
               style={{ color: '#e5e7eb' }}
-              onClick={handleSuspend}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                handleSuspend();
+              }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <circle cx="12" cy="12" r="10" />
@@ -171,7 +214,11 @@ export default function PresencePanel({
               data-testid="whiteboard-context-kick"
               className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[13px] w-full text-left font-inherit transition-colors duration-150 hover:bg-red-600 rounded"
               style={{ color: '#e5e7eb' }}
-              onClick={handleKick}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                handleKick();
+              }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -188,7 +235,7 @@ export default function PresencePanel({
   return (
     <>
       <div
-        className={`fixed right-0 z-[190] flex flex-col overflow-hidden border-l border-slate-200 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur transition-[width] duration-200 sm:bottom-0 sm:top-0 sm:rounded-none ${
+        className={`fixed right-0 z-[1200] flex flex-col overflow-hidden border-l border-slate-200 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur transition-[width] duration-200 sm:bottom-0 sm:top-0 sm:rounded-none ${
           collapsed
             ? 'top-[max(0.5rem,env(safe-area-inset-top))] bottom-auto rounded-l-xl border-y border-slate-200 sm:border-y-0'
             : 'bottom-0 top-0'
@@ -245,7 +292,7 @@ export default function PresencePanel({
               <div
                 key={user.peerId}
                 data-testid={`whiteboard-user-${user.peerId}`}
-                className={`mb-1 flex items-center gap-2 rounded-lg p-2 transition-colors duration-150 ${
+                className={`mb-1 flex flex-wrap items-center gap-2 rounded-lg p-2 transition-colors duration-150 ${
                   canModerate ? 'cursor-pointer' : ''
                 }`}
                 style={{
@@ -306,7 +353,7 @@ export default function PresencePanel({
                   </div>
                 )}
                 {isWaitingModeratable && !collapsed && (
-                  <div className="flex gap-1 items-center">
+                  <div className="flex w-full shrink-0 items-center gap-1 pl-8">
                     <button
                       data-testid={`whiteboard-approve-${user.peerId}`}
                       onClick={(e) => {
@@ -350,7 +397,7 @@ export default function PresencePanel({
       </div>
 
       </div>
-      {typeof document !== 'undefined' && menu ? createPortal(menu, document.body) : null}
+      {menu}
     </>
   );
 }

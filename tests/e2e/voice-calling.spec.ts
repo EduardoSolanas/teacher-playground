@@ -1,4 +1,5 @@
-import { test, expect, Page } from '@playwright/test';
+import { test, expect } from './fixtures';
+import { Page } from '@playwright/test';
 import { newAuthenticatedContext } from './helpers';
 
 function appUrl(path: string) {
@@ -18,8 +19,11 @@ async function createRoomWithMaxUsers(page: Page, name: string, maxUsers: number
   await page.getByTestId('whiteboard-username-input').fill(name);
   await page.getByTestId('whiteboard-join-room-btn').click();
   await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
-
-  return new URL(page.url()).pathname.split('/').pop()!;
+  await expect(page).toHaveURL(/\/whiteboard\/[A-Za-z0-9_-]{8,}(?:\/)?$/);
+  const roomId = new URL(page.url()).pathname.split('/').pop()!;
+  expect(roomId).not.toBe('_room');
+  expect(roomId).not.toBe('undefined');
+  return roomId;
 }
 
 async function joinExistingRoom(page: Page, roomId: string, name: string) {

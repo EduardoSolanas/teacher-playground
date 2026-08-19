@@ -88,3 +88,36 @@ describe('createCollaboration omitted peerId (SEC-006)', () => {
     second.destroy();
   });
 });
+
+describe('createCollaboration adoptLocalPeerId', () => {
+  it('moves the cursor map entry onto the server-issued peer id', () => {
+    const collab = createCollaboration('adopt-room', 'user-local-label');
+    collab.setLocalUserName('CursorPeer');
+    collab.setLocalCursor(12, 34);
+
+    collab.adoptLocalPeerId('user-server-issued');
+
+    expect(collab.localPeerId).toBe('user-server-issued');
+    const cursors = collab.getUsers();
+    expect(cursors.map((user) => user.peerId)).toEqual(['user-server-issued']);
+    expect(cursors[0]?.userName).toBe('CursorPeer');
+    expect(collab.cursorsMap.has('user-local-label')).toBe(false);
+
+    collab.destroy();
+  });
+
+  it('publishes a cursor under the issued id even when none was written yet', () => {
+    const collab = createCollaboration('adopt-empty', 'user-local-label');
+    collab.setLocalUserName('CursorPeer');
+
+    collab.adoptLocalPeerId('user-server-issued');
+
+    expect(collab.cursorsMap.has('user-local-label')).toBe(false);
+    expect(collab.cursorsMap.get('user-server-issued')).toMatchObject({
+      peerId: 'user-server-issued',
+      userName: 'CursorPeer',
+    });
+
+    collab.destroy();
+  });
+});

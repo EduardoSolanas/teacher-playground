@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getStablePeerId, peerIdStorageKey, peerIdWhenJoined } from './peerId';
+import {
+  getStablePeerId,
+  nextPeerIdFromPresence,
+  peerIdStorageKey,
+  peerIdWhenJoined,
+  rememberIssuedPeerId,
+} from './peerId';
 
 describe('getStablePeerId (SEC-006)', () => {
   afterEach(() => {
@@ -33,5 +39,19 @@ describe('getStablePeerId (SEC-006)', () => {
     const id = peerIdWhenJoined(true, 'joined-room');
     expect(id).toMatch(/^user-[0-9a-f]{32}$/);
     expect(localStorage.getItem(peerIdStorageKey('joined-room'))).toBe(id);
+  });
+
+  it('overwrites the minted label with the server-issued peer id', () => {
+    const minted = getStablePeerId('room-a');
+    rememberIssuedPeerId('room-a', 'user-serverissued0123456789abcdef');
+    expect(getStablePeerId('room-a')).toBe('user-serverissued0123456789abcdef');
+    expect(minted).not.toBe('user-serverissued0123456789abcdef');
+  });
+
+  it('returns the issued presence id only when it differs from the local label', () => {
+    expect(nextPeerIdFromPresence('user-local', 'user-server')).toBe('user-server');
+    expect(nextPeerIdFromPresence('user-server', 'user-server')).toBeNull();
+    expect(nextPeerIdFromPresence('user-local', '')).toBeNull();
+    expect(nextPeerIdFromPresence('user-local', 12)).toBeNull();
   });
 });

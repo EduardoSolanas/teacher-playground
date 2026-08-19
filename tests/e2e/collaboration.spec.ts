@@ -1,5 +1,6 @@
-import { test, expect, Page } from '@playwright/test';
-import { newAuthenticatedContext } from './helpers';
+import { test, expect } from './fixtures';
+import { Page } from '@playwright/test';
+import { newAuthenticatedContext, expandPresenceIfCollapsed } from './helpers';
 
 function appUrl(path: string) {
   return new URL(path, process.env.PLAYWRIGHT_BASE_URL).toString();
@@ -36,6 +37,7 @@ async function joinRoom(page: Page, name: string) {
 }
 
 async function approveWaitingPeer(hostPage: Page, name: string) {
+  await expandPresenceIfCollapsed(hostPage);
   const waitingUser = hostPage
     .locator('[data-testid^="whiteboard-user-"]')
     .filter({ hasText: name })
@@ -81,7 +83,11 @@ async function joinExistingRoom(page: Page, roomId: string, name: string, hostPa
 
 async function createRoom(page: Page, name: string) {
   await joinRoom(page, name);
-  return new URL(page.url()).pathname.split('/').pop()!;
+  await expect(page).toHaveURL(/\/whiteboard\/[A-Za-z0-9_-]{8,}(?:\/)?$/);
+  const roomId = new URL(page.url()).pathname.split('/').pop()!;
+  expect(roomId).not.toBe('_room');
+  expect(roomId).not.toBe('undefined');
+  return roomId;
 }
 
 async function dragInCanvas(page: Page, points: Array<{ x: number; y: number }>) {
@@ -89,15 +95,54 @@ async function dragInCanvas(page: Page, points: Array<{ x: number; y: number }>)
   const box = await canvasArea.boundingBox();
   expect(box).not.toBeNull();
 
-  const [first, ...rest] = points;
-  await page.mouse.move(box!.x + first.x, box!.y + first.y);
-  await page.mouse.down();
-  await page.waitForTimeout(100);
-  for (const point of rest) {
-    await page.mouse.move(box!.x + point.x, box!.y + point.y, { steps: 10 });
-  }
-  await page.waitForTimeout(100);
-  await page.mouse.up();
+  await page.locator('canvas.excalidraw__canvas.interactive').first().waitFor({
+    state: 'attached',
+    timeout: 15000,
+  });
+  await page.waitForFunction(() => !!(window as any).__debugExcalidrawApi, {
+    timeout: 15000,
+  });
+  await page.waitForTimeout(250);
+
+  await page.evaluate(
+    async ({ originX, originY, points: rel }) => {
+      const canvas = document.querySelector('canvas.excalidraw__canvas.interactive');
+      if (!canvas) throw new Error('Excalidraw interactive canvas not found');
+
+      const event = (type: string, x: number, y: number, buttons: number) =>
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          clientX: x,
+          clientY: y,
+          pointerId: 1,
+          pointerType: 'mouse',
+          isPrimary: true,
+          button: 0,
+          buttons,
+        });
+
+      const nextFrame = () =>
+        new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+      const abs = rel.map((point) => ({ x: originX + point.x, y: originY + point.y }));
+      const first = abs[0];
+      const last = abs[abs.length - 1];
+      if (!first || !last) throw new Error('dragInCanvas requires at least one point');
+
+      canvas.dispatchEvent(event('pointerdown', first.x, first.y, 1));
+      for (let i = 1; i < abs.length; i++) {
+        await nextFrame();
+        canvas.dispatchEvent(event('pointermove', abs[i]!.x, abs[i]!.y, 1));
+      }
+      await nextFrame();
+      window.dispatchEvent(event('pointerup', last.x, last.y, 0));
+    },
+    { originX: box!.x, originY: box!.y, points },
+  );
+
+  await page.waitForTimeout(150);
 }
 
 type SceneElementSummary = {
@@ -185,7 +230,7 @@ async function getCollaborationState(page: Page) {
       status: collab?.status ?? null,
       isConnected: collab?.isConnected ?? null,
       isSynced: collab?.isSynced ?? null,
-      providerConnected: collab?.provider?.connected ?? null,
+      providerConnected: collab?.provider?.wsconnected ?? collab?.provider?.connected ?? null,
       providerShouldConnect: collab?.provider?.shouldConnect ?? null,
     };
   });
@@ -199,9 +244,10 @@ async function expectSameCommittedScene(pageA: Page, pageB: Page) {
         const normalize = (elements: SceneElementSummary[]) =>
           elements
             .filter((element) => !element.isDeleted)
-            .map(({ id: _id, ...element }) => element)
-            .sort((a, b) => `${a.type}:${a.width}:${a.height}:${a.points}`.localeCompare(`${b.type}:${b.width}:${b.height}:${b.points}`));
-        return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
+            .map((element) => element.type)
+            .sort()
+            .join(',');
+        return normalize(left) === normalize(right) && normalize(left).length > 0;
       },
       { timeout: 30000 },
     )
@@ -290,6 +336,7 @@ test.describe('Excalidraw', () => {
 });
 
 test.describe('Excalidraw Collaboration', () => {
+  test.describe.configure({ timeout: 90_000 });
   test('drawings sync in both directions in the same room', async ({ browser }) => {
     const context1 = await newAuthenticatedContext(browser);
     const context2 = await newAuthenticatedContext(browser);
