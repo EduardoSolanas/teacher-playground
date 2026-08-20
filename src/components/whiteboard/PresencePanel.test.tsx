@@ -384,3 +384,279 @@ describe('PresencePanel raise hand', () => {
     expect(screen.queryByTestId('whiteboard-raise-hand')).toBeNull();
   });
 });
+
+describe('PresencePanel collapsed state', () => {
+  it('shows occupancy count in collapsed state', () => {
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-1', userName: 'Alice' }),
+          makeUser({ peerId: 'peer-2', userName: 'Bob' }),
+        ]}
+        waitingPeers={[]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={true}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+        maxUsers={10}
+      />,
+    );
+
+    const count = screen.getByTestId('whiteboard-presence-count');
+    expect(count.textContent).toBe('2/10');
+  });
+
+  it('reflects maxUsers in the occupancy count', () => {
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-1', userName: 'Alice' }),
+          makeUser({ peerId: 'peer-2', userName: 'Bob' }),
+        ]}
+        waitingPeers={[]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={true}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+        maxUsers={30}
+      />,
+    );
+
+    const count = screen.getByTestId('whiteboard-presence-count');
+    expect(count.textContent).toBe('2/30');
+  });
+
+  it('aria-controls on handle matches the expanded panel id', () => {
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-1', userName: 'Alice' }),
+        ]}
+        waitingPeers={[]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={true}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+      />,
+    );
+
+    const button = screen.getByTestId('whiteboard-presence-toggle');
+    const ariaControls = button.getAttribute('aria-controls');
+    expect(ariaControls).toBe('whiteboard-presence-panel');
+  });
+
+  it('aria-controls remains when expanded', () => {
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-1', userName: 'Alice' }),
+        ]}
+        waitingPeers={[]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={false}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+      />,
+    );
+
+    const button = screen.getByTestId('whiteboard-presence-toggle');
+    const ariaControls = button.getAttribute('aria-controls');
+    expect(ariaControls).toBe('whiteboard-presence-panel');
+  });
+
+  it('aria-label includes counts without waiting', () => {
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-1', userName: 'Alice' }),
+          makeUser({ peerId: 'peer-2', userName: 'Bob' }),
+        ]}
+        waitingPeers={[]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={true}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+        maxUsers={10}
+      />,
+    );
+
+    const button = screen.getByTestId('whiteboard-presence-toggle');
+    const ariaLabel = button.getAttribute('aria-label');
+    expect(ariaLabel).toMatch(/2/);
+    expect(ariaLabel).toMatch(/10/);
+    expect(ariaLabel).not.toMatch(/waiting/i);
+  });
+
+  it('aria-label includes waiting count when someone is waiting', () => {
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-1', userName: 'Alice' }),
+        ]}
+        waitingPeers={[
+          makeUser({ peerId: 'peer-waiting', userName: 'Charlie', isWaiting: true }),
+        ]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={true}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+        maxUsers={10}
+      />,
+    );
+
+    const button = screen.getByTestId('whiteboard-presence-toggle');
+    const ariaLabel = button.getAttribute('aria-label');
+    expect(ariaLabel).toMatch(/1/);
+    expect(ariaLabel).toMatch(/10/);
+    expect(ariaLabel).toMatch(/waiting/i);
+  });
+
+  // A live region only announces changes that happen while it is already in the
+  // document. One rendered at the same moment as its first message is missed by
+  // screen readers, so the empty region has to be there before anyone arrives.
+  it('keeps an empty live region mounted while nobody is waiting', () => {
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-1', userName: 'Alice' }),
+        ]}
+        waitingPeers={[]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={true}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+      />,
+    );
+
+    const liveRegion = screen.getByTestId('whiteboard-presence-waiting-live');
+    expect(liveRegion.getAttribute('aria-live')).toBe('polite');
+    expect(liveRegion.textContent).toBe('');
+  });
+
+  it('announces arrivals as a sentence rather than a bare number', () => {
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-1', userName: 'Alice' }),
+        ]}
+        waitingPeers={[
+          makeUser({ peerId: 'peer-waiting', userName: 'Charlie', isWaiting: true }),
+        ]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={true}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+      />,
+    );
+
+    const liveRegion = screen.getByTestId('whiteboard-presence-waiting-live');
+    expect(liveRegion.textContent).toBe('1 person waiting to be let in');
+  });
+
+  it('pluralises the announcement', () => {
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-1', userName: 'Alice' }),
+        ]}
+        waitingPeers={[
+          makeUser({ peerId: 'peer-w1', userName: 'Charlie', isWaiting: true }),
+          makeUser({ peerId: 'peer-w2', userName: 'Dana', isWaiting: true }),
+        ]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={true}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+      />,
+    );
+
+    const liveRegion = screen.getByTestId('whiteboard-presence-waiting-live');
+    expect(liveRegion.textContent).toBe('2 people waiting to be let in');
+  });
+
+  // The amber badge is the visual channel for the same fact. Marking it live as
+  // well would announce the count twice for one arrival.
+  it('does not mark the visible badge as a second live region', () => {
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-1', userName: 'Alice' }),
+        ]}
+        waitingPeers={[
+          makeUser({ peerId: 'peer-waiting', userName: 'Charlie', isWaiting: true }),
+        ]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={true}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+      />,
+    );
+
+    expect(screen.getAllByTestId('whiteboard-presence-waiting-live')).toHaveLength(1);
+    expect(document.querySelectorAll('[aria-live]')).toHaveLength(1);
+  });
+
+  it('regression: whiteboard-presence-toggle still calls onToggle when clicked', () => {
+    const onToggle = vi.fn();
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-1', userName: 'Alice' }),
+        ]}
+        waitingPeers={[]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={true}
+        onToggle={onToggle}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+      />,
+    );
+
+    const button = screen.getByTestId('whiteboard-presence-toggle');
+    fireEvent.click(button);
+    expect(onToggle).toHaveBeenCalled();
+  });
+});

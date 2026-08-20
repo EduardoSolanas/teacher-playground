@@ -341,15 +341,18 @@ export default function PresencePanel({
     const overflow = Math.max(0, orderedActive.length - stack.length);
     const waitingCount = waitingPeers.length;
     const anyHandRaised = orderedActive.some((user) => user.handRaised);
+    const ariaLabel = `Participants: ${orderedActive.length} of ${maxUsers}${waitingCount > 0 ? `, ${waitingCount} waiting` : ''}`;
     return (
       <>
         <button
           type="button"
           data-testid="whiteboard-presence-toggle"
           aria-expanded={false}
+          aria-controls="whiteboard-presence-panel"
+          aria-label={ariaLabel}
           onClick={onToggle}
           title="Show participants"
-          className="presence-handle fixed right-2 top-[max(0.5rem,env(safe-area-inset-top))] z-[1200] flex w-11 cursor-pointer flex-col items-center gap-1.5 rounded-xl border border-slate-700/80 bg-slate-900/95 py-2 shadow-lg shadow-slate-950/30 backdrop-blur-md transition-colors duration-150 hover:bg-slate-800"
+          className="presence-handle fixed right-2 top-1/2 -translate-y-1/2 z-[1200] flex w-11 cursor-pointer flex-col items-center gap-1.5 rounded-xl border border-slate-700/80 bg-slate-900/95 py-2 shadow-lg shadow-slate-950/30 backdrop-blur-md transition-colors duration-150 hover:bg-slate-800"
         >
           <ChevronRightIcon className="h-4 w-4 rotate-180 text-slate-200" />
           {stack.length > 0 ? (
@@ -370,6 +373,9 @@ export default function PresencePanel({
           {overflow > 0 && (
             <span className="text-[10px] font-semibold text-slate-300">+{overflow}</span>
           )}
+          <span data-testid="whiteboard-presence-count" className="text-[10px] font-semibold text-slate-300">
+            {orderedActive.length}/{maxUsers}
+          </span>
           {waitingCount > 0 && (
             <span
               className="flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-bold text-white"
@@ -382,6 +388,22 @@ export default function PresencePanel({
             <RaisedHandIcon className="h-4 w-4" tone="ink" />
           )}
         </button>
+        {/*
+          Mounted unconditionally and left empty while the queue is: a screen
+          reader only announces a live region that was already in the document
+          when its text changed. Rendering the region together with its first
+          message loses that first message — which is the one that matters.
+        */}
+        <span
+          data-testid="whiteboard-presence-waiting-live"
+          role="status"
+          aria-live="polite"
+          className="sr-only"
+        >
+          {waitingCount > 0
+            ? `${waitingCount} ${waitingCount === 1 ? 'person' : 'people'} waiting to be let in`
+            : ''}
+        </span>
         {menu}
       </>
     );
@@ -399,6 +421,7 @@ export default function PresencePanel({
   return (
     <>
       <div
+        id="whiteboard-presence-panel"
         className="presence-panel fixed z-[1200] flex w-full flex-col overflow-hidden rounded-t-2xl border-t border-slate-200 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur bottom-0 inset-x-0 max-h-[62dvh] sm:inset-x-auto sm:bottom-0 sm:right-0 sm:top-0 sm:max-h-none sm:w-[min(220px,85vw)] sm:rounded-none sm:border-l sm:border-t-0"
         data-testid="whiteboard-presence-panel"
         aria-label="Participants"
@@ -437,6 +460,7 @@ export default function PresencePanel({
               type="button"
               data-testid="whiteboard-presence-toggle"
               aria-expanded={true}
+              aria-controls="whiteboard-presence-panel"
               onClick={onToggle}
               title="Hide participants"
               className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-slate-400 transition-colors duration-150 hover:bg-slate-100 hover:text-slate-600"
