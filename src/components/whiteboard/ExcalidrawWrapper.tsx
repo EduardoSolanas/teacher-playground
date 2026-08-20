@@ -1,6 +1,9 @@
 'use client';
 
 import { useCallback, useRef, useEffect, useState } from 'react';
+// MUST stay above the Excalidraw import: it sets EXCALIDRAW_ASSET_PATH, and ES
+// module imports are evaluated in order, before this module's own body runs.
+import '@/lib/whiteboard/excalidrawAssetPath';
 import { Excalidraw, restoreElements } from '@excalidraw/excalidraw';
 import '@excalidraw/excalidraw/index.css';
 import * as Y from 'yjs';
@@ -13,23 +16,6 @@ import {
 import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 import { cursorPublishDelay } from '@/lib/whiteboard/cursorPublishRate';
 
-/**
- * Serve Excalidraw's fonts and locales from this origin.
- *
- * Left unset, Excalidraw resolves them against its public CDN. Our CSP has no
- * third-party origin in font-src, so every one of those requests was refused —
- * the browser reported the block hundreds of times on a single board, and the
- * handwriting font never loaded. The assets are vendored in
- * public/excalidraw-assets, and Excalidraw appends "excalidraw-assets/" to this
- * value, so "/" resolves to the path the Worker already allows on both
- * hostnames.
- *
- * Set at module scope so it lands before the component mounts and asks for a
- * font.
- */
-if (typeof window !== 'undefined') {
-  (window as unknown as { EXCALIDRAW_ASSET_PATH?: string }).EXCALIDRAW_ASSET_PATH = '/';
-}
 
 type ExcalidrawWrapperProps = {
   roomId: string;
@@ -68,6 +54,26 @@ export default function ExcalidrawWrapper({
   const remoteUpdateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSyncedElementsRef = useRef<any[]>([]);
   const lastPublishedIdsRef = useRef<string[]>([]);
+  /** id -> Excalidraw `version` at the last publish, for O(changed) diffing. */
+  const publishedVersionsRef = useRef<Map<string, number>>(new Map());
+
+  /**
+   * Adopt a scene that arrived from a peer as the publish baseline.
+   *
+   * Without this the version map still describes the pre-remote scene, so the
+   * next local commit would see every remote element as "changed" and publish
+   * it straight back — peers echoing each other's work.
+   */
+  const adoptVersionBaseline = useCallback((elements: readonly any[]) => {
+    const versions = new Map<string, number>();
+    for (const element of elements) {
+      const id = (element as { id?: unknown })?.id;
+      if (typeof id !== 'string' || id.length === 0) continue;
+      const version = (element as { version?: unknown }).version;
+      versions.set(id, typeof version === 'number' ? version : 0);
+    }
+    publishedVersionsRef.current = versions;
+  }, []);
   const pendingElementsRef = useRef<any[] | null>(null);
   /** Scene captured mid-stroke, flushed to React state on pointer up. */
   const deferredElementsRef = useRef<any[] | null>(null);
@@ -157,6 +163,7 @@ export default function ExcalidrawWrapper({
       const same = excalidrawElementsEqual(remoteElements, lastSyncedElementsRef.current);
       if (same) return;
       lastSyncedElementsRef.current = remoteElements;
+      adoptVersionBaseline(remoteElements);
 
       applyRemoteElements(remoteElements);
     };
@@ -198,6 +205,7 @@ export default function ExcalidrawWrapper({
       if (shared.length === 0) return;
       if (excalidrawElementsEqual(shared, lastSyncedElementsRef.current)) return;
       lastSyncedElementsRef.current = shared;
+      adoptVersionBaseline(shared);
       isRemoteUpdateRef.current = true;
       try {
         api.updateScene({ elements: serializeExcalidrawElements(shared) as any });
@@ -281,15 +289,39 @@ export default function ExcalidrawWrapper({
   const commitElements = useCallback(
     (el: readonly any[]) => {
       hasAcceptedInitialSceneRef.current = true;
+
+      // Excalidraw stamps every element with a monotonic `version`, so what
+      // changed can be found by comparing numbers on the RAW elements. The old
+      // check serialized the whole scene and JSON.stringify'd it twice — on a
+      // board of any size that dominated the drawing path.
+      const nextVersions = new Map<string, number>();
+      for (const element of el) {
+        const id = (element as { id?: unknown })?.id;
+        if (typeof id !== 'string' || id.length === 0) continue;
+        const version = (element as { version?: unknown }).version;
+        nextVersions.set(id, typeof version === 'number' ? version : 0);
+      }
+
+      const previousVersions = publishedVersionsRef.current;
+      let removed = false;
+      for (const id of previousVersions.keys()) {
+        if (!nextVersions.has(id)) { removed = true; break; }
+      }
+      const changedIds = new Set<string>();
+      for (const [id, version] of nextVersions) {
+        if (previousVersions.get(id) !== version) changedIds.add(id);
+      }
+      // Nothing moved: leave without serializing anything at all.
+      if (!removed && changedIds.size === 0) return;
+
       const serializedElements = serializeExcalidrawElements(el);
-      const same = excalidrawElementsEqual(serializedElements, lastSyncedElementsRef.current);
-      if (same) return;
 
       const previousIds = lastPublishedIdsRef.current;
       lastSyncedElementsRef.current = serializedElements;
       lastPublishedIdsRef.current = serializedElements
         .map((element) => element.id)
         .filter((id): id is string => typeof id === 'string');
+      publishedVersionsRef.current = nextVersions;
 
       // Excalidraw fires onChange for every pointer sample, so this runs tens of
       // times per second while drawing. Handing the whole scene to React state
@@ -309,9 +341,24 @@ export default function ExcalidrawWrapper({
 
       if (yDoc && yElementsArray) {
         try {
-          replaceSharedElements(yDoc, yElementsArray, serializedElements, 'local', {
-            previousIds,
-          });
+          if (removed) {
+            // An element disappeared, so the stale sweep has to run and needs
+            // the whole scene to know what survived.
+            replaceSharedElements(yDoc, yElementsArray, serializedElements, 'local', {
+              previousIds,
+            });
+          } else {
+            // Only what actually moved. While drawing that is a single element,
+            // so the Yjs walk stops scaling with the size of the board.
+            const changedElements = serializedElements.filter(
+              (element) => typeof element.id === 'string' && changedIds.has(element.id),
+            );
+            if (changedElements.length > 0) {
+              replaceSharedElements(yDoc, yElementsArray, changedElements, 'local', {
+                deleteMissing: false,
+              });
+            }
+          }
         } catch {
           // HTTP persist already ran; a Yjs write must not roll that back.
         }

@@ -95,6 +95,12 @@ function valuesEqual(left: unknown, right: unknown): boolean {
 type ReplaceSharedOptions = {
   /** When set, only these ids may be deleted if they are missing from `nextElements`. */
   previousIds?: readonly string[];
+  /**
+   * Set false when `nextElements` is only the elements that changed rather than
+   * the whole scene. Without it the stale sweep below would treat every element
+   * the caller did not resend as deleted and wipe the board.
+   */
+  deleteMissing?: boolean;
 };
 
 /**
@@ -148,6 +154,8 @@ export function replaceSharedElements(
         }
       }
     }
+
+    if (options?.deleteMissing === false) return;
 
     const removable = options?.previousIds ? new Set(options.previousIds) : null;
     const staleIndexes: number[] = [];
