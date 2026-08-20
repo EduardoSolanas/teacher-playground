@@ -21,6 +21,7 @@ test.describe('raise hand', () => {
     await guestPage.getByTestId('whiteboard-raise-hand').click();
 
     await expandPresenceIfCollapsed(hostPage);
+    await expect(hostPage.getByTestId('whiteboard-raised-hand-cue')).toBeVisible({ timeout: 15000 });
     await expect(hostPage.locator('[data-testid^="whiteboard-user-hand-"]')).toContainText(
       /Hand raised/i,
       { timeout: 15000 },

@@ -13,6 +13,7 @@ import LoadingScreen from '@/components/whiteboard/LoadingScreen';
 import WaitingRoom from '@/components/whiteboard/WaitingRoom';
 import { isGuestHostname } from '@/lib/guest/guestHost';
 import PresencePanel from '@/components/whiteboard/PresencePanel';
+import RaisedHandCue from '@/components/whiteboard/RaisedHandCue';
 import { shouldCollapsePresenceForViewport } from '@/lib/whiteboard/presenceViewport';
 import { shouldOverlayConnectingScreen } from '@/lib/whiteboard/connectingOverlay';
 import RemoteCursorOverlay from '@/components/whiteboard/RemoteCursorOverlay';
@@ -321,6 +322,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         {elements.length === 0 && activeTool === 'select' && <EmptyState />}
       </div>
       <RemoteCursorOverlay cursors={cursors} users={users} />
+      <RaisedHandCue users={users} localPeerId={localPeerId} isLocalHost={isLocalHost} />
       <PresencePanel
         users={users}
         waitingPeers={waitingPeers}

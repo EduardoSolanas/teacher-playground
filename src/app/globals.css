@@ -36,6 +36,33 @@ textarea {
   }
 }
 
+@keyframes raised-hand-phase-out {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.94);
+  }
+  14% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  58% {
+    opacity: 0.92;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-22px) scale(1.03);
+  }
+}
+
+.raised-hand-cue {
+  animation: raised-hand-phase-out 2.8s ease-out forwards;
+}
+
+.raised-hand-cue-icon {
+  filter: drop-shadow(0 0 18px rgba(253, 230, 138, 0.55));
+}
+
 :where(a, button, input, textarea, select):focus-visible {
   outline: 2px solid #6366f1;
   outline-offset: 2px;

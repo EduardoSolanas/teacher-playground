@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { WhiteboardUser } from '@/types/whiteboard';
+import { RaisedHandIcon } from './RaisedHandCue';
 
 function accountNameDisc(accountId: string | null | undefined): string | null {
   if (!accountId) return null;
@@ -288,6 +289,11 @@ export default function PresencePanel({
           <div className="absolute -top-1 -right-1 h-3 w-3 rounded-full bg-amber-500" />
         </div>
       )}
+      {collapsed && users.some((user) => user.handRaised && !user.isWaiting) && (
+        <div className="flex justify-center py-1" aria-hidden="true">
+          <RaisedHandIcon className="h-5 w-5" tone="ink" />
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto p-2">
         {allUsers.length === 0 ? (
@@ -362,8 +368,9 @@ export default function PresencePanel({
                     {!isWaiting && user.handRaised && (
                       <span
                         data-testid={`whiteboard-user-hand-${user.peerId}`}
-                        className="text-[10px] font-semibold text-amber-600"
+                        className="mt-0.5 flex items-center gap-1 text-[10px] font-semibold text-amber-600"
                       >
+                        <RaisedHandIcon className="h-3.5 w-3.5" tone="ink" />
                         Hand raised
                       </span>
                     )}
