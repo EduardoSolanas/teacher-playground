@@ -37,10 +37,25 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const API = 'https://api.cloudflare.com/client/v4';
 
+/**
+ * Every `KEY = "value"` pair in a wrangler.toml, as a map.
+ *
+ * Deliberately one hardcoded regex rather than a pattern built per key: a
+ * RegExp assembled from a variable trips semgrep's detect-non-literal-regexp
+ * (ReDoS) rule, and there is no reason to construct one here.
+ */
+function tomlStringVars(toml) {
+  const pair = /^[^\S\r\n]*([A-Za-z_][A-Za-z0-9_]*)[^\S\r\n]*=[^\S\r\n]*"([^"]*)"[^\S\r\n]*$/gm;
+  const vars = new Map();
+  for (const match of toml.matchAll(pair)) vars.set(match[1], match[2]);
+  return vars;
+}
+
 /** wrangler.toml is the single source of truth for both hostnames. */
 function hostnamesFromWrangler() {
   const toml = readFileSync(join(root, 'wrangler.toml'), 'utf8');
-  const read = (key) => toml.match(new RegExp(`^\\s*${key}\\s*=\\s*"([^"]+)"`, 'm'))?.[1] ?? null;
+  const vars = tomlStringVars(toml);
+  const read = (key) => vars.get(key) || null;
   const teacher = read('TEACHER_HOSTNAME');
   const guest = read('GUEST_HOSTNAME');
   if (!teacher || !guest) {
