@@ -388,8 +388,12 @@ export default function PresencePanel({
   }
 
   const localUser = activeUsers.find((user) => user.peerId === localPeerId);
+  // Raise-hand is a student mechanic: the host moderates and is never in the
+  // queue to speak, so no control is rendered for them.
   const canRaiseHand = Boolean(
-    onRaiseHand && activeUsers.some((user) => user.peerId === localPeerId && !user.isWaiting),
+    onRaiseHand &&
+    !isLocalHost &&
+    activeUsers.some((user) => user.peerId === localPeerId && !user.isWaiting),
   );
 
   return (

@@ -362,4 +362,25 @@ describe('PresencePanel raise hand', () => {
 
     expect(screen.queryByTestId('whiteboard-raise-hand')).toBeNull();
   });
+  it('does not show a raise control for the host', () => {
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-local', userName: 'Me', isHost: true, handRaised: false }),
+        ]}
+        waitingPeers={[]}
+        localPeerId="peer-local"
+        isLocalHost={true}
+        collapsed={false}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+        onRaiseHand={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId('whiteboard-raise-hand')).toBeNull();
+  });
 });
