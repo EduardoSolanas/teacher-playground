@@ -45,7 +45,7 @@ async function expectNotWaiting(page: Page) {
 
 async function getFirstWaitingPeerId(hostPage: Page) {
   await expandPresenceIfCollapsed(hostPage);
-  const waitingUser = hostPage.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: 'Waiting' }).first();
+  const waitingUser = hostPage.locator('[data-testid="whiteboard-waiting-section"] [data-testid^="whiteboard-user-"]').first();
   await expect(waitingUser).toBeVisible({ timeout: 15000 });
   const testId = await waitingUser.getAttribute('data-testid');
   const peerId = testId?.replace('whiteboard-user-', '');
@@ -55,18 +55,18 @@ async function getFirstWaitingPeerId(hostPage: Page) {
 
 async function openFirstWaitingPeerMenu(hostPage: Page) {
   await expandPresenceIfCollapsed(hostPage);
-  const waitingUser = hostPage.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: 'Waiting' }).first();
+  const waitingUser = hostPage.locator('[data-testid="whiteboard-waiting-section"] [data-testid^="whiteboard-user-"]').first();
   await expect(waitingUser).toBeVisible({ timeout: 15000 });
   const testId = await waitingUser.getAttribute('data-testid');
   const peerId = testId?.replace('whiteboard-user-', '');
   expect(peerId).toBeTruthy();
-  await waitingUser.getByRole('button', { name: '...' }).click();
+  await waitingUser.getByTestId(`whiteboard-user-options-${peerId}`).click();
   return peerId!;
 }
 
 async function approveFirstWaitingPeer(hostPage: Page) {
   await expandPresenceIfCollapsed(hostPage);
-  const waitingUser = hostPage.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: 'Waiting' }).first();
+  const waitingUser = hostPage.locator('[data-testid="whiteboard-waiting-section"] [data-testid^="whiteboard-user-"]').first();
   await expect(waitingUser).toBeVisible({ timeout: 15000 });
   const testId = await waitingUser.getAttribute('data-testid');
   const peerId = testId?.replace('whiteboard-user-', '');
@@ -324,7 +324,7 @@ test.describe('Waiting Room', () => {
     await joinExistingRoom(page2, roomId, 'Peer');
     await expect(page2.getByTestId('whiteboard-canvas-area')).toHaveCount(0);
     await expect(page2.getByRole('heading', { name: /Room is Full/ })).toHaveCount(0);
-    await expect(page1.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: 'Waiting' })).toHaveCount(0);
+    await expect(page1.getByTestId('whiteboard-waiting-section')).toHaveCount(0);
 
     await context1.close();
     await context2.close();
@@ -350,7 +350,7 @@ test.describe('Waiting Room', () => {
     await joinExistingRoom(waitingPeerPage, roomId, 'WaitingPeer');
     await expectWaiting(waitingPeerPage);
 
-    await expect(hostPage.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: 'Waiting' }).first()).toBeVisible({
+    await expect(hostPage.locator('[data-testid="whiteboard-waiting-section"] [data-testid^="whiteboard-user-"]').first()).toBeVisible({
       timeout: 15000,
     });
     await expect(approvedPeerPage.locator('[data-testid^="whiteboard-approve-"]')).toHaveCount(0);
@@ -371,15 +371,16 @@ test.describe('Waiting Room', () => {
     const page = await context.newPage();
 
     await createRoomWithMaxUsers(page, 'CollapseHost', 2);
-    await expect(page.getByText(/users online/)).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId('whiteboard-presence-panel')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId('whiteboard-presence-toggle')).toHaveAttribute('aria-expanded', 'true');
 
     await page.getByTestId('whiteboard-presence-toggle').click();
-    await expect(page.getByText(/users online/)).toHaveCount(0);
-    await expect(page.getByTestId('whiteboard-presence-toggle')).toHaveText('>');
+    await expect(page.getByTestId('whiteboard-presence-panel')).toHaveCount(0);
+    await expect(page.getByTestId('whiteboard-presence-toggle')).toHaveAttribute('aria-expanded', 'false');
 
     await page.getByTestId('whiteboard-presence-toggle').click();
-    await expect(page.getByText(/users online/)).toBeVisible({ timeout: 10000 });
-    await expect(page.getByTestId('whiteboard-presence-toggle')).toHaveText('<');
+    await expect(page.getByTestId('whiteboard-presence-panel')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId('whiteboard-presence-toggle')).toHaveAttribute('aria-expanded', 'true');
 
     await context.close();
   });

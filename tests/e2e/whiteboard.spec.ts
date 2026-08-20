@@ -95,8 +95,7 @@ async function waitForSync(page: Page, expectedElements: number, timeout = 10000
 async function approveWaitingPeerIfPresent(hostPage: Page) {
   await expandPresenceIfCollapsed(hostPage);
   const waiting = hostPage
-    .locator('[data-testid^="whiteboard-user-"]')
-    .filter({ hasText: 'Waiting' })
+    .locator('[data-testid="whiteboard-waiting-section"] [data-testid^="whiteboard-user-"]')
     .first();
 
   try {
@@ -908,10 +907,10 @@ test.describe('Edge Cases', () => {
       await waitForProviderConnected(bobPage);
       await page.waitForTimeout(3000);
 
-      // Both should show "2/X users online". The count lives in the panel
+      // Both should show "2 of X" participants. The count lives in the panel
       // header, not on the collapse toggle.
-      await expect(page.getByTestId('whiteboard-presence-count')).toContainText('2/');
-      await expect(bobPage.getByTestId('whiteboard-presence-count')).toContainText('2/');
+      await expect(page.getByTestId('whiteboard-presence-count')).toContainText('2 of');
+      await expect(bobPage.getByTestId('whiteboard-presence-count')).toContainText('2 of');
     } finally {
       await bobContext.close();
     }

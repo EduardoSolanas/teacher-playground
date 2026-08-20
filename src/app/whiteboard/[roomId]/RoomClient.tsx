@@ -304,7 +304,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         onOpenHelp={() => setShowShortcutsHelp(true)}
         showHostTools={isLocalHost}
       />
-      <div className="absolute inset-0 overflow-hidden bg-slate-50 sm:inset-auto sm:left-14 sm:top-12 sm:h-[calc(100vh-48px)] sm:w-[calc(100vw-276px)] sm:rounded-tl-2xl" data-testid="whiteboard-canvas-area">
+      <div className={`absolute inset-0 overflow-hidden bg-slate-50 sm:inset-auto sm:left-14 sm:top-12 sm:h-[calc(100vh-48px)] sm:rounded-tl-2xl ${presenceCollapsed ? 'sm:w-[calc(100vw-68px)]' : 'sm:w-[calc(100vw-276px)]'}`} data-testid="whiteboard-canvas-area">
         <ExcalidrawWrapper
           roomId={roomId}
           userName={userName}
@@ -335,6 +335,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         onKick={kickPeer}
         onSuspend={sendToWaitingRoom}
         onRaiseHand={setHandRaised}
+        maxUsers={maxUsers}
         mutedPeerIds={new Set(
           av.participants.filter((p) => p.micMuted).map((p) => (p.identity === '__local__' ? localPeerId : p.identity)),
         )}
