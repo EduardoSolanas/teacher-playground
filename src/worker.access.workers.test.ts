@@ -6,12 +6,17 @@ import { MAX_BODY_BYTES } from './lib/worker/requestGuard';
 import { DESTRUCTIVE_FRESH_MS } from './lib/identity/sessionStore';
 import { accessFetch, authenticatedFetch, bootstrapLocalSession, localAccessToken } from './test/workerAuth';
 import { resetAuthEventWriterForTests, setAuthEventWriterForTests } from './worker';
+import {
+  ACCESS_REQUEST_RATE_MAX,
+  PRESENCE_POST_RATE_MAX,
+  ROOM_CREATE_RATE_MAX,
+  SCENE_WRITE_RATE_MAX,
+} from './lib/worker/rateLimits';
 
 const BASE = 'https://example.com';
-const ROOM_CREATE_RATE_MAX = 10;
-const ACCESS_REQUEST_RATE_MAX = 20;
-const PRESENCE_POST_RATE_MAX = 30;
-const SCENE_WRITE_RATE_MAX = 120;
+// Rate caps are imported from the Worker, never re-declared here: a local copy
+// silently drifted from production and made the presence limit test assert a
+// threshold the Worker no longer used.
 
 describe('real local Access boundary through workerd', () => {
   afterEach(() => {
@@ -125,13 +130,29 @@ describe('real local Access boundary through workerd', () => {
     expect(setCookie).toContain('Max-Age=0');
   });
 
-  it('POST /auth/session/logout also clears CF_Authorization', async () => {
+  // Ending the app session must NOT end the Access session. Full sign-out is
+  // completeSignOut(), which calls this and then navigates to
+  // /auth/access/logout. Clearing the Access cookie here as well left a user
+  // unable to re-bootstrap a local session while their Access session was
+  // still valid (tests/e2e/auth-security.spec.ts "bootstrap, use, logout, and
+  // re-bootstrap all work in sequence").
+  it('POST /auth/session/logout leaves CF_Authorization for re-bootstrap', async () => {
     const session = await bootstrapLocalSession('logout-cf-cookie');
     const response = await authenticatedFetch('/auth/session/logout', session, {
       method: 'POST',
       headers: { Origin: 'https://example.com' },
     });
     expect(response.status).toBe(204);
+    const setCookie = response.headers.get('set-cookie') ?? '';
+    expect(setCookie).not.toContain('CF_Authorization=');
+  });
+
+  it('GET /auth/access/logout is what clears CF_Authorization', async () => {
+    const response = await SELF.fetch(
+      `${BASE}/auth/access/logout?redirect=${encodeURIComponent('/')}`,
+      { redirect: 'manual', headers: { Cookie: 'CF_Authorization=fake-token' } },
+    );
+    expect(response.status).toBe(302);
     const setCookie = response.headers.get('set-cookie') ?? '';
     expect(setCookie).toContain('CF_Authorization=');
     expect(setCookie).toContain('Max-Age=0');
