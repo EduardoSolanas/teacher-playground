@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 
 import BackToRoomsLink from './BackToRoomsLink';
@@ -19,5 +19,33 @@ describe('BackToRoomsLink', () => {
 
     fireEvent.click(screen.getByTestId('whiteboard-back-to-rooms'));
     expect(onNavigate).toHaveBeenCalledTimes(1);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('is hidden on the guest hostname: students have no room list', () => {
+    vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', window.location.hostname);
+
+    render(<BackToRoomsLink />);
+
+    expect(screen.queryByTestId('whiteboard-back-to-rooms')).toBeNull();
+  });
+
+  it('is shown when the guest hostname is unset', () => {
+    vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', '');
+
+    render(<BackToRoomsLink />);
+
+    expect(screen.getByTestId('whiteboard-back-to-rooms')).toBeTruthy();
+  });
+
+  it('is shown on a hostname that is not the guest hostname', () => {
+    vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', 'join-playground.example.com');
+
+    render(<BackToRoomsLink />);
+
+    expect(screen.getByTestId('whiteboard-back-to-rooms')).toBeTruthy();
   });
 });

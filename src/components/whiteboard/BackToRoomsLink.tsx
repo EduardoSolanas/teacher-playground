@@ -1,12 +1,29 @@
 'use client';
 
 import Link from 'next/link';
+import { useEffect, useState } from 'react';
+import { isGuestHostname } from '@/lib/guest/guestHost';
 
 export default function BackToRoomsLink({
   onNavigate,
 }: {
   onNavigate?: () => void;
 }) {
+  // "Back to rooms" is a teacher affordance: it goes to /whiteboard, which is
+  // teacher-host-only and 404s on the guest hostname. Guests have no room list
+  // and must not be offered one.
+  //
+  // Starts hidden and reveals after mount rather than the reverse. The check
+  // needs `window`, so it cannot run during the static export; showing the link
+  // first would flash a dead control at a student, which matters more than the
+  // imperceptible delay it costs a teacher.
+  const [showLink, setShowLink] = useState(false);
+  useEffect(() => {
+    setShowLink(!isGuestHostname(window.location.hostname));
+  }, []);
+
+  if (!showLink) return null;
+
   return (
     <Link
       href="/whiteboard"
