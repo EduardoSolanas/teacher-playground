@@ -67,6 +67,7 @@ export default function WhiteboardRoute() {
   const [creationTimes, setCreationTimes] = useState<number[]>([]);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [rooms, setRooms] = useState<TeacherRoomSummary[]>([]);
   const [roomsLoading, setRoomsLoading] = useState(true);
   const [hostDisplayName, setHostDisplayName] = useState<string | null>(null);
@@ -193,10 +194,23 @@ export default function WhiteboardRoute() {
 
   const handleDelete = useCallback(
     async (roomId: string) => {
-      const response = await ajaxFetch(`/api/whiteboard/room/${roomId}`, {
-        method: 'DELETE',
-      });
-      if (!response.ok) return;
+      setDeleteError(null);
+      const remove = () => ajaxFetch(`/api/whiteboard/room/${roomId}`, { method: 'DELETE' });
+
+      let response = await remove();
+      // Deleting a room is a destructive action, so the Worker requires a
+      // session created or confirmed in the last five minutes and answers 403
+      // otherwise. Re-confirm and retry once, the same way account erase does —
+      // without this the button silently did nothing for any teacher who had
+      // been signed in longer than five minutes.
+      if (response.status === 403) {
+        const confirmed = await ajaxFetch('/auth/session/confirm', { method: 'POST' });
+        if (confirmed.ok) response = await remove();
+      }
+      if (!response.ok) {
+        setDeleteError('Could not delete that room. Try again.');
+        return;
+      }
       await refreshRooms();
     },
     [refreshRooms],
@@ -243,6 +257,15 @@ export default function WhiteboardRoute() {
               onRename={handleRename}
               onDelete={handleDelete}
             />
+            {deleteError && (
+              <p
+                role="alert"
+                data-testid="whiteboard-room-delete-error"
+                className="mt-3 text-[13px] font-medium text-red-600"
+              >
+                {deleteError}
+              </p>
+            )}
           </div>
 
           <div className="mt-6 rounded-2xl bg-slate-50 p-4 ring-1 ring-slate-200/70 sm:p-5">
