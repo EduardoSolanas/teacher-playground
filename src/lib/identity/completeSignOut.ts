@@ -1,3 +1,5 @@
+import { accessLogoutUrl } from '@/lib/access/accessLogoutUrl';
+
 export const AFTER_LOGOUT_PATH = '/';
 
 export async function completeSignOut(options: {
@@ -9,5 +11,5 @@ export async function completeSignOut(options: {
   } catch {
     // Leave the whiteboard even if session revoke fails.
   }
-  options.navigate(AFTER_LOGOUT_PATH);
+  options.navigate(accessLogoutUrl(AFTER_LOGOUT_PATH));
 }

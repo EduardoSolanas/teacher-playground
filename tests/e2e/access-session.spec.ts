@@ -219,7 +219,7 @@ test.describe('local Access edge and session bootstrap', () => {
     }
   });
 
-  test('Sign out returns to the marketing landing, not the Access team logout URL', async ({ page }) => {
+  test('Sign out clears Access and app cookies, then Sign in does not auto-enter', async ({ page }) => {
     await page.goto(appUrl('/whiteboard'));
     await expectSessionCookie(page);
     await expect(page.locator('h1')).toContainText('Collaborative Whiteboard');
@@ -230,5 +230,12 @@ test.describe('local Access edge and session bootstrap', () => {
     await expect(page).toHaveURL(appUrl('/'));
     expect(page.url()).not.toContain('cloudflareaccess.com');
     await expect(page.locator('h1')).toContainText('board remembers');
+
+    const cookies = await page.context().cookies();
+    expect(cookies.find((cookie) => cookie.name === 'CF_Authorization')).toBeUndefined();
+    expect(cookies.find((cookie) => cookie.name === '__Host-teacher-session')).toBeUndefined();
+
+    await page.goto(appUrl('/whiteboard'));
+    expect((await page.context().cookies()).find((cookie) => cookie.name === '__Host-teacher-session')).toBeUndefined();
   });
 });

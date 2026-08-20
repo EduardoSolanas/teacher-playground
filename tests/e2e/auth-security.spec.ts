@@ -170,8 +170,7 @@ test.describe('session lifecycle', () => {
     const afterLogout = await page.evaluate(async () => (await fetch('/auth/session/current')).status);
     expect(afterLogout).toBe(401);
 
-    // CF_Authorization (the Access edge cookie) is untouched by logout, so a
-    // fresh navigation re-bootstraps a brand-new local session.
+    // App logout alone leaves CF_Authorization, so a fresh navigation can mint a new local session.
     await page.goto(appUrl('/whiteboard'));
     await expectSessionCookie(page);
     const secondToken = sessionCookieOf(await page.context().cookies())?.value;
@@ -180,6 +179,20 @@ test.describe('session lifecycle', () => {
 
     const afterRebootstrap = await page.evaluate(async () => (await fetch('/auth/session/current')).status);
     expect(afterRebootstrap).toBe(200);
+  });
+
+  test('profile Sign out clears CF_Authorization so the next visit does not auto-enter', async ({ page }) => {
+    await page.goto(appUrl('/whiteboard'));
+    await expectSessionCookie(page);
+
+    await page.getByTestId('whiteboard-profile-btn').click();
+    await page.getByTestId('whiteboard-logout-btn').click();
+    await expect(page).toHaveURL(appUrl('/'));
+
+    expect((await page.context().cookies()).find((cookie) => cookie.name === 'CF_Authorization')).toBeUndefined();
+
+    await page.goto(appUrl('/whiteboard'));
+    expect((await page.context().cookies()).find((cookie) => cookie.name === '__Host-teacher-session')).toBeUndefined();
   });
 
   test('concurrent sessions for two different accounts stay isolated', async ({ browser }) => {

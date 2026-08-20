@@ -5,6 +5,12 @@ import {
   verifyAccessRequest,
   type VerifiedAccessPrincipal,
 } from './lib/access/accessVerifier';
+import {
+  ACCESS_LOGOUT_PATH,
+  CF_ACCESS_LOGOUT_PATH,
+  clearCfAuthorizationSetCookie,
+  safeRedirectPath,
+} from './lib/access/accessLogoutUrl';
 import { IdentityDO, getIdentityObject } from './do/IdentityDO';
 import { createRateLimiter } from './lib/http/rateLimit';
 import {
@@ -454,7 +460,9 @@ async function sessionLogout(env: Env, request: Request): Promise<Response> {
     method: 'POST',
     headers: { cookie: request.headers.get('cookie') ?? '' },
   }));
-  return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
+  const headers = new Headers(result.headers);
+  headers.append('Set-Cookie', clearCfAuthorizationSetCookie());
+  return withSecurityHeaders(new Response(result.body, { status: result.status, headers }));
 }
 
 async function accountProfile(
@@ -728,6 +736,21 @@ function hostNotFound(): Response {
   return withSecurityHeaders(new Response(null, { status: 404 }));
 }
 
+function accessLogoutResponse(url: URL, env: Env): Response {
+  const target = safeRedirectPath(url.searchParams.get('redirect'));
+  const headers = new Headers({ 'Cache-Control': 'no-store' });
+  headers.append('Set-Cookie', clearCfAuthorizationSetCookie());
+  if (env.ENVIRONMENT === 'local-test') {
+    headers.set('Location', target);
+  } else {
+    headers.set(
+      'Location',
+      `${CF_ACCESS_LOGOUT_PATH}?redirect=${encodeURIComponent(target)}`,
+    );
+  }
+  return withSecurityHeaders(new Response(null, { status: 302, headers }));
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -739,6 +762,18 @@ export default {
       ? 'teacher'
       : routeHostKind(url.hostname, env.TEACHER_HOSTNAME, env.GUEST_HOSTNAME);
     if (hostKind === 'unknown') return hostNotFound();
+    if (
+      hostKind === 'teacher'
+      && (url.pathname === ACCESS_LOGOUT_PATH || url.pathname === CF_ACCESS_LOGOUT_PATH)
+    ) {
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        return withSecurityHeaders(Response.json(
+          { error: 'Method not allowed' },
+          { status: 405, headers: { Allow: 'GET, HEAD' } },
+        ));
+      }
+      return accessLogoutResponse(url, env);
+    }
     if (hostKind === 'guest' && url.pathname === AUTH_GUEST && request.method !== 'POST') {
       return withSecurityHeaders(Response.json(
         { error: 'Method not allowed' },

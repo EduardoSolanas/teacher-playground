@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { ajaxFetch, SESSION_EXPIRED_EVENT } from '@/lib/http/ajaxFetch';
+import { accessLogoutUrl } from '@/lib/access/accessLogoutUrl';
 import { isGuestHostname } from '@/lib/guest/guestHost';
 
 const ATTEMPT_TIMEOUT_MS = 15_000;
@@ -117,7 +118,7 @@ export function AccessSessionBootstrap({ children }: { children: React.ReactNode
           Retry
         </button>
         <a
-          href="/"
+          href={accessLogoutUrl('/')}
           style={{ color: '#1e4d3a', fontSize: 14 }}
         >
           Sign out and try again

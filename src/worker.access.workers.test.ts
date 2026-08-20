@@ -113,6 +113,30 @@ describe('real local Access boundary through workerd', () => {
     expect(logout.headers.get('set-cookie')).toContain('Max-Age=0');
   });
 
+  it('GET /auth/access/logout clears CF_Authorization and redirects home in local-test', async () => {
+    const response = await SELF.fetch(`${BASE}/auth/access/logout?redirect=${encodeURIComponent('/')}`, {
+      redirect: 'manual',
+      headers: { Cookie: 'CF_Authorization=fake-token' },
+    });
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe('/');
+    const setCookie = response.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain('CF_Authorization=');
+    expect(setCookie).toContain('Max-Age=0');
+  });
+
+  it('POST /auth/session/logout also clears CF_Authorization', async () => {
+    const session = await bootstrapLocalSession('logout-cf-cookie');
+    const response = await authenticatedFetch('/auth/session/logout', session, {
+      method: 'POST',
+      headers: { Origin: 'https://example.com' },
+    });
+    expect(response.status).toBe(204);
+    const setCookie = response.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain('CF_Authorization=');
+    expect(setCookie).toContain('Max-Age=0');
+  });
+
   it('exports only the caller account after Access and a local session', async () => {
     const session = await bootstrapLocalSession('export-own-account');
     const other = await bootstrapLocalSession('export-other-account');
