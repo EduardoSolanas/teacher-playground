@@ -307,7 +307,7 @@ function RoomContent({ roomId }: { roomId: string }) {
 
   return (
     <div
-      className="w-screen h-screen overflow-hidden relative bg-slate-50"
+      className="w-screen h-screen overflow-hidden relative bg-[var(--paper)]"
       onPointerMove={(event) => setCursor(event.clientX, event.clientY)}
     >
       <BackToRoomsLink onNavigate={handleBackToRooms} />

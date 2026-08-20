@@ -15,8 +15,27 @@ waiting or raising hands.
 
 ## 2. Color
 
-Neutrals — slate family only, tinted cool:
-- Canvas background `slate-50` (`#f8fafc`), ink `slate-900` (`#0f172a`)
+### Brand palette (shared base — `public/brand.css`)
+
+Every surface (marketing pages AND app pages) inherits these tokens from
+`public/brand.css`; consume from Tailwind as `bg-[var(--paper)]` etc:
+- paper `#faf7f0` page background (warm paper) · paper2 `#f3eee2` recessed strips
+- ink `#26241f` primary text · ink2 `#4b4740` secondary · mut `#7a756b` muted
+- rule `#c9d6ea` blue rules · line `#e6e0d2` hairlines on paper
+- blue `#2a5db0` primary actions/links · blue-d `#1e4685` hover
+- red `#c0392b` accents: topline, emphasis, destructive
+
+Shared component classes live in the same file: `.btn` (blue, 2px radius,
+hard `2.5px 2.5px 0` ink shadow, `:disabled` greyed), `.brand-topline` (4px red
+bar), `.serif` (Georgia headings), `.wrap`/`.narrow`, `.note-block`/`.draft`
+cards. Cards are white with a `var(--line)` hairline, 2–3px radius and a hard
+offset shadow (`5px 6px 0 rgba(38,36,31,.06)`) — never soft blurred shadows.
+Serif (Georgia, weight 400) is the heading voice on every page.
+
+### In-room overlay system (whiteboard chrome)
+
+Neutrals — slate family, tinted cool:
+- Canvas background: `var(--paper)`; ink `slate-900` (`#0f172a`)
 - Light surfaces: `white/95` + `backdrop-blur` (glass) over the canvas,
   borders `slate-200`, secondary text `slate-500`, muted `slate-400`
 - Dark glass (floating chrome: tool sidebar, bottom bar, back link):
@@ -32,9 +51,12 @@ Accents — one job each, never mixed:
 - Sky (`sky` family, legacy self-highlight `#e8f4fd`, default user color
   `#3498db`): the local user's own row/cursor only
 - Indigo (`#6366f1`): the global focus-visible ring, nothing else
+- Brand blue (`var(--blue)`): primary actions inside app chrome (create room,
+  save, enable guest join) — same blue as the marketing pages
 
-No gradients, no purple/blue washes, saturation kept low. Shadows are always
-slate-tinted (`shadow-slate-900/10`–`/30`), never pure black.
+No gradients, no purple/blue washes, saturation kept low. Shadows on paper
+surfaces are hard offsets tinted ink (`rgba(38,36,31,.06–.08)`); shadows inside
+the room overlay are slate-tinted (`shadow-slate-900/10`–`/30`).
 
 ## 3. Typography
 

@@ -12,8 +12,8 @@ body {
 }
 
 body {
-  background: #f8fafc;
-  color: #0f172a;
+  /* Brand colours live in public/brand.css (imported after this file) so the
+     marketing pages and the app share one palette. */
 }
 
 button,

@@ -53,7 +53,7 @@ function parseGuestSettings(payload: unknown): {
 }
 
 const ICON_BUTTON =
-  'grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-100 hover:text-slate-700';
+  'grid h-11 w-11 shrink-0 place-items-center rounded-[2px] border border-[var(--line)] bg-white text-[var(--ink2)] transition-colors hover:border-[var(--mut)] hover:bg-[var(--paper2)] hover:text-[var(--ink)]';
 
 export default function TeacherRoomList({
   rooms,
@@ -136,24 +136,23 @@ export default function TeacherRoomList({
 
   return (
     <section className="w-full text-left">
-      <h2 className="text-base font-bold text-slate-900 sm:text-lg">Your rooms</h2>
-
+      <h2 className="serif text-xl font-normal text-[var(--ink)] sm:text-2xl">Your rooms</h2>
       {loading ? (
         <p
           data-testid="whiteboard-room-list-loading"
-          className="mt-3 text-sm text-slate-500"
+          className="mt-3 text-sm text-[var(--mut)]"
         >
           Loading rooms…
         </p>
       ) : rooms.length === 0 ? (
         <p
           data-testid="whiteboard-room-list-empty"
-          className="mt-3 rounded-xl border border-dashed border-slate-200 px-4 py-5 text-center text-sm text-slate-400"
+          className="mt-3 rounded-[2px] border border-dashed border-[var(--line)] px-4 py-5 text-center text-sm text-[var(--mut)]"
         >
           No rooms yet. Create one below.
         </p>
       ) : (
-        <ul data-testid="whiteboard-room-list" className="mt-3 flex list-none flex-col gap-2 p-0">
+        <ul data-testid="whiteboard-room-list" className="mt-3 flex list-none flex-col p-0 border-t border-[var(--line)]">
           {rooms.map((room) => {
             const label = teacherRoomTitle(room);
             const editing = editingId === room.roomId;
@@ -166,7 +165,7 @@ export default function TeacherRoomList({
             return (
               <li
                 key={room.roomId}
-                className="relative rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200/70 transition-colors hover:bg-slate-100/80"
+                className="relative border-b border-[var(--line)] px-1 py-2 transition-colors hover:bg-[var(--paper2)]/60"
               >
                 {editing ? (
                   <div className="flex flex-col gap-2 p-1 sm:flex-row sm:items-center">
@@ -182,7 +181,7 @@ export default function TeacherRoomList({
                         if (e.key === 'Escape') setEditingId(null);
                       }}
                       autoFocus
-                      className="h-11 w-full min-w-0 rounded-xl border-2 border-indigo-500 bg-white px-3 text-base text-slate-900 outline-none sm:flex-1"
+                      className="h-11 w-full min-w-0 rounded-[2px] border border-[var(--blue)] bg-white px-3 text-base text-[var(--ink)] outline-none sm:flex-1"
                     />
                     <div className="flex gap-2">
                       <button
@@ -192,14 +191,14 @@ export default function TeacherRoomList({
                           onRename?.(room.roomId, draftName);
                           setEditingId(null);
                         }}
-                        className="h-11 flex-1 rounded-xl bg-indigo-500 px-4 text-sm font-semibold text-white transition-colors hover:bg-indigo-600 sm:flex-none"
+                        className="btn h-11 flex-1 rounded-[2px] px-4 py-0 text-sm sm:flex-none"
                       >
                         Save
                       </button>
                       <button
                         type="button"
                         onClick={() => setEditingId(null)}
-                        className="h-11 flex-1 rounded-xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100 sm:flex-none"
+                        className="h-11 flex-1 rounded-[2px] border border-[var(--ink)] bg-white px-4 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper2)] sm:flex-none"
                       >
                         Cancel
                       </button>
@@ -208,7 +207,7 @@ export default function TeacherRoomList({
                 ) : guestPanel ? (
                   <div className="flex flex-col gap-2 p-1">
                     <div className="flex items-center gap-2">
-                      <p className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-900">
+                      <p className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--ink)]">
                         {label}
                       </p>
                       <button
@@ -217,7 +216,7 @@ export default function TeacherRoomList({
                           setGuestPanelId(null);
                           setGuestSettings(null);
                         }}
-                        className="h-11 rounded-xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100"
+                        className="h-11 rounded-[2px] border border-[var(--ink)] bg-white px-4 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper2)]"
                       >
                         Close
                       </button>
@@ -238,7 +237,7 @@ export default function TeacherRoomList({
                   </div>
                 ) : confirmingDelete ? (
                   <div className="flex flex-col gap-2 p-1 sm:flex-row sm:items-center">
-                    <p className="min-w-0 flex-1 truncate text-sm font-medium text-slate-700">
+                    <p className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--ink2)]">
                       Delete “{label}”?
                     </p>
                     <div className="flex gap-2">
@@ -249,14 +248,14 @@ export default function TeacherRoomList({
                           setConfirmDeleteId(null);
                           onDelete?.(room.roomId);
                         }}
-                        className="h-11 flex-1 rounded-xl bg-red-600 px-4 text-sm font-semibold text-white transition-colors hover:bg-red-700 sm:flex-none"
+                        className="btn h-11 flex-1 rounded-[2px] px-4 py-0 text-sm sm:flex-none"
                       >
                         Delete
                       </button>
                       <button
                         type="button"
                         onClick={() => setConfirmDeleteId(null)}
-                        className="h-11 flex-1 rounded-xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100 sm:flex-none"
+                        className="h-11 flex-1 rounded-[2px] border border-[var(--ink)] bg-white px-4 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper2)] sm:flex-none"
                       >
                         Cancel
                       </button>
@@ -272,13 +271,13 @@ export default function TeacherRoomList({
                         e.preventDefault();
                         onOpen(room.roomId);
                       }}
-                      className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 rounded-xl px-2.5 py-2 no-underline"
+                      className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 px-2.5 py-2 no-underline"
                     >
-                      <span className="truncate text-[15px] font-semibold text-slate-900">
+                      <span className="truncate text-[15px] font-semibold text-[var(--ink)]">
                         {label}
                       </span>
                       {room.createdAt && (
-                        <span className="truncate text-xs font-normal text-slate-400">
+                        <span className="truncate text-xs font-normal text-[var(--mut)]">
                           {formatDate(room.createdAt)}
                         </span>
                       )}
@@ -292,8 +291,8 @@ export default function TeacherRoomList({
                       aria-label={copied ? 'Share link copied' : 'Copy share link'}
                       className={
                         copied
-                          ? 'inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border border-green-200 bg-green-50 px-3 text-[13px] font-semibold text-green-700 transition-colors'
-                          : 'inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-[13px] font-semibold text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-100'
+                          ? 'inline-flex h-11 shrink-0 items-center gap-1.5 rounded-[2px] border border-[var(--blue)] bg-white px-3 text-[13px] font-semibold text-[var(--blue)] transition-colors'
+                          : 'inline-flex h-11 shrink-0 items-center gap-1.5 rounded-[2px] border border-[var(--line)] bg-white px-3 text-[13px] font-semibold text-[var(--ink2)] transition-colors hover:border-[var(--mut)] hover:bg-[var(--paper2)]'
                       }
                     >
                       {copied ? (
@@ -352,7 +351,7 @@ export default function TeacherRoomList({
                       {menuOpen && (
                         <div
                           role="menu"
-                          className="absolute right-0 top-full z-10 mt-1.5 min-w-40 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg shadow-slate-900/10"
+                          className="absolute right-0 top-full z-10 mt-1.5 min-w-40 overflow-hidden rounded-[2px] border border-[var(--line)] bg-white shadow-[4px_5px_0_rgba(38,36,31,0.08)]"
                         >
                           <button
                             type="button"
@@ -363,7 +362,7 @@ export default function TeacherRoomList({
                             setDraftName(room.name?.trim() ?? '');
                             setMenuOpenId(null);
                           }}
-                          className="block h-11 w-full border-none bg-transparent px-4 text-left text-sm text-slate-700 transition-colors hover:bg-slate-100"
+                          className="block h-11 w-full border-none bg-transparent px-4 text-left text-sm text-[var(--ink2)] transition-colors hover:bg-[var(--paper2)] hover:text-[var(--ink)]"
                           >
                             Rename
                           </button>
@@ -374,7 +373,7 @@ export default function TeacherRoomList({
                             onClick={() => {
                               void openGuestPanel(room.roomId);
                             }}
-                            className="block h-11 w-full border-none bg-transparent px-4 text-left text-sm text-slate-700 transition-colors hover:bg-slate-100"
+                          className="block h-11 w-full border-none bg-transparent px-4 text-left text-sm text-[var(--ink2)] transition-colors hover:bg-[var(--paper2)] hover:text-[var(--ink)]"
                           >
                             Guest access
                           </button>
@@ -387,7 +386,7 @@ export default function TeacherRoomList({
                                 setMenuOpenId(null);
                                 setConfirmDeleteId(room.roomId);
                               }}
-                              className="block h-11 w-full border-none bg-transparent px-4 text-left text-sm text-red-600 transition-colors hover:bg-red-50"
+                              className="block h-11 w-full border-none bg-transparent px-4 text-left text-sm text-[var(--red)] transition-colors hover:bg-[var(--paper2)]"
                             >
                               Delete
                             </button>
@@ -398,7 +397,7 @@ export default function TeacherRoomList({
                   </div>
                   <p
                     data-testid="guest-join-url"
-                    className="truncate px-2.5 pb-1 text-[12px] text-slate-500"
+                    className="truncate px-2.5 pb-1 font-mono text-[12px] text-[var(--mut)]"
                   >
                     {joinUrl}
                   </p>
@@ -411,7 +410,7 @@ export default function TeacherRoomList({
       )}
 
       {copyError && (
-        <p role="alert" className="mt-2 text-xs font-medium text-red-600">
+        <p role="alert" className="mt-2 text-xs font-medium text-[var(--red)]">
           Could not copy the link. Long-press the room name to copy it manually.
         </p>
       )}

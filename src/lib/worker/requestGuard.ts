@@ -102,7 +102,9 @@ export function isRouteAllowedOnHost(
       || pathname === '/logo.svg'
       || pathname.startsWith('/_next/')
       || pathname.startsWith('/fonts/')
-      || pathname.startsWith('/data/');
+      || pathname.startsWith('/data/')
+      // The shared brand stylesheet the marketing pages link.
+      || pathname === '/brand.css'
     if (!isPublicMarketingPath) return false;
     return method === 'GET' || method === 'HEAD';
   }

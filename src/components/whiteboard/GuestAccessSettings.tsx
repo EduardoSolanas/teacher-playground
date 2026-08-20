@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useEffect, useState } from 'react';
 
@@ -48,14 +48,14 @@ export default function GuestAccessSettings({
     <div className="flex flex-col gap-3 p-1" data-testid={`guest-access-settings-${roomId}`}>
       {showJoinUrl && (
         <div>
-          <p className="text-[13px] font-semibold text-slate-600">Student join link</p>
+          <p className="text-[13px] font-semibold text-[var(--ink2)]">Student join link</p>
           <p
             data-testid="guest-join-url"
-            className="mt-1 break-all rounded-xl border border-slate-200 bg-white px-3 py-2 text-[13px] text-slate-800"
+            className="mt-1 break-all rounded-[2px] border border-[var(--line)] bg-white px-3 py-2 text-[13px] text-[var(--ink)]"
           >
             {guestJoinUrl}
           </p>
-          <p className="mt-1 text-[12px] text-slate-500">
+          <p className="mt-1 text-[12px] text-[var(--mut)]">
             Share this guest-host link, not the teacher URL.
           </p>
         </div>
@@ -64,7 +64,7 @@ export default function GuestAccessSettings({
       {lockedOut && (
         <div
           data-testid="guest-lockout"
-          className="rounded-xl bg-amber-50 px-3 py-2.5 text-[13px] font-medium text-amber-900 ring-1 ring-amber-200"
+          className="rounded-[2px] bg-[var(--paper2)] px-3 py-2.5 text-[13px] font-medium text-[var(--ink)] ring-1 ring-[var(--rule)]"
           role="status"
         >
           Guest join is locked after too many PIN attempts. Rotate the PIN so the class can try again.
@@ -72,7 +72,7 @@ export default function GuestAccessSettings({
             type="button"
             data-testid="guest-rotate-pin"
             onClick={onRotate}
-            className="mt-2 block h-11 w-full rounded-xl bg-amber-700 px-4 text-sm font-semibold text-white transition-colors hover:bg-amber-800"
+            className="mt-2 block h-11 w-full rounded-[2px] bg-[var(--blue)] px-4 text-sm font-semibold text-white transition-colors hover:bg-[var(--blue-d)]"
           >
             Rotate PIN
           </button>
@@ -81,15 +81,15 @@ export default function GuestAccessSettings({
 
       {guestAccess ? (
         <div className="flex flex-col gap-2">
-          <p className="text-[13px] font-semibold text-slate-600">Class PIN</p>
+          <p className="text-[13px] font-semibold text-[var(--ink2)]">Class PIN</p>
           <p
             data-testid="guest-pin"
-            className="rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-2xl tracking-[0.35em] text-slate-900"
+            className="rounded-[2px] border border-[var(--line)] bg-white px-3 py-2 font-mono text-2xl tracking-[0.35em] text-[var(--ink)]"
           >
             {guestPin}
           </p>
           {expiryLabel && (
-            <p className="text-[12px] text-slate-500">Expires {expiryLabel}</p>
+            <p className="text-[12px] text-[var(--mut)]">Expires {expiryLabel}</p>
           )}
           <div className="flex flex-col gap-2 sm:flex-row">
             {!lockedOut && (
@@ -97,7 +97,7 @@ export default function GuestAccessSettings({
                 type="button"
                 data-testid="guest-rotate-pin"
                 onClick={onRotate}
-                className="h-11 flex-1 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-100"
+                className="h-11 flex-1 rounded-[2px] border border-[var(--line)] bg-white px-4 text-sm font-semibold text-[var(--ink)] transition-colors hover:bg-[var(--paper2)]"
               >
                 Rotate PIN
               </button>
@@ -106,7 +106,7 @@ export default function GuestAccessSettings({
               type="button"
               data-testid="guest-disable"
               onClick={onDisable}
-              className="h-11 flex-1 rounded-xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100"
+              className="h-11 flex-1 rounded-[2px] border border-[var(--line)] bg-white px-4 text-sm font-medium text-[var(--ink2)] transition-colors hover:bg-[var(--paper2)]"
             >
               Turn off guest join
             </button>
@@ -117,7 +117,7 @@ export default function GuestAccessSettings({
           type="button"
           data-testid="guest-enable"
           onClick={onEnable}
-          className="h-11 rounded-xl bg-indigo-500 px-4 text-sm font-semibold text-white transition-colors hover:bg-indigo-600"
+          className="h-11 rounded-[2px] bg-[var(--blue)] px-4 text-sm font-semibold text-white transition-colors hover:bg-[var(--blue-d)]"
         >
           Allow students to join with a PIN
         </button>

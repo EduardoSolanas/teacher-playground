@@ -220,17 +220,12 @@ export default function WhiteboardRoute() {
     setMaxUsers((current) => Math.max(MIN_USERS, Math.min(MAX_USERS, current + delta)));
 
   return (
-    <div className="flex min-h-[100dvh] flex-col bg-[linear-gradient(135deg,#667eea_0%,#764ba2_100%)] px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-6">
-      <header className="mx-auto flex w-full max-w-2xl shrink-0 items-center justify-between gap-3 pb-4 sm:pb-6">
-        <span className="flex min-w-0 items-center gap-2 text-white">
-          <span
-            aria-hidden="true"
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-white/15 text-base ring-1 ring-white/25"
-          >
-            &#9998;
-          </span>
-          <span className="truncate text-sm font-semibold tracking-tight sm:text-base">
-            Teacher Playground
+    <div className="flex min-h-[100dvh] flex-col bg-[var(--paper)] text-[var(--ink)] px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-0 sm:px-6">
+      <div aria-hidden="true" className="brand-topline" />
+      <header className="mx-auto flex w-full max-w-2xl shrink-0 items-center justify-between gap-3 py-4 sm:py-5">
+        <span className="brand flex min-w-0 items-baseline gap-2">
+          <span className="mark text-lg sm:text-xl">
+            Teacher <u>Playground</u>
           </span>
         </span>
 
@@ -240,12 +235,13 @@ export default function WhiteboardRoute() {
         />
       </header>
 
+
       <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col sm:justify-center">
-        <div className="w-full rounded-2xl bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.28)] sm:rounded-3xl sm:p-8">
-          <h1 className="text-balance text-center text-[22px] font-bold leading-tight tracking-tight text-slate-900 sm:text-3xl">
+        <div className="w-full rounded-[3px] border border-[var(--line)] bg-white p-6 shadow-[5px_6px_0_rgba(38,36,31,0.06)] sm:p-8">
+          <h1 className="serif text-balance text-center text-[26px] font-normal leading-tight tracking-tight text-[var(--ink)] sm:text-4xl">
             Collaborative Whiteboard
           </h1>
-          <p className="mx-auto mt-2 max-w-xs text-balance text-center text-sm leading-relaxed text-slate-500 sm:max-w-sm sm:text-base">
+          <p className="mx-auto mt-2 max-w-xs text-balance text-center text-sm leading-relaxed text-[var(--ink2)] sm:max-w-sm sm:text-base">
             Create a room to start collaborating in real-time
           </p>
 
@@ -268,13 +264,13 @@ export default function WhiteboardRoute() {
             )}
           </div>
 
-          <div className="mt-6 rounded-2xl bg-slate-50 p-4 ring-1 ring-slate-200/70 sm:p-5">
-            <h2 className="text-base font-bold text-slate-900">New room</h2>
+          <div className="mt-7 border-t border-[var(--line)] pt-6">
+            <h2 className="serif text-xl font-normal text-[var(--ink)]">New room</h2>
 
             <div className="mt-4">
               <label
                 htmlFor="whiteboard-max-users"
-                className="block text-[13px] font-semibold text-slate-600"
+                className="block text-[13px] font-semibold text-[var(--ink2)]"
               >
                 People allowed
               </label>
@@ -284,7 +280,7 @@ export default function WhiteboardRoute() {
                   aria-label="Fewer people"
                   onClick={() => stepUsers(-1)}
                   disabled={maxUsers <= MIN_USERS}
-                  className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border-2 border-slate-200 bg-white text-xl font-semibold text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-white"
+                  className="grid h-11 w-11 shrink-0 place-items-center rounded-[2px] border border-[var(--ink)] bg-white text-xl font-semibold text-[var(--ink)] transition-colors hover:bg-[var(--paper2)] disabled:opacity-40 disabled:hover:bg-white"
                 >
                   &#8722;
                 </button>
@@ -299,19 +295,19 @@ export default function WhiteboardRoute() {
                       Math.max(MIN_USERS, Math.min(MAX_USERS, Number(e.target.value) || MIN_USERS)),
                     )
                   }
-                  className="h-11 w-full min-w-0 rounded-xl border-2 border-slate-200 bg-white px-3 text-center text-base font-semibold text-slate-900 outline-none transition-colors focus:border-indigo-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  className="h-11 w-full min-w-0 rounded-[2px] border border-[var(--line)] bg-white px-3 text-center text-base font-semibold text-[var(--ink)] outline-none transition-colors focus:border-[var(--blue)] [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                 />
                 <button
                   type="button"
                   aria-label="More people"
                   onClick={() => stepUsers(1)}
                   disabled={maxUsers >= MAX_USERS}
-                  className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border-2 border-slate-200 bg-white text-xl font-semibold text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-white"
+                  className="grid h-11 w-11 shrink-0 place-items-center rounded-[2px] border border-[var(--ink)] bg-white text-xl font-semibold text-[var(--ink)] transition-colors hover:bg-[var(--paper2)] disabled:opacity-40 disabled:hover:bg-white"
                 >
                   +
                 </button>
               </div>
-              <p className="mt-2 text-[12px] text-slate-500">
+              <p className="mt-2 text-[12px] text-[var(--mut)]">
                 Includes you. Free accounts allow one student.
               </p>
             </div>
@@ -320,7 +316,7 @@ export default function WhiteboardRoute() {
               <p
                 role="alert"
                 data-testid="whiteboard-create-room-error"
-                className="mt-4 rounded-xl bg-red-50 px-3 py-2.5 text-[13px] font-medium text-red-700 ring-1 ring-red-200"
+                className="draft mt-4 text-[13px] font-medium"
               >
                 {createError
                   ?? 'Free accounts can keep one room. Delete it to create another.'}
@@ -333,7 +329,7 @@ export default function WhiteboardRoute() {
               onClick={handleCreateRoom}
               disabled={createDisabled}
               aria-busy={isCreatingRoom}
-              className="mt-5 inline-flex h-12 w-full items-center justify-center gap-2.5 rounded-xl bg-[linear-gradient(135deg,#667eea_0%,#764ba2_100%)] text-[15px] font-semibold text-white shadow-lg shadow-indigo-500/25 transition-opacity hover:opacity-95 disabled:cursor-wait disabled:bg-[linear-gradient(135deg,#94a3b8_0%,#64748b_100%)] disabled:opacity-85 disabled:shadow-none"
+              className="btn mt-5 inline-flex h-12 w-full items-center justify-center gap-2.5 text-[15px]"
             >
               {isCreatingRoom && (
                 <span
