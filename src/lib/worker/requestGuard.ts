@@ -169,7 +169,16 @@ export function isRouteAllowedOnHost(
 export const ROOM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** Cap for request bodies (1 MiB) so `request.json()` never reads unbounded data. */
-export const MAX_BODY_BYTES = 1024 * 1024;
+/**
+ * Cap on a JSON request body.
+ *
+ * A whiteboard scene is one JSON document: every freedraw stroke carries its
+ * full point array, so an ordinary lesson board passes 1 MiB quickly and the
+ * save then fails with 413 — the teacher loses work with no warning. 4 MiB
+ * covers a realistic board while still bounding what one request can push into
+ * a Durable Object.
+ */
+export const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 /** Max concurrent signaling sockets per account on one room object. */
 export const SIGNALING_MAX_SOCKETS_PER_ACCOUNT = 4;
@@ -323,11 +332,10 @@ export function withSecurityHeaders(
         "base-uri 'self'",
         options?.connectSrc ?? "connect-src 'self'",
         "img-src 'self' data:",
-        // Excalidraw loads its bundled fonts as data:/blob: URLs. Without an
-        // explicit font-src these fell back to default-src 'self' and every
-        // font load was blocked, which the browser reported hundreds of times
-        // on a single board.
-        "font-src 'self' data:",
+        // Excalidraw registers its bundled fonts through blob: URLs built at
+        // runtime, so 'self' and data: alone are not enough — the browser
+        // reported the block hundreds of times on a single board.
+        "font-src 'self' data: blob:",
         "style-src 'self' 'unsafe-inline'",
         options?.scriptNonce
           ? `script-src 'self' 'nonce-${options.scriptNonce}' 'strict-dynamic'`
@@ -365,6 +373,13 @@ export async function withNonceHtmlSecurityHeaders(
   if (!headers.has('content-type')) {
     headers.set('content-type', 'text/html; charset=utf-8');
   }
+  // The CSP nonce is minted per response and rewritten into the body, so body
+  // and header must always travel together. A validator lets the browser make a
+  // conditional request and get a 304: it then reuses its CACHED body, carrying
+  // the OLD nonce, against the fresh CSP header — and every script on the page
+  // is blocked. Dropping the validators forces a full response every time.
+  headers.delete('etag');
+  headers.delete('last-modified');
   return withSecurityHeaders(
     new Response(html, {
       status: response.status,

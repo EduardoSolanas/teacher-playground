@@ -389,6 +389,33 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(body).toContain(`<script nonce="${nonce}" src="/_next/static/chunks/app.js">`);
     });
 
+    it('drops validators so a 304 cannot pair a stale body with a fresh nonce', async () => {
+      // The nonce is minted per response and written into the body, so a
+      // conditional request that returns 304 would reuse the cached body (old
+      // nonce) against a fresh CSP header and block every script on the page.
+      const wrapped = await withNonceHtmlSecurityHeaders(
+        new Response('<html><head><script src="/a.js"></script></head></html>', {
+          headers: {
+            'content-type': 'text/html; charset=utf-8',
+            etag: '"cafebabe"',
+            'last-modified': 'Wed, 20 Aug 2026 00:00:00 GMT',
+          },
+        }),
+      );
+      expect(wrapped.headers.get('etag')).toBeNull();
+      expect(wrapped.headers.get('last-modified')).toBeNull();
+    });
+
+    it('allows Excalidraw blob: fonts so board text renders', async () => {
+      const wrapped = await withNonceHtmlSecurityHeaders(
+        new Response('<html><head></head></html>', {
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        }),
+      );
+      const csp = wrapped.headers.get('Content-Security-Policy') ?? '';
+      expect(csp).toContain("font-src 'self' data: blob:");
+    });
+
     it('marks non-HTML responses no-store', () => {
       const wrapped = withSecurityHeaders(
         new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } }),
