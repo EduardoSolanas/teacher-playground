@@ -13,6 +13,24 @@ import {
 import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 import { cursorPublishDelay } from '@/lib/whiteboard/cursorPublishRate';
 
+/**
+ * Serve Excalidraw's fonts and locales from this origin.
+ *
+ * Left unset, Excalidraw resolves them against its public CDN. Our CSP has no
+ * third-party origin in font-src, so every one of those requests was refused —
+ * the browser reported the block hundreds of times on a single board, and the
+ * handwriting font never loaded. The assets are vendored in
+ * public/excalidraw-assets, and Excalidraw appends "excalidraw-assets/" to this
+ * value, so "/" resolves to the path the Worker already allows on both
+ * hostnames.
+ *
+ * Set at module scope so it lands before the component mounts and asks for a
+ * font.
+ */
+if (typeof window !== 'undefined') {
+  (window as unknown as { EXCALIDRAW_ASSET_PATH?: string }).EXCALIDRAW_ASSET_PATH = '/';
+}
+
 type ExcalidrawWrapperProps = {
   roomId: string;
   userName: string;
