@@ -1,5 +1,9 @@
 'use client';
 
+import { useEffect, useState } from 'react';
+
+import { isGuestJoinLockedOut } from '@/lib/whiteboard/guestPin';
+
 export default function GuestAccessSettings({
   roomId,
   guestJoinUrl,
@@ -23,7 +27,14 @@ export default function GuestAccessSettings({
   onRotate: () => void;
   showJoinUrl?: boolean;
 }) {
-  const lockedOut = typeof lockoutUntil === 'number' && lockoutUntil > Date.now();
+  const [now, setNow] = useState<number | null>(null);
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const lockedOut = now !== null && isGuestJoinLockedOut(lockoutUntil, now);
   const expiryLabel = guestPinExpiresAt
     ? new Date(guestPinExpiresAt).toLocaleString(undefined, {
       month: 'short',

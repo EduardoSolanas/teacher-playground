@@ -13,7 +13,17 @@ import {
   GUEST_PIN_FAILURE_WINDOW_MS,
   GUEST_PIN_LOCKOUT_DURATION_MS,
   GUEST_PIN_VALIDITY_DURATION_MS,
+  isGuestJoinLockedOut,
 } from './guestPin';
+
+describe('isGuestJoinLockedOut', () => {
+  it('is true only while lockoutUntil is in the future', () => {
+    expect(isGuestJoinLockedOut(100, 50)).toBe(true);
+    expect(isGuestJoinLockedOut(100, 100)).toBe(false);
+    expect(isGuestJoinLockedOut(100, 101)).toBe(false);
+    expect(isGuestJoinLockedOut(null, 50)).toBe(false);
+  });
+});
 
 let db: RoomDatabase;
 const testRoomId = 'test-room-123';

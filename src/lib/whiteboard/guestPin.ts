@@ -9,6 +9,11 @@ export const GUEST_PIN_FAILURE_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
 export const GUEST_PIN_LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 export const GUEST_PIN_VALIDITY_DURATION_MS = 12 * 60 * 60 * 1000; // 12 hours
 
+/** True while `lockoutUntil` is a future timestamp. `now` is passed in so UI render stays pure. */
+export function isGuestJoinLockedOut(lockoutUntil: number | null, now: number): boolean {
+  return typeof lockoutUntil === 'number' && lockoutUntil > now;
+}
+
 /**
  * The PIN is stored in plaintext, not hashed. This is a deliberate decision:
  *

@@ -49,6 +49,24 @@ describe('GuestAccessSettings', () => {
     expect(onRotate).toHaveBeenCalledTimes(1);
   });
 
+  it('does not surface lockout after lockoutUntil has passed', () => {
+    render(
+      <GuestAccessSettings
+        roomId="room-alpha"
+        guestJoinUrl="https://join.example.com/whiteboard/room-alpha"
+        guestAccess
+        guestPin="123456"
+        guestPinExpiresAt={Date.now() + 60_000}
+        lockoutUntil={1}
+        onEnable={vi.fn()}
+        onDisable={vi.fn()}
+        onRotate={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId('guest-lockout')).toBeNull();
+  });
+
   it('does not render an email field', () => {
     const { container } = render(
       <GuestAccessSettings
