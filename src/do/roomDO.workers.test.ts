@@ -1,4 +1,4 @@
-import { beforeEach, describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { runDurableObjectAlarm, runInDurableObject, SELF } from 'cloudflare:test';
 import { getIdentityObject, type IdentityDO } from './IdentityDO';
@@ -1054,7 +1054,16 @@ describe('revocation closes live signaling sockets', () => {
     await changeAccount('revoke-all', target.accountId);
     await runDurableObjectAlarm(roomStub(roomId));
 
-    expect(revoked.closed).toBe(true);
+    // The alarm resolving means the Durable Object called close(); the close
+    // event still has to reach this side of the socket. Asserting immediately
+    // raced that delivery and failed intermittently.
+    await vi.waitFor(() => {
+      expect(revoked.closed).toBe(true);
+    }, { timeout: 2000, interval: 20 });
+
+    // Checked only once the revoked socket has actually closed, so this is a
+    // real "the other account survived" assertion rather than one that passes
+    // because nothing has happened yet.
     expect(survivor.closed).toBe(false);
   });
 });
