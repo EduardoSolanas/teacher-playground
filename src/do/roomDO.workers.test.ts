@@ -962,6 +962,17 @@ describe('revocation closes live signaling sockets', () => {
     return ws;
   }
 
+  /**
+   * The alarm resolving only means the Durable Object called close(); the close
+   * event still has to be delivered to this side of the socket. Every
+   * assertion here waits for that instead of racing it.
+   */
+  async function expectClosed(signal: { closed: boolean }) {
+    await vi.waitFor(() => {
+      expect(signal.closed).toBe(true);
+    }, { timeout: 2000, interval: 20 });
+  }
+
   function closeSignal(ws: WebSocket): { closed: boolean; code?: number } {
     const state = { closed: false } as { closed: boolean; code?: number };
     ws.addEventListener('close', (event: CloseEvent) => {
@@ -984,7 +995,7 @@ describe('revocation closes live signaling sockets', () => {
     await changeAccount('revoke-all', subject.accountId);
     await runDurableObjectAlarm(roomStub(roomId));
 
-    expect(closed.closed).toBe(true);
+    await expectClosed(closed);
   });
 
   it('closes an established socket when the account is disabled', async () => {
@@ -996,7 +1007,7 @@ describe('revocation closes live signaling sockets', () => {
     await changeAccount('disable', subject.accountId);
     await runDurableObjectAlarm(roomStub(roomId));
 
-    expect(closed.closed).toBe(true);
+    await expectClosed(closed);
   });
 
   it('evicts LiveKit when alarm closes revoked sockets after account disable', async () => {
@@ -1054,12 +1065,7 @@ describe('revocation closes live signaling sockets', () => {
     await changeAccount('revoke-all', target.accountId);
     await runDurableObjectAlarm(roomStub(roomId));
 
-    // The alarm resolving means the Durable Object called close(); the close
-    // event still has to reach this side of the socket. Asserting immediately
-    // raced that delivery and failed intermittently.
-    await vi.waitFor(() => {
-      expect(revoked.closed).toBe(true);
-    }, { timeout: 2000, interval: 20 });
+    await expectClosed(revoked);
 
     // Checked only once the revoked socket has actually closed, so this is a
     // real "the other account survived" assertion rather than one that passes
