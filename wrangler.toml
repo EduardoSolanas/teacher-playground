@@ -37,10 +37,21 @@ custom_domain = true
 pattern = "playground.sen-tutor.co.uk"
 custom_domain = true
 
+[observability]
+enabled = true
+
 [assets]
 directory = "./out"
 binding = "ASSETS"
-run_worker_first = true
+# The Worker must run first for anything that carries a security decision:
+# host routing (three surfaces are chosen by Host header), Access verification,
+# session checks, and the per-response CSP nonce injected into every HTML page.
+#
+# Immutable, content-hashed assets carry none of that, so they are excluded and
+# served straight from Cloudflare's edge. That skips a Worker invocation per
+# file — and Excalidraw alone pulls from 234 font files — cutting request
+# latency and Worker CPU on the hot path. Negative patterns take precedence.
+run_worker_first = ["/*", "!/_next/static/*", "!/fonts/*", "!/data/*"]
 
 [[durable_objects.bindings]]
 name = "ROOMS"
