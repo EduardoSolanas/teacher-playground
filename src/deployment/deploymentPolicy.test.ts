@@ -221,4 +221,38 @@ describe('production deployment policy', () => {
     expect(trackedRuntimeEnvironmentFiles).toEqual([]);
     expect(trackedSignalingReferences).toEqual([]);
   });
+
+  it('ignores local development variable files', () => {
+    const devVarsFiles = ['.dev.vars', '.dev.vars.local', '.dev.vars.override'];
+    const devVarsExample = '.dev.vars.example';
+
+    for (const relativePath of devVarsFiles) {
+      let ignored = false;
+      try {
+        execFileSync('git', ['check-ignore', '-q', '--', relativePath], {
+          cwd: repositoryRoot,
+          stdio: 'ignore',
+        });
+        ignored = true;
+      } catch {
+        ignored = false;
+      }
+
+      expect(ignored, relativePath).toBe(true);
+    }
+
+    // .dev.vars.example SHOULD be tracked
+    let exampleIgnored = false;
+    try {
+      execFileSync('git', ['check-ignore', '-q', '--', devVarsExample], {
+        cwd: repositoryRoot,
+        stdio: 'ignore',
+      });
+      exampleIgnored = true;
+    } catch {
+      exampleIgnored = false;
+    }
+
+    expect(exampleIgnored, devVarsExample).toBe(false);
+  });
 });

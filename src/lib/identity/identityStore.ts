@@ -14,6 +14,11 @@ export interface AccountRecord {
   updatedAt: number;
 }
 
+export interface CreateGuestAccountInput {
+  roomId: string;
+  now: number;
+}
+
 export interface SubjectKey {
   issuer: string;
   subject: string;
@@ -45,8 +50,52 @@ export function applyIdentitySchema(db: RoomDatabase): void {
         CHECK (authorization_epoch >= 0),
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
-        CHECK (updated_at >= created_at)
+        CHECK (updated_at >= created_at),
+      provenance TEXT NOT NULL DEFAULT 'access',
+      guest_room_id TEXT
     )
+  `);
+
+  // Migrate legacy databases by adding guest account columns if they don't exist
+  const initialAccountColumns = db
+    .prepare(`PRAGMA table_info(accounts)`)
+    .all() as Array<{ name: string }>;
+  if (!initialAccountColumns.some((column) => column.name === 'provenance')) {
+    db.exec(`ALTER TABLE accounts ADD COLUMN provenance TEXT NOT NULL DEFAULT 'access'`);
+  }
+  if (!initialAccountColumns.some((column) => column.name === 'guest_room_id')) {
+    db.exec(`ALTER TABLE accounts ADD COLUMN guest_room_id TEXT`);
+  }
+
+  // Add database-level enforcement via triggers. These enforce the invariant:
+  // - provenance='guest' requires guest_room_id IS NOT NULL
+  // - provenance='access' requires guest_room_id IS NULL
+  // Triggers work on both fresh and migrated databases, unlike CHECK constraints
+  // which cannot be added via ALTER TABLE.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS accounts_provenance_insert
+    BEFORE INSERT ON accounts
+    FOR EACH ROW
+    WHEN NOT (
+      (NEW.provenance = 'access' AND NEW.guest_room_id IS NULL) OR
+      (NEW.provenance = 'guest'  AND NEW.guest_room_id IS NOT NULL)
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'accounts: invalid provenance/guest_room_id combination');
+    END
+  `);
+
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS accounts_provenance_update
+    BEFORE UPDATE ON accounts
+    FOR EACH ROW
+    WHEN NOT (
+      (NEW.provenance = 'access' AND NEW.guest_room_id IS NULL) OR
+      (NEW.provenance = 'guest'  AND NEW.guest_room_id IS NOT NULL)
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'accounts: invalid provenance/guest_room_id combination');
+    END
   `);
 
   db.exec(`
@@ -336,6 +385,42 @@ export function resolveAccountForSubject(
     if (winner) return { account: winner, created: false };
     throw error;
   }
+}
+
+/**
+ * Creates a guest account scoped to a single room. Guest accounts have no
+ * Access identity and are disposable; they never appear in the access_subjects table.
+ */
+export function createGuestAccount(
+  db: RoomDatabase,
+  input: CreateGuestAccountInput,
+): AccountRecord {
+  const roomId = requireValidRoomId(input.roomId);
+  const now = input.now;
+
+  const account: AccountRecord = {
+    accountId: crypto.randomUUID(),
+    state: 'active',
+    authorizationEpoch: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  db.prepare(
+    `INSERT INTO accounts (
+       account_id, state, authorization_epoch, created_at, updated_at,
+       provenance, guest_room_id
+     ) VALUES (?, ?, ?, ?, ?, 'guest', ?)`,
+  ).run(
+    account.accountId,
+    account.state,
+    account.authorizationEpoch,
+    account.createdAt,
+    account.updatedAt,
+    roomId,
+  );
+
+  return account;
 }
 
 export interface AccountAuthorization {

@@ -1,17 +1,19 @@
 import { defineConfig, devices } from "@playwright/test";
+import "./tests/e2e/localhostDns";
+import { cfAuthorizationCookie, playwrightBaseURL } from "./tests/e2e/origins";
 
 const appPort = Number(process.env.E2E_PORT);
 if (!Number.isInteger(appPort)) {
   throw new Error("Run E2E tests through `npm run test:e2e` so dynamic ports are allocated.");
 }
 
-// Loopback only: run-e2e.mjs starts a local Access JWT issuer + cookie proxy.
-const baseURL = `http://localhost:${appPort}`;
 const accessIssuer = process.env.E2E_ACCESS_ISSUER;
 const accessToken = process.env.E2E_ACCESS_TOKEN;
 if (!accessIssuer || !accessToken) {
   throw new Error("Run E2E tests through npm run test:e2e so the local Access issuer is configured.");
 }
+
+const baseURL = playwrightBaseURL();
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -35,16 +37,7 @@ export default defineConfig({
     // A prompt that unmounts mid-fill then costs 60s instead of failing fast.
     actionTimeout: 10_000,
     storageState: {
-      cookies: [{
-        name: "CF_Authorization",
-        value: accessToken,
-        domain: "localhost",
-        path: "/",
-        expires: Math.floor(Date.now() / 1000) + 3_600,
-        httpOnly: true,
-        secure: true,
-        sameSite: "Lax",
-      }],
+      cookies: [cfAuthorizationCookie(accessToken)],
       origins: [],
     },
     trace: "on-first-retry",

@@ -418,3 +418,67 @@ describe('fresh proof for destructive room DELETE', () => {
     expect(leave.status).toBe(200);
   });
 });
+
+describe('room deletion purges guest accounts', () => {
+  function identity() {
+    return getIdentityObject(env.IDENTITY);
+  }
+
+  async function issueGuest(roomId: string, displayName: string): Promise<{ accountId: string }> {
+    const response = await identity().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId, displayName }),
+    });
+    expect(response.status).toBe(201);
+    return response.json() as Promise<{ accountId: string }>;
+  }
+
+  function accountAndSessionCounts(accountId: string) {
+    return runInDurableObject(identity(), (instance: IdentityDO) => ({
+      accounts: (instance.db
+        .prepare(`SELECT COUNT(*) AS n FROM accounts WHERE account_id = ?`)
+        .get(accountId) as { n: number }).n,
+      sessions: (instance.db
+        .prepare(`SELECT COUNT(*) AS n FROM sessions WHERE account_id = ?`)
+        .get(accountId) as { n: number }).n,
+    }));
+  }
+
+  it('DELETE /api/whiteboard/room/:id purges that room\'s guests and leaves others intact', async () => {
+    const ownerA = await bootstrapLocalSession(`guest-purge-owner-a-${crypto.randomUUID()}`);
+    const ownerB = await bootstrapLocalSession(`guest-purge-owner-b-${crypto.randomUUID()}`);
+    const roomA = `guest-purge-a-${crypto.randomUUID()}`;
+    const roomB = `guest-purge-b-${crypto.randomUUID()}`;
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomA}`, ownerA, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomB}`, ownerB, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const guestA = await issueGuest(roomA, 'Guest A');
+    const guestB = await issueGuest(roomB, 'Guest B');
+
+    const del = await authenticatedFetch(`/api/whiteboard/room/${roomA}`, ownerA, {
+      method: 'DELETE',
+    });
+    expect(del.status).toBe(200);
+
+    const remainingA = await accountAndSessionCounts(guestA.accountId);
+    const remainingB = await accountAndSessionCounts(guestB.accountId);
+    const ownerACounts = await accountAndSessionCounts(ownerA.accountId);
+    const ownerBCounts = await accountAndSessionCounts(ownerB.accountId);
+
+    expect(remainingA).toEqual({ accounts: 0, sessions: 0 });
+    expect(remainingB).toEqual({ accounts: 1, sessions: 1 });
+    expect(ownerACounts.accounts).toBe(1);
+    expect(ownerACounts.sessions).toBeGreaterThan(0);
+    expect(ownerBCounts.accounts).toBe(1);
+  });
+});

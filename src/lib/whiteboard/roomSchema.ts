@@ -41,6 +41,39 @@ export function applySchema(db: RoomDatabase): void {
   if (!columns.some((column) => column.name === 'grant_version')) {
     db.exec(`ALTER TABLE rooms ADD COLUMN grant_version INTEGER NOT NULL DEFAULT 0`);
   }
+  if (!columns.some((column) => column.name === 'guest_access')) {
+    // Existing rooms migrate to the secure default: guests are off unless the
+    // owner opts in.
+    db.exec(`ALTER TABLE rooms ADD COLUMN guest_access INTEGER NOT NULL DEFAULT 0`);
+    columns = db.prepare(`PRAGMA table_info(rooms)`).all() as Array<{ name: string }>;
+  }
+  if (!columns.some((column) => column.name === 'guest_pin')) {
+    // PIN is stored in plaintext; see security rationale in the implementation
+    // (stored and readable at the start of a session). Online guessing is
+    // defeated by lockout, not by encryption or hashing.
+    db.exec(`ALTER TABLE rooms ADD COLUMN guest_pin TEXT`);
+    columns = db.prepare(`PRAGMA table_info(rooms)`).all() as Array<{ name: string }>;
+  }
+  if (!columns.some((column) => column.name === 'guest_pin_expires_at')) {
+    // PIN expires 12 hours after issue.
+    db.exec(`ALTER TABLE rooms ADD COLUMN guest_pin_expires_at INTEGER`);
+    columns = db.prepare(`PRAGMA table_info(rooms)`).all() as Array<{ name: string }>;
+  }
+  if (!columns.some((column) => column.name === 'guest_failed_count')) {
+    // Sliding window counter for failed PIN attempts across all sources.
+    db.exec(`ALTER TABLE rooms ADD COLUMN guest_failed_count INTEGER NOT NULL DEFAULT 0`);
+    columns = db.prepare(`PRAGMA table_info(rooms)`).all() as Array<{ name: string }>;
+  }
+  if (!columns.some((column) => column.name === 'guest_failed_window_at')) {
+    // Start of the current 10-minute lockout window.
+    db.exec(`ALTER TABLE rooms ADD COLUMN guest_failed_window_at INTEGER`);
+    columns = db.prepare(`PRAGMA table_info(rooms)`).all() as Array<{ name: string }>;
+  }
+  if (!columns.some((column) => column.name === 'guest_lockout_until')) {
+    // Non-NULL while the room is locked out (50 failures in 10 minutes).
+    // Lockout lasts 15 minutes.
+    db.exec(`ALTER TABLE rooms ADD COLUMN guest_lockout_until INTEGER`);
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS room_presence (

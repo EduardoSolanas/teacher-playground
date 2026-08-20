@@ -1,6 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { ajaxFetch } from '@/lib/http/ajaxFetch';
+import { guestHostJoinUrl } from '@/lib/whiteboard/guestJoinUrl';
+import GuestAccessSettings from './GuestAccessSettings';
 
 export type TeacherRoomSummary = {
   roomId: string;
@@ -31,6 +34,24 @@ function formatDate(timestamp: number): string {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
+function parseGuestSettings(payload: unknown): {
+  guestAccess: boolean;
+  guestPin: string | null;
+  guestPinExpiresAt: number | null;
+  lockoutUntil: number | null;
+} {
+  if (!payload || typeof payload !== 'object') {
+    return { guestAccess: false, guestPin: null, guestPinExpiresAt: null, lockoutUntil: null };
+  }
+  const record = payload as Record<string, unknown>;
+  return {
+    guestAccess: record.guestAccess === true,
+    guestPin: typeof record.guestPin === 'string' ? record.guestPin : null,
+    guestPinExpiresAt: typeof record.guestPinExpiresAt === 'number' ? record.guestPinExpiresAt : null,
+    lockoutUntil: typeof record.lockoutUntil === 'number' ? record.lockoutUntil : null,
+  };
+}
+
 const ICON_BUTTON =
   'grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-100 hover:text-slate-700';
 
@@ -53,6 +74,8 @@ export default function TeacherRoomList({
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [copyError, setCopyError] = useState(false);
+  const [guestPanelId, setGuestPanelId] = useState<string | null>(null);
+  const [guestSettings, setGuestSettings] = useState<ReturnType<typeof parseGuestSettings> | null>(null);
 
   useEffect(() => {
     if (!menuOpenId) return;
@@ -74,7 +97,7 @@ export default function TeacherRoomList({
   }, [menuOpenId]);
 
   const copyShareLink = async (roomId: string) => {
-    const url = `${window.location.origin}/whiteboard/${roomId}`;
+    const url = guestHostJoinUrl(roomId);
     try {
       await navigator.clipboard.writeText(url);
       setCopyError(false);
@@ -84,6 +107,31 @@ export default function TeacherRoomList({
       setCopyError(true);
       setCopiedId(null);
     }
+  };
+
+  const openGuestPanel = async (roomId: string) => {
+    setGuestPanelId(roomId);
+    setMenuOpenId(null);
+    try {
+      const response = await ajaxFetch(`/api/whiteboard/room/${roomId}/settings`);
+      if (!response.ok) {
+        setGuestSettings({ guestAccess: false, guestPin: null, guestPinExpiresAt: null, lockoutUntil: null });
+        return;
+      }
+      setGuestSettings(parseGuestSettings(await response.json()));
+    } catch {
+      setGuestSettings({ guestAccess: false, guestPin: null, guestPinExpiresAt: null, lockoutUntil: null });
+    }
+  };
+
+  const patchGuestSettings = async (roomId: string, body: Record<string, boolean>) => {
+    const response = await ajaxFetch(`/api/whiteboard/room/${roomId}/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) return;
+    setGuestSettings(parseGuestSettings(await response.json()));
   };
 
   return (
@@ -112,6 +160,8 @@ export default function TeacherRoomList({
             const menuOpen = menuOpenId === room.roomId;
             const copied = copiedId === room.roomId;
             const confirmingDelete = confirmDeleteId === room.roomId;
+            const guestPanel = guestPanelId === room.roomId;
+            const joinUrl = guestHostJoinUrl(room.roomId);
 
             return (
               <li
@@ -155,6 +205,37 @@ export default function TeacherRoomList({
                       </button>
                     </div>
                   </div>
+                ) : guestPanel ? (
+                  <div className="flex flex-col gap-2 p-1">
+                    <div className="flex items-center gap-2">
+                      <p className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-900">
+                        {label}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setGuestPanelId(null);
+                          setGuestSettings(null);
+                        }}
+                        className="h-11 rounded-xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100"
+                      >
+                        Close
+                      </button>
+                    </div>
+                    {guestSettings && (
+                      <GuestAccessSettings
+                        roomId={room.roomId}
+                        guestJoinUrl={joinUrl}
+                        guestAccess={guestSettings.guestAccess}
+                        guestPin={guestSettings.guestPin}
+                        guestPinExpiresAt={guestSettings.guestPinExpiresAt}
+                        lockoutUntil={guestSettings.lockoutUntil}
+                        onEnable={() => { void patchGuestSettings(room.roomId, { guestAccess: true }); }}
+                        onDisable={() => { void patchGuestSettings(room.roomId, { guestAccess: false }); }}
+                        onRotate={() => { void patchGuestSettings(room.roomId, { rotateGuestPin: true }); }}
+                      />
+                    )}
+                  </div>
                 ) : confirmingDelete ? (
                   <div className="flex flex-col gap-2 p-1 sm:flex-row sm:items-center">
                     <p className="min-w-0 flex-1 truncate text-sm font-medium text-slate-700">
@@ -182,6 +263,7 @@ export default function TeacherRoomList({
                     </div>
                   </div>
                 ) : (
+                  <div className="flex flex-col gap-1">
                   <div className="flex items-center gap-1.5">
                     <a
                       href={`/whiteboard/${room.roomId}`}
@@ -276,14 +358,25 @@ export default function TeacherRoomList({
                             type="button"
                             role="menuitem"
                             data-testid={`whiteboard-room-rename-${room.roomId}`}
+                          onClick={() => {
+                            setEditingId(room.roomId);
+                            setDraftName(room.name?.trim() ?? '');
+                            setMenuOpenId(null);
+                          }}
+                          className="block h-11 w-full border-none bg-transparent px-4 text-left text-sm text-slate-700 transition-colors hover:bg-slate-100"
+                          >
+                            Rename
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            data-testid={`whiteboard-room-guest-${room.roomId}`}
                             onClick={() => {
-                              setEditingId(room.roomId);
-                              setDraftName(room.name?.trim() ?? '');
-                              setMenuOpenId(null);
+                              void openGuestPanel(room.roomId);
                             }}
                             className="block h-11 w-full border-none bg-transparent px-4 text-left text-sm text-slate-700 transition-colors hover:bg-slate-100"
                           >
-                            Rename
+                            Guest access
                           </button>
                           {onDelete && (
                             <button
@@ -302,6 +395,13 @@ export default function TeacherRoomList({
                         </div>
                       )}
                     </div>
+                  </div>
+                  <p
+                    data-testid="guest-join-url"
+                    className="truncate px-2.5 pb-1 text-[12px] text-slate-500"
+                  >
+                    {joinUrl}
+                  </p>
                   </div>
                 )}
               </li>

@@ -10,6 +10,7 @@ import {
 import { getRoomDb } from '../roomDb';
 import { getRoomAllowFirstUserHost, getRoomHostPeerId, deleteRoomScopedData } from '../roomSchema';
 import { approveAccount, getGrantRole, requestAccess } from '../membership';
+import { GUEST_PIN_VALIDITY_DURATION_MS, verifyGuestPin } from '../guestPin';
 
 const ROOM_SCOPED_TABLES = [
   'rooms',
@@ -359,6 +360,214 @@ describe('duplicate room creation', () => {
     expect(denied.status).toBe(409);
     expect(getGrantRole(inner, roomId, owner)).toBe('owner');
     expect(getGrantRole(inner, roomId, outsider)).toBeNull();
+  });
+});
+
+describe('owner guest access settings', () => {
+  function guestRow(db: ReturnType<typeof getRoomDb>, roomId: string) {
+    return db.prepare(
+      `SELECT guest_access, guest_pin, guest_pin_expires_at, guest_lockout_until
+       FROM rooms WHERE room_id = ?`,
+    ).get(roomId) as {
+      guest_access: number;
+      guest_pin: string | null;
+      guest_pin_expires_at: number | null;
+      guest_lockout_until: number | null;
+    } | undefined;
+  }
+
+  async function createOwnedRoom(db: ReturnType<typeof getRoomDb>) {
+    const roomId = `room-guest-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }, owner));
+    return { roomId, owner };
+  }
+
+  it('issues a 6-digit PIN and expiry when the owner enables guest access', async () => {
+    const db = getRoomDb();
+    const { roomId, owner } = await createOwnedRoom(db);
+    const before = Date.now();
+
+    const response = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { guestAccess: true }, owner),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      guestAccess?: unknown;
+      guestPin?: unknown;
+      guestPinExpiresAt?: unknown;
+    };
+    expect(body.guestAccess).toBe(true);
+    expect(typeof body.guestPin).toBe('string');
+    expect(body.guestPin).toMatch(/^\d{6}$/);
+    expect(typeof body.guestPinExpiresAt).toBe('number');
+    expect(body.guestPinExpiresAt as number).toBeGreaterThan(before);
+    expect(body.guestPinExpiresAt as number).toBeLessThanOrEqual(
+      Date.now() + GUEST_PIN_VALIDITY_DURATION_MS + 1_000,
+    );
+    expect(guestRow(db, roomId)?.guest_access).toBe(1);
+    expect(guestRow(db, roomId)?.guest_pin).toBe(body.guestPin);
+    expect(verifyGuestPin(db, roomId, body.guestPin as string, Date.now()).ok).toBe(true);
+  });
+
+  it('returns the current PIN and expiry on owner GET when guest access is on', async () => {
+    const db = getRoomDb();
+    const { roomId, owner } = await createOwnedRoom(db);
+    const enabled = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { guestAccess: true }, owner),
+    );
+    const issued = await enabled.json() as { guestPin: string; guestPinExpiresAt: number };
+
+    const response = await handleRoomSettingsGet(db, roomId, getSettingsRequest(roomId, owner));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      guestAccess: true,
+      guestPin: issued.guestPin,
+      guestPinExpiresAt: issued.guestPinExpiresAt,
+    });
+  });
+
+  it('rotates to a different PIN and invalidates the previous one', async () => {
+    const db = getRoomDb();
+    const { roomId, owner } = await createOwnedRoom(db);
+    const enabled = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { guestAccess: true }, owner),
+    );
+    const { guestPin: oldPin } = await enabled.json() as { guestPin: string };
+
+    const rotated = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { rotateGuestPin: true }, owner),
+    );
+    expect(rotated.status).toBe(200);
+    const body = await rotated.json() as { guestPin: string; guestAccess: boolean };
+    expect(body.guestAccess).toBe(true);
+    expect(body.guestPin).toMatch(/^\d{6}$/);
+    expect(body.guestPin).not.toBe(oldPin);
+    expect(verifyGuestPin(db, roomId, oldPin, Date.now()).ok).toBe(false);
+    expect(verifyGuestPin(db, roomId, body.guestPin, Date.now()).ok).toBe(true);
+  });
+
+  it('disables guest access so the old PIN no longer verifies', async () => {
+    const db = getRoomDb();
+    const { roomId, owner } = await createOwnedRoom(db);
+    const enabled = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { guestAccess: true }, owner),
+    );
+    const { guestPin: oldPin } = await enabled.json() as { guestPin: string };
+
+    const disabled = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { guestAccess: false }, owner),
+    );
+    expect(disabled.status).toBe(200);
+    const body = await disabled.json() as {
+      guestAccess?: unknown;
+      guestPin?: unknown;
+    };
+    expect(body.guestAccess).toBe(false);
+    expect(body.guestPin ?? null).toBeNull();
+    expect(guestRow(db, roomId)?.guest_access).toBe(0);
+    expect(guestRow(db, roomId)?.guest_pin).toBeNull();
+    expect(verifyGuestPin(db, roomId, oldPin, Date.now()).ok).toBe(false);
+  });
+
+  it('includes lockoutUntil when the room is locked out', async () => {
+    const db = getRoomDb();
+    const { roomId, owner } = await createOwnedRoom(db);
+    await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { guestAccess: true }, owner),
+    );
+    const lockoutUntil = Date.now() + 15 * 60 * 1000;
+    db.prepare(`UPDATE rooms SET guest_lockout_until = ? WHERE room_id = ?`).run(lockoutUntil, roomId);
+
+    const response = await handleRoomSettingsGet(db, roomId, getSettingsRequest(roomId, owner));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ lockoutUntil });
+  });
+
+  it('refuses a granted editor GET and POST of guest settings with 403 and does not leak the PIN', async () => {
+    const db = getRoomDb();
+    const { roomId, owner } = await createOwnedRoom(db);
+    const editor = `acc-editor-${crypto.randomUUID()}`;
+    const enabled = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { guestAccess: true }, owner),
+    );
+    const { guestPin } = await enabled.json() as { guestPin: string };
+    requestAccess(db, { roomId, accountId: editor, userName: 'Ed' });
+    approveAccount(db, roomId, editor, { role: 'editor' });
+
+    const deniedGet = await handleRoomSettingsGet(db, roomId, getSettingsRequest(roomId, editor));
+    expect(deniedGet.status).toBe(403);
+    const getBody = await deniedGet.json();
+    expect(JSON.stringify(getBody)).not.toContain(guestPin);
+    expect(getBody).not.toHaveProperty('guestPin');
+
+    const deniedPost = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { rotateGuestPin: true }, editor),
+    );
+    expect(deniedPost.status).toBe(403);
+    const postBody = await deniedPost.json();
+    expect(JSON.stringify(postBody)).not.toContain(guestPin);
+    expect(guestRow(db, roomId)?.guest_pin).toBe(guestPin);
+
+    const deniedDisable = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { guestAccess: false }, editor),
+    );
+    expect(deniedDisable.status).toBe(403);
+    expect(guestRow(db, roomId)?.guest_access).toBe(1);
+  });
+
+  it('does not put the PIN on the scene GET payload', async () => {
+    const db = getRoomDb();
+    const { roomId, owner } = await createOwnedRoom(db);
+    const enabled = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { guestAccess: true }, owner),
+    );
+    const { guestPin } = await enabled.json() as { guestPin: string };
+
+    const scene = await handleRoomGet(
+      db,
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`),
+    );
+    const body = await scene.json();
+    expect(body).not.toHaveProperty('guestPin');
+    expect(JSON.stringify(body)).not.toContain(guestPin);
+  });
+
+  it('rejects a client-supplied PIN string on settings POST', async () => {
+    const db = getRoomDb();
+    const { roomId, owner } = await createOwnedRoom(db);
+
+    const response = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { guestAccess: true, guestPin: '000000' }, owner),
+    );
+    expect(response.status).toBe(400);
+    expect(guestRow(db, roomId)?.guest_access).toBe(0);
   });
 });
 

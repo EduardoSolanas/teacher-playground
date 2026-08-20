@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures';
 import { Page, Browser } from '@playwright/test';
-import { createRoomWithMaxUsers, newAuthenticatedContext, expandPresenceIfCollapsed, roomIdFromPageUrl, clickCreateRoom, expectSessionCookie } from './helpers';
+import { createRoomWithMaxUsers, newAuthenticatedContext, expandPresenceIfCollapsed, roomIdFromPageUrl, clickCreateRoom, expectSessionCookie, unusedHexRoomId } from './helpers';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -403,7 +403,7 @@ test.describe('Room Connection Lifecycle', () => {
 
     // Typing a URL is join, not create: first-user host is off and GET /room
     // requires a grant, so a never-created id cannot become a live board.
-    await page.goto(`/whiteboard/FAKENONEXIST${Date.now()}`);
+    await page.goto(`/whiteboard/${unusedHexRoomId()}`);
 
     await expect(page.getByRole('heading', { name: /Room is Full/ })).toBeVisible({ timeout: 15000 });
     await expect(page.getByTestId('whiteboard-canvas-area')).toHaveCount(0);

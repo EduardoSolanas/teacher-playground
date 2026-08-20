@@ -9,6 +9,7 @@ import {
 import {
   DESTRUCTIVE_FRESH_MS,
   SESSION_COOKIE_NAME,
+  GUEST_SESSION_COOKIE_NAME,
   clearSessionCookie,
 } from '../lib/identity/sessionStore';
 import { readAuthorizationAudit } from '../lib/identity/identityStore';
@@ -239,7 +240,7 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
       },
     );
 
-    expect(response.status).toBe(401);
+    expect(response.status).toBe(404);
   });
 
   it('issues, validates, rotates, and logs out a hash-only session through the singleton DO', async () => {
@@ -1026,6 +1027,346 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
         SELF.fetch(`https://example.com${path}`, { method: 'POST' }),
       ),
     );
-    expect(responses.every((response) => response.status === 401)).toBe(true);
+    expect(responses.every((response) => response.status === 404)).toBe(true);
+  });
+
+  // Guest routes tests
+  it('issues a guest session via POST /guests/issue with roomId and displayName', async () => {
+    const response = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId: '12345678901234567890123456789012', displayName: 'Alice' }),
+    });
+    expect(response.status).toBe(201);
+    expect(response.headers.get('set-cookie')).toContain(`${GUEST_SESSION_COOKIE_NAME}=`);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    const body = await response.json() as Record<string, unknown>;
+    expect(body.token).toBeUndefined();
+    expect(body.accountId).toBeDefined();
+    expect(body.authorizationEpoch).toBe(0);
+  });
+
+  it('creates a guest account with provenance=guest and correct guest_room_id', async () => {
+    const roomId = 'aaaabbbbccccddddeeeeffffgggghhhh';
+    const response = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId, displayName: 'Bob' }),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json() as { accountId: string };
+
+    const account = await runInDurableObject(identityStub(), (instance) =>
+      instance.db
+        .prepare(
+          `SELECT provenance, guest_room_id AS guestRoomId
+           FROM accounts WHERE account_id = ?`,
+        )
+        .get(body.accountId) as { provenance: string; guestRoomId: string },
+    );
+    expect(account.provenance).toBe('guest');
+    expect(account.guestRoomId).toBe(roomId);
+  });
+
+  it('rejects /guests/issue with missing roomId', async () => {
+    const response = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ displayName: 'Charlie' }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects /guests/issue with blank roomId', async () => {
+    const response = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId: '', displayName: 'Diana' }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects /guests/issue with missing displayName', async () => {
+    const response = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId: '12345678901234567890123456789012' }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects /guests/issue with blank displayName', async () => {
+    const response = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId: '12345678901234567890123456789012', displayName: '' }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects /guests/issue with over-length displayName', async () => {
+    const response = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId: '12345678901234567890123456789012', displayName: 'a'.repeat(101) }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects /guests/issue with unexpected extra field', async () => {
+    const response = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId: '12345678901234567890123456789012', displayName: 'Eve', extra: true }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('does not include the session token in /guests/issue response body', async () => {
+    const response = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId: '12345678901234567890123456789012', displayName: 'Frank' }),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.text();
+    expect(body).not.toContain('token');
+    expect(body).not.toMatch(/[A-Za-z0-9_-]{43}/);
+  });
+
+  it('authorizes a guest session via POST /sessions/authorize-guest with matching roomId', async () => {
+    const roomId = 'bbbbccccddddeeeeffffgggghhhhjjjj';
+    const issueResponse = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId, displayName: 'Grace' }),
+    });
+    const issuedCookie = issueResponse.headers.get('set-cookie')!.split(';', 1)[0];
+
+    const authResponse = await identityStub().fetch('https://identity/sessions/authorize-guest', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: issuedCookie },
+      body: JSON.stringify({ roomId }),
+    });
+    expect(authResponse.status).toBe(200);
+    const body = await authResponse.json() as Record<string, unknown>;
+    expect(body.accountId).toBeDefined();
+    expect(body.sessionId).toBeDefined();
+  });
+
+  it('rejects /sessions/authorize-guest with teacher cookie', async () => {
+    const issueTeacherResponse = await issueSession('teacher-principal');
+    const teacherCookie = cookiePair(issueTeacherResponse);
+
+    const authResponse = await identityStub().fetch('https://identity/sessions/authorize-guest', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: teacherCookie },
+      body: JSON.stringify({ roomId: 'ccccddddeeeeffffgggghhhhjjjjkkkk' }),
+    });
+    expect(authResponse.status).toBe(401);
+  });
+
+  it('rejects /sessions/authorize-guest with guest cookie for different roomId', async () => {
+    const roomId = 'ddddeeeeffffgggghhhhjjjjkkkkllll';
+    const issueResponse = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId, displayName: 'Hannah' }),
+    });
+    const guestCookie = issueResponse.headers.get('set-cookie')!.split(';', 1)[0];
+
+    const authResponse = await identityStub().fetch('https://identity/sessions/authorize-guest', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: guestCookie },
+      body: JSON.stringify({ roomId: 'eeeeffffgggghhhhjjjjkkkkllllmmmm' }),
+    });
+    expect(authResponse.status).toBe(401);
+  });
+
+  it('purges guest accounts bound to a room via POST /guests/purge', async () => {
+    const roomId = 'fffgggghhhhiiiijjjjkkkkllllmmmm';
+    const issue1 = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId, displayName: 'Ivan' }),
+    });
+    const body1 = await issue1.json() as { accountId: string };
+
+    const issue2 = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId, displayName: 'Jane' }),
+    });
+    const body2 = await issue2.json() as { accountId: string };
+
+    const purgeResponse = await identityStub().fetch('https://identity/guests/purge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId }),
+    });
+    expect(purgeResponse.status).toBe(200);
+
+    const remaining = await runInDurableObject(identityStub(), (instance) =>
+      instance.db
+        .prepare(`SELECT COUNT(*) AS count FROM accounts WHERE account_id IN (?, ?)`)
+        .get(body1.accountId, body2.accountId) as { count: number },
+    );
+    expect(remaining.count).toBe(0);
+  });
+
+  it('leaves other rooms\' guest accounts intact when purging a room', async () => {
+    const roomA = 'gggghhhhjjjjkkkkllllmmmmnnnnooo';
+    const roomB = 'hhhhjjjjkkkkllllmmmmnnnnoooopp';
+    const issueA = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId: roomA, displayName: 'Kevin' }),
+    });
+    const bodyA = await issueA.json() as { accountId: string };
+
+    const issueB = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId: roomB, displayName: 'Laura' }),
+    });
+    const bodyB = await issueB.json() as { accountId: string };
+
+    const purgeResponse = await identityStub().fetch('https://identity/guests/purge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId: roomA }),
+    });
+    expect(purgeResponse.status).toBe(200);
+
+    const counts = await runInDurableObject(identityStub(), (instance) => ({
+      roomA: (instance.db
+        .prepare(`SELECT COUNT(*) AS count FROM accounts WHERE account_id = ?`)
+        .get(bodyA.accountId) as { count: number }).count,
+      roomB: (instance.db
+        .prepare(`SELECT COUNT(*) AS count FROM accounts WHERE account_id = ?`)
+        .get(bodyB.accountId) as { count: number }).count,
+    }));
+    expect(counts.roomA).toBe(0);
+    expect(counts.roomB).toBe(1);
+  });
+
+  it('leaves access accounts untouched when purging guest accounts', async () => {
+    const roomId = 'iiijjjjkkkkllllmmmmnnnnoooopppp';
+    // Create an access account
+    const accessResponse = await resolveSubject('https://access.example.com', 'access-subject-purge');
+    const accessBody = await accessResponse.json() as { account: { accountId: string } };
+
+    // Create a guest account for the same room
+    const guestResponse = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId, displayName: 'Mike' }),
+    });
+    const guestBody = await guestResponse.json() as { accountId: string };
+
+    // Purge the room
+    await identityStub().fetch('https://identity/guests/purge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId }),
+    });
+
+    const counts = await runInDurableObject(identityStub(), (instance) => ({
+      access: (instance.db
+        .prepare(`SELECT COUNT(*) AS count FROM accounts WHERE account_id = ?`)
+        .get(accessBody.account.accountId) as { count: number }).count,
+      guest: (instance.db
+        .prepare(`SELECT COUNT(*) AS count FROM accounts WHERE account_id = ?`)
+        .get(guestBody.accountId) as { count: number }).count,
+    }));
+    expect(counts.access).toBe(1);
+    expect(counts.guest).toBe(0);
+  });
+
+  it('rejects non-POST methods on /guests/issue', async () => {
+    const response = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'GET',
+    });
+    expect(response.status).toBe(405);
+  });
+
+  it('rejects non-POST methods on /sessions/authorize-guest', async () => {
+    const response = await identityStub().fetch('https://identity/sessions/authorize-guest', {
+      method: 'GET',
+    });
+    expect(response.status).toBe(405);
+  });
+
+  it('rejects non-POST methods on /guests/purge', async () => {
+    const response = await identityStub().fetch('https://identity/guests/purge', {
+      method: 'GET',
+    });
+    expect(response.status).toBe(405);
+  });
+
+  it('purges a guest account on fetch once every session has expired', async () => {
+    const roomId = 'kkkkllllmmmmnnnnooooppppqqqqrrrr';
+    const guestResponse = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId, displayName: 'Nina' }),
+    });
+    const guestBody = await guestResponse.json() as { accountId: string };
+
+    const liveResponse = await identityStub().fetch('https://identity/guests/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        roomId: 'llllmmmmnnnnooooppppqqqqrrrrssss',
+        displayName: 'Oscar',
+      }),
+    });
+    const liveBody = await liveResponse.json() as { accountId: string };
+
+    const accessResponse = await resolveSubject(
+      'https://access.example.com',
+      'access-subject-expired-guest-purge',
+    );
+    const accessBody = await accessResponse.json() as { account: { accountId: string } };
+    await issueSession('access-subject-expired-guest-purge');
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const created = Date.now() - 60_000;
+      const idle = created + 1;
+      instance.db
+        .prepare(
+          `UPDATE sessions
+           SET created_at = ?, last_seen_at = ?, idle_expires_at = ?
+           WHERE account_id = ?`,
+        )
+        .run(created, created, idle, guestBody.accountId);
+      instance.db
+        .prepare(
+          `UPDATE sessions
+           SET created_at = ?, last_seen_at = ?, idle_expires_at = ?
+           WHERE account_id = ?`,
+        )
+        .run(created, created, idle, accessBody.account.accountId);
+    });
+
+    const trigger = await identityStub().fetch('https://identity/guests/purge', {
+      method: 'GET',
+    });
+    expect(trigger.status).toBe(405);
+
+    const counts = await runInDurableObject(identityStub(), (instance) => ({
+      expiredGuest: (instance.db
+        .prepare(`SELECT COUNT(*) AS count FROM accounts WHERE account_id = ?`)
+        .get(guestBody.accountId) as { count: number }).count,
+      liveGuest: (instance.db
+        .prepare(`SELECT COUNT(*) AS count FROM accounts WHERE account_id = ?`)
+        .get(liveBody.accountId) as { count: number }).count,
+      access: (instance.db
+        .prepare(`SELECT COUNT(*) AS count FROM accounts WHERE account_id = ?`)
+        .get(accessBody.account.accountId) as { count: number }).count,
+    }));
+    expect(counts.expiredGuest).toBe(0);
+    expect(counts.liveGuest).toBe(1);
+    expect(counts.access).toBe(1);
   });
 });

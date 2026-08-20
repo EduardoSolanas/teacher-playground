@@ -8,8 +8,10 @@ import { usePersistence } from '@/hooks/usePersistence';
 import { useClearSessionOnEviction } from '@/hooks/useClearSessionOnEviction';
 import { useAvSession } from '@/hooks/useAvSession';
 import UserNamePrompt from '@/components/whiteboard/UserNamePrompt';
+import GuestJoinPrompt from '@/components/whiteboard/GuestJoinPrompt';
 import LoadingScreen from '@/components/whiteboard/LoadingScreen';
 import WaitingRoom from '@/components/whiteboard/WaitingRoom';
+import { isGuestHostname } from '@/lib/guest/guestHost';
 import PresencePanel from '@/components/whiteboard/PresencePanel';
 import { shouldCollapsePresenceForViewport } from '@/lib/whiteboard/presenceViewport';
 import { shouldOverlayConnectingScreen } from '@/lib/whiteboard/connectingOverlay';
@@ -43,6 +45,8 @@ const ExcalidrawWrapper = dynamic(
 function RoomContent({ roomId }: { roomId: string }) {
   const router = useRouter();
   const [userName, setUserName] = useState<string | null>(null);
+  const [guestHost, setGuestHost] = useState(false);
+  const [guestHostReady, setGuestHostReady] = useState(false);
   const [clearModalOpen, setClearModalOpen] = useState(false);
   // The store is the single source of truth for the active tool: keyboard
   // shortcuts write to it directly, so deriving from it keeps the sidebar
@@ -53,6 +57,11 @@ function RoomContent({ roomId }: { roomId: string }) {
     () => store.subscribe(() => setActiveTool(store.getState().tool)),
     [],
   );
+
+  useEffect(() => {
+    setGuestHost(isGuestHostname(window.location.hostname));
+    setGuestHostReady(true);
+  }, []);
 
   const handleToolChange = useCallback((tool: string) => {
     store.setTool(tool as Parameters<typeof store.setTool>[0]);
@@ -128,6 +137,7 @@ function RoomContent({ roomId }: { roomId: string }) {
   useEffect(() => {
     if (userName || typeof window === 'undefined') return;
     if (wasKicked || wasRejected) return;
+    if (isGuestHostname(window.location.hostname)) return;
     let cancelled = false;
     const storedName = window.localStorage.getItem('whiteboard_username');
     void (async () => {
@@ -223,6 +233,23 @@ function RoomContent({ roomId }: { roomId: string }) {
   const isLocalHost = Boolean(isHost || localUser?.isHost);
 
   if (!userName) {
+    if (!guestHostReady) {
+      return <LoadingScreen />;
+    }
+    if (guestHost) {
+      return (
+        <>
+          <BackToRoomsLink onNavigate={handleBackToRooms} />
+          <GuestJoinPrompt
+            roomId={roomId}
+            onJoined={(name) => {
+              handleJoin(name);
+              void reloadPresence();
+            }}
+          />
+        </>
+      );
+    }
     return (
       <>
         <BackToRoomsLink onNavigate={handleBackToRooms} />

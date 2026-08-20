@@ -1,4 +1,5 @@
 import { expect, Page, Browser } from '@playwright/test';
+import { cfAuthorizationCookie } from './origins';
 
 // ── URL Helpers ──────────────────────────────────────────────────────────────
 
@@ -27,6 +28,13 @@ function roomIdFromWhiteboardUrl(url: string): string {
     throw new Error(`expected a room URL, got ${url}`);
   }
   return roomId;
+}
+
+/** 32 lowercase hex — the only room-page form the Worker host allowlist serves. */
+function unusedHexRoomId(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
 }
 
 function roomIdFromPageUrl(page: Page): string {
@@ -86,16 +94,7 @@ async function newAuthenticatedContext(browser: Browser, subject?: string) {
   const token = (await response.json()).token;
   return browser.newContext({
     storageState: {
-      cookies: [{
-        name: 'CF_Authorization',
-        value: token,
-        domain: 'localhost',
-        path: '/',
-        expires: Math.floor(Date.now() / 1000) + 3_600,
-        httpOnly: true,
-        secure: true,
-        sameSite: 'Lax',
-      }],
+      cookies: [cfAuthorizationCookie(token)],
       origins: [],
     },
   });
@@ -260,6 +259,7 @@ async function joinRoomApprovedViaUrl(peerPage: Page, hostPage: Page, roomUrl: s
 
 export {
   appUrl,
+  unusedHexRoomId,
   expectSessionCookie,
   clickCreateRoom,
   newAuthenticatedContext,

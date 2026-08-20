@@ -7,6 +7,135 @@
 
 import { randomHexId } from '../crypto/randomId';
 
+export type HostKind = 'teacher' | 'guest' | 'unknown';
+
+/**
+ * Determines the host kind from hostname and configured teacher/guest hostnames.
+ * Hostname comparison is case-insensitive and exact (not suffix matching).
+ *
+ * FAIL-CLOSED: if guestHost is undefined, must NEVER return 'guest'.
+ * An unconfigured deployment has no guest surface at all.
+ */
+export function routeHostKind(
+  hostname: string,
+  teacherHost: string | undefined,
+  guestHost: string | undefined,
+): HostKind {
+  // Empty hostname is unknown
+  if (!hostname) {
+    return 'unknown';
+  }
+
+  const lowerHostname = hostname.toLowerCase();
+
+  // Check for exact teacher host match (case-insensitive)
+  if (teacherHost && lowerHostname === teacherHost.toLowerCase()) {
+    return 'teacher';
+  }
+
+  // Check for exact guest host match (case-insensitive)
+  // FAIL-CLOSED: only return 'guest' if guestHost is defined AND matches exactly
+  if (guestHost && lowerHostname === guestHost.toLowerCase()) {
+    return 'guest';
+  }
+
+  // Any other hostname is unknown
+  return 'unknown';
+}
+
+/**
+ * Determines if a route is allowed on a given host kind.
+ * Encodes §6.1 of guest_implementation.md exactly.
+ *
+ * FAIL-CLOSED: returns false for unknown host kinds and any path containing '..'.
+ */
+export function isRouteAllowedOnHost(
+  pathname: string,
+  method: string,
+  hostKind: HostKind,
+): boolean {
+  // FAIL-CLOSED: unknown host kind always denies
+  if (hostKind === 'unknown') {
+    return false;
+  }
+
+  // FAIL-CLOSED: path traversal always denies
+  if (pathname.includes('..')) {
+    return false;
+  }
+
+  // Teacher-only paths: allow on teacher host, deny on guest host
+  const isTeacherOnlyPath =
+    pathname === '/' ||
+    pathname === '/pricing' ||
+    pathname === '/terms' ||
+    pathname === '/privacy' ||
+    pathname === '/whiteboard' ||
+    pathname === '/auth/session' ||
+    pathname.startsWith('/auth/session/') ||
+    pathname === '/auth/account' ||
+    pathname.startsWith('/auth/account/') ||
+    pathname === '/api/whiteboard/rooms';
+
+  if (isTeacherOnlyPath) {
+    return hostKind === 'teacher';
+  }
+
+  // /api/whiteboard/room/:id/settings is guest-host-denied
+  if (pathname.startsWith('/api/whiteboard/room/') && pathname.includes('/settings')) {
+    return hostKind === 'teacher';
+  }
+
+  // Guest-only: POST /auth/guest
+  if (pathname === '/auth/guest') {
+    return hostKind === 'guest' && method === 'POST';
+  }
+
+  // GET/HEAD /whiteboard/<roomId> (32 lowercase hex chars) on both hosts
+  const whiteboardRoomMatch = /^\/whiteboard\/([a-f0-9]{32})$/.exec(pathname);
+  if (whiteboardRoomMatch) {
+    return method === 'GET' || method === 'HEAD';
+  }
+
+  // Any other /whiteboard/* path (non-matching room id format) is denied
+  if (pathname.startsWith('/whiteboard/')) {
+    return false;
+  }
+
+  // LiveKit join tokens: both hosts; Worker still enforces POST + session + grant.
+  if (pathname === '/api/av/token') {
+    return true;
+  }
+
+  // GET/HEAD /_next/* on both hosts
+  if (pathname.startsWith('/_next/')) {
+    return method === 'GET' || method === 'HEAD';
+  }
+
+  // GET/HEAD /excalidraw-assets/* on both hosts
+  if (pathname.startsWith('/excalidraw-assets/')) {
+    return method === 'GET' || method === 'HEAD';
+  }
+
+  // GET/HEAD /favicon.ico on both hosts
+  if (pathname === '/favicon.ico') {
+    return method === 'GET' || method === 'HEAD';
+  }
+
+  // /api/whiteboard/room/:id and subpaths (except /settings which is already handled above)
+  if (pathname.startsWith('/api/whiteboard/room/')) {
+    return true;
+  }
+
+  // /signaling on both hosts, any method
+  if (pathname === '/signaling') {
+    return true;
+  }
+
+  // Anything else is denied
+  return false;
+}
+
 /** Room identifiers are short alphanumeric codes plus `_`/`-`. */
 export const ROOM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 

@@ -6,6 +6,7 @@ import {
   createSqlTombstoneStore,
   tombstonedJsonResponse,
 } from '../lib/whiteboard/tombstone';
+import { verifyGuestPin } from '../lib/whiteboard/guestPin';
 import {
   bindPeerAccount,
   canWriteBoard,
@@ -185,9 +186,39 @@ export class RoomDO extends DurableObject {
     const segments = url.pathname.split('/').filter(Boolean);
     const section = segments[1] ?? '';
     const method = request.method;
+
+    // Guest-verify is the one route that runs without accountId (early branch before auth checks)
+    if (section === 'guest-verify' && method === 'POST') {
+      // Tombstone check for guest-verify: return generic 403 instead of 410
+      // to avoid room-enumeration oracle on unauthenticated path
+      if (!assertNotTombstoned(createSqlTombstoneStore(this.db), roomId).ok) {
+        return forbidden();
+      }
+
+      const bodyText = await request.text();
+      const body = parseJsonObject(bodyText);
+      const pin = stringField(body, 'pin');
+
+      if (!pin) {
+        // Missing PIN is a failure - return generic 403
+        return forbidden();
+      }
+
+      const result = verifyGuestPin(this.db, roomId, pin, Date.now());
+
+      if (result.ok) {
+        return Response.json({ ok: true }, { status: 200 });
+      }
+
+      // All failures (wrong PIN, guest-disabled, expired, locked out, missing room, tombstoned) return identical 403
+      return forbidden();
+    }
+
+    // For all other sections: accountId check FIRST (before tombstone check)
     const accountId = url.searchParams.get('accountId');
     if (!accountId) return unauthorized('Account required');
 
+    // Then tombstone check for authenticated requests
     if (!assertNotTombstoned(createSqlTombstoneStore(this.db), roomId).ok) {
       return tombstonedJsonResponse();
     }
@@ -204,6 +235,9 @@ export class RoomDO extends DurableObject {
       return Response.json({ error: 'Not found' }, { status: 404 });
     }
 
+    // Guest flag from Worker stamp (Task 8)
+    const guest = url.searchParams.get('guest') === '1';
+
     // Grant role only — no board, queue, or request PII. Discriminators that
     // share a route (kick vs heartbeat) are read from a bounded JSON object
     // after this identity is known. Scene and settings are separate paths.
@@ -212,7 +246,7 @@ export class RoomDO extends DurableObject {
     const bodyText = hasBody ? await request.text() : null;
     const body = parseJsonObject(bodyText);
 
-    const denied = this.authorize(url, roomId, section, method, body, accountId, role);
+    const denied = this.authorize(url, roomId, section, method, body, accountId, role, guest);
     if (denied) return denied;
 
     if (section !== 'erasure') {
@@ -260,6 +294,7 @@ export class RoomDO extends DurableObject {
    * by the Worker-stamped account id. Bearer tokens, emails, and client peer
    * ids are ignored.
    *
+   *   Authenticated (teacher/owner):
  *   GET    /room                     granted (viewer/editor/owner)
  *   POST   /room (create)            any authenticated
  *   POST   /room (scene)             editor/owner
@@ -279,6 +314,23 @@ export class RoomDO extends DurableObject {
    *   GET    /requests                 owner
    *   POST   /requests/:id             owner
    *   POST   /av                       granted (viewer/editor/owner)
+   *
+   *   Guest account denials (guest=1):
+   *   POST   /room (create)           403 (non-existent room)
+   *   DELETE /room                    403
+   *   GET/POST/PATCH /settings        403
+   *   GET    /waiting                 403
+   *   GET    /requests                403
+   *   POST   /requests/:id            403 (approve)
+   *   POST   /presence kick|suspend   403
+   *
+   *   Guest permissions (guest=1):
+   *   POST   /room (scene)            allowed once granted editor
+   *   GET    /room                    allowed once granted
+   *   POST   /requests                allowed (queued as pending)
+   *   GET    /access                  allowed
+   *   POST   /presence heartbeat/join allowed as self
+   *   DELETE /waiting                 allowed for own peerId
    */
   private authorize(
     url: URL,
@@ -288,6 +340,7 @@ export class RoomDO extends DurableObject {
     body: Record<string, unknown> | null,
     accountId: string,
     role: ReturnType<typeof getGrantRole>,
+    guest: boolean = false,
   ): Response | null {
     const owner = isOwnerRole(role);
     const granted = isGrantedRole(role);
@@ -298,8 +351,13 @@ export class RoomDO extends DurableObject {
     }
 
     if (section === '') {
-      if (method === 'DELETE') return owner ? null : forbidden();
+      if (method === 'DELETE') {
+        if (guest) return forbidden();
+        return owner ? null : forbidden();
+      }
       if (method === 'POST') {
+        // Guest denial for create path (non-existent room)
+        if (guest && !roomExists(this.db, roomId)) return forbidden();
         if (!roomExists(this.db, roomId)) return null;
         return canWriteBoard(role) ? null : forbidden();
       }
@@ -308,6 +366,7 @@ export class RoomDO extends DurableObject {
     }
 
     if (section === 'settings') {
+      if (guest) return forbidden();
       if (method === 'GET' || method === 'HEAD') return owner ? null : forbidden();
       if (method === 'POST' || method === 'PATCH') return owner ? null : forbidden();
       return forbidden();
@@ -322,7 +381,10 @@ export class RoomDO extends DurableObject {
         if (bound === accountId) return null;
         return forbidden();
       }
-      if (method === 'GET' || method === 'POST') return owner ? null : forbidden();
+      if (method === 'GET' || method === 'POST') {
+        if (guest) return forbidden();
+        return owner ? null : forbidden();
+      }
       return forbidden();
     }
 
@@ -331,6 +393,7 @@ export class RoomDO extends DurableObject {
       if (method === 'POST') {
         const action = stringField(body, 'action');
         if (action === 'kick' || action === 'suspend') {
+          if (guest) return forbidden();
           return owner ? null : forbidden();
         }
         if (role === 'banned') return forbidden();
@@ -366,6 +429,7 @@ export class RoomDO extends DurableObject {
     if (section === 'requests') {
       const requestId = url.pathname.split('/').filter(Boolean)[2];
       if (method === 'GET' || method === 'HEAD' || (method === 'POST' && requestId)) {
+        if (guest) return forbidden();
         return owner ? null : forbidden();
       }
       if (method === 'POST') return role === 'banned' ? forbidden() : null;

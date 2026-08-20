@@ -140,5 +140,102 @@ describe('roomDb schema', () => {
 
       expect(row?.name).toBeNull();
     });
+
+    it('migration path: adds all six guest columns to existing rooms table', () => {
+      db.exec(`
+        CREATE TABLE rooms (
+          room_id TEXT PRIMARY KEY,
+          elements TEXT NOT NULL DEFAULT '[]',
+          viewport TEXT NOT NULL DEFAULT '{"x":0,"y":0,"zoom":1}',
+          max_users INTEGER NOT NULL DEFAULT 3,
+          host_peer_id TEXT,
+          name TEXT,
+          allow_first_user_host INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+
+      const columnsBeforeMigration = db.prepare(`PRAGMA table_info(rooms)`).all() as Array<{ name: string }>;
+      expect(columnsBeforeMigration.some((col) => col.name === 'guest_access')).toBe(false);
+      expect(columnsBeforeMigration.some((col) => col.name === 'guest_pin')).toBe(false);
+      expect(columnsBeforeMigration.some((col) => col.name === 'guest_pin_expires_at')).toBe(false);
+      expect(columnsBeforeMigration.some((col) => col.name === 'guest_failed_count')).toBe(false);
+      expect(columnsBeforeMigration.some((col) => col.name === 'guest_failed_window_at')).toBe(false);
+      expect(columnsBeforeMigration.some((col) => col.name === 'guest_lockout_until')).toBe(false);
+
+      applySchema(db);
+
+      const columnsAfterMigration = db.prepare(`PRAGMA table_info(rooms)`).all() as Array<{ name: string }>;
+      expect(columnsAfterMigration.some((col) => col.name === 'guest_access')).toBe(true);
+      expect(columnsAfterMigration.some((col) => col.name === 'guest_pin')).toBe(true);
+      expect(columnsAfterMigration.some((col) => col.name === 'guest_pin_expires_at')).toBe(true);
+      expect(columnsAfterMigration.some((col) => col.name === 'guest_failed_count')).toBe(true);
+      expect(columnsAfterMigration.some((col) => col.name === 'guest_failed_window_at')).toBe(true);
+      expect(columnsAfterMigration.some((col) => col.name === 'guest_lockout_until')).toBe(true);
+    });
+
+    it('migration preserves pre-existing rows with guest_access = 0, guest_pin IS NULL, guest_failed_count = 0', () => {
+      db.exec(`
+        CREATE TABLE rooms (
+          room_id TEXT PRIMARY KEY,
+          elements TEXT NOT NULL DEFAULT '[]',
+          viewport TEXT NOT NULL DEFAULT '{"x":0,"y":0,"zoom":1}',
+          max_users INTEGER NOT NULL DEFAULT 3,
+          host_peer_id TEXT,
+          name TEXT,
+          allow_first_user_host INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+
+      const now = Date.now();
+      db.prepare(
+        `INSERT INTO rooms (room_id, elements, viewport, max_users, host_peer_id, name, allow_first_user_host, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run('room-migration', '[]', '{}', 3, null, 'Test Room', 0, now, now);
+
+      applySchema(db);
+
+      const row = db.prepare(
+        `SELECT room_id, guest_access, guest_pin, guest_failed_count FROM rooms WHERE room_id = ?`
+      ).get('room-migration') as
+        | { room_id: string; guest_access: number; guest_pin: string | null; guest_failed_count: number }
+        | undefined;
+
+      expect(row).toBeDefined();
+      expect(row?.room_id).toBe('room-migration');
+      expect(row?.guest_access).toBe(0);
+      expect(row?.guest_pin).toBeNull();
+      expect(row?.guest_failed_count).toBe(0);
+    });
+
+    it('applySchema is idempotent - calling twice does not throw and does not duplicate columns', () => {
+      db.exec(`
+        CREATE TABLE rooms (
+          room_id TEXT PRIMARY KEY,
+          elements TEXT NOT NULL DEFAULT '[]',
+          viewport TEXT NOT NULL DEFAULT '{"x":0,"y":0,"zoom":1}',
+          max_users INTEGER NOT NULL DEFAULT 3,
+          host_peer_id TEXT,
+          name TEXT,
+          allow_first_user_host INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+
+      applySchema(db);
+      const columnsAfterFirst = db.prepare(`PRAGMA table_info(rooms)`).all() as Array<{ name: string }>;
+      const guestAccessCountAfterFirst = columnsAfterFirst.filter((col) => col.name === 'guest_access').length;
+
+      applySchema(db);
+      const columnsAfterSecond = db.prepare(`PRAGMA table_info(rooms)`).all() as Array<{ name: string }>;
+      const guestAccessCountAfterSecond = columnsAfterSecond.filter((col) => col.name === 'guest_access').length;
+
+      expect(guestAccessCountAfterFirst).toBe(1);
+      expect(guestAccessCountAfterSecond).toBe(1);
+    });
   });
 });

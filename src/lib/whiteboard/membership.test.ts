@@ -346,6 +346,29 @@ describe('room membership state machine', () => {
     ).get('r1') as { roomId: string } | undefined;
     expect(tombstone).toEqual({ roomId: 'r1' });
   });
+
+  it('ages out a guest pending row older than WAITING_REQUEST_TTL_MS', () => {
+    const now = 1_000_000_000_000;
+    const stale = now - WAITING_REQUEST_TTL_MS;
+    requestAccess(db, {
+      roomId: 'r-guest',
+      accountId: 'guest-stale',
+      userName: 'Stale Guest',
+      now: stale,
+    });
+    requestAccess(db, {
+      roomId: 'r-guest',
+      accountId: 'guest-fresh',
+      userName: 'Fresh Guest',
+      now: stale + 1,
+    });
+
+    expect(getMembership(db, 'r-guest', 'guest-stale')?.role).toBe('pending');
+    purgeExpiredRoomLifecycle(db, 'r-guest', now);
+
+    expect(getMembership(db, 'r-guest', 'guest-stale')).toBeNull();
+    expect(getMembership(db, 'r-guest', 'guest-fresh')?.role).toBe('pending');
+  });
 });
 
 describe('account erasure from a room', () => {

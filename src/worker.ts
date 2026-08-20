@@ -8,6 +8,7 @@ import {
 import { IdentityDO, getIdentityObject } from './do/IdentityDO';
 import { createRateLimiter } from './lib/http/rateLimit';
 import {
+  parseGuestSessionCookie,
   parseSessionCookie,
   sessionAllowsDestructiveAction,
   type ValidatedSession,
@@ -16,10 +17,12 @@ import { logAuthEvent, type AuthEventInput } from './lib/security/authEvents';
 import {
   bodyTooLarge,
   isJsonContentType,
+  isRouteAllowedOnHost,
   readBoundedJsonBody,
   isPublicPath,
   isValidRoomId,
   MARKETING_PAGES,
+  routeHostKind,
   stripForwardedIdentityHeaders,
   connectSrcForPageOrigin,
   withSecurityHeaders,
@@ -37,6 +40,10 @@ export interface Env {
   LIVEKIT_URL?: string;
   LIVEKIT_API_KEY?: string;
   LIVEKIT_API_SECRET?: string;
+  /** Exact teacher hostname. Unset (with GUEST_HOSTNAME) disables the guest surface. */
+  TEACHER_HOSTNAME?: string;
+  /** Exact guest hostname. Unset disables the guest surface — never default to guest. */
+  GUEST_HOSTNAME?: string;
 }
 
 // Room ids cannot be enumerated at build time, so the static export contains a
@@ -54,7 +61,9 @@ const ACCOUNT_EXPORT = '/auth/account/export';
 const ACCOUNT_ERASE = '/auth/account';
 const ACCOUNT_PROFILE = '/auth/account/profile';
 const ACCOUNT_ROOMS = '/api/whiteboard/rooms';
+const AUTH_GUEST = '/auth/guest';
 const IDENTITY_ACCOUNT_ROOMS = 'https://identity/accounts/rooms';
+const IDENTITY_GUESTS_PURGE = 'https://identity/guests/purge';
 
 /** Room-creation POSTs per verified account within a one-minute window (SEC-005). */
 const ROOM_CREATE_RATE_WINDOW_MS = 60_000;
@@ -131,6 +140,29 @@ function sceneWriteLimiterFor(env: Env) {
     : productionSceneWriteLimiter;
 }
 
+/** Guest join POSTs per client IP within a one-minute window. */
+const GUEST_AUTH_RATE_WINDOW_MS = 60_000;
+const GUEST_AUTH_RATE_MAX = 5;
+const productionGuestAuthLimiter = createRateLimiter({
+  windowMs: GUEST_AUTH_RATE_WINDOW_MS,
+  max: GUEST_AUTH_RATE_MAX,
+});
+const strictLocalTestGuestAuthLimiter = createRateLimiter({
+  windowMs: GUEST_AUTH_RATE_WINDOW_MS,
+  max: GUEST_AUTH_RATE_MAX,
+});
+
+function guestAuthLimiterFor(env: Env) {
+  return env.ENVIRONMENT === 'local-test'
+    ? strictLocalTestGuestAuthLimiter
+    : productionGuestAuthLimiter;
+}
+
+function guestAuthRateKey(request: Request): string {
+  const ip = request.headers.get('CF-Connecting-IP')?.trim();
+  return ip && ip.length > 0 ? ip : 'unknown';
+}
+
 function shouldRateLimitRoomCreate(env: Env, request: Request): boolean {
   if (env.ENVIRONMENT !== 'local-test') return true;
   return request.headers.get('x-test-strict-rate-limit') === '1';
@@ -192,6 +224,7 @@ function originGuard(env: Env, request: Request, pathname: string): Response | n
       || pathname === SESSION_LOGOUT
       || pathname === SESSION_CONFIRM
       || pathname === ACCOUNT_PROFILE
+      || pathname === AUTH_GUEST
       || pathname.startsWith('/api/')
     ));
   if (!guarded || hasExactOrigin(request)) return null;
@@ -200,6 +233,83 @@ function originGuard(env: Env, request: Request, pathname: string): Response | n
     { error: 'Origin required' },
     { status: 403, headers: { 'Cache-Control': 'no-store' } },
   ));
+}
+
+function guestJoinDenied(env: Env): Response {
+  emitAuthEvent({ type: 'auth_failure', outcome: 'denied', reason: 'guest_join' }, env);
+  return withSecurityHeaders(Response.json(
+    { error: 'Forbidden' },
+    { status: 403, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+function isGuestAuthBody(value: unknown): value is {
+  roomId: string;
+  pin: string;
+  displayName: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 3
+    && typeof body.roomId === 'string'
+    && isValidRoomId(body.roomId)
+    && typeof body.pin === 'string'
+    && typeof body.displayName === 'string'
+    && body.displayName.trim().length > 0
+    && body.displayName.length <= 100
+  );
+}
+
+async function issueGuestAuth(env: Env, request: Request): Promise<Response> {
+  if (shouldRateLimitRoomCreate(env, request)) {
+    const limit = guestAuthLimiterFor(env).take(guestAuthRateKey(request));
+    if (!limit.ok) return rateLimited(env, limit.retryAfterMs);
+  }
+  if (bodyTooLarge(request.headers.get('content-length'))) {
+    return withSecurityHeaders(new Response('Body too large', { status: 413 }));
+  }
+  if (!isJsonContentType(request.headers.get('content-type'))) {
+    return withSecurityHeaders(new Response('Content type must be application/json', { status: 415 }));
+  }
+  const bounded = await readBoundedJsonBody(request);
+  if (!bounded.ok) {
+    return withSecurityHeaders(new Response('Body too large', { status: 413 }));
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(bounded.buffer));
+  } catch {
+    return withSecurityHeaders(Response.json({ error: 'Invalid JSON body' }, { status: 400 }));
+  }
+  if (!isGuestAuthBody(parsed)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  const { roomId, pin, displayName } = parsed;
+
+  const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+  const verified = await stub.fetch(new Request(
+    `https://room/room/guest-verify?roomId=${encodeURIComponent(roomId)}`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pin }),
+    },
+  ));
+  if (!verified.ok) return guestJoinDenied(env);
+
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const issued = await identity.fetch(new Request(
+    'https://identity/guests/issue',
+    internalJson({ roomId, displayName }),
+  ));
+  if (!issued.ok) return guestJoinDenied(env);
+
+  const headers = new Headers();
+  headers.set('Cache-Control', 'no-store');
+  const setCookie = issued.headers.get('set-cookie');
+  if (setCookie) headers.set('Set-Cookie', setCookie);
+  return withSecurityHeaders(Response.json({ ok: true }, { status: 200, headers }));
 }
 
 function internalJson(body: unknown): RequestInit {
@@ -241,6 +351,29 @@ async function sessionAuthorized(
   const headers = new Headers(result.headers);
   headers.set('Cache-Control', 'no-store');
   return { denied: withSecurityHeaders(new Response(result.body, { status: 401, headers })) };
+}
+
+async function guestSessionAuthorized(
+  env: Env,
+  request: Request,
+  roomId: string,
+): Promise<SessionOutcome> {
+  const cookie = request.headers.get('cookie');
+  if (!parseGuestSessionCookie(cookie)) return { denied: unauthorized(env, 'missing_session') };
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const result = await identity.fetch(
+    new Request('https://identity/sessions/authorize-guest', {
+      ...internalJson({ roomId }),
+      headers: {
+        'content-type': 'application/json',
+        cookie: cookie!,
+      },
+    }),
+  );
+  if (result.ok) {
+    return { denied: null, session: (await result.json()) as ValidatedSession };
+  }
+  return { denied: unauthorized(env, 'guest_session') };
 }
 
 async function issueSession(
@@ -488,6 +621,29 @@ async function releaseOwnedRoomSlot(
   }
 }
 
+async function purgeRoomGuests(
+  env: Env,
+  cookie: string,
+  roomId: string,
+): Promise<void> {
+  try {
+    const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+    const purged = await identity.fetch(new Request(IDENTITY_GUESTS_PURGE, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie,
+      },
+      body: JSON.stringify({ roomId }),
+    }));
+    if (!purged.ok) {
+      console.error('identity guests purge failed', purged.status);
+    }
+  } catch {
+    console.error('identity guests purge failed');
+  }
+}
+
 async function syncOwnedRoomNameFromSettings(
   env: Env,
   cookie: string,
@@ -513,11 +669,12 @@ function forward(
   request: Request,
   url: URL,
   session: ValidatedSession | null = null,
+  guest = false,
 ): Promise<Response> {
   const target = new URL(`https://room${path}`);
   url.searchParams.forEach((value, key) => target.searchParams.set(key, value));
-  // `set` overwrites, so a client-supplied roomId/accountId/epoch/sessionId on
-  // the original query cannot survive into the internal request.
+  // `set` overwrites, so a client-supplied roomId/accountId/epoch/sessionId/guest
+  // on the original query cannot survive into the internal request.
   target.searchParams.set('roomId', roomId);
   if (session) {
     target.searchParams.set('accountId', session.accountId);
@@ -528,6 +685,7 @@ function forward(
     target.searchParams.delete('accountEpoch');
     target.searchParams.delete('sessionId');
   }
+  target.searchParams.set('guest', guest ? '1' : '0');
 
   const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
   const forwarded = new Request(target, request);
@@ -566,16 +724,37 @@ async function probeRoomAccessStatus(
   }
 }
 
+function hostNotFound(): Response {
+  return withSecurityHeaders(new Response(null, { status: 404 }));
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    // Hostname decides the caller kind before Access, marketing exemptions, or
+    // any session work. Unset teacher/guest hostnames fail closed: every
+    // request is teacher-host and the guest surface does not exist.
+    const hostKind = (!env.TEACHER_HOSTNAME || !env.GUEST_HOSTNAME)
+      ? 'teacher'
+      : routeHostKind(url.hostname, env.TEACHER_HOSTNAME, env.GUEST_HOSTNAME);
+    if (hostKind === 'unknown') return hostNotFound();
+    if (hostKind === 'guest' && url.pathname === AUTH_GUEST && request.method !== 'POST') {
+      return withSecurityHeaders(Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'POST' } },
+      ));
+    }
+    if (!isRouteAllowedOnHost(url.pathname, request.method, hostKind)) return hostNotFound();
+    const isGuestHost = hostKind === 'guest';
 
     // SEC-015 sales-surface exemption: marketing pages must be reachable and
     // indexable by search engines without a Cf-Access-Jwt-Assertion, or the
     // product has no public sales funnel. `isPublicPath` is a small, explicit
     // allowlist reviewed like a firewall rule — nothing else is exempted from
     // Access, and non-GET/HEAD requests to these paths fall through to the
-    // normal Access gate below (public is read-only).
+    // normal Access gate below (public is read-only). Guest-host `/` is
+    // teacher-only and already 404'd above.
     if (
       (request.method === 'GET' || request.method === 'HEAD')
       && isPublicPath(url.pathname)
@@ -587,12 +766,14 @@ export default {
       });
     }
 
-    let principal: VerifiedAccessPrincipal;
-    try {
-      principal = await verifyAccessRequest(request, ctx.access, env);
-    } catch (error) {
-      if (error instanceof AccessVerificationError) return unauthorized(env, 'access_verification_failed');
-      throw error;
+    let principal: VerifiedAccessPrincipal | undefined;
+    if (!isGuestHost) {
+      try {
+        principal = await verifyAccessRequest(request, ctx.access, env);
+      } catch (error) {
+        if (error instanceof AccessVerificationError) return unauthorized(env, 'access_verification_failed');
+        throw error;
+      }
     }
 
     // Run before local-session authorization and before any Durable Object or
@@ -601,39 +782,64 @@ export default {
     const originDenied = originGuard(env, request, url.pathname);
     if (originDenied) return originDenied;
 
-    if (url.pathname === SESSION_ISSUE) {
-      return issueSession(env, request, principal);
+    if (isGuestHost && url.pathname === AUTH_GUEST) {
+      return issueGuestAuth(env, request);
     }
-    if (url.pathname === SESSION_CURRENT) {
-      return sessionCurrent(env, request, principal);
-    }
-    if (url.pathname === SESSION_CONFIRM) {
-      return sessionConfirm(env, request, principal);
-    }
-    if (url.pathname === SESSION_LOGOUT) {
-      return sessionLogout(env, request);
-    }
-    if (url.pathname === ACCOUNT_PROFILE) {
-      return accountProfile(env, request, principal);
-    }
-    if (url.pathname === ACCOUNT_EXPORT) {
-      return accountExport(env, request, principal);
-    }
-    if (url.pathname === ACCOUNT_ERASE) {
-      return accountErase(env, request, principal);
-    }
-    if (url.pathname === ACCOUNT_ROOMS) {
-      return listAccountRooms(env, request, principal);
+
+    if (!isGuestHost && principal) {
+      if (url.pathname === SESSION_ISSUE) {
+        return issueSession(env, request, principal);
+      }
+      if (url.pathname === SESSION_CURRENT) {
+        return sessionCurrent(env, request, principal);
+      }
+      if (url.pathname === SESSION_CONFIRM) {
+        return sessionConfirm(env, request, principal);
+      }
+      if (url.pathname === SESSION_LOGOUT) {
+        return sessionLogout(env, request);
+      }
+      if (url.pathname === ACCOUNT_PROFILE) {
+        return accountProfile(env, request, principal);
+      }
+      if (url.pathname === ACCOUNT_EXPORT) {
+        return accountExport(env, request, principal);
+      }
+      if (url.pathname === ACCOUNT_ERASE) {
+        return accountErase(env, request, principal);
+      }
+      if (url.pathname === ACCOUNT_ROOMS) {
+        return listAccountRooms(env, request, principal);
+      }
     }
 
     // Assets may bootstrap the local session. Every mutable/API and signaling
     // path additionally needs that local session so local revocation remains
     // effective while an Access browser session is still alive.
     let session: ValidatedSession | null = null;
+    let guestCaller = false;
     if (url.pathname.startsWith('/api/') || url.pathname === '/signaling') {
-      const outcome = await sessionAuthorized(env, request, principal);
-      if (outcome.denied) return outcome.denied;
-      session = outcome.session;
+      if (isGuestHost) {
+        const guestRoomId = url.pathname === '/signaling'
+          ? url.searchParams.get('room')
+          : (() => {
+            const roomMatch = url.pathname.match(ROOM_API);
+            return roomMatch ? decodeURIComponent(roomMatch[1]) : null;
+          })();
+        if (!guestRoomId || !isValidRoomId(guestRoomId)) {
+          return url.pathname === '/signaling'
+            ? withSecurityHeaders(new Response('Missing or invalid room', { status: 400 }))
+            : withSecurityHeaders(new Response('Invalid room id', { status: 400 }));
+        }
+        const outcome = await guestSessionAuthorized(env, request, guestRoomId);
+        if (outcome.denied) return outcome.denied;
+        session = outcome.session;
+        guestCaller = true;
+      } else {
+        const outcome = await sessionAuthorized(env, request, principal!);
+        if (outcome.denied) return outcome.denied;
+        session = outcome.session;
+      }
     }
 
     // y-webrtc signaling. The room is named on the query string so the socket
@@ -645,7 +851,7 @@ export default {
       }
       // The account travels with the upgrade so the room can re-check it for
       // the life of the socket, not just at connect time.
-      return forward(env, roomId, '/signaling', request, url, session);
+      return forward(env, roomId, '/signaling', request, url, session, guestCaller);
     }
 
     // Short-lived LiveKit join token. RoomDO enforces admission (granted
@@ -661,7 +867,7 @@ export default {
       if (!roomId || !isValidRoomId(roomId)) {
         return withSecurityHeaders(Response.json({ error: 'Missing or invalid roomId' }, { status: 400 }));
       }
-      return forward(env, roomId, '/room/av', request, url, session);
+      return forward(env, roomId, '/room/av', request, url, session, guestCaller);
     }
 
     const match = url.pathname.match(ROOM_API);
@@ -690,6 +896,10 @@ export default {
         request = new Request(request, { body: bounded.buffer });
       }
       const subpath = match[2] ?? '';
+      // Refuse the internal guest-verify route from the public API.
+      if (subpath === '/guest-verify' || subpath.startsWith('/guest-verify/')) {
+        return withSecurityHeaders(new Response(null, { status: 404 }));
+      }
       if (
         request.method === 'DELETE'
         && subpath === ''
@@ -725,7 +935,7 @@ export default {
         && (request.method === 'POST' || request.method === 'PATCH')
         ? request.clone()
         : null;
-      const response = await forward(env, roomId, `/room${subpath}`, request, url, session);
+      const response = await forward(env, roomId, `/room${subpath}`, request, url, session, guestCaller);
       if (session && subpath === '') {
         const cookie = request.headers.get('cookie') ?? '';
         if (request.method === 'POST' && response.ok) {
@@ -755,6 +965,7 @@ export default {
           }
         } else if (request.method === 'DELETE' && response.status === 200) {
           await releaseOwnedRoomSlot(env, cookie, roomId);
+          await purgeRoomGuests(env, cookie, roomId);
         }
       }
       if (session && settingsClone && response.ok) {

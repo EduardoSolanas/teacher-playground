@@ -1,4 +1,6 @@
 import { test as base, expect } from '@playwright/test';
+import './localhostDns';
+import { cfAuthorizationCookie } from './origins';
 
 async function uniqueAccessStorageState() {
   const issuer = process.env.E2E_ACCESS_ISSUER;
@@ -7,16 +9,7 @@ async function uniqueAccessStorageState() {
   if (!response.ok) throw new Error(`E2E local Access token failed: ${response.status}`);
   const token = (await response.json()).token as string;
   return {
-    cookies: [{
-      name: 'CF_Authorization',
-      value: token,
-      domain: 'localhost',
-      path: '/',
-      expires: Math.floor(Date.now() / 1000) + 3_600,
-      httpOnly: true,
-      secure: true,
-      sameSite: 'Lax' as const,
-    }],
+    cookies: [cfAuthorizationCookie(token)],
     origins: [],
   };
 }

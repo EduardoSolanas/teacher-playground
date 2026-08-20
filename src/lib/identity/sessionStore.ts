@@ -15,6 +15,10 @@ export const SESSION_ABSOLUTE_TTL_MS = 12 * 60 * 60 * 1_000;
 export const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1_000;
 export const DESTRUCTIVE_FRESH_MS = 5 * 60 * 1_000;
 
+export const GUEST_SESSION_COOKIE_NAME = '__Host-teacher-guest';
+// Guests have a shorter session lifetime: 4 hours instead of 12
+export const GUEST_SESSION_ABSOLUTE_TTL_MS = 4 * 60 * 60 * 1_000;
+
 const SESSION_TOKEN_BYTES = 32;
 const SESSION_TOKEN_LENGTH = 43;
 const MAX_COOKIE_HEADER_LENGTH = 8_192;
@@ -271,6 +275,25 @@ export function purgeExpiredSessions(db: RoomDatabase, now = Date.now()): number
     .prepare(
       `DELETE FROM sessions
        WHERE idle_expires_at <= ? OR absolute_expires_at <= ?`,
+    )
+    .run(now, now).changes;
+}
+
+/**
+ * Drops guest accounts that have no remaining unexpired session.
+ * Access accounts are never removed here, even if every session has expired.
+ */
+export function purgeExpiredGuestAccounts(db: RoomDatabase, now = Date.now()): number {
+  return db
+    .prepare(
+      `DELETE FROM accounts
+       WHERE provenance = 'guest'
+         AND NOT EXISTS (
+           SELECT 1 FROM sessions
+           WHERE sessions.account_id = accounts.account_id
+             AND sessions.idle_expires_at > ?
+             AND sessions.absolute_expires_at > ?
+         )`,
     )
     .run(now, now).changes;
 }
@@ -640,4 +663,93 @@ export function sessionCookie(session: IssuedSession): string {
 
 export function clearSessionCookie(): string {
   return `${SESSION_COOKIE_NAME}=; Secure; HttpOnly; Path=/; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+}
+
+/**
+ * Issues a session for an existing guest account bound to a specific room.
+ * Guest sessions use a separate cookie name and have a shorter 4-hour TTL.
+ */
+export async function issueGuestSession(
+  db: RoomDatabase,
+  input: { accountId: string; roomId: string; now?: number },
+): Promise<IssuedSession> {
+  const now = input.now ?? Date.now();
+
+  for (let attempt = 0; attempt < MAX_INSERT_ATTEMPTS; attempt += 1) {
+    const token = generateSessionToken();
+    const sessionHash = await hashSessionToken(token);
+    try {
+      const persisted = db.transaction(() => {
+        const account = currentAccount(db, input.accountId);
+        if (!account || account.state !== 'active') {
+          throw new SessionUnauthorizedError();
+        }
+        return insertSession(
+          db,
+          sessionHash,
+          input.accountId,
+          account.authorizationEpoch,
+          now,
+          now + GUEST_SESSION_ABSOLUTE_TTL_MS,
+        );
+      })();
+      return { token, ...persisted };
+    } catch (error) {
+      if (error instanceof SessionUnauthorizedError) throw error;
+      if (attempt === MAX_INSERT_ATTEMPTS - 1) throw error;
+    }
+  }
+  throw new SessionUnauthorizedError();
+}
+
+export function guestSessionCookie(session: IssuedSession): string {
+  const maxAge = Math.max(
+    0,
+    Math.floor((session.absoluteExpiresAt - session.createdAt) / 1_000),
+  );
+  return `${GUEST_SESSION_COOKIE_NAME}=${session.token}; Secure; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge}`;
+}
+
+export function parseGuestSessionCookie(cookieHeader: string | null | undefined): string | null {
+  if (!cookieHeader || cookieHeader.length > MAX_COOKIE_HEADER_LENGTH) return null;
+  const values: string[] = [];
+  for (const part of cookieHeader.split(';')) {
+    const separator = part.indexOf('=');
+    if (separator < 0) continue;
+    const name = part.slice(0, separator).trim();
+    if (name !== GUEST_SESSION_COOKIE_NAME) continue;
+    values.push(part.slice(separator + 1).trim());
+  }
+  return values.length === 1 && isSessionToken(values[0]) ? values[0] : null;
+}
+
+/**
+ * Validates a guest session token and confirms it is bound to the specified room.
+ * Returns null if the session is invalid, expired, revoked, for a different room,
+ * or the account is disabled or has 'access' provenance.
+ */
+export async function authorizeGuestSession(
+  db: RoomDatabase,
+  token: unknown,
+  roomId: string,
+  now = Date.now(),
+): Promise<ValidatedSession | null> {
+  const session = await validateSession(db, token, now);
+  if (!session) return null;
+
+  // Load the account and verify it's a guest account bound to this room
+  const account = db
+    .prepare(
+      `SELECT provenance, guest_room_id AS guestRoomId
+       FROM accounts WHERE account_id = ?`,
+    )
+    .get(session.accountId) as
+    | { provenance: string; guestRoomId: string | null }
+    | undefined;
+
+  if (!account || account.provenance !== 'guest' || account.guestRoomId !== roomId) {
+    return null;
+  }
+
+  return session;
 }

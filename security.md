@@ -87,19 +87,22 @@ and live-connection expiry remain under application control.
 Use this matrix as the specification for HTTP and the real-time transport.
 Authorization must happen before parsing a request body or returning room data.
 
-| Operation | Unauthenticated | Authenticated pending | Viewer | Peer/editor | Creator |
-| --- | --- | --- | --- | --- | --- |
-| Request access / check own request | no | yes, rate-limited | yes | yes | yes |
-| Read room canvas | no | no | yes | yes | yes |
-| Publish canvas update | no | no | no | yes | yes |
-| Heartbeat/leave as self | no | no | yes | yes | yes |
-| Read active users | no | no | minimal list | minimal list | full list |
-| Read waiting queue or request PII | no | no | no | no | yes |
-| Change room settings | no | no | no | no | yes |
-| Approve, reject, suspend, kick, revoke | no | no | no | no | yes |
-| Delete room | no | no | no | no | yes |
-| Open real-time read channel | no | no | yes | yes | yes |
-| Open real-time write channel | no | no | no | yes | yes |
+| Operation | Unauthenticated | Guest session | Authenticated pending | Viewer | Peer/editor | Creator |
+| --- | --- | --- | --- | --- | --- | --- |
+| Request access / check own request | no | yes, self, rate-limited | yes, rate-limited | yes | yes | yes |
+| Read room canvas | no | no until granted | no | yes | yes | yes |
+| Publish canvas update | no | no until editor grant | no | no | yes | yes |
+| Heartbeat/leave as self | no | yes | no | yes | yes | yes |
+| Read active users | no | no until granted | no | minimal list | minimal list | full list |
+| Read waiting queue or request PII | no | no | no | no | no | yes |
+| Change room settings | no | no | no | no | no | yes |
+| Approve, reject, suspend, kick, revoke | no | no | no | no | no | yes |
+| Delete room | no | no | no | no | no | yes |
+| Open real-time read channel | no | no until granted | no | yes | yes | yes |
+| Open real-time write channel | no | no until editor grant | no | no | yes | yes |
+
+A guest holding `__Host-teacher-guest` is a distinct principal from
+Access-authenticated users; owner-only rows stay `no` for that column.
 
 All decisions must use one normalized room ID, one server-derived principal,
 one grant state, and one expiry/revocation policy. A room code or client-supplied

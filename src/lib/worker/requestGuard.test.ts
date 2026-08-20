@@ -11,9 +11,237 @@ import {
   MARKETING_PAGES,
   stripForwardedIdentityHeaders,
   readBoundedJsonBody,
+  routeHostKind,
+  isRouteAllowedOnHost,
 } from './requestGuard';
 
 describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
+  describe('routeHostKind', () => {
+    // Fail-closed test: guestHost undefined means never return 'guest'
+    it('never returns guest when guestHost is undefined, even for the guest hostname literal', () => {
+      const result = routeHostKind('join.example.com', 'app.example.com', undefined);
+      expect(result).not.toBe('guest');
+      expect(result).toBe('unknown');
+    });
+
+    it('returns teacher for exact teacher host match', () => {
+      expect(routeHostKind('app.example.com', 'app.example.com', 'join.example.com')).toBe('teacher');
+    });
+
+    it('returns teacher for case-insensitive teacher host match', () => {
+      expect(routeHostKind('APP.EXAMPLE.COM', 'app.example.com', 'join.example.com')).toBe('teacher');
+      expect(routeHostKind('App.Example.Com', 'app.example.com', 'join.example.com')).toBe('teacher');
+    });
+
+    it('returns guest for exact guest host match', () => {
+      expect(routeHostKind('join.example.com', 'app.example.com', 'join.example.com')).toBe('guest');
+    });
+
+    it('returns guest for case-insensitive guest host match', () => {
+      expect(routeHostKind('JOIN.EXAMPLE.COM', 'app.example.com', 'join.example.com')).toBe('guest');
+      expect(routeHostKind('Join.Example.Com', 'app.example.com', 'join.example.com')).toBe('guest');
+    });
+
+    it('returns unknown for empty hostname', () => {
+      expect(routeHostKind('', 'app.example.com', 'join.example.com')).toBe('unknown');
+    });
+
+    it('returns unknown for third-party hostname', () => {
+      expect(routeHostKind('evil.example.com', 'app.example.com', 'join.example.com')).toBe('unknown');
+    });
+
+    it('rejects suffix matching (evil-join.example.com should not match join.example.com)', () => {
+      expect(routeHostKind('evil-join.example.com', 'app.example.com', 'join.example.com')).toBe('unknown');
+    });
+
+    it('rejects prefix+suffix matching (join.example.com.evil.com should not match join.example.com)', () => {
+      expect(routeHostKind('join.example.com.evil.com', 'app.example.com', 'join.example.com')).toBe('unknown');
+    });
+  });
+
+  describe('isRouteAllowedOnHost', () => {
+    // Teacher-only paths — true on teacher, false on guest
+    it('/ is teacher-only', () => {
+      expect(isRouteAllowedOnHost('/', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/', 'HEAD', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/', 'GET', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/', 'POST', 'teacher')).toBe(true);
+    });
+
+    it('/pricing is teacher-only', () => {
+      expect(isRouteAllowedOnHost('/pricing', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/pricing', 'GET', 'guest')).toBe(false);
+    });
+
+    it('/terms is teacher-only', () => {
+      expect(isRouteAllowedOnHost('/terms', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/terms', 'GET', 'guest')).toBe(false);
+    });
+
+    it('/privacy is teacher-only', () => {
+      expect(isRouteAllowedOnHost('/privacy', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/privacy', 'GET', 'guest')).toBe(false);
+    });
+
+    it('/whiteboard (list page, no id) is teacher-only', () => {
+      expect(isRouteAllowedOnHost('/whiteboard', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/whiteboard', 'GET', 'guest')).toBe(false);
+    });
+
+    it('/auth/session paths are teacher-only', () => {
+      expect(isRouteAllowedOnHost('/auth/session', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/auth/session/current', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/auth/session/confirm', 'POST', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/auth/session/logout', 'POST', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/auth/session', 'GET', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/auth/session/current', 'GET', 'guest')).toBe(false);
+    });
+
+    it('/auth/account paths are teacher-only', () => {
+      expect(isRouteAllowedOnHost('/auth/account', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/auth/account/export', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/auth/account/profile', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/auth/account', 'GET', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/auth/account/export', 'GET', 'guest')).toBe(false);
+    });
+
+    it('/api/whiteboard/rooms (owned room list) is teacher-only', () => {
+      expect(isRouteAllowedOnHost('/api/whiteboard/rooms', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/whiteboard/rooms', 'GET', 'guest')).toBe(false);
+    });
+
+    // Guest-only paths
+    it('POST /auth/guest is guest-only', () => {
+      expect(isRouteAllowedOnHost('/auth/guest', 'POST', 'guest')).toBe(true);
+      expect(isRouteAllowedOnHost('/auth/guest', 'POST', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/auth/guest', 'GET', 'guest')).toBe(false);
+    });
+
+    it('POST /api/av/token is allowed on both hosts', () => {
+      expect(isRouteAllowedOnHost('/api/av/token', 'POST', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/av/token', 'POST', 'guest')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/av/token', 'GET', 'teacher')).toBe(true);
+    });
+
+    // Dual paths - method matters
+    it('GET/HEAD /whiteboard/<roomId> (32 hex) is allowed on both hosts', () => {
+      const roomId = 'a'.repeat(32); // 32 lowercase hex chars
+      expect(isRouteAllowedOnHost(`/whiteboard/${roomId}`, 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost(`/whiteboard/${roomId}`, 'GET', 'guest')).toBe(true);
+      expect(isRouteAllowedOnHost(`/whiteboard/${roomId}`, 'HEAD', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost(`/whiteboard/${roomId}`, 'HEAD', 'guest')).toBe(true);
+    });
+
+    it('GET /whiteboard/_room is denied (placeholder is Worker-internal)', () => {
+      expect(isRouteAllowedOnHost('/whiteboard/_room', 'GET', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/whiteboard/_room', 'GET', 'guest')).toBe(false);
+    });
+
+    it('POST /whiteboard/<roomId> is not allowed', () => {
+      const roomId = 'a'.repeat(32);
+      expect(isRouteAllowedOnHost(`/whiteboard/${roomId}`, 'POST', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost(`/whiteboard/${roomId}`, 'POST', 'guest')).toBe(false);
+    });
+
+    it('GET/HEAD /_next/* is allowed on both hosts', () => {
+      expect(isRouteAllowedOnHost('/_next/static/chunk.js', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/_next/static/chunk.js', 'GET', 'guest')).toBe(true);
+      expect(isRouteAllowedOnHost('/_next/static/chunk.css', 'HEAD', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/_next/static/chunk.css', 'HEAD', 'guest')).toBe(true);
+    });
+
+    it('POST /_next/* is not allowed', () => {
+      expect(isRouteAllowedOnHost('/_next/static/chunk.js', 'POST', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/_next/static/chunk.js', 'POST', 'guest')).toBe(false);
+    });
+
+    it('GET/HEAD /excalidraw-assets/* is allowed on both hosts', () => {
+      expect(isRouteAllowedOnHost('/excalidraw-assets/font.woff2', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/excalidraw-assets/font.woff2', 'GET', 'guest')).toBe(true);
+      expect(isRouteAllowedOnHost('/excalidraw-assets/icon.png', 'HEAD', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/excalidraw-assets/icon.png', 'HEAD', 'guest')).toBe(true);
+    });
+
+    it('POST /excalidraw-assets/* is not allowed', () => {
+      expect(isRouteAllowedOnHost('/excalidraw-assets/font.woff2', 'POST', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/excalidraw-assets/font.woff2', 'POST', 'guest')).toBe(false);
+    });
+
+    it('GET/HEAD /favicon.ico is allowed on both hosts', () => {
+      expect(isRouteAllowedOnHost('/favicon.ico', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/favicon.ico', 'GET', 'guest')).toBe(true);
+      expect(isRouteAllowedOnHost('/favicon.ico', 'HEAD', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/favicon.ico', 'HEAD', 'guest')).toBe(true);
+    });
+
+    it('POST /favicon.ico is not allowed', () => {
+      expect(isRouteAllowedOnHost('/favicon.ico', 'POST', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/favicon.ico', 'POST', 'guest')).toBe(false);
+    });
+
+    // /api/whiteboard/room/:id paths (except /settings)
+    it('GET /api/whiteboard/room/:id is allowed on both hosts', () => {
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456', 'GET', 'guest')).toBe(true);
+    });
+
+    it('POST /api/whiteboard/room/:id is allowed on both hosts', () => {
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456', 'POST', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456', 'POST', 'guest')).toBe(true);
+    });
+
+    it('DELETE /api/whiteboard/room/:id is allowed on both hosts', () => {
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456', 'DELETE', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456', 'DELETE', 'guest')).toBe(true);
+    });
+
+    it('GET /api/whiteboard/room/:id/access is allowed on both hosts', () => {
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456/access', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456/access', 'GET', 'guest')).toBe(true);
+    });
+
+    it('POST /api/whiteboard/room/:id/presence is allowed on both hosts', () => {
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456/presence', 'POST', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456/presence', 'POST', 'guest')).toBe(true);
+    });
+
+    it('/api/whiteboard/room/:id/settings is false on guest host, true on teacher host', () => {
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456/settings', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456/settings', 'GET', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456/settings', 'POST', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456/settings', 'POST', 'guest')).toBe(false);
+    });
+
+    // /signaling
+    it('/signaling is allowed on both hosts with any method', () => {
+      expect(isRouteAllowedOnHost('/signaling', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/signaling', 'GET', 'guest')).toBe(true);
+      expect(isRouteAllowedOnHost('/signaling', 'POST', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/signaling', 'POST', 'guest')).toBe(true);
+    });
+
+    // Path traversal and malformed paths
+    it('any path with .. is false', () => {
+      expect(isRouteAllowedOnHost('/whiteboard/../etc', 'GET', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/whiteboard/../etc', 'GET', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/id/../../settings', 'GET', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/id/../../settings', 'GET', 'guest')).toBe(false);
+    });
+
+    it('unknown host kind always returns false', () => {
+      expect(isRouteAllowedOnHost('/', 'GET', 'unknown')).toBe(false);
+      expect(isRouteAllowedOnHost('/favicon.ico', 'GET', 'unknown')).toBe(false);
+      expect(isRouteAllowedOnHost('/whiteboard/roomid', 'GET', 'unknown')).toBe(false);
+      expect(isRouteAllowedOnHost('/pricing', 'GET', 'unknown')).toBe(false);
+    });
+
+    it('double-slash and trailing-dot variants are false', () => {
+      expect(isRouteAllowedOnHost('//whiteboard', 'GET', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/whiteboard/', 'GET', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/whiteboard.', 'GET', 'teacher')).toBe(false);
+    });
+  });
+
   describe('isValidRoomId', () => {
     it('accepts room codes', () => {
       expect(isValidRoomId('ABCDEFG1')).toBe(true);

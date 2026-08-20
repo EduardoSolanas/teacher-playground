@@ -17,6 +17,8 @@ export default defineConfig({
             ACCESS_ISSUER: issuer,
             ACCESS_AUDIENCE: 'teacher-playground-local',
             ACCESS_JWKS_URL: `${issuer}/jwks`,
+            TEACHER_HOSTNAME: 'example.com',
+            GUEST_HOSTNAME: 'join.example.com',
             // Short enough for a test to wait for the real alarm rather than
             // triggering it by hand. Production uses the 30s default.
             REVOCATION_CHECK_INTERVAL_MS: '100',

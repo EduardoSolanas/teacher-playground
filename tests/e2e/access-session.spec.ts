@@ -1,11 +1,17 @@
 import { test, expect } from './fixtures';
 import { request as httpRequest } from 'node:http';
 import { appUrl, createRoomWithMaxUsers, expectSessionCookie, clickCreateRoom } from './helpers';
+import { accessCookieDomain, cfAuthorizationCookie } from './origins';
 
 function rawProxyRequest(baseURL: string, cookie: string, assertion: string) {
   return new Promise<{ status: number; cacheControl?: string }>((resolve, reject) => {
-    const request = httpRequest(new URL('/whiteboard', baseURL), {
+    const target = new URL('/whiteboard', baseURL);
+    const request = httpRequest({
+      hostname: '127.0.0.1',
+      port: Number(target.port),
+      path: target.pathname,
       headers: {
+        Host: target.host,
         Cookie: cookie,
         'Cf-Access-Jwt-Assertion': assertion,
       },
@@ -66,16 +72,7 @@ test.describe('local Access edge and session bootstrap', () => {
     const tokenResponse = await fetch(`${issuer}/token?sub=e2e-expired-spa&variant=expired`);
     expect(tokenResponse.ok).toBe(true);
     const expiredToken = (await tokenResponse.json()).token as string;
-    await page.context().addCookies([{
-      name: 'CF_Authorization',
-      value: expiredToken,
-      domain: 'localhost',
-      path: '/',
-      expires: Math.floor(Date.now() / 1000) + 3_600,
-      httpOnly: true,
-      secure: true,
-      sameSite: 'Lax',
-    }]);
+    await page.context().addCookies([cfAuthorizationCookie(expiredToken)]);
 
     const apiRequest = page.waitForRequest((request) => (
       request.method() === 'POST'
@@ -127,7 +124,7 @@ test.describe('local Access edge and session bootstrap', () => {
         cookies: [{
           name: 'CF_Authorization',
           value: 'not-a-jwt',
-          domain: 'localhost',
+          domain: accessCookieDomain(),
           path: '/',
           expires: Math.floor(Date.now() / 1000) + 3_600,
           httpOnly: true,
@@ -177,7 +174,7 @@ test.describe('local Access edge and session bootstrap', () => {
         cookies: [{
           name: 'CF_Authorization',
           value: 'not-a-jwt',
-          domain: 'localhost',
+          domain: accessCookieDomain(),
           path: '/',
           expires: Math.floor(Date.now() / 1000) + 3_600,
           httpOnly: true,

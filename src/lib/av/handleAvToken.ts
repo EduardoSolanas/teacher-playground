@@ -8,7 +8,7 @@
 
 import type { RoomDatabase } from '../whiteboard/db';
 import { getGrantRole } from '../whiteboard/membership';
-import { avEligible, avEligibilityStatus } from './avAuthorization';
+import { avEligible, avEligibilityStatus, type RoomRole } from './avAuthorization';
 import {
   buildLiveKitToken,
   parseLiveKitConfig,
@@ -66,12 +66,16 @@ export async function issueAvTokenResponse(
     );
   }
 
-  return mintTokenResponse(config, input);
+  // At this point, eligibility.eligible is true, which can only happen if the
+  // role is an admitted role (owner, editor, viewer, or member). We've verified
+  // the role via avEligible, so it's safe to narrow its type.
+  return mintTokenResponse(config, input, role as RoomRole);
 }
 
 async function mintTokenResponse(
   config: LiveKitConfig,
   input: IssueAvTokenInput,
+  role: RoomRole,
 ): Promise<Response> {
   // The LiveKit identity is always the server-verified account. LiveKit
   // enforces one live session per identity by disconnecting the previous
@@ -84,6 +88,12 @@ async function mintTokenResponse(
     room: input.roomId,
     identity,
     name: input.name,
+    grant: {
+      canPublish: role !== 'viewer',
+      canPublishData: role !== 'viewer',
+      canSubscribe: true,
+      roomJoin: true,
+    },
   });
 
   return Response.json(

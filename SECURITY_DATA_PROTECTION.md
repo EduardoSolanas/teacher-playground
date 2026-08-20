@@ -47,6 +47,10 @@ classrooms.
 - **Collect the minimum identity data.** A display name is sufficient for
   classroom participation; do not require student email or other PII beyond
   what Access already asserts for admission.
+- **Guest join (when enabled)** collects only a self-chosen display name plus
+  a disposable guest account bound to one room — no email, no OAuth subject, and
+  no join PIN in URLs or logs (the PIN is typed, not linked). Guest accounts are
+  purged when the room is deleted or guest sessions expire.
 - **No extra PII fields** for students (no date of birth, school ID, or
   marketing capture in student-facing flows).
 - **Transcripts and session recording are out of scope** until Phase 10 and

@@ -172,4 +172,92 @@ describe('issueAvTokenResponse', () => {
     const body = (await res.json()) as { identity: string };
     expect(body.identity).toBe('acct-member');
   });
+
+  it('viewer token has canPublish false and canPublishData false', async () => {
+    const db = memoryDb();
+    insertOwner(db, 'room-1', 'acct-owner');
+    requestAccess(db, { roomId: 'room-1', accountId: 'acct-viewer', userName: 'Viewer' });
+    approveAccount(db, 'room-1', 'acct-viewer', { role: 'viewer' });
+    const res = await issueAvTokenResponse({
+      db,
+      env: LIVEKIT_ENV,
+      roomId: 'room-1',
+      accountId: 'acct-viewer',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { token: string; identity: string };
+    expect(body.identity).toBe('acct-viewer');
+
+    const verified = await verifyLiveKitToken(body.token, LIVEKIT_ENV.LIVEKIT_API_SECRET);
+    expect(verified.valid).toBe(true);
+    const video = verified.payload.video as Record<string, unknown>;
+    expect(video.canPublish).toBe(false);
+    expect(video.canPublishData).toBe(false);
+    expect(video.canSubscribe).toBe(true);
+    expect(video.roomJoin).toBe(true);
+  });
+
+  it('editor token has canPublish true', async () => {
+    const db = memoryDb();
+    insertOwner(db, 'room-1', 'acct-owner');
+    requestAccess(db, { roomId: 'room-1', accountId: 'acct-editor', userName: 'Editor' });
+    approveAccount(db, 'room-1', 'acct-editor', { role: 'editor' });
+    const res = await issueAvTokenResponse({
+      db,
+      env: LIVEKIT_ENV,
+      roomId: 'room-1',
+      accountId: 'acct-editor',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { token: string };
+    const verified = await verifyLiveKitToken(body.token, LIVEKIT_ENV.LIVEKIT_API_SECRET);
+    expect(verified.valid).toBe(true);
+    const video = verified.payload.video as Record<string, unknown>;
+    expect(video.canPublish).toBe(true);
+    expect(video.canPublishData).toBe(true);
+    expect(video.canSubscribe).toBe(true);
+    expect(video.roomJoin).toBe(true);
+  });
+
+  it('owner token has canPublish true', async () => {
+    const db = memoryDb();
+    insertOwner(db, 'room-1', 'acct-owner');
+    const res = await issueAvTokenResponse({
+      db,
+      env: LIVEKIT_ENV,
+      roomId: 'room-1',
+      accountId: 'acct-owner',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { token: string };
+    const verified = await verifyLiveKitToken(body.token, LIVEKIT_ENV.LIVEKIT_API_SECRET);
+    expect(verified.valid).toBe(true);
+    const video = verified.payload.video as Record<string, unknown>;
+    expect(video.canPublish).toBe(true);
+    expect(video.canPublishData).toBe(true);
+    expect(video.canSubscribe).toBe(true);
+    expect(video.roomJoin).toBe(true);
+  });
+
+
+  it('token identity and room are verified server values', async () => {
+    const db = memoryDb();
+    insertOwner(db, 'room-1', 'acct-owner');
+    const res = await issueAvTokenResponse({
+      db,
+      env: LIVEKIT_ENV,
+      roomId: 'room-1',
+      accountId: 'acct-owner',
+      name: 'Owner Display Name',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { token: string; identity: string; room: string };
+    expect(body.identity).toBe('acct-owner');
+    expect(body.room).toBe('room-1');
+    const verified = await verifyLiveKitToken(body.token, LIVEKIT_ENV.LIVEKIT_API_SECRET);
+    expect(verified.valid).toBe(true);
+    expect(verified.payload.sub).toBe('acct-owner');
+    const video = verified.payload.video as Record<string, unknown>;
+    expect(video.room).toBe('room-1');
+  });
 });

@@ -5,6 +5,7 @@ import { getIdentityObject, type IdentityDO } from './IdentityDO';
 import { RoomDO } from './RoomDO';
 import { ROOM_SETTINGS_KEYS } from '../lib/whiteboard/requestSchemas';
 import { MAX_BODY_BYTES } from '../lib/worker/requestGuard';
+import { issueGuestPin } from '../lib/whiteboard/guestPin';
 import {
   accessFetch,
   authenticatedFetch,
@@ -875,14 +876,14 @@ describe('static asset serving', () => {
   });
 
   it('serves the placeholder room page for an arbitrary room URL', async () => {
-    const res = await accessFetch('/whiteboard/some-room-id', 'room-worker-test');
+    const res = await accessFetch(`/whiteboard/${'a'.repeat(32)}`, 'room-worker-test');
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/html');
   });
 
   it('serves the same page regardless of room id', async () => {
-    const aRes = await accessFetch('/whiteboard/room-aaa', 'room-worker-test');
-    const bRes = await accessFetch('/whiteboard/room-bbb', 'room-worker-test');
+    const aRes = await accessFetch(`/whiteboard/${'a'.repeat(32)}`, 'room-worker-test');
+    const bRes = await accessFetch(`/whiteboard/${'b'.repeat(32)}`, 'room-worker-test');
     expect(aRes.status).toBe(200);
     expect(bRes.status).toBe(200);
     const a = await aRes.text();
@@ -909,7 +910,7 @@ describe('public marketing surface (SEC-015)', () => {
   });
 
   it('still gates the app: /whiteboard/<room> requires Access', async () => {
-    const res = await SELF.fetch(`${BASE}/whiteboard/some-room`);
+    const res = await SELF.fetch(`${BASE}/whiteboard/${'c'.repeat(32)}`);
     expect(res.status).toBe(401);
   });
 
@@ -3125,5 +3126,609 @@ describe('raise hand presence action', () => {
       body: JSON.stringify({ action: 'raise-hand' }),
     });
     expect(raised.status).toBe(403);
+  });
+});
+
+describe('guest-verify route', () => {
+  async function guestVerify(roomId: string, pin: string) {
+    const res = await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      (instance: RoomDO) => {
+        return instance.fetch(
+          new Request('https://room/room/guest-verify?roomId=' + roomId, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ pin }),
+          }),
+        );
+      },
+    );
+    return { status: res.status, body: await res.text() };
+  }
+
+  it('returns 200 { ok: true } for a valid PIN on a guest-enabled room', async () => {
+    const owner = await bootstrapLocalSession(`guest-verify-owner-${crypto.randomUUID()}`);
+    const roomId = `guest-verify-room-valid-${crypto.randomUUID()}`;
+
+    // Create and enable guest access
+    await writeRoom(roomId, owner);
+    const pin = await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      (instance: RoomDO) => {
+        return issueGuestPin(instance.db, roomId, Date.now());
+      },
+    );
+
+    const res = await guestVerify(roomId, pin);
+    expect(res.status).toBe(200);
+    const json = JSON.parse(res.body);
+    expect(json).toEqual({ ok: true });
+  });
+
+  it('returns 403 with generic body for wrong PIN', async () => {
+    const owner = await bootstrapLocalSession(`guest-verify-wrong-pin-${crypto.randomUUID()}`);
+    const roomId = `guest-verify-room-wrong-${crypto.randomUUID()}`;
+
+    await writeRoom(roomId, owner);
+    await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      (instance: RoomDO) => {
+        return issueGuestPin(instance.db, roomId, Date.now());
+      },
+    );
+
+    const res = await guestVerify(roomId, '000000');
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 403 with generic body for guest-disabled room', async () => {
+    const owner = await bootstrapLocalSession(`guest-verify-disabled-${crypto.randomUUID()}`);
+    const roomId = `guest-verify-room-disabled-${crypto.randomUUID()}`;
+
+    await writeRoom(roomId, owner);
+    // guest_access defaults to 0, so room is guest-disabled
+
+    const res = await guestVerify(roomId, '123456');
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 403 with generic body for missing room', async () => {
+    const nonexistent = `guest-verify-nonexistent-${crypto.randomUUID()}`;
+    const res = await guestVerify(nonexistent, '123456');
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 403 with generic body for expired PIN', async () => {
+    const owner = await bootstrapLocalSession(`guest-verify-expired-${crypto.randomUUID()}`);
+    const roomId = `guest-verify-room-expired-${crypto.randomUUID()}`;
+
+    await writeRoom(roomId, owner);
+    const now = Date.now();
+    await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      (instance: RoomDO) => {
+        return issueGuestPin(instance.db, roomId, now - 13 * 60 * 60 * 1000); // 13 hours ago
+      },
+    );
+
+    const res = await guestVerify(roomId, '123456');
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 403 with generic body for locked-out room even with correct PIN', async () => {
+    const owner = await bootstrapLocalSession(`guest-verify-lockout-${crypto.randomUUID()}`);
+    const roomId = `guest-verify-room-lockout-${crypto.randomUUID()}`;
+
+    await writeRoom(roomId, owner);
+    const pin = await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      (instance: RoomDO) => {
+        const p = issueGuestPin(instance.db, roomId, Date.now());
+        // Manually set lockout
+        instance.db.prepare(
+          'UPDATE rooms SET guest_lockout_until = ? WHERE room_id = ?'
+        ).run(Date.now() + 15 * 60 * 1000, roomId);
+        return p;
+      },
+    );
+
+    const res = await guestVerify(roomId, pin);
+    expect(res.status).toBe(403);
+  });
+
+  it('returns byte-identical 403 responses for wrong PIN and guest-disabled', async () => {
+    const owner = await bootstrapLocalSession(`guest-verify-byte-eq-${crypto.randomUUID()}`);
+    const wrongRoomId = `guest-verify-room-wrong-eq-${crypto.randomUUID()}`;
+    const disabledRoomId = `guest-verify-room-disabled-eq-${crypto.randomUUID()}`;
+
+    await writeRoom(wrongRoomId, owner);
+    await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(wrongRoomId)),
+      (instance: RoomDO) => {
+        return issueGuestPin(instance.db, wrongRoomId, Date.now());
+      },
+    );
+
+    await writeRoom(disabledRoomId, owner);
+    // disabled room has guest_access = 0
+
+    const wrongRes = await guestVerify(wrongRoomId, '000000');
+    const disabledRes = await guestVerify(disabledRoomId, '123456');
+
+    expect(wrongRes.status).toBe(disabledRes.status);
+    expect(wrongRes.body).toBe(disabledRes.body);
+  });
+
+  it('returns multi-case byte-identical 403 responses (wrong PIN, guest-disabled, non-existent)', async () => {
+    const owner = await bootstrapLocalSession(`guest-verify-byte-multi-${crypto.randomUUID()}`);
+    const wrongPinRoomId = `gvbyte-wrong-${crypto.randomUUID().slice(0,8)}`;
+    const disabledRoomId = `gvbyte-disabled-${crypto.randomUUID().slice(0,8)}`;
+    const nonexistentRoomId = `gvbyte-nonexist-${crypto.randomUUID().slice(0,8)}`;
+
+    // Setup room with enabled guest access for wrong PIN test
+    await writeRoom(wrongPinRoomId, owner);
+    await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(wrongPinRoomId)),
+      (instance: RoomDO) => {
+        return issueGuestPin(instance.db, wrongPinRoomId, Date.now());
+      },
+    );
+
+    // Setup disabled room
+    await writeRoom(disabledRoomId, owner);
+
+    // Get all three guest-verify responses
+    const wrongPinRes = await guestVerify(wrongPinRoomId, '000000');
+    const disabledRes = await guestVerify(disabledRoomId, '123456');
+    const nonexistentRes = await guestVerify(nonexistentRoomId, '123456');
+
+    // All must have the same status (generic 403 oracle protection)
+    expect(wrongPinRes.status).toBe(403);
+    expect(disabledRes.status).toBe(403);
+    expect(nonexistentRes.status).toBe(403);
+
+    // Body text must be byte-identical (no distinguishing information)
+    expect(wrongPinRes.body).toBe(disabledRes.body);
+    expect(wrongPinRes.body).toBe(nonexistentRes.body);
+  });
+
+  it('tombstoned room returns generic 403 (oracle protection) via direct RoomDO call', async () => {
+    const roomId = `gvtomb-${crypto.randomUUID().slice(0,8)}`;
+
+    // Create room, then manually tombstone it in the DO
+    await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      (instance: RoomDO) => {
+        // Issue a PIN first
+        issueGuestPin(instance.db, roomId, Date.now());
+        // Manually tombstone it by marking it as deleted
+        instance.db.prepare('INSERT OR REPLACE INTO room_tombstones (room_id, deleted_at) VALUES (?, ?)').run(roomId, Date.now());
+        return Promise.resolve(new Response(''));
+      },
+    );
+
+    // Verify it's actually tombstoned: authenticated request returns 410
+    const tombstoneCheckRes = await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      (instance: RoomDO) => {
+        return instance.fetch(
+          new Request('https://room/room?roomId=' + roomId + '&accountId=test', {
+            method: 'GET',
+          }),
+        );
+      },
+    );
+    expect(tombstoneCheckRes.status).toBe(410);
+
+    // Now verify guest-verify returns generic 403 for tombstoned room
+    const guestVerifyRes = await guestVerify(roomId, '123456');
+    expect(guestVerifyRes.status).toBe(403);
+  });
+
+  it('returns 401 for empty section without accountId', async () => {
+    const res = await SELF.fetch('https://example.com/api/whiteboard/room/test-room', {
+      method: 'GET',
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 401 for /settings without accountId', async () => {
+    const res = await SELF.fetch('https://example.com/api/whiteboard/room/test-room/settings', {
+      method: 'GET',
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 401 for /presence without accountId', async () => {
+    const res = await SELF.fetch('https://example.com/api/whiteboard/room/test-room/presence', {
+      method: 'GET',
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('response does not contain room name, members, queue, or PIN', async () => {
+    const owner = await bootstrapLocalSession(`guest-verify-no-pii-${crypto.randomUUID()}`);
+    const roomId = `guest-verify-room-pii-${crypto.randomUUID()}`;
+
+    await writeRoom(roomId, owner, { name: 'Secret Class' });
+    const pin = await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      (instance: RoomDO) => {
+        return issueGuestPin(instance.db, roomId, Date.now());
+      },
+    );
+
+    const res = await guestVerify(roomId, pin);
+    expect(res.status).toBe(200);
+    const body = res.body;
+    expect(body).not.toContain('Secret Class');
+    expect(body).not.toContain('name');
+    expect(body).not.toContain('member');
+    expect(body).not.toContain('queue');
+    expect(body).not.toContain(pin);
+  });
+
+  // Regression: control flow ordering - accountId check must come BEFORE tombstone check for non-guest routes
+  it('returns 401 (not 410) for tombstoned room without accountId on non-guest section', async () => {
+    const owner = await bootstrapLocalSession(`ordering-regression-${crypto.randomUUID()}`);
+    const roomId = `ordering-regression-room-${crypto.randomUUID()}`;
+
+    await writeRoom(roomId, owner);
+    await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, { method: 'DELETE' });
+
+    // Call RoomDO directly with tombstoned room and no accountId on the empty section
+    const res = await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      (instance: RoomDO) => {
+        return instance.fetch(
+          new Request('https://room/room?roomId=' + roomId, {
+            method: 'GET',
+          }),
+        );
+      },
+    );
+
+    // Must return 401 (accountId required) not 410 (tombstone)
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 401 (not 410) for tombstoned room without accountId on /presence', async () => {
+    const owner = await bootstrapLocalSession(`ordering-presence-${crypto.randomUUID()}`);
+    const roomId = `ordering-presence-room-${crypto.randomUUID()}`;
+
+    await writeRoom(roomId, owner);
+    await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, { method: 'DELETE' });
+
+    const res = await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      (instance: RoomDO) => {
+        return instance.fetch(
+          new Request('https://room/room/presence?roomId=' + roomId, {
+            method: 'GET',
+          }),
+        );
+      },
+    );
+
+    // Must return 401 (accountId required) not 410 (tombstone)
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 410 for tombstoned room WITH accountId', async () => {
+    const owner = await bootstrapLocalSession(`ordering-with-account-${crypto.randomUUID()}`);
+    const roomId = `ordering-with-account-room-${crypto.randomUUID()}`;
+
+    await writeRoom(roomId, owner);
+    await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, { method: 'DELETE' });
+
+    const res = await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      (instance: RoomDO) => {
+        return instance.fetch(
+          new Request('https://room/room?roomId=' + roomId + '&accountId=' + owner.accountId, {
+            method: 'GET',
+          }),
+        );
+      },
+    );
+
+    // With valid accountId, tombstone response should be returned (410)
+    expect(res.status).toBe(410);
+  });
+});
+
+describe('guest authorization matrix', () => {
+  let owner: LocalAuthSession;
+  let guest: LocalAuthSession;
+  let roomId: string;
+
+  beforeEach(async () => {
+    owner = await bootstrapLocalSession(`guest-owner-${crypto.randomUUID()}`);
+    guest = await bootstrapLocalSession(`guest-account-${crypto.randomUUID()}`);
+    roomId = `guest-room-${crypto.randomUUID()}`;
+    // Create room as owner
+    expect((await writeRoom(roomId, owner, { name: 'Guest Test Room' })).status).toBe(200);
+  });
+
+  // Helper to call RoomDO directly as guest
+  async function guestFetch(
+    path: string,
+    method: 'GET' | 'POST' | 'DELETE' | 'PATCH' = 'GET',
+    body?: Record<string, unknown>,
+  ): Promise<Response> {
+    const roomStub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+    return runInDurableObject(roomStub, (instance: RoomDO) => {
+      // Extract path and query string if present
+      const [pathPart, queryPart] = path.split('?');
+      const baseUrl = `https://room/room${pathPart}`;
+      // Build full URL with both existing query params and our auth params
+      const separator = queryPart ? '&' : '?';
+      const url = `${baseUrl}${queryPart ? '?' + queryPart + '&' : '?'}roomId=${roomId}&accountId=${guest.accountId}&guest=1`;
+      const request = new Request(url, {
+        method,
+        headers: body ? { 'content-type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      return instance.fetch(request);
+    });
+  }
+
+  // Helper to approve guest as editor
+  async function approveGuestAsEditor() {
+    const approval = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${guest.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    );
+    expect(approval.status).toBe(200);
+    // Verify the approval succeeded by checking the member role
+    const access = await authenticatedFetch(`/api/whiteboard/room/${roomId}/access`, guest);
+    const accessData = await access.json() as { role?: string };
+    expect(accessData.role).toBe('peer');
+  }
+
+  // Helper to approve guest as viewer
+  async function approveGuestAsViewer() {
+    const approval = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${guest.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'viewer' }),
+      },
+    );
+    expect(approval.status).toBe(200);
+    // Verify the approval succeeded
+    const access = await authenticatedFetch(`/api/whiteboard/room/${roomId}/access`, guest);
+    const accessData = await access.json() as { role?: string };
+    expect(accessData.role).toBe('viewer');
+  }
+
+  describe('guest denials', () => {
+    it('denies POST /room on non-existent room (create)', async () => {
+      const newRoomId = `guest-create-denied-${crypto.randomUUID()}`;
+      const roomStub = env.ROOMS.get(env.ROOMS.idFromName(newRoomId));
+      const res = await runInDurableObject(roomStub, (instance: RoomDO) => {
+        const url = `https://room/room?roomId=${newRoomId}&accountId=${guest.accountId}&guest=1`;
+        return instance.fetch(
+          new Request(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ elements: [] }),
+          }),
+        );
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it('denies DELETE /room', async () => {
+      const res = await guestFetch('', 'DELETE');
+      expect(res.status).toBe(403);
+    });
+
+    it('denies GET /settings', async () => {
+      const res = await guestFetch('/settings', 'GET');
+      expect(res.status).toBe(403);
+    });
+
+    it('denies POST /settings', async () => {
+      const res = await guestFetch('/settings', 'POST', { name: 'Hacked' });
+      expect(res.status).toBe(403);
+    });
+
+    it('denies PATCH /settings', async () => {
+      const res = await guestFetch('/settings', 'PATCH', { name: 'Hacked' });
+      expect(res.status).toBe(403);
+    });
+
+    it('denies GET /waiting', async () => {
+      const res = await guestFetch('/waiting', 'GET');
+      expect(res.status).toBe(403);
+    });
+
+    it('denies GET /requests', async () => {
+      const res = await guestFetch('/requests', 'GET');
+      expect(res.status).toBe(403);
+    });
+
+    it('denies POST /requests/:rid (approve)', async () => {
+      const res = await guestFetch(`/requests/${guest.accountId}`, 'POST', {
+        action: 'approve',
+        role: 'peer',
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it('denies POST /presence with action kick', async () => {
+      const res = await guestFetch('/presence', 'POST', { action: 'kick', peerId: 'some-peer' });
+      expect(res.status).toBe(403);
+    });
+
+    it('denies POST /presence with action suspend', async () => {
+      const res = await guestFetch('/presence', 'POST', { action: 'suspend', peerId: 'some-peer' });
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('guest permissions', () => {
+    it('allows POST /requests (self) and stores email as NULL', async () => {
+      const res = await guestFetch('/requests', 'POST', { userName: 'Guest User' });
+      expect(res.status).toBe(201);
+
+      // Verify email is NULL in the database
+      const roomStub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+      const row = await runInDurableObject(roomStub, (instance: RoomDO) => {
+        return instance.db.prepare(
+          `SELECT email FROM room_members WHERE room_id = ? AND account_id = ?`,
+        ).get(roomId, guest.accountId) as { email: string | null } | undefined;
+      });
+      expect(row?.email).toBeNull();
+    });
+
+    it('allows GET /access', async () => {
+      const res = await guestFetch('/access', 'GET');
+      expect(res.status).toBe(200);
+    });
+
+    it('allows POST /presence join as self', async () => {
+      const res = await guestFetch('/presence', 'POST', {
+        peerId: 'guest-peer-123',
+        userName: 'Guest User',
+        color: '#3498db',
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it('allows DELETE /waiting with own peerId', async () => {
+      // First create a waiting entry
+      const roomStub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+      const peerId = `guest-peer-${crypto.randomUUID()}`;
+      await runInDurableObject(roomStub, (instance: RoomDO) => {
+        instance.db.prepare(
+          `INSERT INTO waiting_peers (room_id, peer_id, user_name, color, requested_at, account_id)
+           VALUES (?, ?, 'Guest', '#3498db', ?, ?)`,
+        ).run(roomId, peerId, Date.now(), guest.accountId);
+      });
+
+      const res = await guestFetch(`/waiting?peerId=${peerId}`, 'DELETE');
+      expect(res.status).toBe(200);
+    });
+
+    it('denies DELETE /waiting with another peer\'s id', async () => {
+      const res = await guestFetch(`/waiting?peerId=other-peer`, 'DELETE');
+      expect(res.status).toBe(403);
+    });
+
+    it('allows GET /room after approval as editor', async () => {
+      // First queue the request
+      const reqRes = await guestFetch('/requests', 'POST', { userName: 'Guest' });
+      expect(reqRes.status).toBe(201);
+
+      // Approve as editor
+      await approveGuestAsEditor();
+
+      // Now GET /room should work
+      const res = await guestFetch('', 'GET');
+      expect(res.status).toBe(200);
+    });
+
+    it('allows POST /room (scene write) after approval as editor', async () => {
+      // First queue the request
+      const reqRes = await guestFetch('/requests', 'POST', { userName: 'Guest' });
+      expect(reqRes.status).toBe(201);
+
+      // Approve as editor
+      await approveGuestAsEditor();
+
+      // Now POST /room (scene write) should work
+      const res = await guestFetch('', 'POST', { elements: [{ id: 'test' }] });
+      expect(res.status).toBe(200);
+    });
+
+    it('allows GET /room after approval as viewer', async () => {
+      // First queue the request
+      const reqRes = await guestFetch('/requests', 'POST', { userName: 'Guest' });
+      expect(reqRes.status).toBe(201);
+
+      // Approve as viewer
+      await approveGuestAsViewer();
+
+      // Now GET /room should work
+      const res = await guestFetch('', 'GET');
+      expect(res.status).toBe(200);
+    });
+
+    it('denies POST /room (scene write) after approval as viewer', async () => {
+      // First queue the request
+      const reqRes = await guestFetch('/requests', 'POST', { userName: 'Guest' });
+      expect(reqRes.status).toBe(201);
+
+      // Approve as viewer
+      await approveGuestAsViewer();
+
+      // Now POST /room (scene write) should be denied
+      const res = await guestFetch('', 'POST', { elements: [{ id: 'test' }] });
+      expect(res.status).toBe(403);
+    });
+
+    it('denies GET /settings even after approval as editor', async () => {
+      // Queue and approve as editor
+      const reqRes = await guestFetch('/requests', 'POST', { userName: 'Guest' });
+      expect(reqRes.status).toBe(201);
+      await approveGuestAsEditor();
+
+      // Even with editor role, guests cannot access settings
+      const res = await guestFetch('/settings', 'GET');
+      expect(res.status).toBe(403);
+    });
+
+    it('denies GET /settings when guest=1 is stamped on the owner account', async () => {
+      const roomStub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+      const res = await runInDurableObject(roomStub, (instance: RoomDO) => {
+        const url = `https://room/room/settings?roomId=${roomId}&accountId=${owner.accountId}&guest=1`;
+        return instance.fetch(new Request(url, { method: 'GET' }));
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it('denies POST /settings when guest=1 is stamped on the owner account', async () => {
+      const roomStub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+      const res = await runInDurableObject(roomStub, (instance: RoomDO) => {
+        const url = `https://room/room/settings?roomId=${roomId}&accountId=${owner.accountId}&guest=1`;
+        return instance.fetch(new Request(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: 'Hacked' }),
+        }));
+      });
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('regression: non-guest paths unchanged', () => {
+    it('still allows owner GET /room', async () => {
+      const res = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner);
+      expect(res.status).toBe(200);
+    });
+
+    it('still allows owner POST /room (scene write)', async () => {
+      const res = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ elements: [{ id: 'owner-edit' }] }),
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it('still denies non-guest outsider GET /room', async () => {
+      const outsider = await bootstrapLocalSession(`guest-outsider-${crypto.randomUUID()}`);
+      const res = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, outsider);
+      expect(res.status).toBe(403);
+    });
   });
 });

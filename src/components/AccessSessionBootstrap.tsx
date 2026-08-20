@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { ajaxFetch, SESSION_EXPIRED_EVENT } from '@/lib/http/ajaxFetch';
+import { isGuestHostname } from '@/lib/guest/guestHost';
 
 const ATTEMPT_TIMEOUT_MS = 15_000;
 const ISSUE_ATTEMPTS = 3;
@@ -10,6 +11,11 @@ export function AccessSessionBootstrap({ children }: { children: React.ReactNode
   const [state, setState] = useState<'loading' | 'ready' | 'unavailable'>('loading');
 
   useEffect(() => {
+    if (isGuestHostname(window.location.hostname)) {
+      setState('ready');
+      return;
+    }
+
     let cancelled = false;
     const timers: ReturnType<typeof setTimeout>[] = [];
     const expire = () => {

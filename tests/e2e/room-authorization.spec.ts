@@ -1,6 +1,7 @@
 import { test, expect } from './fixtures';
 import type { Browser, Page } from '@playwright/test';
 import { appUrl, expectSessionCookie } from './helpers';
+import { cfAuthorizationCookie } from './origins';
 
 /**
  * Room authorization through the real local Access edge and workerd.
@@ -29,16 +30,7 @@ async function signedInPage(
   const token = await accessTokenFor(subject);
   const context = await browser.newContext({
     storageState: {
-      cookies: [{
-        name: 'CF_Authorization',
-        value: token,
-        domain: 'localhost',
-        path: '/',
-        expires: Math.floor(Date.now() / 1000) + 3_600,
-        httpOnly: true,
-        secure: true,
-        sameSite: 'Lax',
-      }],
+      cookies: [cfAuthorizationCookie(token)],
       origins: [],
     },
   });

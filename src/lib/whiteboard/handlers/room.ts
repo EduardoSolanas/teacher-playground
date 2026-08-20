@@ -1,5 +1,6 @@
 import type { RoomDatabase } from '../db';
 import { verifiedAccountId } from '../authz';
+import { issueGuestPin, revokeGuestAccess } from '../guestPin';
 import { canWriteBoard, eraseAccountFromRoom, getGrantRole, getMembership, insertOwner, isOwnerRole } from '../membership';
 import {
   hasRoomSceneIntent,
@@ -86,6 +87,57 @@ function readRoomSettings(db: RoomDatabase, roomId: string) {
       updated_at: number;
     }
     | undefined;
+}
+
+function guestSettingsExtra(db: RoomDatabase, roomId: string): Record<string, unknown> {
+  const row = db.prepare(
+    `SELECT guest_access, guest_pin, guest_pin_expires_at, guest_lockout_until
+     FROM rooms WHERE room_id = ?`,
+  ).get(roomId) as
+    | {
+      guest_access: number;
+      guest_pin: string | null;
+      guest_pin_expires_at: number | null;
+      guest_lockout_until: number | null;
+    }
+    | undefined;
+  if (!row) {
+    return { guestAccess: false, guestPin: null, guestPinExpiresAt: null, lockoutUntil: null };
+  }
+  const enabled = row.guest_access === 1;
+  return {
+    guestAccess: enabled,
+    guestPin: enabled ? row.guest_pin : null,
+    guestPinExpiresAt: enabled ? row.guest_pin_expires_at : null,
+    lockoutUntil: row.guest_lockout_until,
+  };
+}
+
+function applyGuestSettings(
+  db: RoomDatabase,
+  roomId: string,
+  now: number,
+  guestAccess: boolean | undefined,
+  rotateGuestPin: boolean | undefined,
+): void {
+  const row = db.prepare(
+    `SELECT guest_access FROM rooms WHERE room_id = ?`,
+  ).get(roomId) as { guest_access: number } | undefined;
+  const currentlyEnabled = row?.guest_access === 1;
+
+  if (guestAccess === false) {
+    revokeGuestAccess(db, roomId);
+    return;
+  }
+
+  const shouldBeEnabled = guestAccess === true || currentlyEnabled;
+  if (rotateGuestPin === true && shouldBeEnabled) {
+    issueGuestPin(db, roomId, now);
+    return;
+  }
+  if (guestAccess === true && !currentlyEnabled) {
+    issueGuestPin(db, roomId, now);
+  }
 }
 
 // POST /api/whiteboard/room/[roomId] - create room and/or save scene
@@ -208,7 +260,7 @@ export async function handleRoomSettings(
       return Response.json({ error: parseResult.error }, { status: 400 });
     }
 
-    const { maxUsers, hostPeerId, name, allowFirstUserHost } = parseResult.data;
+    const { maxUsers, hostPeerId, name, allowFirstUserHost, guestAccess, rotateGuestPin } = parseResult.data;
     const accountId = verifiedAccountId(request);
     const existing = readRoomSettings(db, roomId);
     if (!existing) {
@@ -251,6 +303,8 @@ export async function handleRoomSettings(
       roomId,
     );
 
+    applyGuestSettings(db, roomId, now, guestAccess, rotateGuestPin);
+
     // hostPeerId is a cursor label only. It must not insert presence or
     // bind another peer's row to the caller, and it never grants owner.
 
@@ -258,7 +312,7 @@ export async function handleRoomSettings(
     if (!settings) {
       return Response.json({ error: 'Failed to save' }, { status: 500 });
     }
-    return roomSettingsResponse(settings);
+    return roomSettingsResponse(settings, guestSettingsExtra(db, roomId));
   } catch (e) {
     return internalErrorResponse(e, 'handleRoomSettings');
   }
@@ -268,14 +322,23 @@ export async function handleRoomSettings(
 export async function handleRoomSettingsGet(
   db: RoomDatabase,
   roomId: string,
-  _request: Request,
+  request: Request,
 ): Promise<Response> {
   try {
     const settings = readRoomSettings(db, roomId);
     if (!settings) {
       return Response.json({ error: 'Room not found' }, { status: 404 });
     }
-    return roomSettingsResponse(settings, { created_at: settings.created_at });
+
+    const accountId = verifiedAccountId(request);
+    if (accountId && !isOwnerRole(getGrantRole(db, roomId, accountId))) {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    return roomSettingsResponse(settings, {
+      created_at: settings.created_at,
+      ...guestSettingsExtra(db, roomId),
+    });
   } catch (e) {
     return internalErrorResponse(e, 'handleRoomSettingsGet');
   }

@@ -32,6 +32,11 @@ new_sqlite_classes = ["IdentityDO"]
 ACCESS_ISSUER = "https://ha-smart-home.cloudflareaccess.com"
 ACCESS_AUDIENCE = "2dabab17621803a68a8a67a0db2dfe0133d29e73a448618c1743945743847621"
 ACCESS_JWKS_URL = "https://ha-smart-home.cloudflareaccess.com/cdn-cgi/access/certs"
+# Guest join hostnames (owner-applied). If either is unset, every request is
+# treated as teacher-host — the guest surface does not exist. Never default to
+# guest. Must be exact hostnames, not wildcards (see guest_implementation.md §6.5).
+# TEACHER_HOSTNAME = "app.example.com"
+# GUEST_HOSTNAME = "join.example.com"
 # LiveKit A/V (optional). Prefer `wrangler secret put LIVEKIT_*` in production.
 # When unset, POST /api/av/token returns 503 and the UI degrades gracefully.
 # LIVEKIT_URL = "wss://your-project.livekit.cloud"

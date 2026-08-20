@@ -46,7 +46,14 @@ const normalizedNameBase = z.preprocess(
 );
 
 export const ROOM_SCENE_KEYS = ['elements', 'viewport'] as const;
-export const ROOM_SETTINGS_KEYS = ['maxUsers', 'name', 'hostPeerId', 'allowFirstUserHost'] as const;
+export const ROOM_SETTINGS_KEYS = [
+  'maxUsers',
+  'name',
+  'hostPeerId',
+  'allowFirstUserHost',
+  'guestAccess',
+  'rotateGuestPin',
+] as const;
 
 function hasOwnKeys(body: object | null, keys: readonly string[]): boolean {
   if (!body) return false;
@@ -220,6 +227,11 @@ export const roomSettingsSchema = z.object({
   hostPeerId: z.string().regex(PEER_ID_RE).optional(),
   name: normalizedNameBase.optional(),
   allowFirstUserHost: z.boolean().optional(),
+  guestAccess: z.boolean().optional(),
+  rotateGuestPin: z.boolean().optional(),
+  // PIN is server-issued only. A client-supplied value is rejected, never stored.
+  guestPin: z.undefined().optional(),
+  pin: z.undefined().optional(),
 });
 
 export const roomPostSchema = roomSceneSchema;

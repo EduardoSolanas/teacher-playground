@@ -6,6 +6,7 @@ import {
   IdentityInputError,
   MAX_AUTHORIZATION_BATCH,
   applyIdentitySchema,
+  createGuestAccount,
   listOwnedRooms,
   readAccountAuthorizations,
   recordOwnedRoom,
@@ -17,6 +18,7 @@ import {
 } from '../lib/identity/identityStore';
 import {
   SessionUnauthorizedError,
+  authorizeGuestSession,
   authorizeSessionForPrincipal,
   clearSessionCookie,
   confirmSession,
@@ -24,9 +26,13 @@ import {
   enableAccount,
   eraseOwnAccount,
   exportOwnAccountData,
+  guestSessionCookie,
+  issueGuestSession,
   issueSessionForVerifiedPrincipal,
   logoutSession,
+  parseGuestSessionCookie,
   parseSessionCookie,
+  purgeExpiredGuestAccounts,
   purgeExpiredSessions,
   revokeAllSessions,
   rotateSession,
@@ -44,6 +50,7 @@ const RESOLVE_PATH = '/subjects/resolve';
 const ISSUE_SESSION_PATH = '/sessions/issue';
 const CURRENT_SESSION_PATH = '/sessions/current';
 const AUTHORIZE_SESSION_PATH = '/sessions/authorize';
+const AUTHORIZE_GUEST_PATH = '/sessions/authorize-guest';
 const CONFIRM_SESSION_PATH = '/sessions/confirm';
 const ROTATE_SESSION_PATH = '/sessions/rotate';
 const LOGOUT_SESSION_PATH = '/sessions/logout';
@@ -55,6 +62,8 @@ const ACCOUNT_ROOMS_PATH = '/accounts/rooms';
 const REVOKE_ALL_PATH = '/accounts/revoke-all';
 const DISABLE_ACCOUNT_PATH = '/accounts/disable';
 const ENABLE_ACCOUNT_PATH = '/accounts/enable';
+const GUESTS_ISSUE_PATH = '/guests/issue';
+const GUESTS_PURGE_PATH = '/guests/purge';
 export const GLOBAL_IDENTITY_OBJECT_NAME = 'global';
 
 function isSubjectBody(value: unknown): value is {
@@ -136,6 +145,52 @@ function isOwnedRoomBody(value: unknown): value is {
   return true;
 }
 
+function isGuestIssueBody(value: unknown): value is {
+  roomId: string;
+  displayName: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 2 &&
+    typeof body.roomId === 'string' &&
+    isValidRoomId(body.roomId) &&
+    typeof body.displayName === 'string' &&
+    body.displayName.trim().length > 0 &&
+    body.displayName.length <= 100
+  );
+}
+
+function isGuestPurgeBody(value: unknown): value is {
+  roomId: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    typeof body.roomId === 'string' &&
+    isValidRoomId(body.roomId)
+  );
+}
+
+function isAuthorizeGuestBody(value: unknown): value is {
+  roomId: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    typeof body.roomId === 'string' &&
+    isValidRoomId(body.roomId)
+  );
+}
+
 function mediaType(request: Request): string | null {
   return (
     request.headers
@@ -202,6 +257,7 @@ export class IdentityDO extends DurableObject {
 
   async fetch(request: Request): Promise<Response> {
     purgeExpiredSessions(this.db);
+    purgeExpiredGuestAccounts(this.db);
     const url = new URL(request.url);
     if (url.pathname === RESOLVE_PATH) {
       if (request.method !== 'POST') return methodNotAllowed('POST');
@@ -453,6 +509,69 @@ export class IdentityDO extends DurableObject {
       return result
         ? Response.json(result)
         : Response.json({ error: 'Not found' }, { status: 404 });
+    }
+
+    if (url.pathname === GUESTS_ISSUE_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readExactJson(request, isGuestIssueBody);
+      if ('response' in parsed) return parsed.response;
+      try {
+        const now = Date.now();
+        const account = createGuestAccount(this.db, {
+          roomId: parsed.body.roomId,
+          now,
+        });
+        const issued = await issueGuestSession(this.db, {
+          accountId: account.accountId,
+          roomId: parsed.body.roomId,
+          now,
+        });
+        const { token: _token, createdAt: _createdAt, ...publicSession } = issued;
+        return Response.json(publicSession, {
+          status: 201,
+          headers: noStore({ 'Set-Cookie': guestSessionCookie(issued) }),
+        });
+      } catch (error) {
+        if (
+          error instanceof IdentityInputError ||
+          error instanceof SessionUnauthorizedError
+        ) {
+          return Response.json({ error: error.message }, { status: 400 });
+        }
+        throw error;
+      }
+    }
+
+    if (url.pathname === AUTHORIZE_GUEST_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readExactJson(request, isAuthorizeGuestBody);
+      if ('response' in parsed) return parsed.response;
+      const token = parseGuestSessionCookie(request.headers.get('cookie'));
+      const session = token
+        ? await authorizeGuestSession(this.db, token, parsed.body.roomId)
+        : null;
+      if (!session) return unauthorized();
+      return Response.json(session, { headers: noStore() });
+    }
+
+    if (url.pathname === GUESTS_PURGE_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readExactJson(request, isGuestPurgeBody);
+      if ('response' in parsed) return parsed.response;
+      try {
+        const deleted = this.db
+          .prepare(
+            `DELETE FROM accounts
+             WHERE guest_room_id = ? AND provenance = 'guest'`,
+          )
+          .run(parsed.body.roomId).changes;
+        return Response.json({ ok: true, deleted }, { headers: noStore() });
+      } catch (error) {
+        if (error instanceof IdentityInputError) {
+          return Response.json({ error: error.message }, { status: 400 });
+        }
+        throw error;
+      }
     }
 
     return Response.json({ error: 'Not found' }, { status: 404 });

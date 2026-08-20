@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, afterEach } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 
 import TeacherRoomList, { teacherRoomTitle } from './TeacherRoomList';
@@ -123,5 +123,35 @@ describe('TeacherRoomList', () => {
 
     fireEvent.pointerDown(document.body);
     expect(screen.queryByTestId('whiteboard-room-rename-room-alpha')).toBeNull();
+  });
+
+  describe('guest-host join URL', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('shows the guest-host join URL, never the teacher-host origin', () => {
+      vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', 'join.example.com');
+      render(
+        <TeacherRoomList rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]} onOpen={vi.fn()} />,
+      );
+
+      const url = screen.getByTestId('guest-join-url');
+      expect(url.textContent).toBe('https://join.example.com/whiteboard/room-alpha');
+      expect(url.textContent).not.toContain(window.location.origin);
+      expect(url.textContent).not.toContain(`${window.location.host}/whiteboard/room-alpha`);
+    });
+
+    it('swaps the window origin to the guest host when the env var is unset', () => {
+      vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', '');
+      render(
+        <TeacherRoomList rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]} onOpen={vi.fn()} />,
+      );
+
+      const url = screen.getByTestId('guest-join-url').textContent ?? '';
+      expect(url).toMatch(/\/whiteboard\/room-alpha$/);
+      expect(url).not.toBe(`${window.location.origin}/whiteboard/room-alpha`);
+      expect(new URL(url).hostname).not.toBe(window.location.hostname);
+    });
   });
 });

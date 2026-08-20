@@ -253,6 +253,27 @@ describe('requestSchemas hardening (SEC-005)', () => {
     it('rejects non-conforming hostPeerId', () => {
       expect(roomSettingsSchema.safeParse({ hostPeerId: 'bad peer id!' }).success).toBe(false);
     });
+
+    it('accepts guestAccess and rotateGuestPin booleans', () => {
+      const enabled = roomSettingsSchema.safeParse({ guestAccess: true });
+      expect(enabled.success).toBe(true);
+      if (enabled.success) expect(enabled.data.guestAccess).toBe(true);
+      const rotated = roomSettingsSchema.safeParse({ rotateGuestPin: true });
+      expect(rotated.success).toBe(true);
+      if (rotated.success) expect(rotated.data.rotateGuestPin).toBe(true);
+      expect(roomSettingsSchema.safeParse({ guestAccess: false }).success).toBe(true);
+    });
+
+    it('rejects a client-supplied PIN string', () => {
+      expect(roomSettingsSchema.safeParse({ guestPin: '123456' }).success).toBe(false);
+      expect(roomSettingsSchema.safeParse({ pin: '123456' }).success).toBe(false);
+      expect(roomSettingsSchema.safeParse({ guestAccess: true, guestPin: '123456' }).success).toBe(false);
+    });
+
+    it('rejects non-boolean guestAccess and rotateGuestPin', () => {
+      expect(roomSettingsSchema.safeParse({ guestAccess: 'yes' }).success).toBe(false);
+      expect(roomSettingsSchema.safeParse({ rotateGuestPin: 1 }).success).toBe(false);
+    });
   });
 
   describe('route field mixing', () => {
@@ -262,6 +283,8 @@ describe('requestSchemas hardening (SEC-005)', () => {
       expect(hasRoomSettingsIntent({ name: 'Room' })).toBe(true);
       expect(hasRoomSettingsIntent({ hostPeerId: 'abc' })).toBe(true);
       expect(hasRoomSettingsIntent({ allowFirstUserHost: false })).toBe(true);
+      expect(hasRoomSettingsIntent({ guestAccess: true })).toBe(true);
+      expect(hasRoomSettingsIntent({ rotateGuestPin: true })).toBe(true);
       expect(hasRoomSettingsIntent(null)).toBe(false);
     });
 

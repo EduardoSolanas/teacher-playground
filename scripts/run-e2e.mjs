@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { request as httpRequest } from 'node:http';
 import net from 'node:net';
 import { resolve } from 'node:path';
 
@@ -81,28 +82,62 @@ async function waitForIssuer(issuer, child) {
   throw new Error('local Access issuer did not start');
 }
 
-async function waitForProxy(baseURL, token, proxy, upstream) {
+/**
+ * Probe loopback over IPv4 with an explicit Host header. Playwright talks to
+ * `*.localhost` (Chromium maps those names to 127.0.0.1); Node fetch to the
+ * same names can prefer IPv6 and miss the IPv4-only listeners.
+ */
+function probeLoopback(port, hostHeader, path, cookie) {
+  return new Promise((resolveStatus) => {
+    const request = httpRequest({
+      hostname: '127.0.0.1',
+      port,
+      path,
+      headers: {
+        Host: hostHeader,
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
+    }, (response) => {
+      response.resume();
+      resolveStatus(response.statusCode ?? 0);
+    });
+    request.once('error', () => resolveStatus(0));
+    request.end();
+  });
+}
+
+function httpOk(status) {
+  return status >= 200 && status < 400;
+}
+
+async function waitForProxy(accessProxyPort, upstreamPort, token, proxy, upstream) {
+  const teacherHost = `app.localhost:${accessProxyPort}`;
+  const guestHost = `join.localhost:${upstreamPort}`;
+  const guestRoomPath = `/whiteboard/${'a'.repeat(32)}`;
   for (let attempt = 0; attempt < 120; attempt += 1) {
     if (proxy.exitCode !== null) throw new Error(`local Access proxy exited with ${proxy.exitCode}`);
     if (upstream.exitCode !== null) throw new Error(`local Wrangler exited with ${upstream.exitCode}`);
-    try {
-      const response = await fetch(baseURL, { headers: { Cookie: `CF_Authorization=${token}` } });
-      if (response.ok) return;
-    } catch {
-      // Wait for Wrangler and the proxy to bind.
-    }
+    const teacherStatus = await probeLoopback(
+      accessProxyPort,
+      teacherHost,
+      '/',
+      `CF_Authorization=${token}`,
+    );
+    const guestStatus = await probeLoopback(upstreamPort, guestHost, guestRoomPath);
+    if (httpOk(teacherStatus) && httpOk(guestStatus)) return;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
   }
   throw new Error('local Access proxy/workerd did not start');
 }
 
 const appPort = process.env.E2E_PORT || String(await getAvailablePort());
-const baseURL = `http://localhost:${appPort}`;
 const skipBuild = process.argv.includes('--skip-build') || Boolean(process.env.E2E_SKIP_BUILD);
 const playwrightArgs = process.argv.slice(2).filter((argument) => argument !== '--skip-build');
 const accessPort = await getAvailablePort();
 const upstreamPort = await getAvailablePort();
 const accessProxyPort = Number(appPort);
+const teacherOrigin = `http://app.localhost:${accessProxyPort}`;
+const guestOrigin = `http://join.localhost:${upstreamPort}`;
 const accessIssuer = `http://127.0.0.1:${accessPort}`;
 const accessProxy = resolve(process.cwd(), 'scripts/local-access-proxy.mjs');
 const wrangler = resolve(process.cwd(), 'node_modules/wrangler/bin/wrangler.js');
@@ -152,7 +187,11 @@ try {
     if (!skipBuild) {
       buildProcess = spawn(process.execPath, [resolve(process.cwd(), 'node_modules/next/dist/bin/next'), 'build', '--webpack'], {
         stdio: 'inherit',
-        env: { ...process.env, NEXT_PUBLIC_E2E: '1' },
+        env: {
+          ...process.env,
+          NEXT_PUBLIC_E2E: '1',
+          NEXT_PUBLIC_GUEST_HOSTNAME: 'join.localhost',
+        },
       });
       buildDone = waitForChild(buildProcess);
     }
@@ -183,6 +222,8 @@ try {
       '--var', `ACCESS_ISSUER:${accessIssuer}`,
       '--var', 'ACCESS_AUDIENCE:teacher-playground-local',
       '--var', `ACCESS_JWKS_URL:${accessIssuer}/jwks`,
+      '--var', 'TEACHER_HOSTNAME:app.localhost',
+      '--var', 'GUEST_HOSTNAME:join.localhost',
       '--ip', '127.0.0.1',
       '--port', String(upstreamPort),
     ], { stdio: 'inherit' });
@@ -194,7 +235,7 @@ try {
       },
       stdio: 'inherit',
     });
-    await waitForProxy(baseURL, accessToken, accessProxyProcess, wranglerProcess);
+    await waitForProxy(accessProxyPort, upstreamPort, accessToken, accessProxyProcess, wranglerProcess);
     if (interrupted) throw new Error('E2E run interrupted');
 
     playwrightProcess = spawn(
@@ -205,7 +246,8 @@ try {
         env: {
           ...process.env,
           E2E_PORT: String(accessProxyPort),
-          PLAYWRIGHT_BASE_URL: baseURL,
+          PLAYWRIGHT_BASE_URL: teacherOrigin,
+          E2E_GUEST_ORIGIN: guestOrigin,
           E2E_ACCESS_ISSUER: accessIssuer,
           E2E_ACCESS_TOKEN: accessToken,
         },

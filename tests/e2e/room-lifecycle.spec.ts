@@ -2,6 +2,7 @@ import { test, expect } from './fixtures';
 import { Page } from '@playwright/test';
 import {
   appUrl,
+  unusedHexRoomId,
   createRoomWithMaxUsers,
   joinExistingRoom,
   approveFirstWaitingPeer,
@@ -132,7 +133,7 @@ test.describe('Room lifecycle', () => {
   }) => {
     // Typing a URL is join, not create: first-user host is off and GET /room
     // requires a grant, so a never-created id cannot become a live board.
-    const fakeRoomId = `never-created-${Date.now()}`;
+    const fakeRoomId = unusedHexRoomId();
     await page.goto(appUrl(`/whiteboard/${fakeRoomId}`));
 
     const usernameInput = page.getByTestId('whiteboard-username-input');

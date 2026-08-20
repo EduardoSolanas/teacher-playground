@@ -6,7 +6,7 @@ static frontend and the room API, with one Durable Object per whiteboard room.
 ## Architecture
 
 ```
-Browser
+Browser (teacher hostname)
   |  Cloudflare Access assertion + local app session
   |-- GET /whiteboard/<roomId>        -> static asset (placeholder page)
   |-- /api/whiteboard/room/<roomId>/* -> RoomDO for that room
@@ -29,6 +29,19 @@ owns two things at once:
 
 This is why the room API must not be scaled horizontally: signaling peers have
 to meet on one instance. The Durable Object guarantees that per room.
+
+### Guest hostname (planned — dashboard not applied)
+
+Guest join uses a **second hostname** on the same Worker. The teacher hostname
+keeps the existing Access application (exact hostname only — no wildcard). The
+guest hostname gets DNS and a Worker route but **no Access application**; adding
+one breaks guest join. Set `TEACHER_HOSTNAME` and `GUEST_HOSTNAME` in Worker
+env; if either is unset, every request is treated as teacher-host. Before
+enabling guests in production, set `workers_dev = false` in `wrangler.toml` and
+spend the zone's single free rate-limit rule on `POST /auth/guest` on the guest
+hostname. See `CLOUDFLARE_ACCESS_STAGING.md` and `guest_implementation.md` §6.5;
+none of this dashboard or Wrangler work is applied or verified in this
+repository yet.
 
 ### Live-socket revocation
 

@@ -13,6 +13,10 @@ ENVIRONMENT = "local-test"
 ACCESS_ISSUER = "http://127.0.0.1:8790"
 ACCESS_AUDIENCE = "teacher-playground-local"
 ACCESS_JWKS_URL = "http://127.0.0.1:8790/jwks"
+# Split-hostname guest join (Task 8). Worker tests override these via miniflare
+# bindings. If either is unset, the Worker treats every request as teacher-host.
+TEACHER_HOSTNAME = "example.com"
+GUEST_HOSTNAME = "join.example.com"
 # LiveKit (optional for local A/V smoke). Prefer secrets via `.dev.vars`:
 # LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET
 

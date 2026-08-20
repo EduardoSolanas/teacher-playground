@@ -9,7 +9,7 @@ const SECRET_ELEMENT_ID = 'P3-SECRET-MARKER-RECT';
 
 /** Room page is SSG; landing `/whiteboard` can stick on session hydration. */
 async function bootstrapSecureSession(page: Page) {
-  await page.goto('/whiteboard/_room');
+  await page.goto(`/whiteboard/${'0'.repeat(32)}`);
   await expectSessionCookie(page);
 }
 

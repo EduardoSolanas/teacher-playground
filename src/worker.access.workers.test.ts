@@ -960,6 +960,84 @@ describe('real local Access boundary through workerd', () => {
     const read = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner);
     expect(await read.json()).toMatchObject({ maxUsers: 2 });
   });
+
+  it('refuses guest-verify subpath with 404 for authenticated POST', async () => {
+    const session = await bootstrapLocalSession('guest-verify-post');
+    const response = await authenticatedFetch('/api/whiteboard/room/guest-verify-test/guest-verify', session, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ pin: '1234' }),
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it('refuses guest-verify subpath with 404 for authenticated GET', async () => {
+    const session = await bootstrapLocalSession('guest-verify-get');
+    const response = await authenticatedFetch('/api/whiteboard/room/guest-verify-test/guest-verify', session);
+    expect(response.status).toBe(404);
+  });
+
+  it('refuses guest-verify subpath with 404 for authenticated PUT', async () => {
+    const session = await bootstrapLocalSession('guest-verify-put');
+    const response = await authenticatedFetch('/api/whiteboard/room/guest-verify-test/guest-verify', session, {
+      method: 'PUT',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ pin: '1234' }),
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it('refuses guest-verify subpath with 404 for authenticated DELETE', async () => {
+    const session = await bootstrapLocalSession('guest-verify-delete');
+    const response = await authenticatedFetch('/api/whiteboard/room/guest-verify-test/guest-verify', session, {
+      method: 'DELETE',
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it('refuses guest-verify subpath with 404 for authenticated PATCH', async () => {
+    const session = await bootstrapLocalSession('guest-verify-patch');
+    const response = await authenticatedFetch('/api/whiteboard/room/guest-verify-test/guest-verify', session, {
+      method: 'PATCH',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ pin: '1234' }),
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it('refuses guest-verify with trailing slash with 404', async () => {
+    const session = await bootstrapLocalSession('guest-verify-trailing');
+    const response = await authenticatedFetch('/api/whiteboard/room/guest-verify-test/guest-verify/', session);
+    expect(response.status).toBe(404);
+  });
+
+  it('refuses guest-verify with deeper path with 404', async () => {
+    const session = await bootstrapLocalSession('guest-verify-deeper');
+    const response = await authenticatedFetch('/api/whiteboard/room/guest-verify-test/guest-verify/anything', session);
+    expect(response.status).toBe(404);
+  });
+
+  it('returns 401 for guest-verify without session before the 404 check', async () => {
+    const response = await accessFetch('/api/whiteboard/room/guest-verify-test/guest-verify', 'guest-verify-nosession');
+    expect(response.status).toBe(401);
+  });
+
+  it('allows other room subpaths to work as before (regression test)', async () => {
+    const owner = await bootstrapLocalSession('guest-verify-regression');
+    const roomId = 'guest-verify-room';
+    const create = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    });
+    expect(create.status).toBe(200);
+
+    const access = await authenticatedFetch(`/api/whiteboard/room/${roomId}/access`, owner);
+    expect(access.status).toBe(200);
+
+    const root = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner);
+    expect(root.status).toBe(200);
+  });
 });
 
 function teacherRoomIds(body: unknown): string[] {

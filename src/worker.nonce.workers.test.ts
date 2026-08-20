@@ -39,7 +39,7 @@ describe('CSP nonce wiring through the real Worker (SEC-CSP)', () => {
 
   it('stamps /whiteboard/<roomId> HTML with a CSP nonce', async () => {
     const session = await bootstrapLocalSession('nonce-room-page');
-    const response = await authenticatedFetch('/whiteboard/test-room-abc', session);
+    const response = await authenticatedFetch(`/whiteboard/${'d'.repeat(32)}`, session);
 
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/html');

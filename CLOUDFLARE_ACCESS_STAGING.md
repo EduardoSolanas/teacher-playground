@@ -6,12 +6,42 @@ This is the observable configuration and verification contract for the staging
 Access boundary. It is not evidence that the configuration has been applied.
 Never add account tokens, OAuth client secrets, Access cookies, or JWTs here.
 
-## Required application configuration
+## Two hostnames (teacher + guest)
+
+Both hostnames route to the same Worker. The edge boundary differs by hostname:
+
+| Hostname | Access application | Serves |
+| --- | --- | --- |
+| Teacher (`TEACHER_HOSTNAME`) | **Yes** — one self-hosted application | Full app (teachers, Access-authenticated users) |
+| Guest (`GUEST_HOSTNAME`) | **No — deliberately none** | Guest join surface only |
+
+- **Teacher hostname:** keep exactly one **Self-hosted / public hostname**
+  Access application scoped to that **exact hostname, never a wildcard**. A
+  `*.<zone>` application would also match the guest hostname (for example
+  `join.<zone>`) and silently break guest join.
+- **Guest hostname:** DNS record and Worker route only — **no Access
+  application of any kind**. Adding Access in front of the guest hostname breaks
+  guest join; its absence is the design.
+- **No `Bypass` policy anywhere.** This design does not need one, and a Bypass
+  would disable Access request logging for whatever it covers.
+- Record `TEACHER_HOSTNAME` and `GUEST_HOSTNAME` as Worker environment
+  variables. If either is unset, the Worker treats **every** request as
+  teacher-host (the guest surface does not exist); never the reverse.
+- **`workers_dev = false`** in `wrangler.toml` is a **release blocker** once
+  the guest surface exists: `*.workers.dev` is an unauthenticated entrance that
+  bypasses the zone WAF and rate limiting.
+- **Rate limiting:** the free plan allows exactly one rate-limiting rule. Spend
+  it on `POST /auth/guest` on the guest hostname — the most abusable
+  unauthenticated route once guests exist. Room creation stays account-gated with
+  app-level quotas.
+
+## Required application configuration (teacher hostname)
 
 - Create exactly one **Self-hosted / public hostname** Access application for
-  the complete staging hostname, with no narrower path. Protecting the whole
-  hostname covers the static site, `/api/*`, and the `/signaling` WebSocket
-  upgrade under the same boundary.
+  the complete **teacher** staging hostname, with no narrower path. Protecting
+  the whole hostname covers the static site, `/api/*`, and the `/signaling`
+  WebSocket upgrade under the same boundary. Do **not** scope this application
+  as a zone wildcard.
 - Enable only the Google and Facebook identity providers for this application.
   Apple and one-time PIN are out of scope.
 - Attach an `Allow` policy restricted to the Google and Facebook login methods.
@@ -35,7 +65,9 @@ and warns that [Bypass disables Access enforcement and logging](https://develope
 
 Retain a sanitized dashboard/API export showing:
 
-- one application ID, one staging hostname without a path, and its Access AUD;
+- one application ID, the teacher staging hostname without a path, and its Access
+  AUD;
+- evidence that the guest staging hostname has **no** Access application;
 - the application type is self-hosted/public-hostname;
 - only Google and Facebook are selected login methods;
 - every attached human policy is `Allow`, with no `Bypass`, OTP, `Everyone`, or
@@ -91,6 +123,7 @@ available in this task. The configuration and its real social-login evidence
 therefore remain unapplied and unverified.
 
 To unblock, an authorized owner must provide a non-production Cloudflare account
-and zone, choose the staging hostname, configure the Google and Facebook OAuth
-applications with Cloudflare's callback, and authorize an isolated staging
-deployment/configuration test. Production deployment is not authorized.
+and zone, choose the teacher and guest staging hostnames, configure the Google
+and Facebook OAuth applications with Cloudflare's callback, and authorize an
+isolated staging deployment/configuration test. Production deployment is not
+authorized.
