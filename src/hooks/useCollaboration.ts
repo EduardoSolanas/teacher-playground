@@ -286,11 +286,24 @@ export function useCollaboration(roomId: string) {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(async () => {
         try {
+          // Excalidraw marks erased elements isDeleted rather than removing
+          // them, and each freedraw stroke carries its full point array —
+          // ~10KB apiece. Persisting them meant a board grew without bound as
+          // it was drawn on and erased, until the save started failing with
+          // 413 and the teacher silently stopped getting saves at all. A board
+          // with four strokes was already three-quarters tombstones.
+          //
+          // This snapshot is the restore-the-board copy, so deleted elements
+          // have no value in it. Tombstones still travel over Yjs, where they
+          // stop a reconnecting peer resurrecting an erased stroke.
+          const liveElements = newElements.filter(
+            (element) => !(element as { isDeleted?: boolean }).isDeleted,
+          );
           const res = await ajaxFetch(`/api/whiteboard/room/${roomId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              elements: newElements,
+              elements: liveElements,
               viewport: newViewport,
             }),
           });
