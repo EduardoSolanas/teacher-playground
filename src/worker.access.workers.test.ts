@@ -661,7 +661,9 @@ describe('real local Access boundary through workerd', () => {
 
     const list = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, joiner);
     expect(list.status).toBe(200);
-  });
+    // 90 sequential workerd round trips: past vitest's 5s default under
+    // suite load. Same reason the scene-write cap test below extends it.
+  }, 20_000);
 
   it('rate-limits existing-room scene writes per account with 429 and Retry-After', async () => {
     const session = await bootstrapLocalSession('boundary-scene-write-rate');
