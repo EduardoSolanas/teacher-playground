@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 56" width="360" height="56" role="img" aria-label="Teacher Playground">
+  <title>Teacher Playground</title>
+  <!-- Matches the wordmark on the landing page: Georgia italic in brand blue,
+       with the red underline under "Teacher". Colours are the same tokens as
+       public/index.html (--blue #2a5db0, --red #c0392b). -->
+  <text x="4" y="34"
+        font-family="Georgia, 'Iowan Old Style', 'Times New Roman', serif"
+        font-style="italic" font-weight="700" font-size="30" fill="#2a5db0">
+    <tspan>Teacher</tspan><tspan dx="8">Playground</tspan>
+  </text>
+  <rect x="4" y="40" width="120" height="3" fill="#c0392b"/>
+</svg>
