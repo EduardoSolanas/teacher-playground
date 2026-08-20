@@ -242,18 +242,26 @@ export default function ExcalidrawWrapper({
   const cursorPendingRef = useRef<any>(null);
   const cursorTimerRef = useRef<number | null>(null);
 
-  const handleElementsChange = useCallback(
-    (el: readonly any[], _appState: any) => {
-      if (isRemoteUpdateRef.current) return;
+  /**
+   * Publishing a stroke while it is being drawn.
+   *
+   * Excalidraw fires onChange for every pointer sample. Each commit below
+   * serializes the whole scene, deep-compares it, and walks every element and
+   * every key to write Yjs — for a freedraw element that includes its entire
+   * point array. Doing all of that per sample is O(board size) tens of times a
+   * second, so the lag grew with how much had been drawn.
+   *
+   * While the pointer is down the work is throttled to this interval, with a
+   * trailing call so the last sample is never dropped, and pointer up flushes.
+   * 50ms is ~20 publishes a second: remote strokes still look continuous, and
+   * cursors travel on their own faster channel.
+   */
+  const STROKE_COMMIT_INTERVAL_MS = 50;
+  const strokeCommitAtRef = useRef(0);
+  const strokeTrailingTimerRef = useRef<number | null>(null);
 
-      if (!hasAcceptedInitialSceneRef.current && el.length === 0) {
-        return;
-      }
-
-      if (el.length === 0 && lastSyncedElementsRef.current.length > 0 && !isPointerDownRef.current) {
-        return;
-      }
-
+  const commitElements = useCallback(
+    (el: readonly any[]) => {
       hasAcceptedInitialSceneRef.current = true;
       const serializedElements = serializeExcalidrawElements(el);
       const same = excalidrawElementsEqual(serializedElements, lastSyncedElementsRef.current);
@@ -292,6 +300,49 @@ export default function ExcalidrawWrapper({
       }
     },
     [yDoc, yElementsArray, onElementsChange],
+  );
+
+  const handleElementsChange = useCallback(
+    (el: readonly any[], _appState: any) => {
+      if (isRemoteUpdateRef.current) return;
+
+      if (!hasAcceptedInitialSceneRef.current && el.length === 0) {
+        return;
+      }
+
+      if (el.length === 0 && lastSyncedElementsRef.current.length > 0 && !isPointerDownRef.current) {
+        return;
+      }
+
+      if (!isPointerDownRef.current) {
+        if (strokeTrailingTimerRef.current !== null) {
+          window.clearTimeout(strokeTrailingTimerRef.current);
+          strokeTrailingTimerRef.current = null;
+        }
+        commitElements(el);
+        return;
+      }
+
+      const now = Date.now();
+      const since = now - strokeCommitAtRef.current;
+      if (since >= STROKE_COMMIT_INTERVAL_MS) {
+        strokeCommitAtRef.current = now;
+        commitElements(el);
+        return;
+      }
+
+      // Too soon: let the trailing timer read the live scene when it fires, so
+      // the newest sample wins rather than this stale one.
+      if (strokeTrailingTimerRef.current === null) {
+        strokeTrailingTimerRef.current = window.setTimeout(() => {
+          strokeTrailingTimerRef.current = null;
+          strokeCommitAtRef.current = Date.now();
+          const api = apiRef.current;
+          if (api) commitElements(api.getSceneElements());
+        }, STROKE_COMMIT_INTERVAL_MS - since);
+      }
+    },
+    [commitElements],
   );
 
   const publishPointer = useCallback(
@@ -344,6 +395,7 @@ export default function ExcalidrawWrapper({
 
   useEffect(() => () => {
     if (cursorTimerRef.current !== null) window.clearTimeout(cursorTimerRef.current);
+    if (strokeTrailingTimerRef.current !== null) window.clearTimeout(strokeTrailingTimerRef.current);
   }, []);
 
   const handlePointerDown = useCallback(() => {
@@ -352,6 +404,27 @@ export default function ExcalidrawWrapper({
 
   const handlePointerUp = useCallback(() => {
     isPointerDownRef.current = false;
+    // Cancel any pending trailing commit and publish the finished stroke now,
+    // so the last sample is never left sitting behind the throttle.
+    if (strokeTrailingTimerRef.current !== null) {
+      window.clearTimeout(strokeTrailingTimerRef.current);
+      strokeTrailingTimerRef.current = null;
+    }
+    strokeCommitAtRef.current = 0;
+    const api = apiRef.current;
+    if (api) {
+      try {
+        const finalElements = api.getSceneElements();
+        // Same guard handleElementsChange applies: Excalidraw reports a
+        // transient empty scene in places, and publishing that would wipe a
+        // board that still has content. A real clear goes through its own path.
+        const wouldWipe = finalElements.length === 0
+          && lastSyncedElementsRef.current.length > 0;
+        if (!wouldWipe) commitElements(finalElements);
+      } catch {
+        // A failed final publish must not wedge the pointer state.
+      }
+    }
     // Flush the scene the stroke produced, so the empty-board check and the
     // debounced persist see the finished result exactly once.
     const deferred = deferredElementsRef.current;
@@ -359,7 +432,7 @@ export default function ExcalidrawWrapper({
       deferredElementsRef.current = null;
       onElementsChange(deferred);
     }
-  }, [onElementsChange]);
+  }, [commitElements, onElementsChange]);
 
   if (!isClient) {
     return <div className="w-full h-full min-h-[400px]" />;
