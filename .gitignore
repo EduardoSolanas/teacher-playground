@@ -51,3 +51,7 @@ tmp/
 
 # Agent scratch state
 .omo/
+
+# Excalidraw runtime assets, copied from node_modules by prebuild.
+/public/fonts
+/public/data

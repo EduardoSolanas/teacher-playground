@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "npm run dev:worker",
     "dev:next": "next dev --webpack",
+    "prebuild": "node scripts/copy-excalidraw-assets.mjs",
     "build": "next build --webpack",
     "dev:worker": "next build && wrangler dev",
     "dev:access": "node scripts/local-access-issuer.mjs",

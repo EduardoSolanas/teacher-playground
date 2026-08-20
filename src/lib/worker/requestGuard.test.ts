@@ -155,16 +155,16 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(isRouteAllowedOnHost('/_next/static/chunk.js', 'POST', 'guest')).toBe(false);
     });
 
-    it('GET/HEAD /excalidraw-assets/* is allowed on both hosts', () => {
-      expect(isRouteAllowedOnHost('/excalidraw-assets/font.woff2', 'GET', 'teacher')).toBe(true);
-      expect(isRouteAllowedOnHost('/excalidraw-assets/font.woff2', 'GET', 'guest')).toBe(true);
-      expect(isRouteAllowedOnHost('/excalidraw-assets/icon.png', 'HEAD', 'teacher')).toBe(true);
-      expect(isRouteAllowedOnHost('/excalidraw-assets/icon.png', 'HEAD', 'guest')).toBe(true);
+    it('GET/HEAD Excalidraw runtime assets are allowed on both hosts', () => {
+      expect(isRouteAllowedOnHost('/fonts/Xiaolai/Xiaolai-Regular.woff2', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/fonts/Xiaolai/Xiaolai-Regular.woff2', 'GET', 'guest')).toBe(true);
+      expect(isRouteAllowedOnHost('/data/image-GAAHSSAO.js', 'HEAD', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/data/image-GAAHSSAO.js', 'HEAD', 'guest')).toBe(true);
     });
 
-    it('POST /excalidraw-assets/* is not allowed', () => {
-      expect(isRouteAllowedOnHost('/excalidraw-assets/font.woff2', 'POST', 'teacher')).toBe(false);
-      expect(isRouteAllowedOnHost('/excalidraw-assets/font.woff2', 'POST', 'guest')).toBe(false);
+    it('POST to Excalidraw runtime assets is not allowed', () => {
+      expect(isRouteAllowedOnHost('/fonts/Xiaolai/Xiaolai-Regular.woff2', 'POST', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/fonts/Xiaolai/Xiaolai-Regular.woff2', 'POST', 'guest')).toBe(false);
     });
 
     it('GET/HEAD /favicon.ico is allowed on both hosts', () => {

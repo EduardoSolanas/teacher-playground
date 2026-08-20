@@ -101,7 +101,8 @@ export function isRouteAllowedOnHost(
       // Cloudflare Access fetches this to brand the login page.
       || pathname === '/logo.svg'
       || pathname.startsWith('/_next/')
-      || pathname.startsWith('/excalidraw-assets/');
+      || pathname.startsWith('/fonts/')
+      || pathname.startsWith('/data/');
     if (!isPublicMarketingPath) return false;
     return method === 'GET' || method === 'HEAD';
   }
@@ -141,8 +142,10 @@ export function isRouteAllowedOnHost(
     return method === 'GET' || method === 'HEAD';
   }
 
-  // GET/HEAD /excalidraw-assets/* on both hosts
-  if (pathname.startsWith('/excalidraw-assets/')) {
+  // GET/HEAD Excalidraw's runtime assets on both hosts. Excalidraw resolves
+  // "./fonts/..." and "./data/..." against EXCALIDRAW_ASSET_PATH, which the
+  // root layout sets to "/", so they are served from these two prefixes.
+  if (pathname.startsWith('/fonts/') || pathname.startsWith('/data/')) {
     return method === 'GET' || method === 'HEAD';
   }
 
