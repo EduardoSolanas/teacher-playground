@@ -8,6 +8,7 @@
     "build": "next build --webpack",
     "dev:worker": "next build && wrangler dev",
     "dev:access": "node scripts/local-access-issuer.mjs",
+    "dev:local": "node scripts/dev-local.mjs",
     "deploy": "npm run build && wrangler deploy",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.worker.json",
