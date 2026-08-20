@@ -316,7 +316,7 @@ function RoomContent({ roomId }: { roomId: string }) {
           activeTool={activeTool}
           isLocalHost={isLocalHost}
           onToolChange={handleToolChange}
-          onViewportChange={() => {}}
+          onViewportChange={noopViewportChange}
           onElementsChange={setElements}
         />
         {elements.length === 0 && activeTool === 'select' && <EmptyState />}
@@ -413,6 +413,9 @@ function useRoomIdFromPath(): string | null {
 
   return roomId;
 }
+
+/** Stable identity: an inline arrow would be a new prop on every render. */
+const noopViewportChange = () => {};
 
 export default function WhiteboardRoomPage() {
   const roomId = useRoomIdFromPath();

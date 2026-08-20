@@ -51,6 +51,8 @@ export default function ExcalidrawWrapper({
   const lastSyncedElementsRef = useRef<any[]>([]);
   const lastPublishedIdsRef = useRef<string[]>([]);
   const pendingElementsRef = useRef<any[] | null>(null);
+  /** Scene captured mid-stroke, flushed to React state on pointer up. */
+  const deferredElementsRef = useRef<any[] | null>(null);
   const hasAcceptedInitialSceneRef = useRef(false);
   const localPeerIdRef = useRef(localPeerId);
   localPeerIdRef.current = localPeerId;
@@ -262,7 +264,22 @@ export default function ExcalidrawWrapper({
       lastPublishedIdsRef.current = serializedElements
         .map((element) => element.id)
         .filter((id): id is string => typeof id === 'string');
-      onElementsChange(serializedElements);
+
+      // Excalidraw fires onChange for every pointer sample, so this runs tens of
+      // times per second while drawing. Handing the whole scene to React state
+      // on each one re-rendered the entire board subtree mid-stroke, and the
+      // cost grew with the size of the board — the drawing lag users reported,
+      // reproducible with the host alone.
+      //
+      // Nothing in that state is needed until the stroke ends: it drives an
+      // is-the-board-empty check and the debounced HTTP persist. The Yjs write
+      // below is NOT deferred, so remote peers still see the stroke live.
+      if (isPointerDownRef.current) {
+        deferredElementsRef.current = serializedElements;
+      } else {
+        deferredElementsRef.current = null;
+        onElementsChange(serializedElements);
+      }
 
       if (yDoc && yElementsArray) {
         try {
@@ -335,7 +352,14 @@ export default function ExcalidrawWrapper({
 
   const handlePointerUp = useCallback(() => {
     isPointerDownRef.current = false;
-  }, []);
+    // Flush the scene the stroke produced, so the empty-board check and the
+    // debounced persist see the finished result exactly once.
+    const deferred = deferredElementsRef.current;
+    if (deferred) {
+      deferredElementsRef.current = null;
+      onElementsChange(deferred);
+    }
+  }, [onElementsChange]);
 
   if (!isClient) {
     return <div className="w-full h-full min-h-[400px]" />;
