@@ -144,6 +144,57 @@ test.describe('Waiting Room', () => {
     await context2.close();
   });
 
+  test('a student knocking opens the roster the host had collapsed', async ({ browser }) => {
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
+
+    const page1 = await context1.newPage();
+    const page2 = await context2.newPage();
+
+    const roomId = await createRoomWithMaxUsers(page1, 'AutoExpandHost', 1);
+
+    // Collapse before anyone knocks: the arrival is what has to reopen it, so
+    // a panel that was already open would prove nothing.
+    const toggle = page1.getByTestId('whiteboard-presence-toggle');
+    await toggle.click({ force: true });
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false', { timeout: 15000 });
+
+    await joinExistingRoom(page2, roomId);
+    await expectWaiting(page2);
+
+    await expect(page1.getByTestId('whiteboard-presence-toggle'))
+      .toHaveAttribute('aria-expanded', 'true', { timeout: 15000 });
+    await expect(page1.getByTestId('whiteboard-waiting-section')).toBeVisible({ timeout: 15000 });
+
+    await context1.close();
+    await context2.close();
+  });
+
+  test('the host can collapse the roster again while a student is still waiting', async ({ browser }) => {
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
+
+    const page1 = await context1.newPage();
+    const page2 = await context2.newPage();
+
+    const roomId = await createRoomWithMaxUsers(page1, 'ReCollapseHost', 1);
+
+    await joinExistingRoom(page2, roomId);
+    await expectWaiting(page2);
+
+    const toggle = page1.getByTestId('whiteboard-presence-toggle');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true', { timeout: 15000 });
+
+    // Deriving the panel's state from "someone is waiting" would pin it open
+    // here and leave the host no way out of it.
+    await toggle.click({ force: true });
+    await expect(page1.getByTestId('whiteboard-presence-toggle'))
+      .toHaveAttribute('aria-expanded', 'false', { timeout: 15000 });
+
+    await context1.close();
+    await context2.close();
+  });
+
   test('host can reject a waiting peer', async ({ browser }) => {
     const context1 = await newAuthenticatedContext(browser);
     const context2 = await newAuthenticatedContext(browser);

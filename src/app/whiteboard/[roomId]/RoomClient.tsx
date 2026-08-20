@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, Suspense } from 'react';
+import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { useCollaboration } from '@/hooks/useCollaboration';
@@ -16,6 +16,7 @@ import PresencePanel from '@/components/whiteboard/PresencePanel';
 import RaisedHandCue from '@/components/whiteboard/RaisedHandCue';
 import { shouldCollapsePresenceForViewport } from '@/lib/whiteboard/presenceViewport';
 import { shouldOverlayConnectingScreen } from '@/lib/whiteboard/connectingOverlay';
+import { shouldExpandForArrival } from '@/lib/whiteboard/waitingArrival';
 import RemoteCursorOverlay from '@/components/whiteboard/RemoteCursorOverlay';
 import EmptyState from '@/components/whiteboard/EmptyState';
 import ClearBoardModal from '@/components/whiteboard/ClearBoardModal';
@@ -232,6 +233,19 @@ function RoomContent({ roomId }: { roomId: string }) {
   // Host status comes only from the recorded host. A first-in-list fallback
   // would let whoever happens to be listed first silently become host.
   const isLocalHost = Boolean(isHost || localUser?.isHost);
+
+  // A student knocking is the one event a collapsed roster hides that the
+  // teacher has to act on, and the admit button lives inside the panel. Open it
+  // for them rather than leaving a badge to be noticed mid-lesson. Only the
+  // host can admit, so only the host is interrupted.
+  const previousWaitingRef = useRef(0);
+  useEffect(() => {
+    const previousWaiting = previousWaitingRef.current;
+    previousWaitingRef.current = waitingPeers.length;
+    if (isLocalHost && shouldExpandForArrival(previousWaiting, waitingPeers.length)) {
+      setPresenceCollapsed(false);
+    }
+  }, [isLocalHost, waitingPeers.length]);
 
   if (!userName) {
     if (!guestHostReady) {
