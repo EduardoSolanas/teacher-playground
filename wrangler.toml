@@ -4,7 +4,10 @@ main = "src/worker.ts"
 # refuses to deploy non-interactively, and a wrong guess would publish the
 # Worker (and its Access-protected hostnames) into the wrong account.
 account_id = "365b447990677931f6b7876de299f62f"
-compatibility_date = "2024-12-10"
+# Kept current so the Worker gets runtime fixes and performance work rather
+# than being pinned to ~20-month-old behaviour. Bumping this can change runtime
+# semantics, so it is its own change, verified against all three suites.
+compatibility_date = "2026-08-01"
 compatibility_flags = ["nodejs_compat"]
 # Closed: the guest surface must not be reachable on an alternate origin that
 # no Access application sits in front of (guest_implementation.md §9).

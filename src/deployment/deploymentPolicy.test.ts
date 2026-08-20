@@ -30,12 +30,38 @@ function isNonExampleEnvironmentFile(relativePath: string): boolean {
 }
 
 describe('production deployment policy', () => {
+  /**
+   * Paths that may bypass the Worker. Content-hashed, immutable, and carrying
+   * no security decision — no Access check, no session, no host routing, no CSP
+   * nonce. Anything else reaching the browser without the Worker running first
+   * would skip the boundary this test exists to protect.
+   */
+  const BYPASSABLE_ASSET_PREFIXES = ['/_next/static/*', '/fonts/*', '/data/*'];
+
   it('runs the cryptographic Worker boundary before serving static assets', () => {
     for (const configPath of ['wrangler.toml', 'wrangler.local.toml']) {
       const config = readRepositoryFile(configPath);
-      expect(config, configPath).toMatch(
-        /^\[assets\]\s*\n(?:(?!^\[)[\s\S])*?^run_worker_first\s*=\s*true\s*$/m,
-      );
+      const assetsBlock = /^\[assets\]\s*\n((?:(?!^\[)[\s\S])*)/m.exec(config)?.[1];
+      expect(assetsBlock, `${configPath}: no [assets] block`).toBeTruthy();
+
+      const setting = /^run_worker_first\s*=\s*(true|\[[^\]]*\])\s*$/m.exec(assetsBlock!)?.[1];
+      expect(setting, `${configPath}: run_worker_first missing`).toBeTruthy();
+
+      if (setting === 'true') continue;
+
+      // The array form is allowed only so immutable assets can skip the Worker.
+      // It must still cover everything by default, and every exclusion must be a
+      // known-safe prefix — otherwise a later edit could quietly route /api/* or
+      // /auth/* around Access and the session check.
+      const patterns = Array.from(setting!.matchAll(/"([^"]+)"/g)).map((m) => m[1]);
+      expect(patterns, `${configPath}: must match all paths by default`).toContain('/*');
+
+      for (const exclusion of patterns.filter((pattern) => pattern.startsWith('!'))) {
+        expect(
+          BYPASSABLE_ASSET_PREFIXES,
+          `${configPath}: ${exclusion} may not bypass the Worker`,
+        ).toContain(exclusion.slice(1));
+      }
     }
   });
 
