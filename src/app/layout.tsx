@@ -19,6 +19,25 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
+      <head>
+        {/*
+          Excalidraw reads EXCALIDRAW_ASSET_PATH when its module initialises. It
+          ships in its own webpack chunk, so import order in a component cannot
+          guarantee we win that race — setting it there still left Excalidraw
+          resolving fonts against its CDN, which font-src refuses (209 CJK
+          subsets, reported ~230 times).
+
+          Inline in <head> is the only placement that is reliably first. The
+          Worker rewrites script tags to carry the CSP nonce, so this needs no
+          'unsafe-inline'. Excalidraw appends "excalidraw-assets/", so "/"
+          resolves to the vendored copy in public/.
+        */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: "window.EXCALIDRAW_ASSET_PATH='/'",
+          }}
+        />
+      </head>
       <body>{children}</body>
     </html>
   );
