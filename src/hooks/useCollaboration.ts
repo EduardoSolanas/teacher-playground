@@ -526,9 +526,20 @@ export function useCollaboration(roomId: string) {
     updatePresence();
     const interval = window.setInterval(updatePresence, 2_000);
 
+    // Browsers throttle background-tab timers to roughly once a minute, so a
+    // student who switches away (or whose phone locks) can sit on the waiting
+    // screen for up to 60s after the teacher has already let them in. There is
+    // no push channel to fall back on: /signaling only opens once admitted.
+    // Refreshing the moment the tab is visible again closes that gap.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') updatePresence();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
     return () => {
       cancelled = true;
       window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, [roomLoaded, hasJoined, roomId, localUserName]);
 
