@@ -124,6 +124,7 @@ padding:.3rem .8rem;transform:rotate(1.5deg)}
 .prose h1{font-family:Georgia,serif;font-weight:400;color:var(--ink);font-size:2.1rem;margin-top:1.4rem}
 .prose h2{font-family:Georgia,serif;font-weight:400;font-size:1.35rem;margin-top:2.1rem;color:var(--ink)}
 .prose p{margin-top:.8rem}
+.updated{font-size:.86rem;color:var(--mut);margin-top:.5rem}
 .prose a{color:var(--blue);border-bottom:1px solid var(--rule)}
 .draft{margin-top:1.8rem;padding:.75rem 1.05rem;border-left:3px solid var(--red);
 background:#fff;border-top:1px solid var(--line);border-right:1px solid var(--line);
@@ -137,17 +138,86 @@ border-bottom:1px solid var(--line);color:var(--ink2);font-size:.9rem}
 <nav><a href="/pricing">Pricing</a><a class="signin" href="/whiteboard">Sign in</a></nav>
 </header></div>
 <main class="narrow prose">
-<div class="draft">Draft — requires owner and legal review before the service
-charges money.</div>
+<div class="draft">Draft — written to match how the service actually works. It is
+not legal advice and needs review by a qualified adviser before the service
+charges money or is used with children at scale.</div>
 <h1>Terms of Service</h1>
-<p>These terms cover the use of Teacher Playground, a collaborative whiteboard service for private tuition.</p>
-<h2>Accounts</h2><p>Access to the service is granted through Cloudflare Access sign-in. Tutors create and own rooms; students authenticate to join a room a tutor has invited them to. We do not maintain a separate password of our own — sign-in is handled by the identity provider configured behind Cloudflare Access.</p>
-<h2>Content you put on the whiteboard</h2><p>Whiteboard content (drawings, notes, and related room data) is stored so the service can run: keeping the board in sync between participants, restoring it after a disconnect, and enforcing the room's retention policy. You keep ownership of what you create.</p>
-<h2>Acceptable use</h2><p>The service is for tuition and classroom collaboration. Do not use it to upload unlawful content, to harass other participants, or to attempt to access rooms or accounts you do not have permission to use.</p>
-<h2>Plans and payment</h2><p>Some plan tiers may require payment from the tutor account that owns a room. Students never pay and never see billing UI. Payment terms will be finalized before any charge is introduced; see <a href="/pricing">pricing</a> for the current, unpriced plan proposal.</p>
-<h2>Termination</h2><p>We may suspend or terminate access for accounts that violate these terms or misuse the service. You may stop using the service, and delete your rooms, at any time.</p>
-<h2>Changes</h2><p>These terms may change as the service develops. Material changes will be reflected on this page.</p>
-<h2>Contact</h2><p>Questions about these terms can be directed to the owner of the repository this service is built from.</p>
+<p class="updated">Last updated 20 August 2026</p>
+<p>These terms cover the use of Teacher Playground, a shared whiteboard for
+tutoring. By creating a room or joining one, you agree to them.</p>
+
+<h2>Who may use the service</h2>
+<p>Rooms are created and owned by <strong>teachers and tutors</strong>, who must
+be adults able to enter a contract. Students may join a room of any age, but only
+where a teacher has invited them and any consent required by their school,
+parent, or guardian has been obtained. Obtaining that consent is the teacher's
+responsibility, not ours.</p>
+
+<h2>Teacher accounts</h2>
+<p>Teachers sign in with Google or Facebook through Cloudflare Access. We do not
+issue or hold passwords of our own. You are responsible for keeping your sign-in
+secure, and for everything done in rooms you own.</p>
+
+<h2>Students joining a room</h2>
+<p>Students join by opening a room link and entering a class PIN, choosing a
+display name for themselves. They do not create an account and give us no
+personal details beyond that name.</p>
+<p>A PIN and a link are an invitation to <em>ask</em> to join, never a right to
+enter. Every student waits until the teacher admits them, and a teacher can
+remove any participant at any time.</p>
+
+<h2>Class PINs are your responsibility</h2>
+<p>A class PIN is six digits. It is deliberately short so a teacher can read it
+aloud, which also makes it guessable if it is published somewhere public. Share a
+PIN with your class, not with the internet. Rooms lock guest joining
+automatically after repeated wrong attempts, and a teacher can rotate or switch
+off guest joining at any time.</p>
+<p>Anyone who knows a live PIN can reach your waiting room. Treat it as you would
+the code on a classroom door.</p>
+
+<h2>Supervision and safeguarding</h2>
+<p>Teacher Playground provides tools — a waiting room, per-participant approval,
+read-only roles, and removal — but it does not moderate lessons. The teacher who
+owns a room is responsible for who is admitted, for supervising what happens on
+the board and in the call, and for complying with their own school's
+safeguarding policy.</p>
+
+<h2>Your content</h2>
+<p>You keep ownership of what you create on a whiteboard. You grant us only the
+permission needed to run the service: storing the board, syncing it between
+participants, restoring it after a disconnect, and deleting it under the
+retention periods in the <a href="/privacy">Privacy Policy</a>.</p>
+
+<h2>Acceptable use</h2>
+<p>The service is for teaching. Do not use it to share unlawful content, to
+harass or endanger anyone, to attempt to reach rooms or accounts you have not
+been admitted to, to guess class PINs, or to disrupt the service for others.</p>
+<p>Voice and video are live only and are never recorded by the service. Do not
+record other participants without their knowledge and consent.</p>
+
+<h2>Availability</h2>
+<p>The service is provided as-is, without a guarantee of uptime or of data
+preservation. Rooms unused for 90 days are deleted automatically. Keep your own
+copy of anything you cannot afford to lose.</p>
+
+<h2>Plans and payment</h2>
+<p>Some plans may require payment from the teacher account that owns a room.
+<strong>Students never pay and are never shown billing.</strong> Payment terms
+will be finalised before any charge is introduced; see <a href="/pricing">
+pricing</a> for the current proposal.</p>
+
+<h2>Suspension and termination</h2>
+<p>We may suspend or end access for accounts that breach these terms or misuse
+the service. You may stop using it and delete your rooms and account at any time
+from the account menu.</p>
+
+<h2>Changes</h2>
+<p>These terms may change as the service develops. Material changes will be
+posted on this page with a new date above.</p>
+
+<h2>Contact</h2>
+<p>Questions about these terms can be sent to the service owner via the contact
+details on the main site.</p>
 </main>
 <footer><div class="wrap foot">
 <span class="mark">Teacher Playground</span>

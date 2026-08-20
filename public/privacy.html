@@ -124,6 +124,7 @@ padding:.3rem .8rem;transform:rotate(1.5deg)}
 .prose h1{font-family:Georgia,serif;font-weight:400;color:var(--ink);font-size:2.1rem;margin-top:1.4rem}
 .prose h2{font-family:Georgia,serif;font-weight:400;font-size:1.35rem;margin-top:2.1rem;color:var(--ink)}
 .prose p{margin-top:.8rem}
+.updated{font-size:.86rem;color:var(--mut);margin-top:.5rem}
 .prose a{color:var(--blue);border-bottom:1px solid var(--rule)}
 .draft{margin-top:1.8rem;padding:.75rem 1.05rem;border-left:3px solid var(--red);
 background:#fff;border-top:1px solid var(--line);border-right:1px solid var(--line);
@@ -137,15 +138,100 @@ border-bottom:1px solid var(--line);color:var(--ink2);font-size:.9rem}
 <nav><a href="/pricing">Pricing</a><a class="signin" href="/whiteboard">Sign in</a></nav>
 </header></div>
 <main class="narrow prose">
-<div class="draft">Draft — requires owner and legal review before the service
-charges money.</div>
+<div class="draft">Draft — written to match what the software actually does. It
+is not legal advice and needs review by a qualified adviser before the service
+charges money or is used with children at scale.</div>
 <h1>Privacy Policy</h1>
-<p>This policy describes what Teacher Playground stores and why, in plain language.</p>
-<h2>What we store</h2><p>Account identity (from Cloudflare Access sign-in), whiteboard content, and the room records needed to run lessons: who belongs to a room, who is waiting, and each room's settings. Voice and video are transmitted live for the call and are not recorded.</p>
-<h2>What we do not do</h2><p>We do not sell personal data. We do not show advertising. Lesson boards are never search-indexed and are visible only to the people a tutor has admitted to the room.</p>
-<h2>Students</h2><p>Students join with a sign-in and a display name. Student data is kept to the minimum the lesson needs, and students never see billing or payment surfaces.</p>
-<h2>Retention</h2><p>Boards are kept according to the room owner's plan and are deleted when their retention period lapses. Deleting a room removes its content.</p>
-<h2>Contact</h2><p>Questions about privacy can be directed to the owner of the repository this service is built from.</p>
+<p class="updated">Last updated 20 August 2026</p>
+<p>Teacher Playground is a shared whiteboard for one-to-one and small-group
+tutoring. This policy explains exactly what the service stores, for how long, and
+why. It is written to be checked against the software rather than to be
+comforting.</p>
+
+<h2>The short version</h2>
+<p><strong>Students give us a first name and nothing else.</strong> No email
+address, no account, no password, no social login. A student joins by opening a
+link and typing a class PIN their teacher reads out. That is the entire student
+sign-up, and it is deliberate: the safest way to hold a child's personal data is
+not to collect any.</p>
+
+<h2>Teachers</h2>
+<p>Teachers sign in with Google or Facebook through Cloudflare Access. We receive
+a verified account identifier from the sign-in provider, plus the name and email
+address on that account. The account identifier is the only thing used to decide
+what a teacher may do; the name and email are shown in the interface and are
+never used to grant access.</p>
+<p>We never receive a teacher's password, and we never receive or store access
+tokens for Google or Facebook.</p>
+
+<h2>Students and guests</h2>
+<p>A student joining a room provides a display name they choose themselves. We do
+not ask for, and have no way to store, a student's email address, date of birth,
+school, or parent's details — those fields do not exist on the join form.</p>
+<p>A guest identity is created for one room only. It cannot be used in any other
+room, it is never linked to a sign-in provider, and it is deleted when the room
+is deleted or when the guest's session expires. Guest sessions expire after
+<strong>4 hours</strong>.</p>
+<p>Students are always held in a waiting room until the teacher admits them.
+Nothing about a room — its board, its participants, or its settings — is visible
+to anyone before a teacher approves them.</p>
+
+<h2>What we store</h2>
+<p><strong>Board content.</strong> The drawings, text, and images a room's
+participants add to the whiteboard.</p>
+<p><strong>Room records.</strong> Who belongs to a room and in what role, who is
+waiting to join, the room's name and settings, and the class PIN if guest joining
+is switched on.</p>
+<p><strong>Session records.</strong> A hashed session identifier, timestamps, and
+an expiry, so that signing out actually ends a session.</p>
+<p><strong>Security events.</strong> Failed sign-ins and rate-limit trips are
+logged so abuse can be spotted. Class PINs are never written to logs.</p>
+
+<h2>Voice and video</h2>
+<p>Voice and video are transmitted live between participants for the duration of
+the call. <strong>Calls are not recorded and are never stored.</strong> A
+participant admitted as a read-only viewer cannot broadcast camera or microphone
+into the room.</p>
+
+<h2>How long we keep things</h2>
+<p>These periods are enforced by the software, not by policy alone:</p>
+<p><strong>Waiting-room requests</strong> — deleted after 24 hours.<br>
+<strong>Removed participants</strong> — record kept 30 days so a removal cannot
+be undone by rejoining.<br>
+<strong>Class PINs</strong> — expire 12 hours after they are issued.<br>
+<strong>Guest sessions</strong> — expire after 4 hours.<br>
+<strong>Teacher sessions</strong> — expire after 30 minutes idle, 12 hours
+maximum.<br>
+<strong>Idle rooms</strong> — deleted after 90 days without use.<br>
+<strong>Deleted-room markers</strong> — a record that a room existed is kept for
+365 days so a deleted room's link cannot be reused.</p>
+<p>Deleting a room deletes its board content, its participant list, and its
+waiting queue.</p>
+
+<h2>What we do not do</h2>
+<p>We do not sell or share personal data. We do not show advertising. We do not
+profile or track users across other websites. Lesson boards are never indexed by
+search engines and are visible only to people a teacher has admitted.</p>
+
+<h2>Your rights</h2>
+<p>A signed-in teacher can export everything held about their account, and can
+delete their account and its rooms, from the account menu inside the app.</p>
+<p>Because students are anonymous to us, we usually cannot identify a particular
+child's data on request — there is no email address or account to look them up
+by. In practice a student's data is removed when the teacher deletes the room, or
+automatically when the retention periods above elapse. A parent or school with a
+concern should contact the teacher who ran the lesson, who can delete the room.</p>
+
+<h2>Children</h2>
+<p>This service is designed to be used by children under a teacher's supervision.
+The data minimisation described above is the principal safeguard: we hold a
+self-chosen first name and nothing that identifies a child outside the lesson.
+Teachers are responsible for obtaining whatever consent their school or
+jurisdiction requires before inviting a student to a room.</p>
+
+<h2>Contact</h2>
+<p>Questions about this policy can be sent to the service owner via the contact
+details on the main site.</p>
 </main>
 <footer><div class="wrap foot">
 <span class="mark">Teacher Playground</span>
