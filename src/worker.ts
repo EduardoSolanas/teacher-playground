@@ -21,6 +21,13 @@ import {
 } from './lib/identity/sessionStore';
 import { logAuthEvent, type AuthEventInput } from './lib/security/authEvents';
 import {
+  ACCESS_REQUEST_RATE_MAX,
+  PRESENCE_POST_RATE_MAX,
+  RATE_WINDOW_MS,
+  ROOM_CREATE_RATE_MAX,
+  SCENE_WRITE_RATE_MAX,
+} from './lib/worker/rateLimits';
+import {
   bodyTooLarge,
   isJsonContentType,
   isRouteAllowedOnHost,
@@ -50,6 +57,12 @@ export interface Env {
   TEACHER_HOSTNAME?: string;
   /** Exact guest hostname. Unset disables the guest surface — never default to guest. */
   GUEST_HOSTNAME?: string;
+  /**
+   * Exact public landing hostname. No Access application may cover it: the
+   * Access JWT arrives only on paths an Access app protects, so marketing
+   * pages cannot be public on the app hostname. Unset disables the surface.
+   */
+  MARKETING_HOSTNAME?: string;
 }
 
 // Room ids cannot be enumerated at build time, so the static export contains a
@@ -72,8 +85,7 @@ const IDENTITY_ACCOUNT_ROOMS = 'https://identity/accounts/rooms';
 const IDENTITY_GUESTS_PURGE = 'https://identity/guests/purge';
 
 /** Room-creation POSTs per verified account within a one-minute window (SEC-005). */
-const ROOM_CREATE_RATE_WINDOW_MS = 60_000;
-const ROOM_CREATE_RATE_MAX = 10;
+const ROOM_CREATE_RATE_WINDOW_MS = RATE_WINDOW_MS;
 const productionRoomCreateLimiter = createRateLimiter({
   windowMs: ROOM_CREATE_RATE_WINDOW_MS,
   max: ROOM_CREATE_RATE_MAX,
@@ -84,8 +96,7 @@ const strictLocalTestRoomCreateLimiter = createRateLimiter({
 });
 
 /** Access-request POSTs per verified account within a one-minute window (SEC-005). */
-const ACCESS_REQUEST_RATE_WINDOW_MS = 60_000;
-const ACCESS_REQUEST_RATE_MAX = 20;
+const ACCESS_REQUEST_RATE_WINDOW_MS = RATE_WINDOW_MS;
 const productionAccessRequestLimiter = createRateLimiter({
   windowMs: ACCESS_REQUEST_RATE_WINDOW_MS,
   max: ACCESS_REQUEST_RATE_MAX,
@@ -111,8 +122,7 @@ function accessRequestLimiterFor(env: Env) {
  * Presence POSTs (join/heartbeat and kick/suspend) per account per minute (SEC-017).
  * Kick shares this cap so the Worker can limit without cloning/parsing JSON.
  */
-const PRESENCE_POST_RATE_WINDOW_MS = 60_000;
-const PRESENCE_POST_RATE_MAX = 30;
+const PRESENCE_POST_RATE_WINDOW_MS = RATE_WINDOW_MS;
 const productionPresencePostLimiter = createRateLimiter({
   windowMs: PRESENCE_POST_RATE_WINDOW_MS,
   max: PRESENCE_POST_RATE_MAX,
@@ -129,8 +139,7 @@ function presencePostLimiterFor(env: Env) {
 }
 
 /** Existing-room scene POSTs (POST /room/:id empty subpath) per account per minute (SEC-005). */
-const SCENE_WRITE_RATE_WINDOW_MS = 60_000;
-const SCENE_WRITE_RATE_MAX = 120;
+const SCENE_WRITE_RATE_WINDOW_MS = RATE_WINDOW_MS;
 const productionSceneWriteLimiter = createRateLimiter({
   windowMs: SCENE_WRITE_RATE_WINDOW_MS,
   max: SCENE_WRITE_RATE_MAX,
@@ -292,6 +301,20 @@ async function issueGuestAuth(env: Env, request: Request): Promise<Response> {
     return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
   }
   const { roomId, pin, displayName } = parsed;
+
+  // Reuse an existing guest session for this room instead of minting a second
+  // identity. Without this, re-entering the PIN (after a reload, or because the
+  // prompt reappeared) creates a NEW guest account: the one the teacher
+  // admitted stays behind, the browser now carries an unapproved account, and
+  // the student is thrown back into the waiting room. The old account also owns
+  // the live Yjs socket, so the board stops syncing for everyone watching.
+  const existing = await guestSessionAuthorized(env, request, roomId);
+  if (!existing.denied) {
+    return withSecurityHeaders(Response.json(
+      { ok: true },
+      { status: 200, headers: { 'Cache-Control': 'no-store' } },
+    ));
+  }
 
   const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
   const verified = await stub.fetch(new Request(
@@ -460,8 +483,13 @@ async function sessionLogout(env: Env, request: Request): Promise<Response> {
     method: 'POST',
     headers: { cookie: request.headers.get('cookie') ?? '' },
   }));
+  // Ends the APPLICATION session only. CF_Authorization is deliberately left
+  // alone: full sign-out is completeSignOut(), which calls this and THEN
+  // navigates to /auth/access/logout, where the Access cookie is cleared.
+  // Clearing it here too broke re-bootstrap — a user who ended their app
+  // session could not mint a new one without re-authenticating with Access,
+  // even though their Access session was still valid.
   const headers = new Headers(result.headers);
-  headers.append('Set-Cookie', clearCfAuthorizationSetCookie());
   return withSecurityHeaders(new Response(result.body, { status: result.status, headers }));
 }
 
@@ -739,15 +767,29 @@ function hostNotFound(): Response {
 function accessLogoutResponse(url: URL, env: Env): Response {
   const target = safeRedirectPath(url.searchParams.get('redirect'));
   const headers = new Headers({ 'Cache-Control': 'no-store' });
-  headers.append('Set-Cookie', clearCfAuthorizationSetCookie());
   if (env.ENVIRONMENT === 'local-test') {
+    // No Access edge here, so the app clears the cookie itself.
+    headers.append('Set-Cookie', clearCfAuthorizationSetCookie());
     headers.set('Location', target);
-  } else {
-    headers.set(
-      'Location',
-      `${CF_ACCESS_LOGOUT_PATH}?redirect=${encodeURIComponent(target)}`,
-    );
+    return withSecurityHeaders(new Response(null, { status: 302, headers }));
   }
+  // Clear the Access cookie and land the user on the public site.
+  //
+  // The alternative — handing off to Cloudflare's /cdn-cgi/access/logout —
+  // strands the user on a Cloudflare-branded page showing the Zero Trust team
+  // domain, because Cloudflare documents no parameter for redirecting after
+  // logout. Clearing the cookie here ends the browser's Access session (the
+  // cookie is the credential) and keeps the user on our own site.
+  //
+  // Trade-off, recorded deliberately: Cloudflare's server-side session record
+  // is not revoked, so signing back in may not re-prompt for Google until it
+  // expires. The application session IS revoked separately by
+  // POST /auth/session/logout, so no room or board access survives this.
+  headers.append('Set-Cookie', clearCfAuthorizationSetCookie());
+  headers.set(
+    'Location',
+    env.MARKETING_HOSTNAME ? `https://${env.MARKETING_HOSTNAME}/` : target,
+  );
   return withSecurityHeaders(new Response(null, { status: 302, headers }));
 }
 
@@ -760,8 +802,44 @@ export default {
     // request is teacher-host and the guest surface does not exist.
     const hostKind = (!env.TEACHER_HOSTNAME || !env.GUEST_HOSTNAME)
       ? 'teacher'
-      : routeHostKind(url.hostname, env.TEACHER_HOSTNAME, env.GUEST_HOSTNAME);
+      : routeHostKind(
+        url.hostname,
+        env.TEACHER_HOSTNAME,
+        env.GUEST_HOSTNAME,
+        env.MARKETING_HOSTNAME,
+      );
     if (hostKind === 'unknown') return hostNotFound();
+
+    // The landing surface is static and entirely public. It never verifies
+    // Access, never issues a session, and never reaches a Durable Object, so it
+    // is served and returned before any of that machinery runs.
+    if (hostKind === 'marketing') {
+      // The landing page links to /whiteboard with relative hrefs so the HTML
+      // stays host-agnostic. Send those to the teacher hostname rather than
+      // 404ing them. The target comes from env, never from the request, and
+      // only these two exact shapes redirect, so this cannot be turned into an
+      // open redirect.
+      const signInPath = url.pathname === '/whiteboard'
+        || /^\/whiteboard\/[a-f0-9]{32}$/.test(url.pathname);
+      if (
+        signInPath
+        && env.TEACHER_HOSTNAME
+        && (request.method === 'GET' || request.method === 'HEAD')
+      ) {
+        return withSecurityHeaders(Response.redirect(
+          `https://${env.TEACHER_HOSTNAME}${url.pathname}`,
+          302,
+        ));
+      }
+      if (!isRouteAllowedOnHost(url.pathname, request.method, hostKind)) {
+        return hostNotFound();
+      }
+      const asset = await env.ASSETS.fetch(request);
+      return withNonceHtmlSecurityHeaders(asset, {
+        indexable: (MARKETING_PAGES as readonly string[]).includes(url.pathname),
+        connectSrc: connectSrcForPageOrigin(url.origin),
+      });
+    }
     if (
       hostKind === 'teacher'
       && (url.pathname === ACCESS_LOGOUT_PATH || url.pathname === CF_ACCESS_LOGOUT_PATH)

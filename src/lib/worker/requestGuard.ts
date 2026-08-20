@@ -7,7 +7,7 @@
 
 import { randomHexId } from '../crypto/randomId';
 
-export type HostKind = 'teacher' | 'guest' | 'unknown';
+export type HostKind = 'teacher' | 'guest' | 'marketing' | 'unknown';
 
 /**
  * Determines the host kind from hostname and configured teacher/guest hostnames.
@@ -20,6 +20,7 @@ export function routeHostKind(
   hostname: string,
   teacherHost: string | undefined,
   guestHost: string | undefined,
+  marketingHost?: string | undefined,
 ): HostKind {
   // Empty hostname is unknown
   if (!hostname) {
@@ -37,6 +38,17 @@ export function routeHostKind(
   // FAIL-CLOSED: only return 'guest' if guestHost is defined AND matches exactly
   if (guestHost && lowerHostname === guestHost.toLowerCase()) {
     return 'guest';
+  }
+
+  // The public landing surface. Access cannot protect this hostname: the Worker
+  // reads the Access JWT from the Cf-Access-Jwt-Assertion header, which
+  // Cloudflare injects only on paths an Access application covers. A
+  // path-scoped application would therefore strip the header from /api/* and
+  // /auth/*, so marketing pages cannot be public on the app hostname. They get
+  // their own hostname with no Access application instead.
+  // FAIL-CLOSED: only return 'marketing' when the hostname is configured.
+  if (marketingHost && lowerHostname === marketingHost.toLowerCase()) {
+    return 'marketing';
   }
 
   // Any other hostname is unknown
@@ -76,6 +88,23 @@ export function isRouteAllowedOnHost(
     pathname === '/auth/account' ||
     pathname.startsWith('/auth/account/') ||
     pathname === '/api/whiteboard/rooms';
+
+  // The marketing hostname serves the public pages and nothing else. Everything
+  // not listed here falls through to the final `return false` for this host.
+  if (hostKind === 'marketing') {
+    const isPublicMarketingPath =
+      pathname === '/'
+      || pathname === '/pricing'
+      || pathname === '/terms'
+      || pathname === '/privacy'
+      || pathname === '/favicon.ico'
+      // Cloudflare Access fetches this to brand the login page.
+      || pathname === '/logo.svg'
+      || pathname.startsWith('/_next/')
+      || pathname.startsWith('/excalidraw-assets/');
+    if (!isPublicMarketingPath) return false;
+    return method === 'GET' || method === 'HEAD';
+  }
 
   if (isTeacherOnlyPath) {
     return hostKind === 'teacher';
@@ -294,6 +323,11 @@ export function withSecurityHeaders(
         "base-uri 'self'",
         options?.connectSrc ?? "connect-src 'self'",
         "img-src 'self' data:",
+        // Excalidraw loads its bundled fonts as data:/blob: URLs. Without an
+        // explicit font-src these fell back to default-src 'self' and every
+        // font load was blocked, which the browser reported hundreds of times
+        // on a single board.
+        "font-src 'self' data:",
         "style-src 'self' 'unsafe-inline'",
         options?.scriptNonce
           ? `script-src 'self' 'nonce-${options.scriptNonce}' 'strict-dynamic'`

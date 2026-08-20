@@ -1,9 +1,41 @@
 name = "teacher-playground"
 main = "src/worker.ts"
+# Pinned because this login can see more than one account: without it wrangler
+# refuses to deploy non-interactively, and a wrong guess would publish the
+# Worker (and its Access-protected hostnames) into the wrong account.
+account_id = "365b447990677931f6b7876de299f62f"
 compatibility_date = "2024-12-10"
 compatibility_flags = ["nodejs_compat"]
-workers_dev = true  # TODO: set false once a custom domain is configured
+# Closed: the guest surface must not be reachable on an alternate origin that
+# no Access application sits in front of (guest_implementation.md §9).
+workers_dev = false
 preview_urls = false
+
+# Both hostnames route to this same Worker. The Worker decides which surface a
+# request gets from the Host header (guest_implementation.md §5.2), so the
+# split is enforced in code, not by two deployments.
+#
+# The Cloudflare Access application must cover playground.sen-tutor.co.uk ONLY, as an
+# exact hostname — a *.sen-tutor.co.uk wildcard application would also cover
+# join-playground.sen-tutor.co.uk and break guest join entirely.
+# Single-label subdomains are deliberate: Cloudflare Universal SSL covers
+# sen-tutor.co.uk and *.sen-tutor.co.uk only. A second-level name such as
+# app.playground.sen-tutor.co.uk gets no certificate and fails the TLS
+# handshake outright. Deeper names would need Advanced Certificate Manager.
+[[routes]]
+pattern = "app-playground.sen-tutor.co.uk"
+custom_domain = true
+
+[[routes]]
+pattern = "join-playground.sen-tutor.co.uk"
+custom_domain = true
+
+# Public landing page. No Access application may cover this hostname — see the
+# MARKETING_HOSTNAME comment in src/worker.ts for why marketing cannot live on
+# the Access-protected app hostname.
+[[routes]]
+pattern = "playground.sen-tutor.co.uk"
+custom_domain = true
 
 [assets]
 directory = "./out"
@@ -35,8 +67,9 @@ ACCESS_JWKS_URL = "https://ha-smart-home.cloudflareaccess.com/cdn-cgi/access/cer
 # Guest join hostnames (owner-applied). If either is unset, every request is
 # treated as teacher-host — the guest surface does not exist. Never default to
 # guest. Must be exact hostnames, not wildcards (see guest_implementation.md §6.5).
-# TEACHER_HOSTNAME = "app.example.com"
-# GUEST_HOSTNAME = "join.example.com"
+TEACHER_HOSTNAME = "app-playground.sen-tutor.co.uk"
+MARKETING_HOSTNAME = "playground.sen-tutor.co.uk"
+GUEST_HOSTNAME = "join-playground.sen-tutor.co.uk"
 # LiveKit A/V (optional). Prefer `wrangler secret put LIVEKIT_*` in production.
 # When unset, POST /api/av/token returns 503 and the UI degrades gracefully.
 # LIVEKIT_URL = "wss://your-project.livekit.cloud"
