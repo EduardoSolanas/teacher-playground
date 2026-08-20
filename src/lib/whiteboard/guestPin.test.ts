@@ -620,6 +620,34 @@ describe('guestPin module', () => {
         expect(result).toEqual({ ok: true });
       });
 
+      it('failures during an active lockout do not extend it', () => {
+        const now = Date.now();
+        const pin = issueGuestPin(db, testRoomId, now);
+
+        // Trip the lockout at `now`: the room locks until now + 15 min.
+        for (let i = 0; i < 50; i++) {
+          verifyGuestPin(db, testRoomId, '000000', now);
+        }
+
+        // An attacker keeps guessing during the lockout, within the per-IP
+        // rate limit. Those attempts must not re-arm the lock — otherwise a
+        // single IP at 5 req/min can lock the room out indefinitely.
+        const duringLockout = now + 5 * 60 * 1000;
+        for (let i = 0; i < 10; i++) {
+          verifyGuestPin(db, testRoomId, '000000', duringLockout);
+        }
+
+        const row = db.prepare(
+          `SELECT guest_lockout_until FROM rooms WHERE room_id = ?`
+        ).get(testRoomId) as { guest_lockout_until: number } | undefined;
+        expect(row?.guest_lockout_until).toBe(now + GUEST_PIN_LOCKOUT_DURATION_MS);
+
+        // The correct PIN works again once the ORIGINAL expiry has passed.
+        const afterOriginalExpiry = now + GUEST_PIN_LOCKOUT_DURATION_MS + 1;
+        const result = verifyGuestPin(db, testRoomId, pin, afterOriginalExpiry);
+        expect(result).toEqual({ ok: true });
+      });
+
       it('counter resets after lockout expires', () => {
         const now = Date.now();
         const pin = issueGuestPin(db, testRoomId, now);

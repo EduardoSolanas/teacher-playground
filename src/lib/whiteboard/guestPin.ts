@@ -211,8 +211,10 @@ export function verifyGuestPin(
 
   // Check if room is currently locked out
   if (row.guest_lockout_until !== null && row.guest_lockout_until > now) {
-    // Still in lockout, increment counter but reject
-    incrementFailureCounter(db, roomId, now);
+    // Still in lockout. The failure counter is deliberately NOT incremented:
+    // incrementing re-arms guest_lockout_until (count is already >= threshold),
+    // so a single IP within the per-IP rate limit could keep the room locked
+    // out indefinitely. The lock is a fixed penalty, not a renewable one.
     return { ok: false, reason: 'invalid' };
   }
 
