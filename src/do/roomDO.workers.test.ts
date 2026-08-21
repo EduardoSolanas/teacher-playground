@@ -12,6 +12,17 @@ import {
   bootstrapLocalSession,
   type LocalAuthSession,
 } from '../test/workerAuth';
+/*
+ * How long a socket event may take before the test gives up.
+ *
+ * These are nets, not assertions: nothing here measures how fast a close or a
+ * frame arrives, and no test passes by being slow. At 2s they failed in
+ * batches on a loaded CI runner — the suite stretched from ~130s to ~370s and
+ * sockets that do close were reported as never closing. Generous enough that
+ * only a genuinely hung socket trips it.
+ */
+const SOCKET_EVENT_DEADLINE_MS = 15_000;
+
 
 function splitRoomWrite(body: Record<string, unknown>) {
   const settings: Record<string, unknown> = {};
@@ -220,7 +231,7 @@ describe('y-webrtc signaling over Durable Object WebSockets', () => {
 
   function nextMessage(ws: WebSocket): Promise<string> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('timed out')), 2000);
+      const timer = setTimeout(() => reject(new Error('timed out')), SOCKET_EVENT_DEADLINE_MS);
       ws.addEventListener('message', (event: MessageEvent) => {
         clearTimeout(timer);
         resolve(String(event.data));
@@ -485,7 +496,7 @@ describe('y-websocket document bytes over RoomDO WebSockets', () => {
 
   function nextBinaryMessage(ws: WebSocket): Promise<ArrayBuffer> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('timed out waiting for binary frame')), 2000);
+      const timer = setTimeout(() => reject(new Error('timed out waiting for binary frame')), SOCKET_EVENT_DEADLINE_MS);
       ws.addEventListener('message', (event: MessageEvent) => {
         clearTimeout(timer);
         if (typeof event.data === 'string') {
@@ -697,7 +708,7 @@ describe('signaling message rate limit', () => {
 
   function closeSignal(ws: WebSocket): Promise<number> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('socket was not closed')), 2000);
+      const timer = setTimeout(() => reject(new Error('socket was not closed')), SOCKET_EVENT_DEADLINE_MS);
       ws.addEventListener('close', (event: CloseEvent) => {
         clearTimeout(timer);
         resolve(event.code);
@@ -707,7 +718,7 @@ describe('signaling message rate limit', () => {
 
   function nextMessage(ws: WebSocket): Promise<string> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('timed out')), 2000);
+      const timer = setTimeout(() => reject(new Error('timed out')), SOCKET_EVENT_DEADLINE_MS);
       ws.addEventListener('message', (event: MessageEvent) => {
         clearTimeout(timer);
         resolve(String(event.data));
@@ -791,7 +802,7 @@ describe('signaling message size limit', () => {
 
   function closeSignal(ws: WebSocket): Promise<number> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('socket was not closed')), 2000);
+      const timer = setTimeout(() => reject(new Error('socket was not closed')), SOCKET_EVENT_DEADLINE_MS);
       ws.addEventListener('close', (event: CloseEvent) => {
         clearTimeout(timer);
         resolve(event.code);
@@ -801,7 +812,7 @@ describe('signaling message size limit', () => {
 
   function nextBinaryMessage(ws: WebSocket): Promise<ArrayBuffer> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('timed out waiting for binary frame')), 2000);
+      const timer = setTimeout(() => reject(new Error('timed out waiting for binary frame')), SOCKET_EVENT_DEADLINE_MS);
       ws.addEventListener('message', (event: MessageEvent) => {
         clearTimeout(timer);
         if (typeof event.data === 'string') {
@@ -970,7 +981,7 @@ describe('revocation closes live signaling sockets', () => {
   async function expectClosed(signal: { closed: boolean }) {
     await vi.waitFor(() => {
       expect(signal.closed).toBe(true);
-    }, { timeout: 2000, interval: 20 });
+    }, { timeout: SOCKET_EVENT_DEADLINE_MS, interval: 20 });
   }
 
   function closeSignal(ws: WebSocket): { closed: boolean; code?: number } {
@@ -1029,11 +1040,16 @@ describe('revocation closes live signaling sockets', () => {
     await changeAccount('disable', subject.accountId);
     await runDurableObjectAlarm(roomStub(roomId));
 
-    const calls = await runInDurableObject(
-      roomStub(roomId),
-      (instance: RoomDO) => [...(instance.liveKitEvictCalls ?? [])],
-    );
-    expect(calls).toEqual([{ roomId, identity: subject.accountId }]);
+    // The alarm closes the socket and evicts from LiveKit asynchronously, so
+    // reading the calls once races the eviction and saw an empty array on a
+    // slow runner. Poll until it lands, or fail on the deadline.
+    await vi.waitFor(async () => {
+      const calls = await runInDurableObject(
+        roomStub(roomId),
+        (instance: RoomDO) => [...(instance.liveKitEvictCalls ?? [])],
+      );
+      expect(calls).toEqual([{ roomId, identity: subject.accountId }]);
+    }, { timeout: SOCKET_EVENT_DEADLINE_MS, interval: 25 });
   });
 
   it('leaves another account\'s socket open when one account is revoked', async () => {
