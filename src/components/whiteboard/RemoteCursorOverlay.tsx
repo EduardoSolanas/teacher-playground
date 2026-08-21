@@ -28,14 +28,14 @@ export default function RemoteCursorOverlay({ cursors, users }: RemoteCursorOver
               <path d="M4 3l16 7-7.2 2.3L10 20 4 3z" />
             </svg>
             <span
-              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-semibold text-white shadow-sm"
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.6875rem] font-semibold text-white shadow-sm"
               style={{ background: cursor.color }}
             >
               {cursor.userName}
               {isHostUser && (
                 <span
                   data-testid={`whiteboard-peer-cursor-host-${cursor.peerId}`}
-                  className="rounded bg-emerald-600 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-white"
+                  className="rounded bg-emerald-600 px-1 py-px text-[0.5625rem] font-bold uppercase tracking-wide text-white"
                 >
                   Host
                 </span>

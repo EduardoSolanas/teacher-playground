@@ -33,7 +33,7 @@ export default function BackToRoomsLink({
         event.preventDefault();
         onNavigate();
       }}
-      className="fixed left-[max(0.5rem,env(safe-area-inset-left))] top-[max(0.5rem,env(safe-area-inset-top))] z-[1100] inline-flex h-11 items-center gap-1.5 rounded-xl border border-slate-700/80 bg-slate-900/95 pl-2.5 pr-3.5 text-[13px] font-medium text-slate-200 no-underline shadow-lg shadow-slate-950/30 backdrop-blur-md transition-colors hover:bg-slate-800 hover:text-white active:bg-slate-700"
+      className="fixed left-[max(0.5rem,env(safe-area-inset-left))] top-[max(0.5rem,env(safe-area-inset-top))] z-[1100] inline-flex h-11 items-center gap-1.5 rounded-xl border border-slate-700/80 bg-slate-900/95 pl-2.5 pr-3.5 text-[0.8125rem] font-medium text-slate-200 no-underline shadow-lg shadow-slate-950/30 backdrop-blur-md transition-colors hover:bg-slate-800 hover:text-white active:bg-slate-700"
     >
       <svg
         aria-hidden="true"

@@ -138,7 +138,7 @@ export function UserProfileMenu({
       >
         <span
           aria-hidden="true"
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/20 text-[11px] font-bold tracking-wide"
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/20 text-[0.6875rem] font-bold tracking-wide"
         >
           {label.slice(0, 1).toUpperCase()}
         </span>
@@ -153,7 +153,7 @@ export function UserProfileMenu({
         >
           {!editing && !deleting && (
             <div className="p-1.5">
-              <p className="truncate px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+              <p className="truncate px-3 py-2 text-[0.6875rem] font-semibold uppercase tracking-[0.14em] text-slate-400">
                 Profile
               </p>
               <button
@@ -203,7 +203,7 @@ export function UserProfileMenu({
                 void handleSaveName();
               }}
             >
-              <label htmlFor="whiteboard-profile-name" className="block text-[13px] font-semibold text-slate-600">
+              <label htmlFor="whiteboard-profile-name" className="block text-[0.8125rem] font-semibold text-slate-600">
                 Display name
               </label>
               <input
@@ -214,7 +214,7 @@ export function UserProfileMenu({
                 onChange={(event) => setDraftName(event.target.value)}
                 className="mt-1.5 h-11 w-full rounded-xl border-2 border-slate-200 px-3 text-sm text-slate-900 outline-none focus:border-indigo-500"
               />
-              {error && <p role="alert" className="mt-2 text-[12px] font-medium text-red-700">{error}</p>}
+              {error && <p role="alert" className="mt-2 text-[0.75rem] font-medium text-red-700">{error}</p>}
               <div className="mt-3 flex gap-2">
                 <button
                   type="button"
@@ -244,7 +244,7 @@ export function UserProfileMenu({
               }}
             >
               <p className="text-sm font-semibold text-slate-900">Delete this account?</p>
-              <p className="mt-1 text-[13px] leading-relaxed text-slate-500">
+              <p className="mt-1 text-[0.8125rem] leading-relaxed text-slate-500">
                 Rooms you own will be removed. Type DELETE to confirm.
               </p>
               <input
@@ -254,7 +254,7 @@ export function UserProfileMenu({
                 autoComplete="off"
                 className="mt-3 h-11 w-full rounded-xl border-2 border-slate-200 px-3 text-sm text-slate-900 outline-none focus:border-red-500"
               />
-              {error && <p role="alert" className="mt-2 text-[12px] font-medium text-red-700">{error}</p>}
+              {error && <p role="alert" className="mt-2 text-[0.75rem] font-medium text-red-700">{error}</p>}
               <div className="mt-3 flex gap-2">
                 <button
                   type="button"

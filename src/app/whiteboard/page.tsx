@@ -251,7 +251,8 @@ export default function WhiteboardRoute() {
           <div className="section-sep">
             <h2 className="app-h2">New room</h2>
 
-            <div className="mt-4">
+            <div className="form-panel">
+            <div className="field-group">
               <label htmlFor="whiteboard-room-name" className="app-label">
                 Room name <span className="app-small">(optional)</span>
               </label>
@@ -267,7 +268,7 @@ export default function WhiteboardRoute() {
               />
             </div>
 
-            <div className="mt-4">
+            <div className="field-group">
               <label
                 htmlFor="whiteboard-max-users"
                 className="app-label"
@@ -310,6 +311,7 @@ export default function WhiteboardRoute() {
               <p className="app-small">
                 Includes you. Free accounts allow one student.
               </p>
+            </div>
             </div>
 
             {(createError || atRoomLimit) && (

@@ -256,7 +256,7 @@ export default function PresencePanel({
     isLocalHost && menuOpen && menuPeerId && menuPeer ? (
       <div
         ref={menuRef}
-        className="fixed z-[1250] bg-slate-800 border border-slate-700 rounded-lg p-1 min-w-[180px] shadow-xl shadow-slate-950/30 pointer-events-auto"
+        className="fixed z-[1250] bg-slate-800 border border-slate-700 rounded-lg p-1 min-w-[11.25rem] shadow-xl shadow-slate-950/30 pointer-events-auto"
         style={{
           left: menuPosition.left,
           top: menuPosition.top,
@@ -266,7 +266,7 @@ export default function PresencePanel({
           <>
             <button
               data-testid="whiteboard-context-let-in"
-              className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[13px] text-slate-200 w-full text-left font-inherit transition-colors duration-150 hover:bg-emerald-600 rounded"
+              className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[0.8125rem] text-slate-200 w-full text-left font-inherit transition-colors duration-150 hover:bg-emerald-600 rounded"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -280,7 +280,7 @@ export default function PresencePanel({
             </button>
             <button
               data-testid="whiteboard-context-reject"
-              className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[13px] text-slate-200 w-full text-left font-inherit transition-colors duration-150 hover:bg-red-600 rounded"
+              className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[0.8125rem] text-slate-200 w-full text-left font-inherit transition-colors duration-150 hover:bg-red-600 rounded"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -298,7 +298,7 @@ export default function PresencePanel({
           <>
             <button
               data-testid="whiteboard-context-suspend"
-              className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[13px] text-slate-200 w-full text-left font-inherit transition-colors duration-150 hover:bg-amber-600 rounded"
+              className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[0.8125rem] text-slate-200 w-full text-left font-inherit transition-colors duration-150 hover:bg-amber-600 rounded"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -313,7 +313,7 @@ export default function PresencePanel({
             </button>
             <button
               data-testid="whiteboard-context-kick"
-              className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[13px] text-slate-200 w-full text-left font-inherit transition-colors duration-150 hover:bg-red-600 rounded"
+              className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[0.8125rem] text-slate-200 w-full text-left font-inherit transition-colors duration-150 hover:bg-red-600 rounded"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -365,12 +365,12 @@ export default function PresencePanel({
           ) : (
             <UsersIcon className="h-5 w-5 text-slate-300" />
           )}
-          <span data-testid="whiteboard-presence-count" className="text-[10px] font-semibold text-slate-300">
+          <span data-testid="whiteboard-presence-count" className="text-[0.625rem] font-semibold text-slate-300">
             {orderedActive.length}/{maxUsers}
           </span>
           {waitingCount > 0 && (
             <span
-              className="flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-bold text-white"
+              className="flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[0.625rem] font-bold text-white"
               title={`${waitingCount} waiting`}
             >
               {waitingCount}
@@ -414,7 +414,7 @@ export default function PresencePanel({
     <>
       <div
         id="whiteboard-presence-panel"
-        className="presence-panel fixed z-[1200] flex w-full flex-col overflow-hidden rounded-t-2xl border-t border-slate-200 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur bottom-0 inset-x-0 max-h-[62dvh] sm:inset-x-auto sm:bottom-0 sm:right-0 sm:top-0 sm:max-h-none sm:w-[min(220px,85vw)] sm:rounded-none sm:border-l sm:border-t-0"
+        className="presence-panel fixed z-[1200] flex w-full flex-col overflow-hidden rounded-t-2xl border-t border-slate-200 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur bottom-0 inset-x-0 max-h-[62dvh] sm:inset-x-auto sm:bottom-0 sm:right-0 sm:top-0 sm:max-h-none sm:w-[min(13.75rem,85vw)] sm:rounded-none sm:border-l sm:border-t-0"
         data-testid="whiteboard-presence-panel"
         aria-label="Participants"
       >
@@ -425,16 +425,16 @@ export default function PresencePanel({
 
         <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-3 py-2">
           <div className="flex min-w-0 items-center gap-1.5">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+            <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-slate-500">
               In the room
             </span>
-            <span data-testid="whiteboard-presence-count" className="text-[11px] font-medium text-slate-400">
+            <span data-testid="whiteboard-presence-count" className="text-[0.6875rem] font-medium text-slate-400">
               {activeUsers.length} of {maxUsers}
             </span>
           </div>
           <div className="flex items-center gap-1.5">
             {waitingPeers.length > 0 && (
-              <span className="flex h-5 items-center rounded-full bg-amber-100 px-2 text-[11px] font-semibold text-amber-700" title={`${waitingPeers.length} waiting`}>
+              <span className="flex h-5 items-center rounded-full bg-amber-100 px-2 text-[0.6875rem] font-semibold text-amber-700" title={`${waitingPeers.length} waiting`}>
                 {waitingPeers.length} waiting
               </span>
             )}
@@ -442,7 +442,7 @@ export default function PresencePanel({
               <button
                 type="button"
                 data-testid="whiteboard-raise-hand"
-                className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700 transition-colors duration-150 hover:bg-slate-100"
+                className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[0.6875rem] font-semibold text-slate-700 transition-colors duration-150 hover:bg-slate-100"
                 onClick={() => onRaiseHand?.(!localUser?.handRaised)}
               >
                 {localUser?.handRaised ? 'Lower hand' : 'Raise hand'}
@@ -491,7 +491,7 @@ export default function PresencePanel({
                   >
                     <div className="flex items-center gap-1.5 overflow-hidden">
                       <span
-                        className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] text-slate-900"
+                        className="overflow-hidden text-ellipsis whitespace-nowrap text-[0.8125rem] text-slate-900"
                         style={{ fontWeight: isSelf ? 600 : 400 }}
                       >
                         {user.userName}
@@ -499,7 +499,7 @@ export default function PresencePanel({
                       {isHostUser && (
                         <span
                           data-testid={`whiteboard-user-host-${user.peerId}`}
-                          className="flex-shrink-0 text-[10px] font-semibold uppercase tracking-wide text-emerald-600"
+                          className="flex-shrink-0 text-[0.625rem] font-semibold uppercase tracking-wide text-emerald-600"
                         >
                           Host
                         </span>
@@ -507,7 +507,7 @@ export default function PresencePanel({
                       {nameDisc ? (
                         <span
                           data-testid={`whiteboard-user-disc-${user.peerId}`}
-                          className="flex-shrink-0 text-[11px] font-mono font-normal text-slate-500"
+                          className="flex-shrink-0 text-[0.6875rem] font-mono font-normal text-slate-500"
                         >
                           {nameDisc}
                         </span>
@@ -520,7 +520,7 @@ export default function PresencePanel({
                       {user.handRaised && (
                         <span
                           data-testid={`whiteboard-user-hand-${user.peerId}`}
-                          className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-amber-600"
+                          className="flex items-center gap-1 text-[0.625rem] font-semibold uppercase tracking-wide text-amber-600"
                         >
                           <RaisedHandIcon className="h-3.5 w-3.5" tone="ink" />
                           Hand raised
@@ -529,7 +529,7 @@ export default function PresencePanel({
                       {mutedPeerIds?.has(user.peerId) && (
                         <span
                           data-testid={`whiteboard-user-muted-${user.peerId}`}
-                          className="text-[10px] font-semibold uppercase tracking-wide text-amber-600"
+                          className="text-[0.625rem] font-semibold uppercase tracking-wide text-amber-600"
                         >
                           Muted
                         </span>
@@ -557,10 +557,10 @@ export default function PresencePanel({
           {waitingPeers.length > 0 && (
             <div data-testid="whiteboard-waiting-section" className="mt-2 border-t border-slate-200 pt-2">
               <div className="flex items-center gap-1.5 px-2 pb-1">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-amber-600">
+                <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-amber-600">
                   Waiting
                 </span>
-                <span className="text-[11px] font-medium text-amber-500">{waitingPeers.length}</span>
+                <span className="text-[0.6875rem] font-medium text-amber-500">{waitingPeers.length}</span>
               </div>
               {waitingPeers.map((user) => {
                 const canModerate = isLocalHost;
@@ -580,18 +580,18 @@ export default function PresencePanel({
                     <UserAvatar user={user} />
                     <div className="min-w-0 flex-1 overflow-hidden">
                       <div className="flex items-center gap-1.5 overflow-hidden">
-                        <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] text-slate-900">
+                        <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[0.8125rem] text-slate-900">
                           {user.userName}
                         </span>
                         {nameDisc ? (
                           <span
                             data-testid={`whiteboard-user-disc-${user.peerId}`}
-                            className="flex-shrink-0 text-[11px] font-mono font-normal text-slate-500"
+                            className="flex-shrink-0 text-[0.6875rem] font-mono font-normal text-slate-500"
                           >
                             {nameDisc}
                           </span>
                         ) : null}
-                        <span className="flex-shrink-0 text-[10px] font-semibold uppercase tracking-wide text-amber-600">
+                        <span className="flex-shrink-0 text-[0.625rem] font-semibold uppercase tracking-wide text-amber-600">
                           Waiting
                         </span>
                       </div>
@@ -604,7 +604,7 @@ export default function PresencePanel({
                             e.stopPropagation();
                             onApprove(user.peerId, user.accountId);
                           }}
-                          className="flex-shrink-0 rounded-lg bg-emerald-500 px-3 py-1.5 text-[12px] font-semibold text-white shadow-md transition-colors duration-150 hover:bg-emerald-600"
+                          className="flex-shrink-0 rounded-lg bg-emerald-500 px-3 py-1.5 text-[0.75rem] font-semibold text-white shadow-md transition-colors duration-150 hover:bg-emerald-600"
                         >
                           Let in
                         </button>
@@ -630,7 +630,7 @@ export default function PresencePanel({
 
         {/*
           The roster is sized to its own content, so a room of one no longer
-          stretches a single row down a 220px column of white. What is left of
+          stretches a single row down a 13.75rem column of white. What is left of
           the rail is this reserved region rather than the roster's overflow:
           tinted and ruled off so the space reads as part of the panel, and
           already the right shape for the chat that will mount into it.

@@ -500,12 +500,12 @@ export default function ExcalidrawWrapper({
   }, [commitElements, onElementsChange]);
 
   if (!isClient) {
-    return <div className="w-full h-full min-h-[400px]" />;
+    return <div className="w-full h-full min-h-[25rem]" />;
   }
 
   return (
     <div
-      className="w-full h-full min-h-[400px]"
+      className="w-full h-full min-h-[25rem]"
       data-whiteboard-role={isLocalHost ? 'host' : 'peer'}
     >
       <Excalidraw

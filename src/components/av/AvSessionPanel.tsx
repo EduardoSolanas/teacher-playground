@@ -84,7 +84,7 @@ function ParticipantTile({
       )}
       {!isLocal && <audio ref={audioRef} autoPlay playsInline />}
       <div className="absolute bottom-1 left-1 right-1 flex items-center justify-between gap-1">
-        <span className="truncate rounded bg-black/60 px-1.5 py-0.5 text-[11px] text-white">
+        <span className="truncate rounded bg-black/60 px-1.5 py-0.5 text-[0.6875rem] text-white">
           {isLocal ? 'You' : participant.identity}
           {participant.micMuted ? ' · muted' : ''}
         </span>
@@ -92,7 +92,7 @@ function ParticipantTile({
           <button
             type="button"
             data-testid={`av-host-mute-${participant.identity}`}
-            className="rounded bg-black/60 px-1.5 py-0.5 text-[11px] text-amber-200 hover:bg-black/80"
+            className="rounded bg-black/60 px-1.5 py-0.5 text-[0.6875rem] text-amber-200 hover:bg-black/80"
             onClick={() => av.requestMute(participant.identity)}
             title="Request mute"
           >
@@ -124,10 +124,10 @@ export default function AvSessionPanel({
   return (
     <div
       data-testid="av-session-panel"
-      className="fixed left-2 right-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+3.5rem)] z-[180] w-auto rounded-xl border border-slate-700/80 bg-slate-900/95 p-2 shadow-xl shadow-slate-900/30 sm:bottom-16 sm:left-14 sm:right-auto sm:top-auto sm:w-[min(420px,calc(100vw-300px))]"
+      className="fixed left-2 right-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+3.5rem)] z-[180] w-auto rounded-xl border border-slate-700/80 bg-slate-900/95 p-2 shadow-xl shadow-slate-900/30 sm:bottom-16 sm:left-14 sm:right-auto sm:top-auto sm:w-[min(26.25rem,calc(100vw-18.75rem))]"
     >
       <div className="mb-2 flex items-center justify-between gap-2 px-1">
-        <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+        <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-slate-400">
           Call
           {av.status === 'connecting' ? ' · connecting…' : ''}
           {av.status === 'joined' ? ' · live' : ''}
@@ -136,7 +136,7 @@ export default function AvSessionPanel({
           <button
             type="button"
             data-testid="av-toggle-mic"
-            className="rounded-md border border-slate-600 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+            className="rounded-md border border-slate-600 px-2 py-1 text-[0.6875rem] text-slate-200 hover:bg-slate-700"
             onClick={av.toggleMicrophone}
             disabled={av.status === 'idle' && !av.unavailableReason}
           >
@@ -145,7 +145,7 @@ export default function AvSessionPanel({
           <button
             type="button"
             data-testid="av-toggle-cam"
-            className="rounded-md border border-slate-600 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+            className="rounded-md border border-slate-600 px-2 py-1 text-[0.6875rem] text-slate-200 hover:bg-slate-700"
             onClick={av.toggleCamera}
             disabled={av.status === 'idle' && !av.unavailableReason}
           >
@@ -155,7 +155,7 @@ export default function AvSessionPanel({
       </div>
 
       {message ? (
-        <p data-testid="av-status-message" className="px-1 pb-2 text-[12px] text-amber-200">
+        <p data-testid="av-status-message" className="px-1 pb-2 text-[0.75rem] text-amber-200">
           {message}
         </p>
       ) : (
@@ -175,7 +175,7 @@ export default function AvSessionPanel({
       {(av.devices.microphone.length > 1 || av.devices.camera.length > 1) && (
         <div className="mt-2 flex flex-col gap-1 border-t border-slate-700 pt-2">
           {av.devices.microphone.length > 1 && (
-            <label className="flex items-center gap-2 text-[11px] text-slate-300">
+            <label className="flex items-center gap-2 text-[0.6875rem] text-slate-300">
               Mic
               <select
                 data-testid="av-device-mic"
@@ -195,7 +195,7 @@ export default function AvSessionPanel({
             </label>
           )}
           {av.devices.camera.length > 1 && (
-            <label className="flex items-center gap-2 text-[11px] text-slate-300">
+            <label className="flex items-center gap-2 text-[0.6875rem] text-slate-300">
               Cam
               <select
                 data-testid="av-device-cam"

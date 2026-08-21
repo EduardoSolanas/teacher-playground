@@ -82,34 +82,6 @@ test.describe('Clear Board Modal', () => {
   });
 });
 
-test.describe('Empty State', () => {
-  test('empty state hints are visible on fresh whiteboard with select tool', async ({ page }) => {
-    await joinRoom(page, 'EmptyUser');
-    await page.waitForTimeout(2000);
-    await expect(page.getByText('Drag, draw, and collaborate in real-time')).toBeVisible();
-  });
-
-  test('dismiss button hides the empty state hints', async ({ page }) => {
-    await joinRoom(page, 'DismissUser');
-    await page.waitForTimeout(2000);
-    await expect(page.getByText('Drag, draw, and collaborate in real-time')).toBeVisible();
-    // Scoped to the canvas: getByRole name matching is substring by default, so
-    // a bare 'Dismiss' also matches the account button of a user called
-    // "DismissUser".
-    await page.getByTestId('whiteboard-canvas-area').getByRole('button', { name: 'Dismiss' }).click();
-    await expect(page.getByText('Drag, draw, and collaborate in real-time')).toBeHidden();
-  });
-
-  test('empty state is hidden after switching tool away from select', async ({ page }) => {
-    await joinRoom(page, 'ToolSwitchEmpty');
-    await page.waitForTimeout(2000);
-    await expect(page.getByText('Drag, draw, and collaborate in real-time')).toBeVisible();
-    await page.getByTestId('whiteboard-tool-pen').click();
-    await page.waitForTimeout(500);
-    await expect(page.getByText('Drag, draw, and collaborate in real-time')).toBeHidden();
-  });
-});
-
 test.describe('Undo/Redo Bar', () => {
   test('undo button is visible', async ({ page }) => {
     await joinRoom(page, 'UndoVisible');

@@ -45,7 +45,7 @@ describe('RoomAccountMenu', () => {
   });
 
   it('clears the roster rail when one is on screen', () => {
-    // The roster is a fixed 220px column on the right edge. Anchoring the menu
+    // The roster is a fixed 13.75rem column on the right edge. Anchoring the menu
     // to the viewport edge would park it underneath.
     const { rerender } = render(
       <RoomAccountMenu displayName="eduardo" onDisplayNameChange={noop} rosterExpanded={true} />,
@@ -56,7 +56,7 @@ describe('RoomAccountMenu', () => {
     const collapsed = screen.getByTestId('whiteboard-room-account').className;
 
     expect(expanded).not.toBe(collapsed);
-    expect(expanded).toContain('sm:right-[228px]');
+    expect(expanded).toContain('sm:right-[14.25rem]');
     expect(collapsed).toContain('sm:right-3');
   });
 });

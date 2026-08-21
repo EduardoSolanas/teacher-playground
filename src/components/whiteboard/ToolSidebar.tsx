@@ -139,7 +139,7 @@ export default function ToolSidebar({
                 className="absolute left-full ml-3 hidden sm:flex px-2.5 py-1.5 bg-slate-950/95 border border-slate-800/80 text-slate-100 rounded-lg text-xs whitespace-nowrap pointer-events-none opacity-0 group-hover:opacity-100 scale-95 group-hover:scale-100 transition-all duration-150 shadow-2xl z-50 items-center gap-1.5 font-medium"
               >
                 <span>{t.label}</span>
-                <kbd className="px-1 py-0.5 bg-slate-800 border border-slate-700/80 text-slate-400 rounded text-[10px] leading-none uppercase font-semibold">
+                <kbd className="px-1 py-0.5 bg-slate-800 border border-slate-700/80 text-slate-400 rounded text-[0.625rem] leading-none uppercase font-semibold">
                   {shortcut}
                 </kbd>
               </span>

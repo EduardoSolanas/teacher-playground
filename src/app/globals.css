@@ -1,4 +1,18 @@
 @import "tailwindcss";
+/*
+ * brand.css is pulled into the base layer on purpose.
+ *
+ * Imported unlayered (as it was from layout.tsx) every rule in it outranks
+ * every Tailwind utility, because unlayered CSS beats layered CSS whatever the
+ * specificity. That let `a{color:inherit}` repaint the dark "Back to rooms"
+ * pill in near-black ink on a near-black background, and `*{margin:0;padding:0}`
+ * strip the padding off the participants panel and profile menu.
+ *
+ * In `base` it still sets the palette and element defaults, and utilities —
+ * a later layer — win again. The marketing pages link the file directly and
+ * are unaffected: the layer is applied here, at the import, not in the file.
+ */
+@import "../../public/brand.css";
 
 * {
   box-sizing: border-box;
@@ -33,7 +47,7 @@ textarea {
 @keyframes raised-hand-phase-out {
   0% {
     opacity: 0;
-    transform: translateY(10px) scale(0.94);
+    transform: translateY(0.625rem) scale(0.94);
   }
   14% {
     opacity: 1;
@@ -45,7 +59,7 @@ textarea {
   }
   100% {
     opacity: 0;
-    transform: translateY(-22px) scale(1.03);
+    transform: translateY(-1.375rem) scale(1.03);
   }
 }
 
@@ -57,7 +71,7 @@ textarea {
 @keyframes presence-sheet-in {
   from {
     opacity: 0;
-    transform: translateY(16px);
+    transform: translateY(1rem);
   }
   to {
     opacity: 1;
@@ -68,7 +82,7 @@ textarea {
 @keyframes presence-rail-in {
   from {
     opacity: 0;
-    transform: translateX(16px);
+    transform: translateX(1rem);
   }
   to {
     opacity: 1;
@@ -102,12 +116,12 @@ textarea {
 }
 
 .raised-hand-cue-icon {
-  filter: drop-shadow(0 0 18px rgba(253, 230, 138, 0.55));
+  filter: drop-shadow(0 0 1.125rem rgba(253, 230, 138, 0.55));
 }
 
 :where(a, button, input, textarea, select):focus-visible {
-  outline: 2px solid #6366f1;
-  outline-offset: 2px;
+  outline:2px solid #6366f1;
+  outline-offset:2px;
 }
 
 /* Below sm the app supplies its own bottom tool bar, which carries the same

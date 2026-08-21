@@ -18,7 +18,6 @@ import { shouldCollapsePresenceForViewport } from '@/lib/whiteboard/presenceView
 import { shouldOverlayConnectingScreen } from '@/lib/whiteboard/connectingOverlay';
 import { shouldExpandForArrival } from '@/lib/whiteboard/waitingArrival';
 import RemoteCursorOverlay from '@/components/whiteboard/RemoteCursorOverlay';
-import EmptyState from '@/components/whiteboard/EmptyState';
 import ClearBoardModal from '@/components/whiteboard/ClearBoardModal';
 import ToolSidebar from '@/components/whiteboard/ToolSidebar';
 import BackToRoomsLink from '@/components/whiteboard/BackToRoomsLink';
@@ -41,7 +40,7 @@ const ExcalidrawWrapper = dynamic(
   () => import('@/components/whiteboard/ExcalidrawWrapper'),
   {
     ssr: false,
-    loading: () => <div className="w-full h-full min-h-[400px]" />,
+    loading: () => <div className="w-full h-full min-h-[25rem]" />,
   },
 );
 
@@ -123,7 +122,7 @@ function RoomContent({ roomId }: { roomId: string }) {
 
   useEffect(() => { cleanupStaleRooms(); }, []);
 
-  // A 220px roster over a phone screen leaves almost no canvas, so phones start
+  // A 13.75rem roster over a phone screen leaves almost no canvas, so phones start
   // with it collapsed. Set once on mount: after that it is the user's choice.
   useEffect(() => {
     if (shouldCollapsePresenceForViewport(window.innerWidth)) {
@@ -344,7 +343,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         onOpenHelp={() => setShowShortcutsHelp(true)}
         showHostTools={isLocalHost}
       />
-      <div className={`absolute inset-0 overflow-hidden bg-slate-50 sm:inset-auto sm:left-14 sm:top-12 sm:h-[calc(100vh-48px)] sm:rounded-tl-2xl ${presenceCollapsed ? 'sm:w-[calc(100vw-68px)]' : 'sm:w-[calc(100vw-276px)]'}`} data-testid="whiteboard-canvas-area">
+      <div className={`absolute inset-0 overflow-hidden bg-slate-50 sm:inset-auto sm:left-14 sm:top-12 sm:h-[calc(100vh-3rem)] sm:rounded-tl-2xl ${presenceCollapsed ? 'sm:w-[calc(100vw-4.25rem)]' : 'sm:w-[calc(100vw-17.25rem)]'}`} data-testid="whiteboard-canvas-area">
         <ExcalidrawWrapper
           roomId={roomId}
           userName={userName}
@@ -359,7 +358,6 @@ function RoomContent({ roomId }: { roomId: string }) {
           onViewportChange={noopViewportChange}
           onElementsChange={setElements}
         />
-        {elements.length === 0 && activeTool === 'select' && <EmptyState />}
       </div>
       <RemoteCursorOverlay cursors={cursors} users={users} />
       <RaisedHandCue users={users} localPeerId={localPeerId} isLocalHost={isLocalHost} />
@@ -384,7 +382,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         <div
           role="alert"
           data-testid="whiteboard-moderation-error"
-          className="fixed left-1/2 top-[max(0.75rem,env(safe-area-inset-top))] z-[400] -translate-x-1/2 rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-[13px] font-medium text-red-700 shadow-lg"
+          className="fixed left-1/2 top-[max(0.75rem,env(safe-area-inset-top))] z-[400] -translate-x-1/2 rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-[0.8125rem] font-medium text-red-700 shadow-lg"
         >
           {moderationError}
         </div>
@@ -405,7 +403,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         <button
           data-testid="whiteboard-clear-btn"
           onClick={() => setClearModalOpen(true)}
-          className="flex h-9 cursor-pointer items-center justify-center rounded-lg border border-slate-700 px-3 text-[13px] font-medium text-slate-300 transition-colors duration-150 hover:bg-slate-700 hover:text-red-400 sm:h-7 sm:px-2 sm:text-[11px]"
+          className="flex h-9 cursor-pointer items-center justify-center rounded-lg border border-slate-700 px-3 text-[0.8125rem] font-medium text-slate-300 transition-colors duration-150 hover:bg-slate-700 hover:text-red-400 sm:h-7 sm:px-2 sm:text-[0.6875rem]"
           title="Clear board"
         >
           Clear
@@ -413,7 +411,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         <button
           data-testid="whiteboard-leave-room-btn"
           onClick={handleLeaveRoom}
-          className="flex h-9 cursor-pointer items-center justify-center rounded-lg border border-slate-700 px-3 text-[13px] font-medium text-slate-300 transition-colors duration-150 hover:bg-slate-700 hover:text-slate-100 sm:h-7 sm:px-2 sm:text-[11px]"
+          className="flex h-9 cursor-pointer items-center justify-center rounded-lg border border-slate-700 px-3 text-[0.8125rem] font-medium text-slate-300 transition-colors duration-150 hover:bg-slate-700 hover:text-slate-100 sm:h-7 sm:px-2 sm:text-[0.6875rem]"
           title="Leave room"
         >
           Leave

@@ -25,18 +25,18 @@ export default function ZoomControls({
         data-testid="whiteboard-zoom-out-btn"
         onClick={onZoomOut}
         title="Zoom out"
-        className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg border-none text-[16px] font-semibold text-slate-200 transition-colors duration-150 hover:bg-slate-700"
+        className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg border-none text-[1rem] font-semibold text-slate-200 transition-colors duration-150 hover:bg-slate-700"
       >
         -
       </button>
-      <span className="min-w-[52px] select-none text-center text-xs text-slate-400">
+      <span className="min-w-[3.25rem] select-none text-center text-xs text-slate-400">
         {zoomPercent}%
       </span>
       <button
         data-testid="whiteboard-zoom-in-btn"
         onClick={onZoomIn}
         title="Zoom in"
-        className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg border-none text-[16px] font-semibold text-slate-200 transition-colors duration-150 hover:bg-slate-700"
+        className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg border-none text-[1rem] font-semibold text-slate-200 transition-colors duration-150 hover:bg-slate-700"
       >
         +
       </button>
@@ -46,7 +46,7 @@ export default function ZoomControls({
         onClick={onFitToContent}
         title="Fit to content"
         disabled={elements.length === 0}
-        className="flex h-8 cursor-pointer items-center justify-center rounded-lg border-none px-2 text-[11px] font-medium text-slate-200 transition-colors duration-150 hover:bg-slate-700"
+        className="flex h-8 cursor-pointer items-center justify-center rounded-lg border-none px-2 text-[0.6875rem] font-medium text-slate-200 transition-colors duration-150 hover:bg-slate-700"
         style={{
           opacity: elements.length === 0 ? 0.4 : 1,
           cursor: elements.length === 0 ? 'not-allowed' : 'pointer',
@@ -58,7 +58,7 @@ export default function ZoomControls({
         data-testid="whiteboard-reset-view-btn"
         onClick={onResetView}
         title="Reset view"
-        className="flex h-8 cursor-pointer items-center justify-center rounded-lg border-none px-2 text-[11px] font-medium text-slate-200 transition-colors duration-150 hover:bg-slate-700"
+        className="flex h-8 cursor-pointer items-center justify-center rounded-lg border-none px-2 text-[0.6875rem] font-medium text-slate-200 transition-colors duration-150 hover:bg-slate-700"
       >
         Reset
       </button>

@@ -33,11 +33,11 @@ export default function RoomAccountMenu({
 
   if (!showMenu) return null;
 
-  // Mirrors the canvas, which is itself inset by the roster's 220px column.
+  // Mirrors the canvas, which is itself inset by the roster's 13.75rem column.
   // Anchored to the viewport edge instead, the menu would sit under the roster.
   // Screens with no roster at all (name prompt, waiting room, loading) pass
   // false and get the full width.
-  const rightEdge = rosterExpanded ? 'sm:right-[228px]' : 'sm:right-3';
+  const rightEdge = rosterExpanded ? 'sm:right-[14.25rem]' : 'sm:right-3';
 
   return (
     <div
@@ -47,7 +47,7 @@ export default function RoomAccountMenu({
       <UserProfileMenu
         displayName={displayName}
         onDisplayNameChange={onDisplayNameChange}
-        triggerClassName="inline-flex h-11 max-w-[12rem] shrink-0 items-center gap-2 rounded-xl border border-slate-700/80 bg-slate-900/95 px-2.5 text-[13px] font-medium text-slate-200 shadow-lg shadow-slate-950/30 backdrop-blur-md transition-colors hover:bg-slate-800 hover:text-white active:bg-slate-700"
+        triggerClassName="inline-flex h-11 max-w-[12rem] shrink-0 items-center gap-2 rounded-xl border border-slate-700/80 bg-slate-900/95 px-2.5 text-[0.8125rem] font-medium text-slate-200 shadow-lg shadow-slate-950/30 backdrop-blur-md transition-colors hover:bg-slate-800 hover:text-white active:bg-slate-700"
       />
     </div>
   );

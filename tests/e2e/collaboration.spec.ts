@@ -574,13 +574,15 @@ test.describe('Excalidraw Collaboration', () => {
     await expectCommittedElement(page, 'freedraw', 1, { minPoints: 3 });
   });
 
-  test('pen draws through the first-run empty state hints', async ({ page }) => {
+  // Was 'pen draws through the first-run empty state hints'. The hint overlay
+  // is gone, so there is nothing left to draw through, but what the test
+  // actually proved — selecting the pen and dragging produces a freedraw
+  // element — is worth keeping on its own.
+  test('selecting the pen and dragging produces a freedraw element', async ({ page }) => {
     await joinRoom(page, 'PenHints');
     await page.waitForTimeout(2000);
 
-    await expect(page.getByText('Drag, draw, and collaborate in real-time')).toBeVisible();
     await selectExcalidrawTool(page, 'whiteboard-tool-pen');
-    await expect(page.getByText('Drag, draw, and collaborate in real-time')).toBeHidden();
 
     const canvasArea = page.getByTestId('whiteboard-canvas-area');
     const box = await canvasArea.boundingBox();

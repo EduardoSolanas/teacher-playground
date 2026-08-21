@@ -17,7 +17,7 @@ export function UndoRedoBar({ onUndo, onRedo, canUndo, canRedo }: UndoRedoBarPro
         <button
           data-testid="whiteboard-undo-btn"
           title="Undo"
-          className={`flex items-center justify-center w-9 h-9 bg-slate-800 border-none rounded-lg cursor-pointer text-slate-200 text-[16px] transition-colors duration-150 ${canUndo ? 'hover:bg-slate-700' : 'opacity-40 cursor-not-allowed bg-slate-950'}`}
+          className={`flex items-center justify-center w-9 h-9 bg-slate-800 border-none rounded-lg cursor-pointer text-slate-200 text-[1rem] transition-colors duration-150 ${canUndo ? 'hover:bg-slate-700' : 'opacity-40 cursor-not-allowed bg-slate-950'}`}
           onClick={onUndo}
           disabled={!canUndo}
           style={{ opacity: !canUndo ? 0.4 : 1, cursor: !canUndo ? 'not-allowed' : 'pointer' }}
@@ -41,7 +41,7 @@ export function UndoRedoBar({ onUndo, onRedo, canUndo, canRedo }: UndoRedoBarPro
         <button
           data-testid="whiteboard-redo-btn"
           title="Redo"
-          className={`flex items-center justify-center w-9 h-9 bg-slate-800 border-none rounded-lg cursor-pointer text-slate-200 text-[16px] transition-colors duration-150 ${canRedo ? 'hover:bg-slate-700' : 'opacity-40 cursor-not-allowed bg-slate-950'}`}
+          className={`flex items-center justify-center w-9 h-9 bg-slate-800 border-none rounded-lg cursor-pointer text-slate-200 text-[1rem] transition-colors duration-150 ${canRedo ? 'hover:bg-slate-700' : 'opacity-40 cursor-not-allowed bg-slate-950'}`}
           onClick={onRedo}
           disabled={!canRedo}
           style={{ opacity: !canRedo ? 0.4 : 1, cursor: !canRedo ? 'not-allowed' : 'pointer' }}

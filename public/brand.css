@@ -20,6 +20,22 @@
  *   line   #e6e0d2  hairline borders on paper
  */
 
+/*
+ * Everything below sits in the `base` cascade layer.
+ *
+ * Unlayered CSS outranks every layered rule whatever the specificity, and
+ * Tailwind emits its utilities in `@layer utilities`. Unlayered, this file
+ * therefore beat every utility in the app: `a{color:inherit}` repainted the
+ * dark "Back to rooms" pill in near-black ink on a near-black background, and
+ * `*{margin:0;padding:0}` stripped the padding from the participants panel and
+ * the profile menu. In `base` the palette and element defaults still apply and
+ * utilities win again.
+ *
+ * The marketing pages link this file with no Tailwind alongside it, so a
+ * single layer with nothing competing behaves exactly as before.
+ */
+@layer base {
+
 :root{
 --paper:#faf7f0;--paper2:#f3eee2;--ink:#26241f;--ink2:#4b4740;--mut:#7a756b;
 --rule:#c9d6ea;--blue:#2a5db0;--blue-d:#1e4685;--red:#c0392b;--line:#e6e0d2;
@@ -41,7 +57,7 @@ svg{max-width:100%;height:auto}
 
 /* ---- top rule + nav ---------------------------------------------------- */
 
-.topline{height:4px;background:var(--red)}
+.topline{height:0.25rem;background:var(--red)}
 .nav{display:flex;align-items:center;justify-content:space-between;padding:1.3rem 0}
 .brand{display:flex;align-items:baseline;gap:.6rem}
 .brand .mark{font-family:Georgia,serif;font-style:italic;font-weight:700;font-size:1.25rem;color:var(--blue)}
@@ -74,7 +90,7 @@ padding:.85rem 1.6rem;border-radius:2px;box-shadow:2.5px 2.5px 0 var(--ink)}
 font-size:clamp(2.5rem,5.4vw,3.9rem);line-height:1.06;letter-spacing:-.015em;margin-top:1rem}
 .hero h1 .u{position:relative;white-space:nowrap}
 .hero h1 .u svg{position:absolute;left:0;right:0;bottom:-.28em;width:100%;height:.42em}
-/* The nowrap ".u" phrase is ~305px at the 2.5rem clamp floor; below ~353px
+/* The nowrap ".u" phrase is ~19.0625rem at the 2.5rem clamp floor; below ~22.0625rem
    viewports it overflows the track, so step the size down for small phones. */
 @media(max-width:360px){.hero h1{font-size:2.1rem}}
 .hero .lede{margin-top:1.5rem;max-width:30rem;font-size:1.08rem;color:var(--ink2)}
@@ -114,7 +130,7 @@ letter-spacing:-.01em;line-height:1.15}
 /* blue-ruled note card */
 .note-block{margin-top:2.6rem;background:#fff;border:1px solid var(--line);border-radius:3px;
 padding:2.2rem 2.4rem;box-shadow:5px 6px 0 rgba(38,36,31,.06);
-background-image:repeating-linear-gradient(180deg,transparent 0 1.85rem,var(--rule) 1.85rem calc(1.85rem + 1px));
+background-image:repeating-linear-gradient(180deg,transparent 0 1.85rem,var(--rule) 1.85rem calc(1.85rem + 0.0625rem));
 background-position:0 .35rem}
 .note-block .item{display:grid;grid-template-columns:1.4rem 1fr;gap:.8rem;padding:.35rem 0}
 .note-block .item .tick{color:var(--red);font-weight:700}
@@ -179,7 +195,7 @@ border-bottom:1px solid var(--line);color:var(--ink2);font-size:.9rem}
 .app-screen{min-height:100dvh;display:flex;flex-direction:column;background:var(--paper);color:var(--ink);
 padding:0 1rem 1.5rem}
 @media(min-width:640px){.app-screen{padding:0 1.5rem 1.5rem}}
-.app-topline{height:4px;background:var(--red);margin:0 -1rem}
+.app-topline{height:0.25rem;background:var(--red);margin:0 -1rem}
 @media(min-width:640px){.app-topline{margin:0 -1.5rem}}
 .app-header{display:flex;align-items:center;justify-content:space-between;gap:.75rem;
 max-width:42rem;margin:0 auto;width:100%;padding:1rem 0}
@@ -193,6 +209,20 @@ font-size:1.6rem;line-height:1.2;letter-spacing:-.01em;text-align:center;color:v
 .app-h2{font-family:Georgia,'Iowan Old Style','Times New Roman',serif;font-weight:400;
 font-size:1.35rem;color:var(--ink);margin:0}
 .section-sep{margin-top:1.75rem;border-top:1px solid var(--line);padding-top:1.5rem}
+
+/*
+ * The rooms you have and the form for making another are different kinds of
+ * thing, and stacked as bare headings on one sheet they read as one list. The
+ * form sits on the recessed paper tone inside its own hairline so the eye can
+ * tell "these are my rooms" from "this makes a new one" without reading.
+ */
+.form-panel{margin-top:.75rem;border:1px solid var(--line);border-radius:3px;
+background:var(--paper2);padding:1.25rem}
+@media(min-width:640px){.form-panel{padding:1.5rem}}
+.form-panel .app-label{margin-top:0}
+.field-group+.field-group{margin-top:1.15rem}
+.section-head{display:flex;align-items:baseline;justify-content:space-between;gap:1rem}
+.section-count{font-size:.78rem;letter-spacing:.1em;text-transform:uppercase;color:var(--mut)}
 .app-label{display:block;font-size:.8rem;font-weight:600;color:var(--ink2)}
 .app-small{font-size:.75rem;color:var(--mut);margin:.5rem 0 0}
 .app-error{margin-top:.75rem;font-size:.8rem;font-weight:500;color:var(--red)}
@@ -328,3 +358,4 @@ transition:background .15s}
 .btn-row{display:flex;flex-wrap:wrap;justify-content:center;gap:.75rem;margin-top:1.75rem}
 .btn-danger{background:var(--red)}
 .btn-danger:hover{background:#a43225}
+}

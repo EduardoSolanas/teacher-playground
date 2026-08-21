@@ -28,7 +28,7 @@ export default function ClearBoardModal({
       className="fixed inset-0 bg-black/60 flex items-center justify-center z-[1000]"
     >
       <div
-        className="bg-slate-800 rounded-xl p-6 max-w-[400px] w-[90%] border border-slate-700 shadow-2xl"
+        className="bg-slate-800 rounded-xl p-6 max-w-[25rem] w-[90%] border border-slate-700 shadow-2xl"
       >
         <h3
           className="m-0 mb-3 text-lg font-semibold text-slate-100"

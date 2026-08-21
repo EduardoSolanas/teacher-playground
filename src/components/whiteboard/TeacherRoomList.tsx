@@ -412,12 +412,6 @@ export default function TeacherRoomList({
                       )}
                     </div>
                   </div>
-                  <p
-                    data-testid="guest-join-url"
-                    className="room-url"
-                  >
-                    {joinUrl}
-                  </p>
                   </div>
                 )}
               </li>

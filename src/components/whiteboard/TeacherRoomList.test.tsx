@@ -1,5 +1,5 @@
-import { describe, expect, it, vi, afterEach } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import TeacherRoomList, { teacherRoomTitle } from './TeacherRoomList';
 
@@ -179,32 +179,63 @@ describe('TeacherRoomList', () => {
   });
 
   describe('guest-host join URL', () => {
+    // The row no longer prints the URL, so the guard moves to where the URL
+    // actually reaches a student: the clipboard. A teacher-host origin copied
+    // here would send a minor to a surface Access sits in front of, which they
+    // cannot pass.
+    let copied: string[];
+
+    beforeEach(() => {
+      copied = [];
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: (text: string) => { copied.push(text); return Promise.resolve(); } },
+      });
+    });
+
     afterEach(() => {
       vi.unstubAllEnvs();
     });
 
-    it('shows the guest-host join URL, never the teacher-host origin', () => {
+    async function copyFirstShareLink() {
+      fireEvent.click(screen.getByTestId('whiteboard-room-share-room-alpha'));
+      await waitFor(() => expect(copied).toHaveLength(1));
+      return copied[0];
+    }
+
+    it('copies the guest-host join URL, never the teacher-host origin', async () => {
       vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', 'join.example.com');
       render(
         <TeacherRoomList rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]} onOpen={vi.fn()} />,
       );
 
-      const url = screen.getByTestId('guest-join-url');
-      expect(url.textContent).toBe('https://join.example.com/whiteboard/room-alpha');
-      expect(url.textContent).not.toContain(window.location.origin);
-      expect(url.textContent).not.toContain(`${window.location.host}/whiteboard/room-alpha`);
+      const url = await copyFirstShareLink();
+      expect(url).toBe('https://join.example.com/whiteboard/room-alpha');
+      expect(url).not.toContain(window.location.origin);
+      expect(url).not.toContain(`${window.location.host}/whiteboard/room-alpha`);
     });
 
-    it('swaps the window origin to the guest host when the env var is unset', () => {
+    it('swaps the window origin to the guest host when the env var is unset', async () => {
       vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', '');
       render(
         <TeacherRoomList rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]} onOpen={vi.fn()} />,
       );
 
-      const url = screen.getByTestId('guest-join-url').textContent ?? '';
+      const url = await copyFirstShareLink();
       expect(url).toMatch(/\/whiteboard\/room-alpha$/);
       expect(url).not.toBe(`${window.location.origin}/whiteboard/room-alpha`);
       expect(new URL(url).hostname).not.toBe(window.location.hostname);
+    });
+
+    it('does not print the raw URL in the row', () => {
+      vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', 'join.example.com');
+      render(
+        <TeacherRoomList rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]} onOpen={vi.fn()} />,
+      );
+
+      expect(screen.queryByTestId('guest-join-url')).toBeNull();
+      expect(screen.getByTestId('whiteboard-room-list').textContent)
+        .not.toContain('https://');
     });
   });
 });

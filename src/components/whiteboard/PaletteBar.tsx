@@ -12,7 +12,7 @@ export default function PaletteBar() {
     >
       <div className="bg-slate-900/95 border border-slate-700/80 rounded-xl shadow-xl shadow-slate-900/20 backdrop-blur-md flex items-center h-10 px-3.5 gap-4 pointer-events-auto">
         <div className="flex gap-1.5 items-center">
-          <span className="text-slate-400 text-[11px] font-semibold tracking-wide uppercase mr-1 select-none">Color</span>
+          <span className="text-slate-400 text-[0.6875rem] font-semibold tracking-wide uppercase mr-1 select-none">Color</span>
           {COLOR_PRESETS.map((color) => (
             <div
               key={color}
@@ -24,8 +24,8 @@ export default function PaletteBar() {
                 borderRadius: '50%',
                 background: color,
                 cursor: 'pointer',
-                border: palette.color === color ? '3px solid #ffffff' : '2px solid #475569',
-                boxShadow: palette.color === color ? '0 0 0 2px #3b82f6' : 'none',
+                border: palette.color === color ? '0.1875rem solid #ffffff' : '0.125rem solid #475569',
+                boxShadow: palette.color === color ? '0 0 0 0.125rem #3b82f6' : 'none',
                 transition: 'all 0.15s',
               }}
               className="hover:scale-110 active:scale-95"
@@ -36,7 +36,7 @@ export default function PaletteBar() {
         <div className="w-px h-5 bg-slate-800/80" />
 
         <div className="flex gap-1 items-center">
-          <span className="text-slate-400 text-[11px] font-semibold tracking-wide uppercase mr-1 select-none">Stroke</span>
+          <span className="text-slate-400 text-[0.6875rem] font-semibold tracking-wide uppercase mr-1 select-none">Stroke</span>
           {STROKE_WIDTHS.map((w) => (
             <div
               key={w}
@@ -50,7 +50,7 @@ export default function PaletteBar() {
                 justifyContent: 'center',
                 cursor: 'pointer',
                 borderRadius: 6,
-                border: palette.strokeWidth === w ? '2px solid #3b82f6' : '1px solid #475569',
+                border: palette.strokeWidth === w ? '0.125rem solid #3b82f6' : '0.0625rem solid #475569',
                 background: palette.strokeWidth === w ? '#1e293b' : 'transparent',
                 transition: 'all 0.15s',
               }}
@@ -71,7 +71,7 @@ export default function PaletteBar() {
         <div className="w-px h-5 bg-slate-800/80" />
 
         <div className="flex gap-1.5 items-center">
-          <span className="text-slate-400 text-[11px] font-semibold tracking-wide uppercase mr-1 select-none">Fill</span>
+          <span className="text-slate-400 text-[0.6875rem] font-semibold tracking-wide uppercase mr-1 select-none">Fill</span>
           <div
             data-testid="whiteboard-fill-toggle"
             onClick={() =>
@@ -83,10 +83,10 @@ export default function PaletteBar() {
               borderRadius: 6,
               background:
                 palette.fill === 'transparent'
-                  ? 'repeating-conic-gradient(#334155 0% 25%, #1e293b 0% 50%) 50% / 6px 6px'
+                  ? 'repeating-conic-gradient(#334155 0% 25%, #1e293b 0% 50%) 50% / 0.375rem 0.375rem'
                   : palette.fill,
               cursor: 'pointer',
-              border: palette.fill !== 'transparent' ? '2px solid #3b82f6' : '2px solid #475569',
+              border: palette.fill !== 'transparent' ? '0.125rem solid #3b82f6' : '0.125rem solid #475569',
               transition: 'all 0.15s',
             }}
             className="hover:scale-105 active:scale-95 shadow-inner"
