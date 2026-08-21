@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useRef, useEffect, useState } from 'react';
+import { diffScene, shouldPublish, elementsToPublish } from '@/lib/whiteboard/scenePublish';
 // MUST stay above the Excalidraw import: it sets EXCALIDRAW_ASSET_PATH, and ES
 // module imports are evaluated in order, before this module's own body runs.
 import '@/lib/whiteboard/excalidrawAssetPath';
@@ -14,7 +15,6 @@ import {
   uniqueElementsById,
 } from '@/lib/whiteboard/excalidrawSync';
 import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
-import { cursorPublishDelay } from '@/lib/whiteboard/cursorPublishRate';
 
 
 type ExcalidrawWrapperProps = {
@@ -264,9 +264,6 @@ export default function ExcalidrawWrapper({
     }
   }, [activeTool]);
 
-  const cursorSentAtRef = useRef<number | null>(null);
-  const cursorPendingRef = useRef<any>(null);
-  const cursorTimerRef = useRef<number | null>(null);
 
   /**
    * Publishing a stroke while it is being drawn.
@@ -287,32 +284,15 @@ export default function ExcalidrawWrapper({
   const strokeTrailingTimerRef = useRef<number | null>(null);
 
   const commitElements = useCallback(
-    (el: readonly any[]) => {
+    (el: readonly any[], force = false) => {
       hasAcceptedInitialSceneRef.current = true;
 
       // Excalidraw stamps every element with a monotonic `version`, so what
       // changed can be found by comparing numbers on the RAW elements. The old
       // check serialized the whole scene and JSON.stringify'd it twice — on a
       // board of any size that dominated the drawing path.
-      const nextVersions = new Map<string, number>();
-      for (const element of el) {
-        const id = (element as { id?: unknown })?.id;
-        if (typeof id !== 'string' || id.length === 0) continue;
-        const version = (element as { version?: unknown }).version;
-        nextVersions.set(id, typeof version === 'number' ? version : 0);
-      }
-
-      const previousVersions = publishedVersionsRef.current;
-      let removed = false;
-      for (const id of previousVersions.keys()) {
-        if (!nextVersions.has(id)) { removed = true; break; }
-      }
-      const changedIds = new Set<string>();
-      for (const [id, version] of nextVersions) {
-        if (previousVersions.get(id) !== version) changedIds.add(id);
-      }
-      // Nothing moved: leave without serializing anything at all.
-      if (!removed && changedIds.size === 0) return;
+      const diff = diffScene(publishedVersionsRef.current, el);
+      if (!shouldPublish(diff, force)) return;
 
       const serializedElements = serializeExcalidrawElements(el);
 
@@ -321,7 +301,7 @@ export default function ExcalidrawWrapper({
       lastPublishedIdsRef.current = serializedElements
         .map((element) => element.id)
         .filter((id): id is string => typeof id === 'string');
-      publishedVersionsRef.current = nextVersions;
+      publishedVersionsRef.current = diff.nextVersions;
 
       // Excalidraw fires onChange for every pointer sample, so this runs tens of
       // times per second while drawing. Handing the whole scene to React state
@@ -341,23 +321,20 @@ export default function ExcalidrawWrapper({
 
       if (yDoc && yElementsArray) {
         try {
-          if (removed) {
+          const { elements: payload, wholeScene } = elementsToPublish(
+            serializedElements,
+            diff,
+          );
+          if (wholeScene) {
             // An element disappeared, so the stale sweep has to run and needs
             // the whole scene to know what survived.
             replaceSharedElements(yDoc, yElementsArray, serializedElements, 'local', {
               previousIds,
             });
-          } else {
-            // Only what actually moved. While drawing that is a single element,
-            // so the Yjs walk stops scaling with the size of the board.
-            const changedElements = serializedElements.filter(
-              (element) => typeof element.id === 'string' && changedIds.has(element.id),
-            );
-            if (changedElements.length > 0) {
-              replaceSharedElements(yDoc, yElementsArray, changedElements, 'local', {
-                deleteMissing: false,
-              });
-            }
+          } else if (payload.length > 0) {
+            replaceSharedElements(yDoc, yElementsArray, payload, 'local', {
+              deleteMissing: false,
+            });
           }
         } catch {
           // HTTP persist already ran; a Yjs write must not roll that back.
@@ -410,56 +387,20 @@ export default function ExcalidrawWrapper({
     [commitElements],
   );
 
-  const publishPointer = useCallback(
-    (payload: any) => {
-      const peerId = localPeerIdRef.current;
-      if (!yCursorsMap || !peerId) return;
-      const pointer = payload?.pointer ?? payload;
-      const x = typeof pointer?.x === 'number' ? pointer.x : 0;
-      const y = typeof pointer?.y === 'number' ? pointer.y : 0;
-      const user = users.find((entry) => entry.peerId === peerId);
-      cursorSentAtRef.current = Date.now();
-      yCursorsMap.set(peerId, {
-        x,
-        y,
-        cursor: payload,
-        userName,
-        color: user?.color || '#3498db',
-        peerId,
-      });
-    },
-    [userName, users, yCursorsMap],
-  );
-
-  /**
-   * Excalidraw reports pointer updates at pointer rate and each one is a Yjs
-   * write, so publishing every update pushed past the Worker's 60 msg/sec
-   * signaling cap and had the socket closed mid-drag. The latest payload is
-   * kept and flushed when the window opens.
+  /*
+   * No cursor publishing here.
+   *
+   * RoomClient already writes the local cursor from its root onPointerMove, in
+   * viewport pixels — the units RemoteCursorOverlay positions with. This
+   * component used to publish Excalidraw's scene coordinates to the same Yjs
+   * key, on its own separate throttle, so while a pointer moved over the canvas
+   * the two writers interleaved and every other update put the peer's cursor
+   * somewhere else entirely. On the receiving board that read as the pointer
+   * flickering between two positions, worst while drawing, when both handlers
+   * fire continuously.
    */
-  const handlePointerUpdate = useCallback(
-    (payload: any) => {
-      const delay = cursorPublishDelay(cursorSentAtRef.current, Date.now());
-      if (delay === 0) {
-        cursorPendingRef.current = null;
-        publishPointer(payload);
-        return;
-      }
-
-      cursorPendingRef.current = payload;
-      if (cursorTimerRef.current !== null) return;
-      cursorTimerRef.current = window.setTimeout(() => {
-        cursorTimerRef.current = null;
-        const pending = cursorPendingRef.current;
-        cursorPendingRef.current = null;
-        if (pending) publishPointer(pending);
-      }, delay);
-    },
-    [publishPointer],
-  );
 
   useEffect(() => () => {
-    if (cursorTimerRef.current !== null) window.clearTimeout(cursorTimerRef.current);
     if (strokeTrailingTimerRef.current !== null) window.clearTimeout(strokeTrailingTimerRef.current);
   }, []);
 
@@ -485,7 +426,7 @@ export default function ExcalidrawWrapper({
         // board that still has content. A real clear goes through its own path.
         const wouldWipe = finalElements.length === 0
           && lastSyncedElementsRef.current.length > 0;
-        if (!wouldWipe) commitElements(finalElements);
+        if (!wouldWipe) commitElements(finalElements, true);
       } catch {
         // A failed final publish must not wedge the pointer state.
       }
@@ -513,7 +454,6 @@ export default function ExcalidrawWrapper({
         onChange={handleElementsChange}
         onPointerDown={handlePointerDown}
         onPointerUp={handlePointerUp}
-        onPointerUpdate={handlePointerUpdate}
         UIOptions={{
           canvasActions: {
             export: false,

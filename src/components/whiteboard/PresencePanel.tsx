@@ -424,20 +424,22 @@ export default function PresencePanel({
         </div>
 
         <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-3 py-2">
-          <div className="flex min-w-0 items-center gap-1.5">
+          <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
             <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-slate-500">
               In the room
             </span>
             <span data-testid="whiteboard-presence-count" className="text-[0.6875rem] font-medium text-slate-400">
-              {activeUsers.length} of {maxUsers}
+              {activeUsers.length}/{maxUsers}
             </span>
           </div>
-          <div className="flex items-center gap-1.5">
-            {waitingPeers.length > 0 && (
-              <span className="flex h-5 items-center rounded-full bg-amber-100 px-2 text-[0.6875rem] font-semibold text-amber-700" title={`${waitingPeers.length} waiting`}>
-                {waitingPeers.length} waiting
-              </span>
-            )}
+          {/*
+            No waiting badge here. The Waiting section directly below already
+            heads itself with the same count, and a second copy of it was what
+            pushed this header over 220px and wrapped "IN THE ROOM" onto two
+            lines. The collapsed handle keeps its badge — there the section is
+            not visible.
+          */}
+          <div className="flex shrink-0 items-center gap-1.5">
             {canRaiseHand && (
               <button
                 type="button"
@@ -597,7 +599,10 @@ export default function PresencePanel({
                       </div>
                     </div>
                     {canModerate && (
-                      <div className="flex shrink-0 items-center gap-1">
+                      // basis-full: at 220px the name, Let in and the kebab
+                      // cannot share a line — the name lost, ellipsising to a
+                      // single letter. The controls wrap under it instead.
+                      <div className="flex basis-full shrink-0 items-center justify-end gap-1">
                         <button
                           data-testid={`whiteboard-approve-${user.peerId}`}
                           onClick={(e) => {

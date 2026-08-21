@@ -907,10 +907,12 @@ test.describe('Edge Cases', () => {
       await waitForProviderConnected(bobPage);
       await page.waitForTimeout(3000);
 
-      // Both should show "2 of X" participants. The count lives in the panel
+      // Both should show "2/X" participants. The header count is compact
+      // because "2 of 2" wrapped "IN THE ROOM" onto two lines in the rail.
+      // The count lives in the panel
       // header, not on the collapse toggle.
-      await expect(page.getByTestId('whiteboard-presence-count')).toContainText('2 of');
-      await expect(bobPage.getByTestId('whiteboard-presence-count')).toContainText('2 of');
+      await expect(page.getByTestId('whiteboard-presence-count')).toContainText('2/');
+      await expect(bobPage.getByTestId('whiteboard-presence-count')).toContainText('2/');
     } finally {
       await bobContext.close();
     }
