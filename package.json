@@ -7,7 +7,7 @@
     "dev:next": "next dev --webpack",
     "prebuild": "node scripts/copy-excalidraw-assets.mjs",
     "build": "next build --webpack",
-    "dev:worker": "next build && wrangler dev",
+    "dev:worker": "npm run build && wrangler dev",
     "dev:access": "node scripts/local-access-issuer.mjs",
     "dev:local": "node scripts/dev-local.mjs",
     "deploy": "npm run build && wrangler deploy",

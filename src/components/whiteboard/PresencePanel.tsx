@@ -266,8 +266,7 @@ export default function PresencePanel({
           <>
             <button
               data-testid="whiteboard-context-let-in"
-              className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[13px] w-full text-left font-inherit transition-colors duration-150 hover:bg-emerald-600 rounded"
-              style={{ color: '#e5e7eb' }}
+              className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[13px] text-slate-200 w-full text-left font-inherit transition-colors duration-150 hover:bg-emerald-600 rounded"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -281,8 +280,7 @@ export default function PresencePanel({
             </button>
             <button
               data-testid="whiteboard-context-reject"
-              className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[13px] w-full text-left font-inherit transition-colors duration-150 hover:bg-red-600 rounded"
-              style={{ color: '#e5e7eb' }}
+              className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[13px] text-slate-200 w-full text-left font-inherit transition-colors duration-150 hover:bg-red-600 rounded"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -300,8 +298,7 @@ export default function PresencePanel({
           <>
             <button
               data-testid="whiteboard-context-suspend"
-              className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[13px] w-full text-left font-inherit transition-colors duration-150 hover:bg-amber-600 rounded"
-              style={{ color: '#e5e7eb' }}
+              className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[13px] text-slate-200 w-full text-left font-inherit transition-colors duration-150 hover:bg-amber-600 rounded"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -316,8 +313,7 @@ export default function PresencePanel({
             </button>
             <button
               data-testid="whiteboard-context-kick"
-              className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[13px] w-full text-left font-inherit transition-colors duration-150 hover:bg-red-600 rounded"
-              style={{ color: '#e5e7eb' }}
+              className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-[13px] text-slate-200 w-full text-left font-inherit transition-colors duration-150 hover:bg-red-600 rounded"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();

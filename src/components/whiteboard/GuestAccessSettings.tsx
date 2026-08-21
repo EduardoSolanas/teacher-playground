@@ -117,8 +117,7 @@ export default function GuestAccessSettings({
           type="button"
           data-testid="guest-enable"
           onClick={onEnable}
-          className="btn btn-block"
-          style={{ marginTop: 0 }}
+          className="btn btn-block flush-top"
         >
           Allow students to join with a PIN
         </button>

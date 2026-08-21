@@ -146,8 +146,7 @@ export default function TeacherRoomList({
       ) : rooms.length === 0 ? (
         <p
           data-testid="whiteboard-room-list-empty"
-          className="callout"
-          style={{ borderLeftStyle: 'dashed', borderLeftColor: 'var(--line)' }}
+          className="callout quiet"
         >
           No rooms yet. Create one below.
         </p>
@@ -237,7 +236,7 @@ export default function TeacherRoomList({
                   </div>
                 ) : confirmingDelete ? (
                   <div className="row-flex">
-                    <p className="room-name" style={{ fontWeight: 500, color: 'var(--ink2)' }}>
+                    <p className="room-name confirming">
                       Delete â€œ{label}â€?
                     </p>
                     <div className="btn-gap">
@@ -291,8 +290,8 @@ export default function TeacherRoomList({
                       aria-label={copied ? 'Share link copied' : 'Copy share link'}
                       className={
                         copied
-                          ? 'btn-small copied'
-                          : 'icon-btn btn-small'
+                          ? 'btn-outline btn-small copied'
+                          : 'btn-outline btn-small'
                       }
                     >
                       {copied ? (
@@ -323,7 +322,7 @@ export default function TeacherRoomList({
                           <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
                         </svg>
                       )}
-                      <span className="app-small" style={{ marginTop: 0 }}>{copied ? 'Copied!' : 'Share link'}</span>
+                      <span>{copied ? 'Copied!' : 'Share link'}</span>
                     </button>
 
                     <div className="relative shrink-0" data-room-menu>
@@ -410,7 +409,7 @@ export default function TeacherRoomList({
       )}
 
       {copyError && (
-        <p role="alert" className="app-error" style={{ marginTop: '.5rem' }}>
+        <p role="alert" className="app-error nudge-top">
           Could not copy the link. Long-press the room name to copy it manually.
         </p>
       )}

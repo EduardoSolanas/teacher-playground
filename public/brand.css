@@ -213,8 +213,11 @@ border-bottom:1.5px solid var(--rule)}
 
 .btn-block{display:flex;width:100%;align-items:center;justify-content:center;gap:.625rem;height:3rem;
 margin-top:1.25rem;font-size:.95rem}
+/* A labelled pill. Never combine with .icon-btn: that is a fixed 2.75rem
+   square, declared later, so it wins on width and squeezes the label into a
+   wrap. nowrap keeps a two-word label on one line inside the fixed height. */
 .btn-small{height:2.75rem;padding:0 1rem;border-radius:2px;font-size:.85rem;display:inline-flex;
-align-items:center;gap:.375rem;flex-shrink:0}
+align-items:center;gap:.375rem;flex-shrink:0;white-space:nowrap}
 .btn-small.copied{border:1px solid var(--blue);color:var(--blue)}
 .btn-outline{height:2.75rem;padding:0 1rem;border-radius:2px;border:1px solid var(--ink);background:#fff;
 font-size:.85rem;font-weight:500;color:var(--ink);cursor:pointer;transition:background .15s}
@@ -233,6 +236,10 @@ color:var(--ink);cursor:pointer;transition:background .15s}
 background:#fff;padding:0 .75rem;text-align:center;font-size:1rem;font-weight:600;color:var(--ink);
 outline:none;transition:border-color .15s}
 .stepper-input:focus{border-color:var(--blue)}
+.callout.quiet{border-left-style:dashed;border-left-color:var(--line)}
+.flush-top{margin-top:0}
+.nudge-top{margin-top:.5rem}
+.room-name.confirming{font-weight:500;color:var(--ink2)}
 .callout{border-left:3px solid var(--red);background:#fff;border-top:1px solid var(--line);
 border-right:1px solid var(--line);border-bottom:1px solid var(--line);padding:.75rem 1rem;
 font-size:.85rem;font-weight:500;color:var(--ink2)}
