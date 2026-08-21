@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 
 import { isGuestJoinLockedOut } from '@/lib/whiteboard/guestPin';
+import CopyButton from './CopyButton';
 
 export default function GuestAccessSettings({
   roomId,
@@ -55,6 +56,9 @@ export default function GuestAccessSettings({
           >
             {guestJoinUrl}
           </p>
+          <div className="btn-gap nudge-top">
+            <CopyButton value={guestJoinUrl} label="student join link" />
+          </div>
           <p className="app-small">
             Share this guest-host link, not the teacher URL.
           </p>
@@ -88,6 +92,9 @@ export default function GuestAccessSettings({
           >
             {guestPin}
           </p>
+          <div className="btn-gap">
+            <CopyButton value={guestPin ?? ''} label="class PIN" />
+          </div>
           {expiryLabel && (
             <p className="app-small">Expires {expiryLabel}</p>
           )}

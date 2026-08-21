@@ -1,9 +1,45 @@
-import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import GuestAccessSettings from './GuestAccessSettings';
 
 describe('GuestAccessSettings', () => {
+  let copied: string[];
+
+  beforeEach(() => {
+    copied = [];
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: (t: string) => { copied.push(t); return Promise.resolve(); } },
+    });
+  });
+
+  // The link is long and the PIN is read off a screen onto a phone: both are
+  // there to be handed to a student, so both need copying without selecting
+  // text by hand.
+  it('copies the join link and the PIN, each from its own button', async () => {
+    render(
+      <GuestAccessSettings
+        roomId="room-alpha"
+        guestJoinUrl="https://join.example.com/whiteboard/room-alpha"
+        guestAccess
+        guestPin="004271"
+        guestPinExpiresAt={Date.now() + 12 * 60 * 60 * 1000}
+        lockoutUntil={null}
+        onEnable={vi.fn()}
+        onDisable={vi.fn()}
+        onRotate={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Copy student join link'));
+    await waitFor(() => expect(copied).toEqual(['https://join.example.com/whiteboard/room-alpha']));
+
+    fireEvent.click(screen.getByLabelText('Copy class PIN'));
+    await waitFor(() => expect(copied).toHaveLength(2));
+    expect(copied[1]).toBe('004271');
+  });
+
   it('shows the guest-host join URL and PIN when guest access is on', () => {
     render(
       <GuestAccessSettings
