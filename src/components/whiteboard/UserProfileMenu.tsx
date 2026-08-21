@@ -5,12 +5,22 @@ import { useRouter } from 'next/navigation';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import { completeSignOut } from '@/lib/identity/completeSignOut';
 
+/**
+ * The trigger's default skin is tuned for the rooms-list header, which sits on
+ * a dark band. Floating it over the whiteboard's light canvas needs the dark
+ * pill the other in-room controls use, so the caller can override it.
+ */
+const DEFAULT_TRIGGER_CLASS =
+  'inline-flex h-11 max-w-[min(100%,16rem)] shrink-0 items-center gap-2 rounded-xl border border-white/30 bg-white/10 px-3 text-sm font-semibold text-white backdrop-blur-md transition-colors hover:bg-white/20 active:bg-white/25 sm:px-4';
+
 export function UserProfileMenu({
   displayName,
   onDisplayNameChange,
+  triggerClassName = DEFAULT_TRIGGER_CLASS,
 }: {
   displayName: string | null;
   onDisplayNameChange: (name: string) => void;
+  triggerClassName?: string;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -124,7 +134,7 @@ export function UserProfileMenu({
           setDeleting(false);
           setError(null);
         }}
-        className="inline-flex h-11 max-w-[min(100%,16rem)] shrink-0 items-center gap-2 rounded-xl border border-white/30 bg-white/10 px-3 text-sm font-semibold text-white backdrop-blur-md transition-colors hover:bg-white/20 active:bg-white/25 sm:px-4"
+        className={triggerClassName}
       >
         <span
           aria-hidden="true"

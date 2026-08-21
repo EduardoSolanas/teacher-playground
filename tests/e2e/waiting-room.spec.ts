@@ -195,6 +195,27 @@ test.describe('Waiting Room', () => {
     await context2.close();
   });
 
+  test('a peer stuck in the waiting room can still reach their account', async ({ browser }) => {
+    // The waiting room is the screen someone is most likely to be stranded on,
+    // and for a long time it was the screen with no way out of the account.
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
+
+    const page1 = await context1.newPage();
+    const page2 = await context2.newPage();
+
+    const roomId = await createRoomWithMaxUsers(page1, 'StrandedHost', 1);
+
+    await joinExistingRoom(page2, roomId);
+    await expectWaiting(page2);
+
+    await page2.getByTestId('whiteboard-room-account').getByRole('button').click();
+    await expect(page2.getByTestId('whiteboard-logout-btn')).toBeVisible({ timeout: 15000 });
+
+    await context1.close();
+    await context2.close();
+  });
+
   test('host can reject a waiting peer', async ({ browser }) => {
     const context1 = await newAuthenticatedContext(browser);
     const context2 = await newAuthenticatedContext(browser);

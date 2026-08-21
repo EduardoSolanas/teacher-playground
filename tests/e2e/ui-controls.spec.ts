@@ -93,7 +93,10 @@ test.describe('Empty State', () => {
     await joinRoom(page, 'DismissUser');
     await page.waitForTimeout(2000);
     await expect(page.getByText('Drag, draw, and collaborate in real-time')).toBeVisible();
-    await page.getByRole('button', { name: 'Dismiss' }).click();
+    // Scoped to the canvas: getByRole name matching is substring by default, so
+    // a bare 'Dismiss' also matches the account button of a user called
+    // "DismissUser".
+    await page.getByTestId('whiteboard-canvas-area').getByRole('button', { name: 'Dismiss' }).click();
     await expect(page.getByText('Drag, draw, and collaborate in real-time')).toBeHidden();
   });
 

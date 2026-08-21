@@ -338,7 +338,6 @@ export default function PresencePanel({
 
   if (collapsed) {
     const stack = orderedActive.slice(0, 3);
-    const overflow = Math.max(0, orderedActive.length - stack.length);
     const waitingCount = waitingPeers.length;
     const anyHandRaised = orderedActive.some((user) => user.handRaised);
     const ariaLabel = `Participants: ${orderedActive.length} of ${maxUsers}${waitingCount > 0 ? `, ${waitingCount} waiting` : ''}`;
@@ -369,9 +368,6 @@ export default function PresencePanel({
             </div>
           ) : (
             <UsersIcon className="h-5 w-5 text-slate-300" />
-          )}
-          {overflow > 0 && (
-            <span className="text-[10px] font-semibold text-slate-300">+{overflow}</span>
           )}
           <span data-testid="whiteboard-presence-count" className="text-[10px] font-semibold text-slate-300">
             {orderedActive.length}/{maxUsers}
@@ -471,7 +467,7 @@ export default function PresencePanel({
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-2">
+        <div className="flex-1 overflow-y-auto p-2 sm:max-h-[45%] sm:flex-none">
           {orderedActive.length === 0 ? (
             <p className="p-2 text-xs text-slate-400">No one else here yet</p>
           ) : (
@@ -635,6 +631,15 @@ export default function PresencePanel({
             </div>
           )}
         </div>
+
+        {/*
+          The roster is sized to its own content, so a room of one no longer
+          stretches a single row down a 220px column of white. What is left of
+          the rail is this reserved region rather than the roster's overflow:
+          tinted and ruled off so the space reads as part of the panel, and
+          already the right shape for the chat that will mount into it.
+        */}
+        <div className="hidden flex-1 border-t border-slate-200 bg-slate-50/70 sm:block" aria-hidden="true" />
       </div>
       {menu}
     </>

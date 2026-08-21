@@ -22,6 +22,7 @@ import EmptyState from '@/components/whiteboard/EmptyState';
 import ClearBoardModal from '@/components/whiteboard/ClearBoardModal';
 import ToolSidebar from '@/components/whiteboard/ToolSidebar';
 import BackToRoomsLink from '@/components/whiteboard/BackToRoomsLink';
+import RoomAccountMenu from '@/components/whiteboard/RoomAccountMenu';
 import { LibraryPanel } from '@/components/whiteboard/LibraryPanel';
 import { ShortcutsHelp } from '@/components/whiteboard/ShortcutsHelp';
 import { UndoRedoBar } from '@/components/whiteboard/UndoRedoBar';
@@ -255,6 +256,11 @@ function RoomContent({ roomId }: { roomId: string }) {
       return (
         <>
           <BackToRoomsLink onNavigate={handleBackToRooms} />
+          <RoomAccountMenu
+            displayName={userName}
+            onDisplayNameChange={handleJoin}
+            rosterExpanded={false}
+          />
           <GuestJoinPrompt
             roomId={roomId}
             onJoined={(name) => {
@@ -268,6 +274,11 @@ function RoomContent({ roomId }: { roomId: string }) {
     return (
       <>
         <BackToRoomsLink onNavigate={handleBackToRooms} />
+        <RoomAccountMenu
+          displayName={userName}
+          onDisplayNameChange={handleJoin}
+          rosterExpanded={false}
+        />
         <UserNamePrompt onJoin={handleJoin} roomId={roomId} />
       </>
     );
@@ -277,6 +288,11 @@ function RoomContent({ roomId }: { roomId: string }) {
     return (
       <>
         <BackToRoomsLink onNavigate={handleBackToRooms} />
+        <RoomAccountMenu
+          displayName={userName}
+          onDisplayNameChange={handleJoin}
+          rosterExpanded={false}
+        />
         <WaitingRoom
           userName={userName}
           roomCode={roomId}
@@ -300,6 +316,11 @@ function RoomContent({ roomId }: { roomId: string }) {
     return (
       <>
         <BackToRoomsLink onNavigate={handleBackToRooms} />
+        <RoomAccountMenu
+          displayName={userName}
+          onDisplayNameChange={handleJoin}
+          rosterExpanded={false}
+        />
         <LoadingScreen error={error} />
       </>
     );
@@ -307,10 +328,15 @@ function RoomContent({ roomId }: { roomId: string }) {
 
   return (
     <div
-      className="w-screen h-screen overflow-hidden relative bg-[var(--paper)]"
+      className="room-shell"
       onPointerMove={(event) => setCursor(event.clientX, event.clientY)}
     >
       <BackToRoomsLink onNavigate={handleBackToRooms} />
+      <RoomAccountMenu
+        displayName={userName}
+        onDisplayNameChange={handleJoin}
+        rosterExpanded={!presenceCollapsed}
+      />
       <ToolSidebar
         activeTool={activeTool}
         onToolChange={handleToolChange}
