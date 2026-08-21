@@ -29,5 +29,19 @@ export default defineConfig({
   ],
   test: {
     include: ['src/**/*.workers.test.ts'],
+    /*
+     * These run a real Worker, real Durable Objects and real WebSockets inside
+     * workerd, so a single case can legitimately take seconds. On vitest's 5s
+     * default the suite passed on a quiet machine and failed on a busy one, in
+     * batches, purely on elapsed time — the whole run stretched from ~130s to
+     * ~300s and five cases tripped the timeout with nothing wrong.
+     *
+     * This is a safety net, not an assertion: no test here measures duration,
+     * and none of them pass by being slow. Widening a threshold that IS the
+     * property under test would be cheating; widening a net that only exists to
+     * stop a hung test hanging CI is not.
+     */
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
   },
 });

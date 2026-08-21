@@ -50,10 +50,24 @@ export default function CopyButton({
         type="button"
         data-testid="whiteboard-copy-btn"
         aria-label={`Copy ${label}`}
+        title={copied ? 'Copied' : `Copy ${label}`}
         onClick={() => { void handleCopy(); }}
-        className={copied ? 'btn-outline btn-small copied' : 'btn-outline btn-small'}
+        className={copied ? 'copy-icon-btn copied' : 'copy-icon-btn'}
       >
-        {copied ? 'Copied!' : 'Copy'}
+        {copied ? (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M20 6 9 17l-5-5" />
+          </svg>
+        ) : (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="9" y="9" width="13" height="13" rx="2" />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </svg>
+        )}
+        {/* The state a sighted user reads from the tick, for everyone else. */}
+        <span className="sr-only">{copied ? 'Copied' : 'Copy'}</span>
       </button>
       {failed && (
         <p role="alert" data-testid="whiteboard-copy-error" className="app-error">

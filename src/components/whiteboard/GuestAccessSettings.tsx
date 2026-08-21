@@ -50,13 +50,13 @@ export default function GuestAccessSettings({
       {showJoinUrl && (
         <div>
           <p className="app-label">Student join link</p>
-          <p
-            data-testid="guest-join-url"
-            className="guest-url-box"
-          >
-            {guestJoinUrl}
-          </p>
-          <div className="btn-gap nudge-top">
+          <div className="copy-field nudge-top">
+            <p
+              data-testid="guest-join-url"
+              className="guest-url-box"
+            >
+              {guestJoinUrl}
+            </p>
             <CopyButton value={guestJoinUrl} label="student join link" />
           </div>
           <p className="app-small">
@@ -86,13 +86,13 @@ export default function GuestAccessSettings({
       {guestAccess ? (
         <div className="guest-fields">
           <p className="app-label">Class PIN</p>
-          <p
-            data-testid="guest-pin"
-            className="guest-pin"
-          >
-            {guestPin}
-          </p>
-          <div className="btn-gap">
+          <div className="copy-field">
+            <p
+              data-testid="guest-pin"
+              className="guest-pin"
+            >
+              {guestPin}
+            </p>
             <CopyButton value={guestPin ?? ''} label="class PIN" />
           </div>
           {expiryLabel && (

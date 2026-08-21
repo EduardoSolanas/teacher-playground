@@ -305,6 +305,19 @@ background:#fff;padding:0 .75rem;font-size:.95rem;color:var(--ink);outline:none;
 .field-input:focus{border-color:var(--blue)}
 .field-input.editing{border-color:var(--blue)}
 .guest-settings{display:flex;flex-direction:column;gap:.75rem;padding:.25rem}
+/* A value and the control that copies it: the button sits at the right edge of
+   the field rather than under it, where a full-width button read as a page
+   action rather than as belonging to the value above it. */
+.copy-field{display:flex;align-items:stretch;gap:.5rem}
+/* The value carries its own top margin for when it stands alone; inside the
+   row that margin offsets it from the button beside it. */
+.copy-field>:first-child{flex:1;min-width:0;margin-top:0}
+.copy-icon-btn{display:grid;place-items:center;width:2.75rem;flex-shrink:0;
+border:1px solid var(--line);border-radius:2px;background:#fff;color:var(--ink2);
+cursor:pointer;transition:background .15s,border-color .15s,color .15s}
+.copy-icon-btn:hover{border-color:var(--mut);background:var(--paper2);color:var(--ink)}
+.copy-icon-btn svg{width:1.05rem;height:1.05rem}
+.copy-icon-btn.copied{border-color:var(--blue);color:var(--blue)}
 .guest-url-box{margin-top:.25rem;overflow-wrap:anywhere;border:1px solid var(--line);border-radius:0.125rem;background:#fff;
 padding:.5rem .75rem;font-size:.85rem;color:var(--ink)}
 .guest-fields{display:flex;flex-direction:column;gap:.5rem}
