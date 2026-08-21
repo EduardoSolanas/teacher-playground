@@ -171,3 +171,153 @@ padding:.3rem .8rem;transform:rotate(1.5deg)}
 background:#fff;border-top:1px solid var(--line);border-right:1px solid var(--line);
 border-bottom:1px solid var(--line);color:var(--ink2);font-size:.9rem}
 .updated{font-size:.86rem;color:var(--mut);margin-top:.5rem}
+
+/* ---- app screens (rooms list, session states) ----------------------------
+   Classic-CSS components shared by the Next app pages. Tailwind is used only
+   for grid/flex utilities inside JSX; every visual token comes from here. */
+
+.app-screen{min-height:100dvh;display:flex;flex-direction:column;background:var(--paper);color:var(--ink);
+padding:0 1rem 1.5rem}
+@media(min-width:640px){.app-screen{padding:0 1.5rem 1.5rem}}
+.app-topline{height:4px;background:var(--red);margin:0 -1rem}
+@media(min-width:640px){.app-topline{margin:0 -1.5rem}}
+.app-header{display:flex;align-items:center;justify-content:space-between;gap:.75rem;
+max-width:42rem;margin:0 auto;width:100%;padding:1rem 0}
+.app-main{display:flex;flex-direction:column;flex:1;max-width:42rem;margin:0 auto;width:100%}
+@media(min-width:640px){.app-main{justify-content:center}}
+.app-title{font-family:Georgia,'Iowan Old Style','Times New Roman',serif;font-weight:400;
+font-size:1.6rem;line-height:1.2;letter-spacing:-.01em;text-align:center;color:var(--ink);margin:0}
+@media(min-width:640px){.app-title{font-size:2.25rem}}
+.app-sub{margin:.5rem auto 0;max-width:24rem;text-align:center;font-size:.875rem;line-height:1.6;color:var(--ink2)}
+@media(min-width:640px){.app-sub{max-width:30rem;font-size:1rem}}
+.app-h2{font-family:Georgia,'Iowan Old Style','Times New Roman',serif;font-weight:400;
+font-size:1.35rem;color:var(--ink);margin:0}
+.section-sep{margin-top:1.75rem;border-top:1px solid var(--line);padding-top:1.5rem}
+.app-label{display:block;font-size:.8rem;font-weight:600;color:var(--ink2)}
+.app-small{font-size:.75rem;color:var(--mut);margin:.5rem 0 0}
+.app-error{margin-top:.75rem;font-size:.8rem;font-weight:500;color:var(--red)}
+
+.paper-card{background:#fff;border:1px solid var(--line);border-radius:3px;
+box-shadow:5px 6px 0 rgba(38,36,31,.06);padding:1.5rem}
+@media(min-width:640px){.paper-card{padding:2rem}}
+.session-screen{min-height:100dvh;display:flex;flex-direction:column;align-items:center;
+justify-content:center;gap:1rem;background:var(--paper);color:var(--ink);padding:1.5rem;text-align:center}
+.session-card{width:100%;max-width:24rem;background:#fff;border:1px solid var(--line);border-radius:3px;
+padding:2rem;box-shadow:5px 6px 0 rgba(38,36,31,.06);text-align:center}
+.session-title{font-family:Georgia,'Iowan Old Style','Times New Roman',serif;font-weight:400;
+font-size:1.5rem;color:var(--ink);margin:0}
+.session-text{margin:.5rem 0 0;font-size:.875rem;line-height:1.6;color:var(--ink2)}
+.link-aside{display:inline-block;margin-top:1rem;font-size:.875rem;font-weight:600;color:var(--blue);
+border-bottom:1.5px solid var(--rule)}
+.link-aside:hover{border-color:var(--blue)}
+
+.btn-block{display:flex;width:100%;align-items:center;justify-content:center;gap:.625rem;height:3rem;
+margin-top:1.25rem;font-size:.95rem}
+.btn-small{height:2.75rem;padding:0 1rem;border-radius:2px;font-size:.85rem;display:inline-flex;
+align-items:center;gap:.375rem;flex-shrink:0}
+.btn-small.copied{border:1px solid var(--blue);color:var(--blue)}
+.btn-outline{height:2.75rem;padding:0 1rem;border-radius:2px;border:1px solid var(--ink);background:#fff;
+font-size:.85rem;font-weight:500;color:var(--ink);cursor:pointer;transition:background .15s}
+.btn-outline:hover{background:var(--paper2)}
+.spinner{width:1rem;height:1rem;flex-shrink:0;border-radius:999px;border:2px solid rgba(255,255,255,.45);
+border-top-color:#fff;animation:whiteboard-spin .8s linear infinite}
+
+.stepper{display:flex;align-items:center;gap:.5rem;max-width:15rem}
+.stepper-btn{display:grid;place-items:center;width:2.75rem;height:2.75rem;flex-shrink:0;
+border:1px solid var(--ink);border-radius:2px;background:#fff;font-size:1.25rem;font-weight:600;
+color:var(--ink);cursor:pointer;transition:background .15s}
+.stepper-btn:hover{background:var(--paper2)}
+.stepper-btn:disabled{opacity:.4;cursor:default}
+.stepper-btn:hover:disabled{background:#fff}
+.stepper-input{width:100%;min-width:0;height:2.75rem;border:1px solid var(--line);border-radius:2px;
+background:#fff;padding:0 .75rem;text-align:center;font-size:1rem;font-weight:600;color:var(--ink);
+outline:none;transition:border-color .15s}
+.stepper-input:focus{border-color:var(--blue)}
+.callout{border-left:3px solid var(--red);background:#fff;border-top:1px solid var(--line);
+border-right:1px solid var(--line);border-bottom:1px solid var(--line);padding:.75rem 1rem;
+font-size:.85rem;font-weight:500;color:var(--ink2)}
+
+.rooms-h2{font-family:Georgia,'Iowan Old Style','Times New Roman',serif;font-weight:400;
+font-size:1.35rem;color:var(--ink);margin:0}
+.room-list{list-style:none;margin:.75rem 0 0;padding:0;border-top:1px solid var(--line)}
+.room-row{position:relative;border-bottom:1px solid var(--line);padding:.5rem .25rem;transition:background .15s}
+.room-row:hover{background:rgba(243,238,226,.6)}
+.row-flex{display:flex;flex-direction:column;gap:.5rem;padding:.25rem}
+@media(min-width:640px){.row-flex{flex-direction:row;align-items:center}}
+.row-stack{display:flex;flex-direction:column;gap:.5rem;padding:.25rem}
+.btn-gap{display:flex;gap:.5rem}
+.room-link{display:flex;flex-direction:column;justify-content:center;gap:.125rem;min-width:0;flex:1;
+padding:.5rem .625rem;text-decoration:none}
+.room-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.95rem;font-weight:600;color:var(--ink)}
+.room-date{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.75rem;color:var(--mut)}
+.room-url{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 .625rem .25rem;
+font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.75rem;color:var(--mut)}
+.room-menu{position:absolute;right:0;top:100%;z-index:10;margin-top:.375rem;min-width:10rem;
+overflow:hidden;border:1px solid var(--line);border-radius:2px;background:#fff;
+box-shadow:4px 5px 0 rgba(38,36,31,.08)}
+.menu-item{display:block;width:100%;border:none;background:transparent;height:2.75rem;padding:0 1rem;
+text-align:left;font-size:.875rem;color:var(--ink2);cursor:pointer;transition:background .15s}
+.menu-item:hover{background:var(--paper2);color:var(--ink)}
+.menu-item.danger{color:var(--red)}
+.icon-btn{display:grid;place-items:center;width:2.75rem;height:2.75rem;flex-shrink:0;
+border:1px solid var(--line);border-radius:2px;background:#fff;color:var(--ink2);cursor:pointer;
+transition:background .15s,border-color .15s,color .15s}
+.icon-btn:hover{border-color:var(--mut);background:var(--paper2);color:var(--ink)}
+.field-input{height:2.75rem;width:100%;min-width:0;border:1px solid var(--line);border-radius:2px;
+background:#fff;padding:0 .75rem;font-size:.95rem;color:var(--ink);outline:none;transition:border-color .15s}
+.field-input:focus{border-color:var(--blue)}
+.field-input.editing{border-color:var(--blue)}
+.guest-settings{display:flex;flex-direction:column;gap:.75rem;padding:.25rem}
+.guest-url-box{margin-top:.25rem;overflow-wrap:anywhere;border:1px solid var(--line);border-radius:2px;background:#fff;
+padding:.5rem .75rem;font-size:.85rem;color:var(--ink)}
+.guest-fields{display:flex;flex-direction:column;gap:.5rem}
+.guest-pin{border:1px solid var(--line);border-radius:2px;background:#fff;padding:.5rem .75rem;
+font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:1.5rem;letter-spacing:.35em;color:var(--ink);margin:0}
+.btn-grow{flex:1 1 0}
+.room-shell{width:100vw;height:100vh;overflow:hidden;position:relative;background:var(--paper)}
+
+/* ---- app: full-screen states and modals -------------------------------
+ * The keyframe lives here, not in globals.css, because the classes that use
+ * it (.spinner, .spinner-page) are defined in this file and this file is the
+ * one both the marketing pages and the app load. A class whose animation is
+ * declared in a stylesheet the marketing pages never see would silently not
+ * animate there.
+ */
+@keyframes whiteboard-spin{to{transform:rotate(360deg)}}
+
+.spinner-page{width:3rem;height:3rem;flex-shrink:0;border-radius:999px;
+border:3px solid var(--line);border-top-color:var(--blue);
+animation:whiteboard-spin .8s linear infinite}
+.spinner-page.waiting{width:4rem;height:4rem;border-top-color:var(--red)}
+
+.modal-overlay{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;
+justify-content:center;padding:1.5rem;background:rgba(38,36,31,.55)}
+.modal-card{width:100%;max-width:22rem;background:#fff;border:1px solid var(--line);
+border-radius:3px;padding:2rem;box-shadow:5px 6px 0 rgba(38,36,31,.12)}
+.modal-title{font-family:Georgia,'Iowan Old Style','Times New Roman',serif;font-weight:400;
+font-size:1.35rem;color:var(--ink);margin:0}
+.modal-text{margin:.35rem 0 1.25rem;font-size:.85rem;line-height:1.6;color:var(--ink2)}
+
+.field-block{display:block;margin-bottom:1rem}
+.field-pin{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.3em}
+
+.queue-card{margin-top:1.75rem;min-width:16rem;background:#fff;border:1px solid var(--line);
+border-radius:3px;box-shadow:5px 6px 0 rgba(38,36,31,.06);padding:1.75rem 2rem;text-align:center}
+.queue-number{font-family:Georgia,'Iowan Old Style','Times New Roman',serif;font-weight:400;
+font-size:3rem;line-height:1;color:var(--red);margin:0}
+.queue-label{margin:.4rem 0 0;font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--mut)}
+.queue-code{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:1rem;
+font-weight:600;color:var(--ink2)}
+/* A label that opens a card heads it, rather than captioning the line above. */
+.queue-card .queue-label:first-child{margin:0 0 .35rem}
+.session-note{max-width:24rem}
+
+.status-line{display:flex;align-items:center;justify-content:center;gap:.5rem;margin-top:1.5rem;
+font-size:.85rem;color:var(--ink2)}
+.status-dot{width:.55rem;height:.55rem;flex-shrink:0;border-radius:999px;background:var(--blue);
+transition:background .15s}
+.status-dot.busy{background:var(--red)}
+
+.btn-row{display:flex;flex-wrap:wrap;justify-content:center;gap:.75rem;margin-top:1.75rem}
+.btn-danger{background:var(--red)}
+.btn-danger:hover{background:#a43225}

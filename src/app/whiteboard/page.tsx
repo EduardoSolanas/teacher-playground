@@ -220,28 +220,24 @@ export default function WhiteboardRoute() {
     setMaxUsers((current) => Math.max(MIN_USERS, Math.min(MAX_USERS, current + delta)));
 
   return (
-    <div className="flex min-h-[100dvh] flex-col bg-[var(--paper)] text-[var(--ink)] px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-0 sm:px-6">
-      <div aria-hidden="true" className="brand-topline" />
-      <header className="mx-auto flex w-full max-w-2xl shrink-0 items-center justify-between gap-3 py-4 sm:py-5">
-        <span className="brand flex min-w-0 items-baseline gap-2">
-          <span className="mark text-lg sm:text-xl">
-            Teacher <u>Playground</u>
-          </span>
+    <div className="app-screen">
+      <div aria-hidden="true" className="app-topline" />
+      <header className="app-header">
+        <span className="brand">
+          <span className="mark">Teacher <u>Playground</u></span>
         </span>
-
         <UserProfileMenu
           displayName={hostDisplayName}
           onDisplayNameChange={setHostDisplayName}
         />
       </header>
 
-
-      <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col sm:justify-center">
-        <div className="w-full rounded-[3px] border border-[var(--line)] bg-white p-6 shadow-[5px_6px_0_rgba(38,36,31,0.06)] sm:p-8">
-          <h1 className="serif text-balance text-center text-[26px] font-normal leading-tight tracking-tight text-[var(--ink)] sm:text-4xl">
+      <main className="app-main">
+        <div className="paper-card">
+          <h1 className="app-title">
             Collaborative Whiteboard
           </h1>
-          <p className="mx-auto mt-2 max-w-xs text-balance text-center text-sm leading-relaxed text-[var(--ink2)] sm:max-w-sm sm:text-base">
+          <p className="app-sub">
             Create a room to start collaborating in real-time
           </p>
 
@@ -257,30 +253,30 @@ export default function WhiteboardRoute() {
               <p
                 role="alert"
                 data-testid="whiteboard-room-delete-error"
-                className="mt-3 text-[13px] font-medium text-red-600"
+                className="app-error"
               >
                 {deleteError}
               </p>
             )}
           </div>
 
-          <div className="mt-7 border-t border-[var(--line)] pt-6">
-            <h2 className="serif text-xl font-normal text-[var(--ink)]">New room</h2>
+          <div className="section-sep">
+            <h2 className="app-h2">New room</h2>
 
             <div className="mt-4">
               <label
                 htmlFor="whiteboard-max-users"
-                className="block text-[13px] font-semibold text-[var(--ink2)]"
+                className="app-label"
               >
                 People allowed
               </label>
-              <div className="mt-1.5 flex max-w-[240px] items-center gap-2">
+              <div className="stepper">
                 <button
                   type="button"
                   aria-label="Fewer people"
                   onClick={() => stepUsers(-1)}
                   disabled={maxUsers <= MIN_USERS}
-                  className="grid h-11 w-11 shrink-0 place-items-center rounded-[2px] border border-[var(--ink)] bg-white text-xl font-semibold text-[var(--ink)] transition-colors hover:bg-[var(--paper2)] disabled:opacity-40 disabled:hover:bg-white"
+                  className="stepper-btn"
                 >
                   &#8722;
                 </button>
@@ -295,19 +291,19 @@ export default function WhiteboardRoute() {
                       Math.max(MIN_USERS, Math.min(MAX_USERS, Number(e.target.value) || MIN_USERS)),
                     )
                   }
-                  className="h-11 w-full min-w-0 rounded-[2px] border border-[var(--line)] bg-white px-3 text-center text-base font-semibold text-[var(--ink)] outline-none transition-colors focus:border-[var(--blue)] [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  className="stepper-input [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                 />
                 <button
                   type="button"
                   aria-label="More people"
                   onClick={() => stepUsers(1)}
                   disabled={maxUsers >= MAX_USERS}
-                  className="grid h-11 w-11 shrink-0 place-items-center rounded-[2px] border border-[var(--ink)] bg-white text-xl font-semibold text-[var(--ink)] transition-colors hover:bg-[var(--paper2)] disabled:opacity-40 disabled:hover:bg-white"
+                  className="stepper-btn"
                 >
                   +
                 </button>
               </div>
-              <p className="mt-2 text-[12px] text-[var(--mut)]">
+              <p className="app-small">
                 Includes you. Free accounts allow one student.
               </p>
             </div>
@@ -316,7 +312,7 @@ export default function WhiteboardRoute() {
               <p
                 role="alert"
                 data-testid="whiteboard-create-room-error"
-                className="draft mt-4 text-[13px] font-medium"
+                className="callout app-error"
               >
                 {createError
                   ?? 'Free accounts can keep one room. Delete it to create another.'}
@@ -329,14 +325,10 @@ export default function WhiteboardRoute() {
               onClick={handleCreateRoom}
               disabled={createDisabled}
               aria-busy={isCreatingRoom}
-              className="btn mt-5 inline-flex h-12 w-full items-center justify-center gap-2.5 text-[15px]"
+              className="btn btn-block"
             >
               {isCreatingRoom && (
-                <span
-                  aria-hidden="true"
-                  className="h-4 w-4 shrink-0 rounded-full border-2 border-white/45 border-t-white"
-                  style={{ animation: 'whiteboard-spin 0.8s linear infinite' }}
-                />
+                <span aria-hidden="true" className="spinner" />
               )}
               {isCreatingRoom ? 'Creating room...' : 'Create Room'}
             </button>

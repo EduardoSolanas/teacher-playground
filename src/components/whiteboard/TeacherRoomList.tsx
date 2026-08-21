@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useEffect, useState } from 'react';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
@@ -52,8 +52,7 @@ function parseGuestSettings(payload: unknown): {
   };
 }
 
-const ICON_BUTTON =
-  'grid h-11 w-11 shrink-0 place-items-center rounded-[2px] border border-[var(--line)] bg-white text-[var(--ink2)] transition-colors hover:border-[var(--mut)] hover:bg-[var(--paper2)] hover:text-[var(--ink)]';
+const ICON_BUTTON = 'icon-btn';
 
 export default function TeacherRoomList({
   rooms,
@@ -136,23 +135,24 @@ export default function TeacherRoomList({
 
   return (
     <section className="w-full text-left">
-      <h2 className="serif text-xl font-normal text-[var(--ink)] sm:text-2xl">Your rooms</h2>
+      <h2 className="rooms-h2">Your rooms</h2>
       {loading ? (
         <p
           data-testid="whiteboard-room-list-loading"
-          className="mt-3 text-sm text-[var(--mut)]"
+          className="app-small"
         >
-          Loading rooms…
+          Loading roomsâ€¦
         </p>
       ) : rooms.length === 0 ? (
         <p
           data-testid="whiteboard-room-list-empty"
-          className="mt-3 rounded-[2px] border border-dashed border-[var(--line)] px-4 py-5 text-center text-sm text-[var(--mut)]"
+          className="callout"
+          style={{ borderLeftStyle: 'dashed', borderLeftColor: 'var(--line)' }}
         >
           No rooms yet. Create one below.
         </p>
       ) : (
-        <ul data-testid="whiteboard-room-list" className="mt-3 flex list-none flex-col p-0 border-t border-[var(--line)]">
+        <ul data-testid="whiteboard-room-list" className="room-list">
           {rooms.map((room) => {
             const label = teacherRoomTitle(room);
             const editing = editingId === room.roomId;
@@ -165,10 +165,10 @@ export default function TeacherRoomList({
             return (
               <li
                 key={room.roomId}
-                className="relative border-b border-[var(--line)] px-1 py-2 transition-colors hover:bg-[var(--paper2)]/60"
+                className="room-row"
               >
                 {editing ? (
-                  <div className="flex flex-col gap-2 p-1 sm:flex-row sm:items-center">
+                  <div className="row-flex">
                     <input
                       data-testid={`whiteboard-room-name-input-${room.roomId}`}
                       value={draftName}
@@ -181,9 +181,9 @@ export default function TeacherRoomList({
                         if (e.key === 'Escape') setEditingId(null);
                       }}
                       autoFocus
-                      className="h-11 w-full min-w-0 rounded-[2px] border border-[var(--blue)] bg-white px-3 text-base text-[var(--ink)] outline-none sm:flex-1"
+                      className="field-input editing"
                     />
-                    <div className="flex gap-2">
+                    <div className="btn-gap">
                       <button
                         type="button"
                         data-testid={`whiteboard-room-name-save-${room.roomId}`}
@@ -191,23 +191,23 @@ export default function TeacherRoomList({
                           onRename?.(room.roomId, draftName);
                           setEditingId(null);
                         }}
-                        className="btn h-11 flex-1 rounded-[2px] px-4 py-0 text-sm sm:flex-none"
+                        className="btn btn-small"
                       >
                         Save
                       </button>
                       <button
                         type="button"
                         onClick={() => setEditingId(null)}
-                        className="h-11 flex-1 rounded-[2px] border border-[var(--ink)] bg-white px-4 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper2)] sm:flex-none"
+                        className="btn-outline"
                       >
                         Cancel
                       </button>
                     </div>
                   </div>
                 ) : guestPanel ? (
-                  <div className="flex flex-col gap-2 p-1">
-                    <div className="flex items-center gap-2">
-                      <p className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--ink)]">
+                  <div className="row-stack">
+                    <div className="row-flex">
+                      <p className="room-name">
                         {label}
                       </p>
                       <button
@@ -216,7 +216,7 @@ export default function TeacherRoomList({
                           setGuestPanelId(null);
                           setGuestSettings(null);
                         }}
-                        className="h-11 rounded-[2px] border border-[var(--ink)] bg-white px-4 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper2)]"
+                        className="btn-outline"
                       >
                         Close
                       </button>
@@ -236,11 +236,11 @@ export default function TeacherRoomList({
                     )}
                   </div>
                 ) : confirmingDelete ? (
-                  <div className="flex flex-col gap-2 p-1 sm:flex-row sm:items-center">
-                    <p className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--ink2)]">
-                      Delete “{label}”?
+                  <div className="row-flex">
+                    <p className="room-name" style={{ fontWeight: 500, color: 'var(--ink2)' }}>
+                      Delete â€œ{label}â€?
                     </p>
-                    <div className="flex gap-2">
+                    <div className="btn-gap">
                       <button
                         type="button"
                         data-testid={`whiteboard-room-delete-confirm-${room.roomId}`}
@@ -255,15 +255,15 @@ export default function TeacherRoomList({
                       <button
                         type="button"
                         onClick={() => setConfirmDeleteId(null)}
-                        className="h-11 flex-1 rounded-[2px] border border-[var(--ink)] bg-white px-4 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper2)] sm:flex-none"
+                        className="btn-outline"
                       >
                         Cancel
                       </button>
                     </div>
                   </div>
                 ) : (
-                  <div className="flex flex-col gap-1">
-                  <div className="flex items-center gap-1.5">
+                  <div className="row-stack">
+                  <div className="row-flex">
                     <a
                       href={`/whiteboard/${room.roomId}`}
                       data-testid={`whiteboard-room-list-item-${room.roomId}`}
@@ -271,13 +271,13 @@ export default function TeacherRoomList({
                         e.preventDefault();
                         onOpen(room.roomId);
                       }}
-                      className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 px-2.5 py-2 no-underline"
+                      className="room-link"
                     >
-                      <span className="truncate text-[15px] font-semibold text-[var(--ink)]">
+                      <span className="room-name">
                         {label}
                       </span>
                       {room.createdAt && (
-                        <span className="truncate text-xs font-normal text-[var(--mut)]">
+                        <span className="room-date">
                           {formatDate(room.createdAt)}
                         </span>
                       )}
@@ -291,8 +291,8 @@ export default function TeacherRoomList({
                       aria-label={copied ? 'Share link copied' : 'Copy share link'}
                       className={
                         copied
-                          ? 'inline-flex h-11 shrink-0 items-center gap-1.5 rounded-[2px] border border-[var(--blue)] bg-white px-3 text-[13px] font-semibold text-[var(--blue)] transition-colors'
-                          : 'inline-flex h-11 shrink-0 items-center gap-1.5 rounded-[2px] border border-[var(--line)] bg-white px-3 text-[13px] font-semibold text-[var(--ink2)] transition-colors hover:border-[var(--mut)] hover:bg-[var(--paper2)]'
+                          ? 'btn-small copied'
+                          : 'icon-btn btn-small'
                       }
                     >
                       {copied ? (
@@ -323,7 +323,7 @@ export default function TeacherRoomList({
                           <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
                         </svg>
                       )}
-                      <span className="hidden sm:inline">{copied ? 'Copied!' : 'Share link'}</span>
+                      <span className="app-small" style={{ marginTop: 0 }}>{copied ? 'Copied!' : 'Share link'}</span>
                     </button>
 
                     <div className="relative shrink-0" data-room-menu>
@@ -351,7 +351,7 @@ export default function TeacherRoomList({
                       {menuOpen && (
                         <div
                           role="menu"
-                          className="absolute right-0 top-full z-10 mt-1.5 min-w-40 overflow-hidden rounded-[2px] border border-[var(--line)] bg-white shadow-[4px_5px_0_rgba(38,36,31,0.08)]"
+                          className="room-menu"
                         >
                           <button
                             type="button"
@@ -362,9 +362,9 @@ export default function TeacherRoomList({
                             setDraftName(room.name?.trim() ?? '');
                             setMenuOpenId(null);
                           }}
-                          className="block h-11 w-full border-none bg-transparent px-4 text-left text-sm text-[var(--ink2)] transition-colors hover:bg-[var(--paper2)] hover:text-[var(--ink)]"
-                          >
-                            Rename
+                          className="menu-item"
+                        >
+                          Rename
                           </button>
                           <button
                             type="button"
@@ -373,9 +373,9 @@ export default function TeacherRoomList({
                             onClick={() => {
                               void openGuestPanel(room.roomId);
                             }}
-                          className="block h-11 w-full border-none bg-transparent px-4 text-left text-sm text-[var(--ink2)] transition-colors hover:bg-[var(--paper2)] hover:text-[var(--ink)]"
-                          >
-                            Guest access
+                          className="menu-item"
+                        >
+                          Guest access
                           </button>
                           {onDelete && (
                             <button
@@ -386,7 +386,7 @@ export default function TeacherRoomList({
                                 setMenuOpenId(null);
                                 setConfirmDeleteId(room.roomId);
                               }}
-                              className="block h-11 w-full border-none bg-transparent px-4 text-left text-sm text-[var(--red)] transition-colors hover:bg-[var(--paper2)]"
+                              className="menu-item danger"
                             >
                               Delete
                             </button>
@@ -397,7 +397,7 @@ export default function TeacherRoomList({
                   </div>
                   <p
                     data-testid="guest-join-url"
-                    className="truncate px-2.5 pb-1 font-mono text-[12px] text-[var(--mut)]"
+                    className="room-url"
                   >
                     {joinUrl}
                   </p>
@@ -410,7 +410,7 @@ export default function TeacherRoomList({
       )}
 
       {copyError && (
-        <p role="alert" className="mt-2 text-xs font-medium text-[var(--red)]">
+        <p role="alert" className="app-error" style={{ marginTop: '.5rem' }}>
           Could not copy the link. Long-press the room name to copy it manually.
         </p>
       )}

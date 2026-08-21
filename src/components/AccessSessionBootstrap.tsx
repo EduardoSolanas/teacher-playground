@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useEffect, useState } from 'react';
 import { ajaxFetch, SESSION_EXPIRED_EVENT } from '@/lib/http/ajaxFetch';
@@ -73,56 +73,32 @@ export function AccessSessionBootstrap({ children }: { children: React.ReactNode
 
   if (state === 'loading') {
     return (
-      <div role="status" aria-live="polite" style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        minHeight: '100vh',
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        color: '#666',
-        fontSize: 16,
-      }}>
-        Loading secure session…
+      <div role="status" aria-live="polite" className="session-screen">
+        Loading secure sessionâ€¦
       </div>
     );
   }
   if (state === 'unavailable') {
     return (
-      <div role="alert" style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 16,
-        minHeight: '100vh',
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        color: '#333',
-        fontSize: 16,
-        padding: 24,
-        textAlign: 'center',
-      }}>
-        <p style={{ margin: 0 }}>This secure session is unavailable. Sign in again to continue.</p>
-        <button
-          onClick={() => window.location.reload()}
-          style={{
-            padding: '10px 24px',
-            border: 'none',
-            borderRadius: 8,
-            background: '#667eea',
-            color: '#fff',
-            fontSize: 15,
-            fontWeight: 600,
-            cursor: 'pointer',
-          }}
-        >
-          Retry
-        </button>
-        <a
-          href={accessLogoutUrl('/')}
-          style={{ color: '#1e4d3a', fontSize: 14 }}
-        >
-          Sign out and try again
-        </a>
+      <div role="alert" className="session-screen">
+        <div className="session-card">
+          <p className="session-title">Session unavailable</p>
+          <p className="session-text">
+            This secure session is unavailable. Sign in again to continue.
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            className="btn btn-block"
+          >
+            Retry
+          </button>
+          <a
+            href={accessLogoutUrl('/')}
+            className="link-aside"
+          >
+            Sign out and try again
+          </a>
+        </div>
       </div>
     );
   }

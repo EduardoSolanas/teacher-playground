@@ -45,17 +45,17 @@ export default function GuestAccessSettings({
     : null;
 
   return (
-    <div className="flex flex-col gap-3 p-1" data-testid={`guest-access-settings-${roomId}`}>
+    <div className="guest-settings" data-testid={`guest-access-settings-${roomId}`}>
       {showJoinUrl && (
         <div>
-          <p className="text-[13px] font-semibold text-[var(--ink2)]">Student join link</p>
+          <p className="app-label">Student join link</p>
           <p
             data-testid="guest-join-url"
-            className="mt-1 break-all rounded-[2px] border border-[var(--line)] bg-white px-3 py-2 text-[13px] text-[var(--ink)]"
+            className="guest-url-box"
           >
             {guestJoinUrl}
           </p>
-          <p className="mt-1 text-[12px] text-[var(--mut)]">
+          <p className="app-small">
             Share this guest-host link, not the teacher URL.
           </p>
         </div>
@@ -64,7 +64,7 @@ export default function GuestAccessSettings({
       {lockedOut && (
         <div
           data-testid="guest-lockout"
-          className="rounded-[2px] bg-[var(--paper2)] px-3 py-2.5 text-[13px] font-medium text-[var(--ink)] ring-1 ring-[var(--rule)]"
+          className="callout"
           role="status"
         >
           Guest join is locked after too many PIN attempts. Rotate the PIN so the class can try again.
@@ -72,7 +72,7 @@ export default function GuestAccessSettings({
             type="button"
             data-testid="guest-rotate-pin"
             onClick={onRotate}
-            className="mt-2 block h-11 w-full rounded-[2px] bg-[var(--blue)] px-4 text-sm font-semibold text-white transition-colors hover:bg-[var(--blue-d)]"
+            className="btn btn-block"
           >
             Rotate PIN
           </button>
@@ -80,24 +80,24 @@ export default function GuestAccessSettings({
       )}
 
       {guestAccess ? (
-        <div className="flex flex-col gap-2">
-          <p className="text-[13px] font-semibold text-[var(--ink2)]">Class PIN</p>
+        <div className="guest-fields">
+          <p className="app-label">Class PIN</p>
           <p
             data-testid="guest-pin"
-            className="rounded-[2px] border border-[var(--line)] bg-white px-3 py-2 font-mono text-2xl tracking-[0.35em] text-[var(--ink)]"
+            className="guest-pin"
           >
             {guestPin}
           </p>
           {expiryLabel && (
-            <p className="text-[12px] text-[var(--mut)]">Expires {expiryLabel}</p>
+            <p className="app-small">Expires {expiryLabel}</p>
           )}
-          <div className="flex flex-col gap-2 sm:flex-row">
+          <div className="btn-gap">
             {!lockedOut && (
               <button
                 type="button"
                 data-testid="guest-rotate-pin"
                 onClick={onRotate}
-                className="h-11 flex-1 rounded-[2px] border border-[var(--line)] bg-white px-4 text-sm font-semibold text-[var(--ink)] transition-colors hover:bg-[var(--paper2)]"
+                className="btn-outline btn-grow"
               >
                 Rotate PIN
               </button>
@@ -106,7 +106,7 @@ export default function GuestAccessSettings({
               type="button"
               data-testid="guest-disable"
               onClick={onDisable}
-              className="h-11 flex-1 rounded-[2px] border border-[var(--line)] bg-white px-4 text-sm font-medium text-[var(--ink2)] transition-colors hover:bg-[var(--paper2)]"
+              className="btn-outline btn-grow"
             >
               Turn off guest join
             </button>
@@ -117,7 +117,8 @@ export default function GuestAccessSettings({
           type="button"
           data-testid="guest-enable"
           onClick={onEnable}
-          className="h-11 rounded-[2px] bg-[var(--blue)] px-4 text-sm font-semibold text-white transition-colors hover:bg-[var(--blue-d)]"
+          className="btn btn-block"
+          style={{ marginTop: 0 }}
         >
           Allow students to join with a PIN
         </button>

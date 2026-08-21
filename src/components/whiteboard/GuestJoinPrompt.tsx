@@ -76,18 +76,18 @@ export default function GuestJoinPrompt({
   };
 
   return (
-    <div className="fixed inset-0 flex items-center justify-center bg-black/60 z-[1000]">
+    <div className="modal-overlay">
       <form
         data-testid="guest-join-prompt"
         onSubmit={handleSubmit}
-        className="bg-white rounded-xl p-8 min-w-[320px] shadow-xl"
+        className="modal-card"
       >
-        <h2 className="m-0 mb-2 text-xl">Join class</h2>
-        <p className="m-0 mb-4 text-slate-500 text-sm">
+        <h2 className="modal-title">Join class</h2>
+        <p className="modal-text">
           Enter your name and the PIN your teacher gave you.
         </p>
-        <label className="block mb-4">
-          <span className="block text-xs text-slate-500 uppercase tracking-wider mb-1">Your name</span>
+        <label className="field-block">
+          <span className="app-label">Your name</span>
           <input
             data-testid="guest-join-name"
             type="text"
@@ -95,11 +95,11 @@ export default function GuestJoinPrompt({
             onChange={(event) => setName(event.target.value)}
             autoFocus
             autoComplete="off"
-            className="w-full px-3 py-2.5 rounded-lg border border-slate-300 text-sm box-border"
+            className="field-input"
           />
         </label>
-        <label className="block mb-4">
-          <span className="block text-xs text-slate-500 uppercase tracking-wider mb-1">Class PIN</span>
+        <label className="field-block">
+          <span className="app-label">Class PIN</span>
           <input
             data-testid="guest-join-pin"
             type="text"
@@ -108,20 +108,20 @@ export default function GuestJoinPrompt({
             maxLength={6}
             value={pin}
             onChange={(event) => setPin(event.target.value.replace(/\D/g, '').slice(0, 6))}
-            className="w-full px-3 py-2.5 rounded-lg border border-slate-300 text-sm box-border tracking-[0.3em]"
+            className="field-input field-pin"
           />
         </label>
         {error && (
           <p
             data-testid="guest-join-error"
             role="alert"
-            className="m-0 mb-4 text-sm text-red-600"
+            className="app-error"
           >
             {GUEST_PIN_ERROR}
           </p>
         )}
         {retrying && (
-          <p data-testid="guest-join-retry-hint" className="m-0 mb-4 text-sm text-slate-500">
+          <p data-testid="guest-join-retry-hint" className="app-small">
             Please wait a few minutes before trying again.
           </p>
         )}
@@ -129,12 +129,7 @@ export default function GuestJoinPrompt({
           data-testid="guest-join-submit"
           type="submit"
           disabled={retrying || submitting || !normalizeGuestName(name) || pin.length !== 6}
-          className="w-full px-0 py-2.5 rounded-lg border-none text-white text-sm font-semibold cursor-pointer transition-colors duration-150 disabled:cursor-not-allowed"
-          style={{
-            background: retrying || submitting || !normalizeGuestName(name) || pin.length !== 6
-              ? '#ccc'
-              : '#3498db',
-          }}
+          className="btn btn-block"
         >
           Continue
         </button>

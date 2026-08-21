@@ -64,12 +64,10 @@ export default function UserNamePrompt({
   };
 
   return (
-    <div className="fixed inset-0 flex items-center justify-center bg-black/60 z-[1000]">
-      <form onSubmit={handleSubmit} className="bg-white rounded-xl p-8 min-w-[320px] shadow-xl">
-        <h2 className="m-0 mb-2 text-xl">Join Room</h2>
-        <p className="m-0 mb-4 text-slate-500 text-sm">
-          Room: {roomId}
-        </p>
+    <div className="modal-overlay">
+      <form onSubmit={handleSubmit} className="modal-card">
+        <h2 className="modal-title">Join room</h2>
+        <p className="modal-text">Room: {roomId}</p>
         <input
           ref={inputRef}
           data-testid="whiteboard-username-input"
@@ -78,16 +76,15 @@ export default function UserNamePrompt({
           onChange={(e) => setName(e.target.value)}
           placeholder="Enter your name"
           autoFocus
-          className="w-full px-3 py-2.5 rounded-lg border border-slate-300 text-sm mb-4 box-border"
+          className="field-input"
         />
         <button
           data-testid="whiteboard-join-room-btn"
           type="submit"
           disabled={!name.trim()}
-          className="w-full px-0 py-2.5 rounded-lg border-none text-white text-sm font-semibold cursor-pointer transition-colors duration-150"
-          style={{ background: name.trim() ? '#3498db' : '#ccc', cursor: name.trim() ? 'pointer' : 'not-allowed' }}
+          className="btn btn-block"
         >
-          Join Room
+          Join room
         </button>
       </form>
     </div>

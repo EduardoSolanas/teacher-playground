@@ -30,12 +30,6 @@ textarea {
   display: none;
 }
 
-@keyframes whiteboard-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 @keyframes raised-hand-phase-out {
   0% {
     opacity: 0;
