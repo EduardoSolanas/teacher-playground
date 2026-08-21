@@ -278,6 +278,20 @@ export function isPublicPath(pathname: string): boolean {
   if (pathname.includes('..')) return false;
   if ((MARKETING_PAGES as readonly string[]).includes(pathname)) return true;
   if (pathname === '/favicon.ico') return true;
+  /*
+   * Excalidraw's typefaces and their metadata.
+   *
+   * A browser fetches @font-face sources anonymously — no cookies, by spec —
+   * so behind Access every one of them is a 401. Excalidraw answers a failed
+   * font by falling back to a hardcoded https://esm.sh/... URL compiled into
+   * its bundle, which CSP blocks, so a room logged hundreds of violations and
+   * rendered none of its own typefaces.
+   *
+   * These are static files shipped with the bundle. They say nothing about a
+   * room, an account or a session, and the trailing slash keeps the exemption
+   * to the directories themselves — `/fontsecret` stays behind Access.
+   */
+  if (pathname.startsWith('/fonts/') || pathname.startsWith('/data/')) return true;
   // Deliberately NOT /_next/: the marketing pages are self-contained static
   // HTML, so the app's JS/CSS bundles never need to be public.
   return false;
@@ -292,10 +306,31 @@ export function connectSrcForPageOrigin(pageOrigin: string): string {
   return `connect-src 'self' ${url.origin} ${wsProtocol}//${url.host}`;
 }
 
+/**
+ * Put the response's nonce on every element `script-src` will judge.
+ *
+ * That is not only `<script>`. `strict-dynamic` disables host allowlisting, so
+ * `'self'` admits nothing on its own and anything without the nonce is refused.
+ * Next emits `<link rel="preload" as="script">` for its webpack runtime, and a
+ * preload is governed by `script-src-elem` falling back to `script-src` — so
+ * leaving links alone blocked that preload on every single page load.
+ *
+ * Only script-ish links qualify. A stylesheet or a font preload answers to
+ * `style-src` and `font-src`, neither of which uses a nonce here.
+ */
 export function applyCspNonceToHtml(html: string, nonce: string): string {
-  return html.replace(/<script\b([^>]*)>/gi, (full, attrs: string) => {
+  const withScripts = html.replace(/<script\b([^>]*)>/gi, (full, attrs: string) => {
     if (/\bnonce\s*=/i.test(attrs)) return full;
     return `<script nonce="${nonce}"${attrs}>`;
+  });
+
+  return withScripts.replace(/<link\b([^>]*)>/gi, (full, attrs: string) => {
+    if (/\bnonce\s*=/i.test(attrs)) return full;
+    const isModulePreload = /\brel\s*=\s*["']?modulepreload\b/i.test(attrs);
+    const isScriptPreload = /\brel\s*=\s*["']?(?:preload|prefetch)\b/i.test(attrs)
+      && /\bas\s*=\s*["']?script\b/i.test(attrs);
+    if (!isModulePreload && !isScriptPreload) return full;
+    return `<link nonce="${nonce}"${attrs}>`;
   });
 }
 

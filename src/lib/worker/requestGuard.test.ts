@@ -7,6 +7,7 @@ import {
   withNonceHtmlSecurityHeaders,
   connectSrcForPageOrigin,
   MAX_BODY_BYTES,
+  applyCspNonceToHtml,
   isPublicPath,
   MARKETING_PAGES,
   stripForwardedIdentityHeaders,
@@ -532,6 +533,77 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(stripped.get('Sec-WebSocket-Protocol')).toBe('y-webrtc');
       expect(stripped.get('Origin')).toBe('https://example.com');
       expect(stripped.get('Cookie')).toBeNull();
+    });
+  });
+
+  describe('applyCspNonceToHtml covers script preloads', () => {
+    /*
+     * `strict-dynamic` disables host allowlisting, so `'self'` no longer
+     * admits anything: an element without the nonce is refused. Next emits a
+     * <link rel="preload" as="script"> for its webpack runtime, and a preload
+     * is governed by script-src-elem falling back to script-src — so an
+     * un-nonced one was blocked on every page load.
+     */
+    it('nonces a script preload link', () => {
+      const html = '<link rel="preload" as="script" fetchPriority="low" href="/_next/x.js"/>';
+      expect(applyCspNonceToHtml(html, 'abc')).toContain('nonce="abc"');
+    });
+
+    it('nonces a modulepreload link', () => {
+      const html = '<link rel="modulepreload" href="/_next/x.js"/>';
+      expect(applyCspNonceToHtml(html, 'abc')).toContain('nonce="abc"');
+    });
+
+    it('leaves a stylesheet link alone: style-src has no strict-dynamic', () => {
+      const html = '<link rel="stylesheet" href="/a.css"/>';
+      expect(applyCspNonceToHtml(html, 'abc')).toBe(html);
+    });
+
+    it('leaves a non-script preload alone', () => {
+      const html = '<link rel="preload" as="font" href="/f.woff2"/>';
+      expect(applyCspNonceToHtml(html, 'abc')).toBe(html);
+    });
+
+    it('does not double-nonce a link that already has one', () => {
+      const html = '<link rel="preload" as="script" nonce="old" href="/x.js"/>';
+      const out = applyCspNonceToHtml(html, 'abc');
+      expect(out).toBe(html);
+      expect(out.match(/nonce=/g)).toHaveLength(1);
+    });
+
+    it('still nonces script tags', () => {
+      expect(applyCspNonceToHtml('<script src="/a.js"></script>', 'abc'))
+        .toContain('<script nonce="abc" src="/a.js">');
+    });
+  });
+
+  describe('font assets are readable without an Access credential', () => {
+    /*
+     * A browser fetches @font-face sources anonymously — no cookies, by spec.
+     * Behind Access that is a 401, and Excalidraw answers a failed font by
+     * falling back to a hardcoded https://esm.sh/... URL baked into its bundle,
+     * which CSP then blocks. The visible result was 230 console violations per
+     * room and Excalidraw's own typefaces never rendering.
+     *
+     * These are static font and font-metadata files shipped in the bundle.
+     * They carry nothing about a room, an account or a session.
+     */
+    it('serves fonts and font data with no credential', () => {
+      expect(isPublicPath('/fonts/Xiaolai/Xiaolai-Regular-1b61.woff2')).toBe(true);
+      expect(isPublicPath('/data/Xiaolai.json')).toBe(true);
+    });
+
+    it('keeps everything else behind Access', () => {
+      expect(isPublicPath('/fonts')).toBe(false);
+      expect(isPublicPath('/data')).toBe(false);
+      expect(isPublicPath('/fontsecret')).toBe(false);
+      expect(isPublicPath('/database/dump.sql')).toBe(false);
+      expect(isPublicPath('/api/whiteboard/rooms')).toBe(false);
+    });
+
+    it('refuses traversal out of the font directory', () => {
+      expect(isPublicPath('/fonts/../api/whiteboard/rooms')).toBe(false);
+      expect(isPublicPath('/data/../../etc/passwd')).toBe(false);
     });
   });
 
