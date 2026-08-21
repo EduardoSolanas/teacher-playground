@@ -11,12 +11,18 @@ export type TeacherRoomSummary = {
   createdAt?: number;
 };
 
+/**
+ * What a room is called in the list: its name, or failing that its code.
+ *
+ * Naming is optional at creation, so most rooms start with no name and the
+ * code is what the teacher has to go on — it is also what they read out to a
+ * student. An earlier version fell back to the creation timestamp, which gave
+ * every unnamed room the same shape and told you nothing about which room you
+ * were looking at.
+ */
 export function teacherRoomTitle(room: TeacherRoomSummary): string {
   const trimmed = room.name?.trim();
   if (trimmed) return trimmed;
-  if (typeof room.createdAt === 'number') {
-    return new Date(room.createdAt).toISOString().replace('T', ' ').slice(0, 16);
-  }
   return room.roomId;
 }
 
@@ -95,6 +101,20 @@ export default function TeacherRoomList({
     };
   }, [menuOpenId]);
 
+  /**
+   * Save a rename, or do nothing.
+   *
+   * A room name is a non-empty string or absent — roomSettingsSchema enforces
+   * that, so a blank save would 400 and be swallowed by the caller, leaving a
+   * Save button that looks live and does nothing.
+   */
+  const commitRename = (roomId: string) => {
+    const next = draftName.trim();
+    if (!next) return;
+    onRename?.(roomId, next);
+    setEditingId(null);
+  };
+
   const copyShareLink = async (roomId: string) => {
     const url = guestHostJoinUrl(roomId);
     try {
@@ -171,11 +191,11 @@ export default function TeacherRoomList({
                     <input
                       data-testid={`whiteboard-room-name-input-${room.roomId}`}
                       value={draftName}
+                      maxLength={100}
                       onChange={(e) => setDraftName(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
-                          onRename?.(room.roomId, draftName);
-                          setEditingId(null);
+                          commitRename(room.roomId);
                         }
                         if (e.key === 'Escape') setEditingId(null);
                       }}
@@ -186,10 +206,8 @@ export default function TeacherRoomList({
                       <button
                         type="button"
                         data-testid={`whiteboard-room-name-save-${room.roomId}`}
-                        onClick={() => {
-                          onRename?.(room.roomId, draftName);
-                          setEditingId(null);
-                        }}
+                        disabled={!draftName.trim()}
+                        onClick={() => commitRename(room.roomId)}
                         className="btn btn-small"
                       >
                         Save

@@ -358,6 +358,30 @@ describe('account owned-room index', () => {
     expect(listOwnedRooms(db, owner.accountId)).toEqual([]);
   });
 
+  // Naming became the teacher's own choice, so a stored name is now theirs to
+  // lose. recordOwnedRoom upserts with `name = excluded.name`, and the
+  // room-creation path calls it with name: null — so any nameless re-sync of an
+  // already-named room silently erases the name the teacher typed.
+  it('a nameless re-sync does not erase a name the teacher set', () => {
+    const owner = account('owner-rename');
+    recordOwnedRoom(db, {
+      accountId: owner.accountId,
+      roomId: 'room-keep',
+      name: 'Tuesday algebra',
+      now: 1_000,
+    });
+
+    recordOwnedRoom(db, {
+      accountId: owner.accountId,
+      roomId: 'room-keep',
+      name: null,
+      now: 2_000,
+    });
+
+    const [room] = listOwnedRooms(db, owner.accountId);
+    expect(room.name).toBe('Tuesday algebra');
+  });
+
   it('records two rooms and lists newest updated first', () => {
     const owner = account('owner-two');
     recordOwnedRoom(db, {

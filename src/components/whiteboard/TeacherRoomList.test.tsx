@@ -7,7 +7,10 @@ const UNNAMED_CREATED_AT = 1_700_000_000_000;
 const UNNAMED_UTC_STAMP = new Date(UNNAMED_CREATED_AT).toISOString().replace('T', ' ').slice(0, 16);
 
 describe('TeacherRoomList', () => {
-  it('shows a named room as Algebra and an unnamed createdAt room as the UTC stamp, not roomId', () => {
+  // A room falls back to its own code, not its creation time. The code is what
+  // a teacher reads out or recognises; a UTC stamp names every room the same
+  // shape and tells you nothing about which room it is.
+  it('shows a named room by name and an unnamed room by its code', () => {
     const onOpen = vi.fn();
     const { container } = render(
       <TeacherRoomList
@@ -22,7 +25,7 @@ describe('TeacherRoomList', () => {
     expect(screen.getByRole('heading', { level: 2, name: 'Your rooms' })).toBeTruthy();
     expect(screen.getAllByRole('listitem')).toHaveLength(2);
     expect(screen.getByText('Algebra')).toBeTruthy();
-    expect(screen.getByText(UNNAMED_UTC_STAMP)).toBeTruthy();
+    expect(screen.getByText('room-beta')).toBeTruthy();
     expect(screen.queryByRole('combobox')).toBeNull();
     expect(screen.queryByRole('listbox')).toBeNull();
     expect(container.querySelector('select')).toBeNull();
@@ -33,11 +36,14 @@ describe('TeacherRoomList', () => {
     );
     expect(teacherRoomTitle({ roomId: 'room-alpha', name: 'Algebra' })).toBe('Algebra');
     const unnamedItem = screen.getByTestId('whiteboard-room-list-item-room-beta');
-    expect(unnamedItem.textContent).toContain(UNNAMED_UTC_STAMP);
-    expect(unnamedItem.textContent).not.toContain('room-beta');
+    expect(unnamedItem.textContent).toContain('room-beta');
+    expect(unnamedItem.textContent).not.toContain(UNNAMED_UTC_STAMP);
+    // createdAt present and still ignored: only a name beats the code.
     expect(
       teacherRoomTitle({ roomId: 'room-beta', createdAt: UNNAMED_CREATED_AT }),
-    ).toBe(UNNAMED_UTC_STAMP);
+    ).toBe('room-beta');
+    expect(teacherRoomTitle({ roomId: 'room-beta', name: '   ' })).toBe('room-beta');
+    expect(teacherRoomTitle({ roomId: 'room-beta', name: null })).toBe('room-beta');
 
     const algebraLink = screen.getByRole('link', { name: /Algebra/ });
     expect(algebraLink.getAttribute('href')).toBe('/whiteboard/room-alpha');
@@ -45,6 +51,53 @@ describe('TeacherRoomList', () => {
     fireEvent.click(unnamedItem);
     expect(onOpen).toHaveBeenCalledTimes(1);
     expect(onOpen).toHaveBeenCalledWith('room-beta');
+  });
+
+  // A name is either a real name or absent; '' is neither. roomSettingsSchema
+  // types it as a non-empty string, so a blank save would 400 and be swallowed
+  // silently by handleRename, leaving the teacher with a dead Save button.
+  it('refuses to submit a blank rename', () => {
+    const onRename = vi.fn();
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={vi.fn()}
+        onRename={onRename}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-rename-room-alpha'));
+
+    const input = screen.getByTestId('whiteboard-room-name-input-room-alpha');
+    fireEvent.change(input, { target: { value: '   ' } });
+
+    const save = screen.getByTestId('whiteboard-room-name-save-room-alpha');
+    expect(save).toHaveProperty('disabled', true);
+
+    fireEvent.click(save);
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onRename).not.toHaveBeenCalled();
+  });
+
+  it('trims a rename before handing it on', () => {
+    const onRename = vi.fn();
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={vi.fn()}
+        onRename={onRename}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-rename-room-alpha'));
+    fireEvent.change(screen.getByTestId('whiteboard-room-name-input-room-alpha'), {
+      target: { value: '  Tuesday algebra  ' },
+    });
+    fireEvent.click(screen.getByTestId('whiteboard-room-name-save-room-alpha'));
+
+    expect(onRename).toHaveBeenCalledWith('room-alpha', 'Tuesday algebra');
   });
 
   it('opens a named room on click and does not navigate when renaming', () => {

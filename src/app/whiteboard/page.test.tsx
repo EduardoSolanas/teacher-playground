@@ -182,7 +182,10 @@ describe('WhiteboardRoute room list', () => {
     expect(screen.getByRole('button', { name: 'More people' })).toHaveProperty('disabled', true);
   });
 
-  it('names a new room from the Access full name without a name field', async () => {
+  // Naming is the teacher's choice now. Auto-naming every room after the
+  // account gave a list where each entry read "Ada Lovelace's room", which
+  // told them apart no better than nothing at all.
+  it('leaves a new room unnamed when the optional name field is blank', async () => {
     ajaxFetch.mockImplementation((url: string, init?: RequestInit) => {
       if (url === '/api/whiteboard/rooms') {
         return Promise.resolve(jsonResponse({ rooms: [] }));
@@ -203,7 +206,47 @@ describe('WhiteboardRoute room list', () => {
     await waitFor(() => {
       expect(screen.getByTestId('whiteboard-create-room-btn')).toHaveProperty('disabled', false);
     });
-    expect(screen.queryByLabelText('Room name')).toBeNull();
+    expect(screen.getByTestId('whiteboard-new-room-name')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('whiteboard-create-room-btn'));
+
+    await waitFor(() => {
+      expect(assign).toHaveBeenCalledWith('/whiteboard/new-room');
+    });
+
+    const settingsCall = ajaxFetch.mock.calls.find(
+      (call) => typeof call[0] === 'string' && String(call[0]).endsWith('/settings'),
+    );
+    // The key is absent, not null: roomSettingsSchema types name as a
+    // non-empty string, so a null or '' would fail the whole create.
+    const body = JSON.parse(String(settingsCall?.[1]?.body));
+    expect(body.maxUsers).toBe(2);
+    expect('name' in body).toBe(false);
+  });
+
+  it('sends the typed room name, trimmed', async () => {
+    ajaxFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/whiteboard/rooms') {
+        return Promise.resolve(jsonResponse({ rooms: [] }));
+      }
+      if (url === '/auth/session/current') {
+        return Promise.resolve(jsonResponse({
+          accountId: 'acct-1',
+          displayName: 'Ada Lovelace',
+        }));
+      }
+      if (init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      return Promise.resolve(jsonResponse({}, false));
+    });
+
+    render(<WhiteboardRoute />);
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-create-room-btn')).toHaveProperty('disabled', false);
+    });
+    fireEvent.change(screen.getByTestId('whiteboard-new-room-name'), {
+      target: { value: '  Tuesday algebra  ' },
+    });
     fireEvent.click(screen.getByTestId('whiteboard-create-room-btn'));
 
     await waitFor(() => {
@@ -215,8 +258,43 @@ describe('WhiteboardRoute room list', () => {
     );
     expect(JSON.parse(String(settingsCall?.[1]?.body))).toMatchObject({
       maxUsers: 2,
-      name: "Ada Lovelace's room",
+      name: 'Tuesday algebra',
     });
+  });
+
+  it('sends null rather than an empty string for a whitespace-only name', async () => {
+    // The column is nullable and the list keys its fallback off null, so a
+    // blank string would give a room a name that renders as nothing at all.
+    ajaxFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/whiteboard/rooms') {
+        return Promise.resolve(jsonResponse({ rooms: [] }));
+      }
+      if (url === '/auth/session/current') {
+        return Promise.resolve(jsonResponse({ accountId: 'acct-1', displayName: 'Ada' }));
+      }
+      if (init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      return Promise.resolve(jsonResponse({}, false));
+    });
+
+    render(<WhiteboardRoute />);
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-create-room-btn')).toHaveProperty('disabled', false);
+    });
+    fireEvent.change(screen.getByTestId('whiteboard-new-room-name'), {
+      target: { value: '   ' },
+    });
+    fireEvent.click(screen.getByTestId('whiteboard-create-room-btn'));
+
+    await waitFor(() => {
+      expect(assign).toHaveBeenCalledWith('/whiteboard/new-room');
+    });
+
+    const settingsCall = ajaxFetch.mock.calls.find(
+      (call) => typeof call[0] === 'string' && String(call[0]).endsWith('/settings'),
+    );
+    expect('name' in JSON.parse(String(settingsCall?.[1]?.body))).toBe(false);
   });
 
   it('posts maxUsers 2 when creating a room', async () => {

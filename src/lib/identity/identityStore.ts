@@ -511,6 +511,15 @@ function requireValidRoomId(roomId: string): string {
 }
 
 /** Upserts an owned-room index row. created_at is kept on conflict. */
+/**
+ * Record or refresh an owned room.
+ *
+ * A null name means "leave whatever is there", not "clear it". The
+ * room-creation path re-syncs with name: null, so a plain assignment let any
+ * such call erase a name the teacher had typed. Clearing is still possible:
+ * an empty string is stored, and the room list falls back to the code for any
+ * name that trims to nothing.
+ */
 export function recordOwnedRoom(
   db: RoomDatabase,
   input: RecordOwnedRoomInput,
@@ -524,7 +533,7 @@ export function recordOwnedRoom(
        account_id, room_id, role, name, created_at, updated_at
      ) VALUES (?, ?, 'owner', ?, ?, ?)
      ON CONFLICT(account_id, room_id) DO UPDATE SET
-       name = excluded.name,
+       name = COALESCE(excluded.name, account_rooms.name),
        updated_at = excluded.updated_at`,
   ).run(input.accountId, roomId, name, now, now);
 

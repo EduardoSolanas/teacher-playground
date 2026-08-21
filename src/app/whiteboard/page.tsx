@@ -9,7 +9,6 @@ import TeacherRoomList, {
   type TeacherRoomSummary,
 } from '@/components/whiteboard/TeacherRoomList';
 import { UserProfileMenu } from '@/components/whiteboard/UserProfileMenu';
-import { roomNameForHostDisplayName } from '@/lib/access/accessDisplayName';
 import {
   DEFAULT_MAX_USERS,
   FREE_MAX_ROOMS,
@@ -17,28 +16,8 @@ import {
   MIN_MAX_USERS,
 } from '@/lib/plan/limits';
 
-const ADJECTIVES = [
-  'Bright', 'Calm', 'Swift', 'Warm', 'Bold',
-  'Fresh', 'Clear', 'Keen', 'Neat', 'Vivid',
-  'Cozy', 'Lively', 'Gentle', 'Snappy', 'Curious',
-];
-
-const NOUNS = [
-  'Canvas', 'Studio', 'Board', 'Space', 'Workshop',
-  'Lab', 'Room', 'Desk', 'Corner', 'Garden',
-  'Atelier', 'Haven', 'Nook', 'Forum', 'Stage',
-];
-
 const MIN_USERS = MIN_MAX_USERS;
 const MAX_USERS = FREE_MAX_USERS;
-
-function generateRoomName(): string {
-  const bytes = new Uint8Array(2);
-  crypto.getRandomValues(bytes);
-  const adj = ADJECTIVES[bytes[0] % ADJECTIVES.length];
-  const noun = NOUNS[bytes[1] % NOUNS.length];
-  return `${adj} ${noun}`;
-}
 
 function parseTeacherRooms(payload: unknown): TeacherRoomSummary[] {
   if (!payload || typeof payload !== 'object') return [];
@@ -64,6 +43,7 @@ function parseTeacherRooms(payload: unknown): TeacherRoomSummary[] {
 
 export default function WhiteboardRoute() {
   const [maxUsers, setMaxUsers] = useState(DEFAULT_MAX_USERS);
+  const [newRoomName, setNewRoomName] = useState('');
   const [creationTimes, setCreationTimes] = useState<number[]>([]);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -146,9 +126,17 @@ export default function WhiteboardRoute() {
       const settings = await ajaxFetch(`/api/whiteboard/room/${roomId}/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ maxUsers, hostPeerId, name: hostDisplayName
-          ? roomNameForHostDisplayName(hostDisplayName)
-          : generateRoomName() }),
+        // Naming is optional: an unnamed room falls back to its code, which is
+        // more use than auto-naming every room after the same teacher.
+        //
+        // A blank name omits the key rather than sending null or ''. The
+        // settings schema types name as a non-empty string, so both are
+        // rejected outright and the whole room creation fails.
+        body: JSON.stringify({
+          maxUsers,
+          hostPeerId,
+          ...(newRoomName.trim() ? { name: newRoomName.trim() } : {}),
+        }),
       });
 
       if (!settings.ok) {
@@ -167,7 +155,7 @@ export default function WhiteboardRoute() {
       setIsCreatingRoom(false);
       setCreateError('Room creation failed. Please try again.');
     }
-  }, [creationTimes, hostDisplayName, isCreatingRoom, maxUsers, rooms.length]);
+  }, [creationTimes, isCreatingRoom, maxUsers, newRoomName, rooms.length]);
 
   const refreshRooms = useCallback(async () => {
     const response = await ajaxFetch('/api/whiteboard/rooms');
@@ -262,6 +250,22 @@ export default function WhiteboardRoute() {
 
           <div className="section-sep">
             <h2 className="app-h2">New room</h2>
+
+            <div className="mt-4">
+              <label htmlFor="whiteboard-room-name" className="app-label">
+                Room name <span className="app-small">(optional)</span>
+              </label>
+              <input
+                id="whiteboard-room-name"
+                data-testid="whiteboard-new-room-name"
+                type="text"
+                value={newRoomName}
+                maxLength={100}
+                placeholder="Leave blank to use the room code"
+                onChange={(event) => setNewRoomName(event.target.value)}
+                className="field-input nudge-top"
+              />
+            </div>
 
             <div className="mt-4">
               <label
