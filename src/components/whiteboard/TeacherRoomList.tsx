@@ -265,7 +265,7 @@ export default function TeacherRoomList({
                           setConfirmDeleteId(null);
                           onDelete?.(room.roomId);
                         }}
-                        className="btn h-11 flex-1 rounded-[2px] px-4 py-0 text-sm sm:flex-none"
+                        className="btn h-11 flex-1 rounded-[0.125rem] px-4 py-0 text-sm sm:flex-none"
                       >
                         Delete
                       </button>

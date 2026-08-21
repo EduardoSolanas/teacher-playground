@@ -65,14 +65,14 @@ svg{max-width:100%;height:auto}
 .nav nav{display:flex;align-items:center;gap:1.8rem;font-size:.92rem}
 .nav nav a{color:var(--ink2)}
 .nav nav a:hover{color:var(--ink)}
-.nav a.signin{border:1.5px solid var(--ink);border-radius:2px;padding:.45rem 1.05rem;
+.nav a.signin{border:1.5px solid var(--ink);border-radius:0.125rem;padding:.45rem 1.05rem;
 font-weight:600;color:var(--ink)}
 .nav a.signin:hover{background:var(--ink);color:var(--paper)}
 
 /* ---- buttons ------------------------------------------------------------ */
 
 .btn{display:inline-block;background:var(--blue);color:#fff;font-weight:600;font-size:.97rem;
-padding:.85rem 1.6rem;border-radius:2px;box-shadow:2.5px 2.5px 0 var(--ink)}
+padding:.85rem 1.6rem;border-radius:0.125rem;box-shadow:0.15625rem 0.15625rem 0 var(--ink)}
 .btn:hover{background:var(--blue-d)}
 .btn.alt{background:var(--ink)}
 .btn.alt:hover{background:#000}
@@ -99,8 +99,8 @@ font-size:clamp(2.5rem,5.4vw,3.9rem);line-height:1.06;letter-spacing:-.015em;mar
 /* ---- the board sheet ------------------------------------------------------ */
 
 .sheet{position:relative;transform:rotate(.8deg)}
-.sheet .paper{background:#fff;border:1px solid var(--line);border-radius:3px;
-box-shadow:0 1px 0 var(--line),8px 10px 0 rgba(38,36,31,.08);padding:.6rem}
+.sheet .paper{background:#fff;border:1px solid var(--line);border-radius:0.1875rem;
+box-shadow:0 0.0625rem 0 var(--line),0.5rem 0.625rem 0 rgba(38,36,31,.08);padding:.6rem}
 .sheet .tape{position:absolute;top:-.85rem;left:50%;width:6.5rem;height:1.7rem;
 transform:translateX(-50%) rotate(-2deg);background:#e8e0c9cc;border-left:1px solid #d9cfb2;
 border-right:1px solid #d9cfb2}
@@ -128,8 +128,8 @@ letter-spacing:-.01em;line-height:1.15}
 .exercise p{margin-top:.3rem;color:var(--ink2)}
 
 /* blue-ruled note card */
-.note-block{margin-top:2.6rem;background:#fff;border:1px solid var(--line);border-radius:3px;
-padding:2.2rem 2.4rem;box-shadow:5px 6px 0 rgba(38,36,31,.06);
+.note-block{margin-top:2.6rem;background:#fff;border:1px solid var(--line);border-radius:0.1875rem;
+padding:2.2rem 2.4rem;box-shadow:0.3125rem 0.375rem 0 rgba(38,36,31,.06);
 background-image:repeating-linear-gradient(180deg,transparent 0 1.85rem,var(--rule) 1.85rem calc(1.85rem + 0.0625rem));
 background-position:0 .35rem}
 .note-block .item{display:grid;grid-template-columns:1.4rem 1fr;gap:.8rem;padding:.35rem 0}
@@ -161,9 +161,9 @@ footer{border-top:1px solid var(--line);background:var(--paper2)}
 .price-head p{margin-top:1rem;color:var(--ink2);max-width:30rem}
 .tiers{display:grid;gap:2rem;padding:2.6rem 0 1rem;grid-template-columns:1fr;align-items:stretch}
 @media(min-width:820px){.tiers{grid-template-columns:1fr 1fr}}
-.tier{position:relative;background:#fff;border:1px solid var(--line);border-radius:3px;
-padding:2.2rem 2.3rem;box-shadow:5px 6px 0 rgba(38,36,31,.06);display:flex;flex-direction:column}
-.tier.pro{border:1.5px solid var(--ink);box-shadow:6px 7px 0 rgba(42,93,176,.22)}
+.tier{position:relative;background:#fff;border:1px solid var(--line);border-radius:0.1875rem;
+padding:2.2rem 2.3rem;box-shadow:0.3125rem 0.375rem 0 rgba(38,36,31,.06);display:flex;flex-direction:column}
+.tier.pro{border:1.5px solid var(--ink);box-shadow:0.375rem 0.4375rem 0 rgba(42,93,176,.22)}
 .tier .corner{position:absolute;top:-.7rem;right:1.6rem;background:var(--red);color:#fff;
 font-size:.72rem;font-weight:650;letter-spacing:.08em;text-transform:uppercase;
 padding:.3rem .8rem;transform:rotate(1.5deg)}
@@ -216,7 +216,7 @@ font-size:1.35rem;color:var(--ink);margin:0}
  * form sits on the recessed paper tone inside its own hairline so the eye can
  * tell "these are my rooms" from "this makes a new one" without reading.
  */
-.form-panel{margin-top:.75rem;border:1px solid var(--line);border-radius:3px;
+.form-panel{margin-top:.75rem;border:1px solid var(--line);border-radius:0.1875rem;
 background:var(--paper2);padding:1.25rem}
 @media(min-width:640px){.form-panel{padding:1.5rem}}
 .form-panel .app-label{margin-top:0}
@@ -227,13 +227,13 @@ background:var(--paper2);padding:1.25rem}
 .app-small{font-size:.75rem;color:var(--mut);margin:.5rem 0 0}
 .app-error{margin-top:.75rem;font-size:.8rem;font-weight:500;color:var(--red)}
 
-.paper-card{background:#fff;border:1px solid var(--line);border-radius:3px;
-box-shadow:5px 6px 0 rgba(38,36,31,.06);padding:1.5rem}
+.paper-card{background:#fff;border:1px solid var(--line);border-radius:0.1875rem;
+box-shadow:0.3125rem 0.375rem 0 rgba(38,36,31,.06);padding:1.5rem}
 @media(min-width:640px){.paper-card{padding:2rem}}
 .session-screen{min-height:100dvh;display:flex;flex-direction:column;align-items:center;
 justify-content:center;gap:1rem;background:var(--paper);color:var(--ink);padding:1.5rem;text-align:center}
-.session-card{width:100%;max-width:24rem;background:#fff;border:1px solid var(--line);border-radius:3px;
-padding:2rem;box-shadow:5px 6px 0 rgba(38,36,31,.06);text-align:center}
+.session-card{width:100%;max-width:24rem;background:#fff;border:1px solid var(--line);border-radius:0.1875rem;
+padding:2rem;box-shadow:0.3125rem 0.375rem 0 rgba(38,36,31,.06);text-align:center}
 .session-title{font-family:Georgia,'Iowan Old Style','Times New Roman',serif;font-weight:400;
 font-size:1.5rem;color:var(--ink);margin:0}
 .session-text{margin:.5rem 0 0;font-size:.875rem;line-height:1.6;color:var(--ink2)}
@@ -246,23 +246,23 @@ margin-top:1.25rem;font-size:.95rem}
 /* A labelled pill. Never combine with .icon-btn: that is a fixed 2.75rem
    square, declared later, so it wins on width and squeezes the label into a
    wrap. nowrap keeps a two-word label on one line inside the fixed height. */
-.btn-small{height:2.75rem;padding:0 1rem;border-radius:2px;font-size:.85rem;display:inline-flex;
+.btn-small{height:2.75rem;padding:0 1rem;border-radius:0.125rem;font-size:.85rem;display:inline-flex;
 align-items:center;gap:.375rem;flex-shrink:0;white-space:nowrap}
 .btn-small.copied{border:1px solid var(--blue);color:var(--blue)}
-.btn-outline{height:2.75rem;padding:0 1rem;border-radius:2px;border:1px solid var(--ink);background:#fff;
+.btn-outline{height:2.75rem;padding:0 1rem;border-radius:0.125rem;border:1px solid var(--ink);background:#fff;
 font-size:.85rem;font-weight:500;color:var(--ink);cursor:pointer;transition:background .15s}
 .btn-outline:hover{background:var(--paper2)}
-.spinner{width:1rem;height:1rem;flex-shrink:0;border-radius:999px;border:2px solid rgba(255,255,255,.45);
+.spinner{width:1rem;height:1rem;flex-shrink:0;border-radius:50%;border:2px solid rgba(255,255,255,.45);
 border-top-color:#fff;animation:whiteboard-spin .8s linear infinite}
 
 .stepper{display:flex;align-items:center;gap:.5rem;max-width:15rem}
 .stepper-btn{display:grid;place-items:center;width:2.75rem;height:2.75rem;flex-shrink:0;
-border:1px solid var(--ink);border-radius:2px;background:#fff;font-size:1.25rem;font-weight:600;
+border:1px solid var(--ink);border-radius:0.125rem;background:#fff;font-size:1.25rem;font-weight:600;
 color:var(--ink);cursor:pointer;transition:background .15s}
 .stepper-btn:hover{background:var(--paper2)}
 .stepper-btn:disabled{opacity:.4;cursor:default}
 .stepper-btn:hover:disabled{background:#fff}
-.stepper-input{width:100%;min-width:0;height:2.75rem;border:1px solid var(--line);border-radius:2px;
+.stepper-input{width:100%;min-width:0;height:2.75rem;border:1px solid var(--line);border-radius:0.125rem;
 background:#fff;padding:0 .75rem;text-align:center;font-size:1rem;font-weight:600;color:var(--ink);
 outline:none;transition:border-color .15s}
 .stepper-input:focus{border-color:var(--blue)}
@@ -290,25 +290,25 @@ padding:.5rem .625rem;text-decoration:none}
 .room-url{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 .625rem .25rem;
 font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.75rem;color:var(--mut)}
 .room-menu{position:absolute;right:0;top:100%;z-index:10;margin-top:.375rem;min-width:10rem;
-overflow:hidden;border:1px solid var(--line);border-radius:2px;background:#fff;
-box-shadow:4px 5px 0 rgba(38,36,31,.08)}
+overflow:hidden;border:1px solid var(--line);border-radius:0.125rem;background:#fff;
+box-shadow:0.25rem 0.3125rem 0 rgba(38,36,31,.08)}
 .menu-item{display:block;width:100%;border:none;background:transparent;height:2.75rem;padding:0 1rem;
 text-align:left;font-size:.875rem;color:var(--ink2);cursor:pointer;transition:background .15s}
 .menu-item:hover{background:var(--paper2);color:var(--ink)}
 .menu-item.danger{color:var(--red)}
 .icon-btn{display:grid;place-items:center;width:2.75rem;height:2.75rem;flex-shrink:0;
-border:1px solid var(--line);border-radius:2px;background:#fff;color:var(--ink2);cursor:pointer;
+border:1px solid var(--line);border-radius:0.125rem;background:#fff;color:var(--ink2);cursor:pointer;
 transition:background .15s,border-color .15s,color .15s}
 .icon-btn:hover{border-color:var(--mut);background:var(--paper2);color:var(--ink)}
-.field-input{height:2.75rem;width:100%;min-width:0;border:1px solid var(--line);border-radius:2px;
+.field-input{height:2.75rem;width:100%;min-width:0;border:1px solid var(--line);border-radius:0.125rem;
 background:#fff;padding:0 .75rem;font-size:.95rem;color:var(--ink);outline:none;transition:border-color .15s}
 .field-input:focus{border-color:var(--blue)}
 .field-input.editing{border-color:var(--blue)}
 .guest-settings{display:flex;flex-direction:column;gap:.75rem;padding:.25rem}
-.guest-url-box{margin-top:.25rem;overflow-wrap:anywhere;border:1px solid var(--line);border-radius:2px;background:#fff;
+.guest-url-box{margin-top:.25rem;overflow-wrap:anywhere;border:1px solid var(--line);border-radius:0.125rem;background:#fff;
 padding:.5rem .75rem;font-size:.85rem;color:var(--ink)}
 .guest-fields{display:flex;flex-direction:column;gap:.5rem}
-.guest-pin{border:1px solid var(--line);border-radius:2px;background:#fff;padding:.5rem .75rem;
+.guest-pin{border:1px solid var(--line);border-radius:0.125rem;background:#fff;padding:.5rem .75rem;
 font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:1.5rem;letter-spacing:.35em;color:var(--ink);margin:0}
 .btn-grow{flex:1 1 0}
 .room-shell{width:100vw;height:100vh;overflow:hidden;position:relative;background:var(--paper)}
@@ -322,7 +322,7 @@ font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:1.5rem;letter-
  */
 @keyframes whiteboard-spin{to{transform:rotate(360deg)}}
 
-.spinner-page{width:3rem;height:3rem;flex-shrink:0;border-radius:999px;
+.spinner-page{width:3rem;height:3rem;flex-shrink:0;border-radius:50%;
 border:3px solid var(--line);border-top-color:var(--blue);
 animation:whiteboard-spin .8s linear infinite}
 .spinner-page.waiting{width:4rem;height:4rem;border-top-color:var(--red)}
@@ -330,7 +330,7 @@ animation:whiteboard-spin .8s linear infinite}
 .modal-overlay{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;
 justify-content:center;padding:1.5rem;background:rgba(38,36,31,.55)}
 .modal-card{width:100%;max-width:22rem;background:#fff;border:1px solid var(--line);
-border-radius:3px;padding:2rem;box-shadow:5px 6px 0 rgba(38,36,31,.12)}
+border-radius:0.1875rem;padding:2rem;box-shadow:0.3125rem 0.375rem 0 rgba(38,36,31,.12)}
 .modal-title{font-family:Georgia,'Iowan Old Style','Times New Roman',serif;font-weight:400;
 font-size:1.35rem;color:var(--ink);margin:0}
 .modal-text{margin:.35rem 0 1.25rem;font-size:.85rem;line-height:1.6;color:var(--ink2)}
@@ -339,7 +339,7 @@ font-size:1.35rem;color:var(--ink);margin:0}
 .field-pin{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.3em}
 
 .queue-card{margin-top:1.75rem;min-width:16rem;background:#fff;border:1px solid var(--line);
-border-radius:3px;box-shadow:5px 6px 0 rgba(38,36,31,.06);padding:1.75rem 2rem;text-align:center}
+border-radius:0.1875rem;box-shadow:0.3125rem 0.375rem 0 rgba(38,36,31,.06);padding:1.75rem 2rem;text-align:center}
 .queue-number{font-family:Georgia,'Iowan Old Style','Times New Roman',serif;font-weight:400;
 font-size:3rem;line-height:1;color:var(--red);margin:0}
 .queue-label{margin:.4rem 0 0;font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--mut)}
@@ -351,7 +351,7 @@ font-weight:600;color:var(--ink2)}
 
 .status-line{display:flex;align-items:center;justify-content:center;gap:.5rem;margin-top:1.5rem;
 font-size:.85rem;color:var(--ink2)}
-.status-dot{width:.55rem;height:.55rem;flex-shrink:0;border-radius:999px;background:var(--blue);
+.status-dot{width:.55rem;height:.55rem;flex-shrink:0;border-radius:50%;background:var(--blue);
 transition:background .15s}
 .status-dot.busy{background:var(--red)}
 

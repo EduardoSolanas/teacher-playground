@@ -149,7 +149,7 @@ export function UserProfileMenu({
         <div
           id={labelId}
           role="menu"
-          className="absolute right-0 z-30 mt-2 w-64 overflow-hidden rounded-2xl bg-white text-slate-900 shadow-[0_18px_50px_rgba(15,23,42,0.28)] ring-1 ring-slate-200"
+          className="absolute right-0 z-30 mt-2 w-64 overflow-hidden rounded-2xl bg-white text-slate-900 shadow-[0_1.125rem_3.125rem_rgba(15,23,42,0.28)] ring-1 ring-slate-200"
         >
           {!editing && !deleting && (
             <div className="p-1.5">
