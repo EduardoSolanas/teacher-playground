@@ -1107,6 +1107,16 @@ describe('revocation closes live signaling sockets', () => {
     return state;
   }
 
+  async function forceRevocationDeadline(roomId: string): Promise<void> {
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      const internal = instance as unknown as {
+        checkIntervalMs: number;
+        lastRevocationCheckAt: number;
+      };
+      internal.lastRevocationCheckAt = Date.now() - internal.checkIntervalMs;
+    });
+  }
+
   it('closes an established socket after the account epoch advances', async () => {
     const roomId = 'revoke-room-epoch';
     const subject = await bootstrapLocalSession('revoke-epoch');
@@ -1114,10 +1124,12 @@ describe('revocation closes live signaling sockets', () => {
     const closed = closeSignal(ws);
 
     // Socket survives a check while the account is still authorized.
+    await forceRevocationDeadline(roomId);
     await runDurableObjectAlarm(roomStub(roomId));
     expect(closed.closed).toBe(false);
 
     await changeAccount('revoke-all', subject.accountId);
+    await forceRevocationDeadline(roomId);
     await runDurableObjectAlarm(roomStub(roomId));
 
     await expectClosed(closed);
@@ -1130,8 +1142,44 @@ describe('revocation closes live signaling sockets', () => {
     const closed = closeSignal(ws);
 
     await changeAccount('disable', subject.accountId);
+    await forceRevocationDeadline(roomId);
     await runDurableObjectAlarm(roomStub(roomId));
 
+    await expectClosed(closed);
+  });
+
+  it('skips identity work on an early durability alarm but checks at the revocation deadline', async () => {
+    const roomId = 'revocation-not-every-flush-room';
+    const subject = await bootstrapLocalSession('revocation-not-every-flush');
+    const ws = await openSocket(roomId, subject);
+    const closed = closeSignal(ws);
+
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      const internal = instance as unknown as {
+        checkIntervalMs: number;
+        lastRevocationCheckAt: number;
+        ctx: DurableObjectState;
+      };
+      // Keep the test's manual early alarm separate from the automatically
+      // scheduled revocation alarm; otherwise the assertion below can race a
+      // second alarm in a busy full-suite run.
+      internal.checkIntervalMs = 1_000;
+      internal.lastRevocationCheckAt = Date.now();
+      return internal.ctx.storage.deleteAlarm();
+    });
+    await changeAccount('disable', subject.accountId);
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => instance.alarm());
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(closed.closed).toBe(false);
+
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      const internal = instance as unknown as {
+        checkIntervalMs: number;
+        lastRevocationCheckAt: number;
+      };
+      internal.lastRevocationCheckAt = Date.now() - internal.checkIntervalMs;
+    });
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => instance.alarm());
     await expectClosed(closed);
   });
 
@@ -1152,6 +1200,7 @@ describe('revocation closes live signaling sockets', () => {
     });
 
     await changeAccount('disable', subject.accountId);
+    await forceRevocationDeadline(roomId);
     await runDurableObjectAlarm(roomStub(roomId));
 
     // The alarm closes the socket and evicts from LiveKit asynchronously, so
@@ -1193,6 +1242,7 @@ describe('revocation closes live signaling sockets', () => {
     const survivor = closeSignal(survivorWs);
 
     await changeAccount('revoke-all', target.accountId);
+    await forceRevocationDeadline(roomId);
     await runDurableObjectAlarm(roomStub(roomId));
 
     await expectClosed(revoked);
@@ -1967,6 +2017,15 @@ describe('revocation check runs without being triggered by hand', () => {
     const subject = await bootstrapLocalSession('revoke-self-scheduled');
     expect((await writeRoom(roomId, subject)).status).toBe(200);
 
+    await runInDurableObject(env.ROOMS.get(env.ROOMS.idFromName(roomId)), async (instance: RoomDO) => {
+      const internal = instance as unknown as {
+        checkIntervalMs: number;
+        ctx: DurableObjectState;
+      };
+      internal.checkIntervalMs = 100;
+      await internal.ctx.storage.deleteAlarm();
+    });
+
     const res = await authenticatedFetch(`/signaling?room=${roomId}`, subject, {
       headers: { Upgrade: 'websocket' },
     });
@@ -1992,8 +2051,8 @@ describe('revocation check runs without being triggered by hand', () => {
         body: JSON.stringify({ accountId: subject.accountId, actor: 'test-operator', reason: 'automated test' }),
       });
 
-    // Deliberately no runDurableObjectAlarm(): this proves the object
-    // re-schedules and fires its own check.
+    // Deliberately no runDurableObjectAlarm(): this proves the signaling
+    // upgrade schedules the check and workerd fires it.
     expect(await closed).toBe(4401);
   });
 });
@@ -4240,7 +4299,11 @@ describe('server-side y-websocket sync', () => {
   }
 
   async function openSocket(roomId: string): Promise<WebSocket> {
-    const res = await authenticatedFetch(`/signaling?room=${roomId}`, session, {
+    return openSocketAs(session, roomId);
+  }
+
+  async function openSocketAs(who: LocalAuthSession, roomId: string): Promise<WebSocket> {
+    const res = await authenticatedFetch(`/signaling?room=${roomId}`, who, {
       headers: { Upgrade: 'websocket' },
     });
     expect(res.status).toBe(101);
@@ -4340,6 +4403,43 @@ describe('server-side y-websocket sync', () => {
     joiner.close();
   });
 
+  it('hydrates a viewer and does not relay or persist its update', async () => {
+    const roomId = 'viewer-server-sync-room';
+    const viewerSession = await bootstrapLocalSession('viewer-server-sync-viewer');
+    await writeBoardAndClose(roomId, board);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, viewerSession, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Viewer' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${viewerSession.accountId}`,
+      session,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'viewer' }),
+      },
+    )).status).toBe(200);
+
+    const owner = await openSocket(roomId);
+    const ownerMessages: ArrayBuffer[] = [];
+    owner.addEventListener('message', (event: MessageEvent) => {
+      if (event.data instanceof ArrayBuffer) ownerMessages.push(event.data);
+    });
+
+    const viewer = await openSocketAs(viewerSession, roomId);
+    viewer.send(syncStepOneFrame());
+    expect(boardFromReply(await nextBinaryMessage(viewer))).toEqual(board);
+    viewer.send(boardUpdateFrame([{ id: 'viewer-write', type: 'line', x: 1, y: 2 }]));
+    await settle();
+    expect(ownerMessages).toHaveLength(0);
+    viewer.close();
+    owner.close();
+    await settle();
+    expect(await storedBoard(roomId)).toEqual(board);
+  });
+
   it('writes the board to storage when the last socket closes', async () => {
     const roomId = 'persist-sync-room';
     await writeBoardAndClose(roomId, board);
@@ -4374,6 +4474,67 @@ describe('server-side y-websocket sync', () => {
     expect(await storedBoard(roomId)).toEqual(board);
 
     peer.close();
+  });
+
+  it('schedules the final edit for durable storage within the flush interval', async () => {
+    const roomId = 'final-edit-deadline-room';
+    const finalElement: BoardElement = { id: 'e2', type: 'ellipse', x: 30, y: 40 };
+    const peer = await connect(roomId);
+
+    peer.send(boardUpdateFrame(board));
+    await settle();
+    expect(await storedBoard(roomId)).toEqual(board);
+
+    await runInDurableObject(roomStub(roomId), async (instance: RoomDO) => {
+      (instance as unknown as { checkIntervalMs: number }).checkIntervalMs = 30_000;
+      await (instance as unknown as { ctx: DurableObjectState }).ctx.storage.deleteAlarm();
+    });
+    peer.send(boardUpdateFrame([finalElement]));
+    await expect.poll(
+      () => storedBoard(roomId),
+      { timeout: 3_500, interval: 100 },
+    ).toEqual(expect.arrayContaining([finalElement]));
+    peer.close();
+  });
+
+  it('retries the SQL scene projection after the durable snapshot succeeds', async () => {
+    const roomId = 'projection-retry-room';
+    const peer = await connect(roomId);
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      instance.db.exec(`
+        CREATE TRIGGER fail_room_projection
+        BEFORE UPDATE OF elements ON rooms
+        WHEN NEW.room_id = '${roomId}'
+        BEGIN
+          SELECT RAISE(FAIL, 'projection failed');
+        END
+      `);
+    });
+
+    peer.send(boardUpdateFrame(board));
+    await settle();
+    expect(await storedBoard(roomId)).toEqual(board);
+    expect(await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      const row = instance.db.prepare(
+        `SELECT elements FROM rooms WHERE room_id = ?`,
+      ).get(roomId) as { elements: string };
+      return JSON.parse(row.elements);
+    })).toEqual([]);
+
+    peer.close();
+    await settle();
+    await evictDurableObject(roomStub(roomId));
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      instance.db.exec(`DROP TRIGGER fail_room_projection`);
+    });
+    await runDurableObjectAlarm(roomStub(roomId));
+    expect(await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      const row = instance.db.prepare(
+        `SELECT elements FROM rooms WHERE room_id = ?`,
+      ).get(roomId) as { elements: string };
+      return JSON.parse(row.elements);
+    })).toEqual(board);
+
   });
 
   it('seeds the document from a board stored before this change', async () => {
@@ -4493,20 +4654,4 @@ describe('server-side y-websocket sync', () => {
     joiner.close();
   });
 
-  it('keeps the stored row truthful with no client upload', async () => {
-    const roomId = 'sql-truthful-room';
-
-    const peer = await connect(roomId);
-    peer.send(boardUpdateFrame(board));
-    await settle();
-    await runDurableObjectAlarm(roomStub(roomId));
-
-    // The read path is still served from the row, so the object has to keep it
-    // current now that no client posts the board any more.
-    const res = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session);
-    expect(res.status).toBe(200);
-    expect((await res.json() as { elements: unknown[] }).elements).toEqual(board);
-
-    peer.close();
-  });
 });

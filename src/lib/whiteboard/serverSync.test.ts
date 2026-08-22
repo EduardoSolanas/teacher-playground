@@ -72,6 +72,45 @@ describe('serverSync', () => {
       expect(item).toEqual({ name: 'item1' });
     });
 
+    it('read-only mode answers sync step 1 without requesting viewer state', () => {
+      const serverDoc = new Y.Doc();
+      serverDoc.getArray('items').push([{ name: 'server-item' }]);
+      const clientDoc = new Y.Doc();
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, MESSAGE_SYNC);
+      syncProtocol.writeSyncStep1(encoder, clientDoc);
+
+      const replies = handleSyncFrame(
+        serverDoc,
+        encoding.toUint8Array(encoder),
+        undefined,
+        { readOnly: true },
+      );
+
+      expect(replies).toHaveLength(1);
+      const decoder = decoding.createDecoder(replies[0]);
+      expect(decoding.readVarUint(decoder)).toBe(MESSAGE_SYNC);
+      syncProtocol.readSyncMessage(decoder, encoding.createEncoder(), clientDoc, undefined);
+      expect(clientDoc.getArray('items').toArray()).toEqual([{ name: 'server-item' }]);
+    });
+
+    it('read-only mode rejects sync updates without mutating the server doc', () => {
+      const serverDoc = new Y.Doc();
+      const viewerDoc = new Y.Doc();
+      viewerDoc.getArray('items').push([{ name: 'viewer-write' }]);
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, MESSAGE_SYNC);
+      syncProtocol.writeUpdate(encoder, Y.encodeStateAsUpdate(viewerDoc));
+
+      expect(handleSyncFrame(
+        serverDoc,
+        encoding.toUint8Array(encoder),
+        undefined,
+        { readOnly: true },
+      )).toEqual([]);
+      expect(serverDoc.getArray('items').toArray()).toEqual([]);
+    });
+
     it('a step 1 also yields the server own step 1, so the sender answers with what the server lacks', () => {
       const serverDoc = new Y.Doc();
       serverDoc.getArray('data').push([{ x: 42 }]);

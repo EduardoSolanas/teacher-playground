@@ -215,21 +215,24 @@ export function deleteRoomScopedData(db: RoomDatabase, roomId: string): void {
 export function purgeExpiredRoomsAndTombstones(
   db: RoomDatabase,
   now = Date.now(),
-): void {
+): string[] {
   const idleCutoff = now - ROOM_IDLE_TTL_MS;
   const staleRooms = db
     .prepare(`SELECT room_id AS roomId FROM rooms WHERE updated_at <= ?`)
     .all(idleCutoff) as Array<{ roomId: string }>;
   const store = createSqlTombstoneStore(db);
+  const purgedRoomIds: string[] = [];
   for (const { roomId } of staleRooms) {
     deleteRoomScopedData(db, roomId);
     if (!store.has(roomId)) {
       store.add(roomId);
     }
+    purgedRoomIds.push(roomId);
   }
   db.prepare(`DELETE FROM room_tombstones WHERE deleted_at <= ?`).run(
     now - TOMBSTONE_TTL_MS,
   );
+  return purgedRoomIds;
 }
 
 /**

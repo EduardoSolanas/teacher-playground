@@ -84,11 +84,9 @@ describe('createYWebsocketProvider', () => {
     destroyProvider('connect-room');
   });
   /**
-   * The Worker relays bytes between sockets and keeps no server-side Y.Doc, so
-   * nobody asks a late joiner for its baseline state. Without a periodic
-   * re-sync the first peer's updates arrive with a causal gap and Yjs parks
-   * them in pendingStructs forever, which is how a peer's cursor and elements
-   * silently never reach the host.
+   * The room owns the Y.Doc, but signaling may shed bursts above its budget.
+   * Periodic sync lets a client repair an update the server missed during that
+   * window, so the recovery mechanism must stay enabled.
    */
   it('re-sends sync step 1 on an interval so a late joiner cannot leave peers with a causal gap', () => {
     vi.stubGlobal('window', {

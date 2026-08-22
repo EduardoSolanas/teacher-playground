@@ -49,10 +49,11 @@ describe('purgeExpiredRoomsAndTombstones (SEC-007)', () => {
     insertRoom('stale', now - ROOM_IDLE_TTL_MS);
     expect(scopedRowCount('stale')).toBeGreaterThan(0);
 
-    purgeExpiredRoomsAndTombstones(db, now);
+    const purged = purgeExpiredRoomsAndTombstones(db, now);
 
     expect(scopedRowCount('stale')).toBe(0);
     expect(createSqlTombstoneStore(db).has('stale')).toBe(true);
+    expect(purged).toEqual(['stale']);
   });
 
   it('keeps a fresh room', () => {
@@ -60,10 +61,11 @@ describe('purgeExpiredRoomsAndTombstones (SEC-007)', () => {
     insertRoom('fresh', now - ROOM_IDLE_TTL_MS + 1);
     const before = scopedRowCount('fresh');
 
-    purgeExpiredRoomsAndTombstones(db, now);
+    const purged = purgeExpiredRoomsAndTombstones(db, now);
 
     expect(scopedRowCount('fresh')).toBe(before);
     expect(createSqlTombstoneStore(db).has('fresh')).toBe(false);
+    expect(purged).toEqual([]);
   });
 
   it('removes an old tombstone so recreate can proceed', () => {

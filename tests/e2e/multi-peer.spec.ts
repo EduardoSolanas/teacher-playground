@@ -73,6 +73,105 @@ test.describe('Multi-peer collaboration', () => {
     }
   });
 
+  test('recovers a Yjs update that signaling sheds', async ({ page, browser }) => {
+    const roomId = await createRoomWithMaxUsers(page, 'ShedHost', 2);
+    const peerContext = await newAuthenticatedContext(browser);
+    const peerPage = await peerContext.newPage();
+    try {
+      await joinExistingRoom(peerPage, roomId, 'ShedPeer');
+      await expectWaiting(peerPage);
+      await approveFirstWaitingPeer(page);
+      await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+      await expect.poll(
+        async () => peerPage.evaluate(() => {
+          const socket = (window as any).__whiteboardCollab?.provider?.ws as WebSocket | undefined;
+          return socket?.readyState === WebSocket.OPEN;
+        }),
+        { timeout: 15000 },
+      ).toBe(true);
+
+      await expect.poll(
+        async () => peerPage.evaluate(() => Boolean((window as any).__debugExcalidrawApi)),
+        { timeout: 15000 },
+      ).toBe(true);
+      // Let the initial remote-scene hydration finish before the local update.
+      await peerPage.waitForTimeout(400);
+
+      // The Worker relays at most 60 messages per account per second and sheds
+      // the rest. Start just after a periodic sync so the next repair is still
+      // about three seconds away, then prove a probe is shed before updating.
+      const probeWasRelayed = await peerPage.evaluate(async (element) => {
+        const socket = (window as any).__whiteboardCollab?.provider?.ws as WebSocket | undefined;
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          throw new Error('expected the peer y-websocket to be open');
+        }
+        const originalSend = socket.send.bind(socket);
+        await new Promise<void>((resolve, reject) => {
+          const timeout = window.setTimeout(
+            () => reject(new Error('periodic sync step 1 did not fire')),
+            4_000,
+          );
+          socket.send = ((data: string | ArrayBufferLike | Blob | ArrayBufferView) => {
+            let bytes: Uint8Array | null = null;
+            if (data instanceof ArrayBuffer) bytes = new Uint8Array(data);
+            else if (ArrayBuffer.isView(data)) {
+              bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+            }
+            if (bytes?.[0] === 0 && bytes?.[1] === 0) {
+              window.clearTimeout(timeout);
+              resolve();
+            }
+            (originalSend as (value: typeof data) => void)(data);
+          }) as typeof socket.send;
+        });
+
+        for (let index = 0; index < 120; index += 1) {
+          socket.send(JSON.stringify({ type: 'publish', topic: 'room', data: `shed-${index}` }));
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+
+        const probe = `shed-probe-${crypto.randomUUID()}`;
+        const relayed = await new Promise<boolean>((resolve) => {
+          const timeout = window.setTimeout(() => {
+            socket.removeEventListener('message', onMessage);
+            resolve(false);
+          }, 250);
+          const onMessage = (event: MessageEvent) => {
+            if (typeof event.data !== 'string') return;
+            try {
+              const parsed = JSON.parse(event.data) as { data?: unknown };
+              if (parsed.data !== probe) return;
+              window.clearTimeout(timeout);
+              socket.removeEventListener('message', onMessage);
+              resolve(true);
+            } catch {
+              // Non-JSON frames belong to y-websocket.
+            }
+          };
+          socket.addEventListener('message', onMessage);
+          socket.send(JSON.stringify({ type: 'publish', topic: 'room', data: probe }));
+        });
+
+        const api = (window as any).__debugExcalidrawApi;
+        api.updateScene({
+          elements: [...api.getSceneElements(), element],
+          captureUpdate: 'IMMEDIATELY',
+        });
+        return relayed;
+      }, rectangle('recovered-after-shed-rect-1', 320, 180));
+
+      expect(probeWasRelayed).toBe(false);
+      const shedElementId = 'recovered-after-shed-rect-1';
+
+      await expect.poll(async () => sceneElementIds(peerPage), { timeout: 5000 }).toContain(shedElementId);
+      await page.waitForTimeout(1_000);
+      expect(await sceneElementIds(page)).not.toContain(shedElementId);
+      await expect.poll(async () => sceneElementIds(page), { timeout: 10000 }).toContain(shedElementId);
+    } finally {
+      await peerContext.close();
+    }
+  });
+
   test('both peers append an element at the same time and each ends up with both ids present', async ({
     page,
     browser,

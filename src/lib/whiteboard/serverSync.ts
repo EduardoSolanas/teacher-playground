@@ -20,8 +20,19 @@ export const MESSAGE_SYNC = 0;
  * Never throws. The caller has already relayed these bytes to the peers, and a
  * frame the server cannot parse must not cost them that relay.
  */
-export function handleSyncFrame(doc: Y.Doc, bytes: Uint8Array, origin?: unknown): Uint8Array[] {
+export function handleSyncFrame(
+  doc: Y.Doc,
+  bytes: Uint8Array,
+  origin?: unknown,
+  options: { readOnly?: boolean } = {},
+): Uint8Array[] {
   try {
+    if (options.readOnly) {
+      const typeDecoder = decoding.createDecoder(bytes);
+      if (decoding.readVarUint(typeDecoder) !== MESSAGE_SYNC) return [];
+      if (decoding.readVarUint(typeDecoder) !== syncProtocol.messageYjsSyncStep1) return [];
+    }
+
     const decoder = decoding.createDecoder(bytes);
     if (decoding.readVarUint(decoder) !== MESSAGE_SYNC) return [];
 
@@ -34,7 +45,7 @@ export function handleSyncFrame(doc: Y.Doc, bytes: Uint8Array, origin?: unknown)
     if (encoding.length(replyEncoder) > 1) {
       replies.push(encoding.toUint8Array(replyEncoder));
     }
-    if (syncMessageType === syncProtocol.messageYjsSyncStep1) {
+    if (syncMessageType === syncProtocol.messageYjsSyncStep1 && !options.readOnly) {
       const stepOneEncoder = encoding.createEncoder();
       encoding.writeVarUint(stepOneEncoder, MESSAGE_SYNC);
       syncProtocol.writeSyncStep1(stepOneEncoder, doc);

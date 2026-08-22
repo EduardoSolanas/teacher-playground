@@ -1,6 +1,9 @@
 import { beforeEach, describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:workers';
-import { runInDurableObject } from 'cloudflare:test';
+import { runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
+import * as Y from 'yjs';
+import * as encoding from 'lib0/encoding';
+import * as syncProtocol from 'y-protocols/sync';
 import type { RoomDO } from './RoomDO';
 import { getIdentityObject, type IdentityDO } from './IdentityDO';
 import {
@@ -9,6 +12,10 @@ import {
   type LocalAuthSession,
 } from '../test/workerAuth';
 import { DESTRUCTIVE_FRESH_MS } from '../lib/identity/sessionStore';
+import { replaceSharedElements } from '../lib/whiteboard/yjsDoc';
+import { ROOM_IDLE_TTL_MS } from '../lib/whiteboard/roomSchema';
+
+const SOCKET_EVENT_DEADLINE_MS = 15_000;
 
 const ROOM_SCOPED_TABLES = [
   'rooms',
@@ -45,6 +52,82 @@ function seedLeftoverTables(instance: RoomDO, roomId: string, now = Date.now()) 
   instance.db.prepare(
     `INSERT INTO kicked_peers (room_id, peer_id, kicked_at) VALUES (?, 'kick-1', ?)`,
   ).run(roomId, now);
+}
+
+function boardUpdateFrame(): Uint8Array {
+  const doc = new Y.Doc();
+  replaceSharedElements(doc, doc.getArray('elements'), [
+    { id: 'delete-me', type: 'rectangle', x: 10, y: 20 },
+  ]);
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, 0);
+  syncProtocol.writeUpdate(encoder, Y.encodeStateAsUpdate(doc));
+  return encoding.toUint8Array(encoder);
+}
+
+function syncStepOneFrame(): Uint8Array {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, 0);
+  syncProtocol.writeSyncStep1(encoder, new Y.Doc());
+  return encoding.toUint8Array(encoder);
+}
+
+function nextBinaryMessage(ws: WebSocket): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const handleMessage = (event: MessageEvent) => {
+      if (!(event.data instanceof ArrayBuffer)) return;
+      clearTimeout(timer);
+      ws.removeEventListener('message', handleMessage);
+      resolve(event.data);
+    };
+    timer = setTimeout(() => {
+      ws.removeEventListener('message', handleMessage);
+      reject(new Error('timed out waiting for binary frame'));
+    }, SOCKET_EVENT_DEADLINE_MS);
+    ws.addEventListener('message', handleMessage);
+  });
+}
+
+async function openRoomSocket(owner: LocalAuthSession, roomId: string): Promise<WebSocket> {
+  const upgrade = await authenticatedFetch(`/signaling?room=${roomId}`, owner, {
+    headers: { Upgrade: 'websocket' },
+  });
+  expect(upgrade.status).toBe(101);
+  const ws = upgrade.webSocket;
+  if (!ws) throw new Error('no webSocket on response');
+  ws.accept();
+  ws.send(Uint8Array.from(boardUpdateFrame()).buffer);
+  const synced = nextBinaryMessage(ws);
+  ws.send(Uint8Array.from(syncStepOneFrame()).buffer);
+  await synced;
+  return ws;
+}
+
+function waitForClose(ws: WebSocket): Promise<void> {
+  if (ws.readyState === WebSocket.CLOSED) return Promise.resolve();
+  return new Promise((resolve) => ws.addEventListener('close', () => resolve(), { once: true }));
+}
+
+async function assertBoardStateDeleted(roomId: string): Promise<void> {
+  await runInDurableObject(roomStub(roomId), async (instance: RoomDO) => {
+    expect(scopedCounts(instance, roomId)).toEqual({
+      rooms: 0,
+      room_members: 0,
+      room_presence: 0,
+      waiting_peers: 0,
+      kicked_peers: 0,
+    });
+    expect(
+      instance.db.prepare(`SELECT 1 FROM room_tombstones WHERE room_id = ?`).get(roomId),
+    ).toBeDefined();
+    expect(
+      await (instance as unknown as { ctx: DurableObjectState }).ctx.storage.get(`ydoc:${roomId}`),
+    ).toBeUndefined();
+    expect(
+      await (instance as unknown as { ctx: DurableObjectState }).ctx.storage.get(`ydoc-projection:${roomId}`),
+    ).toBeUndefined();
+  });
 }
 
 describe('atomic room deletion in RoomDO', () => {
@@ -104,6 +187,48 @@ describe('atomic room deletion in RoomDO', () => {
 
     expect(closed.done).toBe(true);
     expect(closed.code).toBe(4404);
+  });
+
+  it('deletes the cached and stored board before the delete-triggered close can flush it', async () => {
+    const roomId = `delete-board-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const ws = await openRoomSocket(owner, roomId);
+    const closed = waitForClose(ws);
+    const del = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'DELETE',
+    });
+    expect(del.status).toBe(200);
+    await closed;
+
+    await assertBoardStateDeleted(roomId);
+    await runDurableObjectAlarm(roomStub(roomId));
+    await assertBoardStateDeleted(roomId);
+  });
+
+  it('does not let a frame already in flight recreate board storage after deletion', async () => {
+    const roomId = `delete-in-flight-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const ws = await openRoomSocket(owner, roomId);
+    const closed = waitForClose(ws);
+    ws.send(Uint8Array.from(boardUpdateFrame()).buffer);
+    const del = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'DELETE',
+    });
+    expect(del.status).toBe(200);
+    await closed;
+
+    await runDurableObjectAlarm(roomStub(roomId));
+    await assertBoardStateDeleted(roomId);
   });
 
   it('rejects recreate after delete so old grants cannot be restored', async () => {
@@ -194,6 +319,30 @@ describe('RoomDO account erasure', () => {
         kicked_peers: 0,
       });
     });
+  });
+
+  it('deletes an owned room board before erasure closes the live socket', async () => {
+    const owner = await bootstrapLocalSession(`erase-board-owner-${crypto.randomUUID()}`);
+    const roomId = `erase-board-owner-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const ws = await openRoomSocket(owner, roomId);
+    const closed = waitForClose(ws);
+    const erased = await roomStub(roomId).fetch(
+      new Request(`https://room/room/erasure?roomId=${encodeURIComponent(roomId)}&accountId=${encodeURIComponent(owner.accountId)}`, {
+        method: 'POST',
+      }),
+    );
+    expect(erased.status).toBe(200);
+    await closed;
+
+    await assertBoardStateDeleted(roomId);
+    await runDurableObjectAlarm(roomStub(roomId));
+    await assertBoardStateDeleted(roomId);
   });
 
   it('removes a non-owner membership and leaves another account in another room', async () => {
@@ -310,6 +459,35 @@ describe('RoomDO account erasure', () => {
         role: 'editor',
       });
     });
+  });
+});
+
+describe('idle room board purge', () => {
+  it('deletes the cached and stored board when the idle TTL creates a tombstone', async () => {
+    const owner = await bootstrapLocalSession(`idle-board-owner-${crypto.randomUUID()}`);
+    const roomId = `idle-board-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const ws = await openRoomSocket(owner, roomId);
+    const closed = waitForClose(ws);
+    ws.close();
+    await closed;
+    await runInDurableObject(roomStub(roomId), async (instance: RoomDO) => {
+      expect(
+        await (instance as unknown as { ctx: DurableObjectState }).ctx.storage.get(`ydoc:${roomId}`),
+      ).toBeDefined();
+      instance.db.prepare(`UPDATE rooms SET updated_at = ? WHERE room_id = ?`)
+        .run(Date.now() - ROOM_IDLE_TTL_MS - 60_000, roomId);
+    });
+
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => instance.alarm());
+    await assertBoardStateDeleted(roomId);
+    await runDurableObjectAlarm(roomStub(roomId));
+    await assertBoardStateDeleted(roomId);
   });
 });
 

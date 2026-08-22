@@ -27,12 +27,10 @@ function createServerProvider(): ProviderLike {
 }
 
 /**
- * The Worker relays raw bytes between sockets and holds no server-side Y.Doc,
- * so a client that connects first sends its sync step 1 into an empty room and
- * nobody ever asks the later joiner for its baseline. The joiner's incremental
- * updates then reference ops the first client never saw, and Yjs parks them in
- * `pendingStructs` instead of applying them — the peer's cursor and elements
- * simply never appear. Re-issuing sync step 1 on an interval closes that gap.
+ * The room's Durable Object owns the authoritative Y.Doc, but signaling can
+ * shed bursts above its per-account budget. Re-issuing sync step 1 lets the
+ * client send any update the server missed during that shed window. Three
+ * seconds bounds the repair delay without adding traffic to the live path.
  */
 const RESYNC_INTERVAL_MS = 3_000;
 

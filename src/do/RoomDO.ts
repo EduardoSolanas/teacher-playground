@@ -207,6 +207,12 @@ export class RoomDO extends DurableObject {
    */
   private readonly dirtyRooms = new Set<string>();
 
+  /** Rooms whose durable Yjs snapshot still needs to be projected into SQL. */
+  private readonly projectionDirtyRooms = new Set<string>();
+
+  /** Last live-account check; earlier board alarms must not multiply identity traffic. */
+  private lastRevocationCheckAt = 0;
+
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
     this.roomEnv = env as RoomEnv;
@@ -533,8 +539,11 @@ export class RoomDO extends DurableObject {
           });
         }
         if (method === 'DELETE') {
-          return handleRoomDelete(this.db, roomId, request).then((response) => {
-            if (response.ok) this.deleteSockets();
+          return handleRoomDelete(this.db, roomId, request).then(async (response) => {
+            if (response.ok) {
+              await this.deleteBoardState(roomId);
+              this.deleteSockets();
+            }
             return response;
           });
         }
@@ -544,10 +553,14 @@ export class RoomDO extends DurableObject {
           const accountId = url.searchParams.get('accountId');
           if (!accountId) return Promise.resolve(forbidden('Account required'));
           const membership = getMembership(this.db, roomId, accountId);
-          return handleRoomAccountErasure(this.db, roomId, accountId).then((response) => {
+          return handleRoomAccountErasure(this.db, roomId, accountId).then(async (response) => {
             if (response.ok) {
-              if (membership?.role === 'owner') this.deleteSockets();
-              else this.closeAccountSockets(accountId, roomId);
+              if (membership?.role === 'owner') {
+                await this.deleteBoardState(roomId);
+                this.deleteSockets();
+              } else {
+                this.closeAccountSockets(accountId, roomId);
+              }
             }
             return response;
           });
@@ -707,7 +720,10 @@ export class RoomDO extends DurableObject {
   private async flushIfDue(): Promise<void> {
     if (this.dirtyRooms.size === 0) return;
     const now = Date.now();
-    if (now - this.lastFlushAt < RoomDO.FLUSH_INTERVAL_MS) return;
+    if (now - this.lastFlushAt < RoomDO.FLUSH_INTERVAL_MS) {
+      await this.scheduleAlarmNoLaterThan(this.lastFlushAt + RoomDO.FLUSH_INTERVAL_MS);
+      return;
+    }
     this.lastFlushAt = now;
     await this.flushDirtyDocs();
   }
@@ -783,17 +799,38 @@ export class RoomDO extends DurableObject {
       if (!body || typeof body !== 'object') return;
       const elements = body.elements;
       if (!Array.isArray(elements) || elements.length === 0) return;
-      this.docs.delete(roomId);
-      this.dirtyRooms.delete(roomId);
-      await this.ctx.storage.delete(`ydoc:${roomId}`);
+      await this.deleteBoardState(roomId);
     } catch {
       // A body that will not parse was refused by the handler anyway.
+    }
+  }
+
+  /** Removes every in-memory and durable copy of a room's collaborative board. */
+  private async deleteBoardState(roomId: string): Promise<void> {
+    this.docs.delete(roomId);
+    this.dirtyRooms.delete(roomId);
+    this.projectionDirtyRooms.delete(roomId);
+    await this.ctx.storage.delete([
+      `ydoc:${roomId}`,
+      `ydoc-projection:${roomId}`,
+    ]);
+  }
+
+  /** Rehydrates projection retry markers that survived a Durable Object eviction. */
+  private async restoreProjectionRetries(): Promise<void> {
+    const stored = await this.ctx.storage.list({ prefix: 'ydoc-projection:' });
+    for (const key of stored.keys()) {
+      this.projectionDirtyRooms.add(key.slice('ydoc-projection:'.length));
     }
   }
 
   /** Writes every document that has changed since the last flush. */
   private async flushDirtyDocs(): Promise<void> {
     for (const roomId of this.dirtyRooms) {
+      if (!roomExists(this.db, roomId)) {
+        await this.deleteBoardState(roomId);
+        continue;
+      }
       const doc = this.docs.get(roomId);
       if (!doc) {
         this.dirtyRooms.delete(roomId);
@@ -809,8 +846,17 @@ export class RoomDO extends DurableObject {
       }
 
       try {
-        await this.ctx.storage.put(`ydoc:${roomId}`, snapshot);
+        await this.ctx.storage.put({
+          [`ydoc:${roomId}`]: snapshot,
+          [`ydoc-projection:${roomId}`]: true,
+        });
+        if (!roomExists(this.db, roomId)) {
+          await this.deleteBoardState(roomId);
+          continue;
+        }
         this.dirtyRooms.delete(roomId);
+        this.projectionDirtyRooms.add(roomId);
+        this.lastFlushAt = Date.now();
       } catch (error) {
         logBoardSnapshot({
           roomId,
@@ -823,6 +869,15 @@ export class RoomDO extends DurableObject {
         continue;
       }
 
+    }
+
+    for (const roomId of this.projectionDirtyRooms) {
+      if (!roomExists(this.db, roomId)) {
+        await this.deleteBoardState(roomId);
+        continue;
+      }
+      const doc = this.docs.get(roomId) ?? await this.getRoomDoc(roomId);
+
       try {
         /*
          * The stored row is no longer written by any client, and the read path
@@ -834,10 +889,16 @@ export class RoomDO extends DurableObject {
         this.db.prepare(
           `UPDATE rooms SET elements = ?, updated_at = ? WHERE room_id = ?`,
         ).run(JSON.stringify(elements), Date.now(), roomId);
+        await this.ctx.storage.delete(`ydoc-projection:${roomId}`);
+        this.projectionDirtyRooms.delete(roomId);
       } catch {
         // The Yjs snapshot above is the durable copy and it is already written;
         // the row is a convenience for the read path, not the record.
       }
+    }
+
+    if (this.dirtyRooms.size > 0 || this.projectionDirtyRooms.size > 0) {
+      await this.scheduleAlarmNoLaterThan(Date.now() + RoomDO.FLUSH_INTERVAL_MS);
     }
   }
 
@@ -945,10 +1006,18 @@ export class RoomDO extends DurableObject {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  /** Keeps exactly one pending alarm while any socket is open. */
+  /** Keeps the pending alarm at the earliest durability or revocation deadline. */
+  private async scheduleAlarmNoLaterThan(deadline: number): Promise<void> {
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > deadline) {
+      await this.ctx.storage.setAlarm(deadline);
+    }
+  }
+
+  /** Keeps a revocation alarm while any socket is open. */
   private async scheduleRevocationCheck(): Promise<void> {
-    if (await this.ctx.storage.getAlarm() !== null) return;
-    await this.ctx.storage.setAlarm(Date.now() + this.checkIntervalMs);
+    if (this.lastRevocationCheckAt === 0) this.lastRevocationCheckAt = Date.now();
+    await this.scheduleAlarmNoLaterThan(this.lastRevocationCheckAt + this.checkIntervalMs);
   }
 
   /**
@@ -957,11 +1026,22 @@ export class RoomDO extends DurableObject {
    * for as long as the socket stayed open.
    */
   async alarm(): Promise<void> {
+    // Workerd may still expose the alarm currently being delivered through
+    // getAlarm(). Clear that consumed value before retry scheduling, or a
+    // failed projection can leave an already-due alarm and re-enter here.
+    //
+    // Alarm rescheduling invariant: after consuming the fired deadline, every
+    // path that leaves an OPEN socket must arrange the next alarm; no-socket
+    // and all-closed returns below are deliberate.
+    await this.ctx.storage.deleteAlarm();
     // Before the early return below: the alarm is the only beat that still
     // ticks once every socket has gone, so a board must be written here.
+    await this.restoreProjectionRetries();
     await this.flushDirtyDocs();
 
-    const sockets = this.ctx.getWebSockets();
+    const sockets = this.ctx.getWebSockets().filter(
+      (socket) => socket.readyState === WebSocket.OPEN,
+    );
     const now = Date.now();
     const roomIds = new Set<string>();
     for (const row of this.db.prepare(
@@ -977,7 +1057,10 @@ export class RoomDO extends DurableObject {
         // Attachment may be missing; room ids still come from the rooms table.
       }
     }
-    purgeExpiredRoomsAndTombstones(this.db, now);
+    const purgedRoomIds = purgeExpiredRoomsAndTombstones(this.db, now);
+    for (const roomId of purgedRoomIds) {
+      await this.deleteBoardState(roomId);
+    }
     for (const roomId of roomIds) {
       purgeExpiredGrants(this.db, roomId, now);
       purgeExpiredRoomLifecycle(this.db, roomId, now);
@@ -986,7 +1069,17 @@ export class RoomDO extends DurableObject {
       // where that cursor finally goes.
       this.sweepDepartedCursors(roomId);
     }
+    if (this.dirtyRooms.size > 0 || this.projectionDirtyRooms.size > 0) {
+      await this.scheduleAlarmNoLaterThan(now + RoomDO.FLUSH_INTERVAL_MS);
+    }
     if (sockets.length === 0) return;
+
+    const nextRevocationCheckAt = this.lastRevocationCheckAt + this.checkIntervalMs;
+    if (this.lastRevocationCheckAt > 0 && now < nextRevocationCheckAt) {
+      await this.scheduleAlarmNoLaterThan(nextRevocationCheckAt);
+      return;
+    }
+    this.lastRevocationCheckAt = now;
 
     const identities = new Map<WebSocket, SocketIdentity>();
     for (const socket of sockets) {
@@ -1021,7 +1114,7 @@ export class RoomDO extends DurableObject {
     } catch {
       // Leave sockets open and retry: a transient identity failure must not
       // disconnect an entire classroom.
-      await this.ctx.storage.setAlarm(Date.now() + this.checkIntervalMs);
+      await this.scheduleAlarmNoLaterThan(Date.now() + this.checkIntervalMs);
       return;
     }
 
@@ -1040,8 +1133,8 @@ export class RoomDO extends DurableObject {
       }
     }
 
-    if (this.ctx.getWebSockets().length > 0) {
-      await this.ctx.storage.setAlarm(Date.now() + this.checkIntervalMs);
+    if (this.ctx.getWebSockets().some((socket) => socket.readyState === WebSocket.OPEN)) {
+      await this.scheduleAlarmNoLaterThan(Date.now() + this.checkIntervalMs);
     }
   }
 
@@ -1140,11 +1233,21 @@ export class RoomDO extends DurableObject {
     // y-websocket sends Yjs updates as binary; relay to other peers, not back to sender.
     if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
       const role = getGrantRole(this.db, attachment.roomId, attachment.accountId);
-      if (!canWriteBoard(role)) return;
-
       const bytes = raw instanceof ArrayBuffer
         ? new Uint8Array(raw)
         : new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+
+      if (!canWriteBoard(role)) {
+        try {
+          const doc = await this.getRoomDoc(attachment.roomId);
+          const replies = handleSyncFrame(doc, bytes, ws, { readOnly: true });
+          for (const reply of replies) ws.send(reply);
+        } catch {
+          // A malformed viewer handshake is ignored like any other bad sync frame.
+        }
+        return;
+      }
+
       for (const peer of this.ctx.getWebSockets()) {
         if (peer === ws) continue;
         try {

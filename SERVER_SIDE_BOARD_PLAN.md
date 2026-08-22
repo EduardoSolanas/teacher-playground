@@ -5,7 +5,8 @@ the system does, what is deliberately still open, and what the next implementer
 should do about it. Read the whole thing before touching `RoomDO`; several of
 the odd-looking decisions here are load-bearing and are explained nowhere else.
 
-**Shipped:** `befdfc5`, `2bb52c5`, `4e3c41d`. **Open:** tasks 1, 3, 5, 6 below.
+**Shipped baseline:** `befdfc5`, `2bb52c5`, `4e3c41d`. The corrective tasks
+that were open in this handover are now implemented in the main worktree.
 
 ---
 
@@ -48,29 +49,41 @@ it is the opt-in local cache and shares only a name.
 ### The path a stroke takes
 
 1. A peer draws; its y-websocket provider sends a binary sync frame.
-2. `RoomDO.webSocketMessage` (`src/do/RoomDO.ts:1079`) **relays the bytes to the
+2. `RoomDO.webSocketMessage` (`src/do/RoomDO.ts:1169`) **relays the bytes to the
    other sockets first**, unchanged from before this work.
 3. It then applies the frame to the room's `Y.Doc` via `handleSyncFrame`
    (`src/lib/whiteboard/serverSync.ts:23`) and answers the sender.
-4. Applying it marks the room dirty. Nothing is written yet.
+4. Applying it marks the room dirty and moves the single DO alarm earlier when
+   needed, so the final accepted edit has a 3s durability deadline.
 5. A flush writes `ydoc:<roomId>`, then projects the elements into the row.
 
 ### When a flush runs
 
-- **while drawing** — `flushIfDue` (`src/do/RoomDO.ts:707`), at most once every
-  `FLUSH_INTERVAL_MS` (3s). See task 3: this is a throttle, not an idle debounce.
-- **on the alarm** — `alarm()` (`src/do/RoomDO.ts:959`), before its early return.
-- **on the last socket closing** — `webSocketClose` (`src/do/RoomDO.ts:1241`).
+- **while drawing** — `flushIfDue`, at most once every `FLUSH_INTERVAL_MS` (3s).
+- **on the earliest alarm** — the earlier of the dirty-document deadline and
+  the revocation deadline. Early durability alarms skip the identity fetch.
+- **on the last socket closing** — `webSocketClose` (`src/do/RoomDO.ts:1341`).
+
+The durable Yjs write and the SQL projection have separate dirty sets. A
+successful snapshot followed by a failed SQL update therefore retries the
+projection instead of forgetting it. The projection-retry marker is stored
+alongside the Yjs snapshot, so the retry also survives Durable Object eviction.
 
 ### Reading it back
 
 A joining peer gets the board over sync. On a cold frame `getRoomDoc`
-(`src/do/RoomDO.ts:655`) loads the snapshot; if there is none — a room from
-before this work — it seeds the document from `rooms.elements` and marks it
-dirty. Seeding happens **on read**, so no migration can miss a room.
+(`src/do/RoomDO.ts:668`) loads the snapshot; if there is none — a room from
+before this work — it seeds the document from `rooms.elements`. Rehydration and
+seeding deliberately happen before the update listener is installed, so neither
+is itself a dirty edit. Seeding happens **on read**, so no migration can miss a
+room.
 
 `GET /api/whiteboard/room/:id` still serves from the row, which is why the flush
 projects into it.
+
+A viewer may send sync step 1 and receives the authoritative baseline. Its sync
+step 2/update is neither applied to the server document nor relayed. Editors and
+owners retain the bidirectional handshake.
 
 ### File map
 
@@ -114,6 +127,9 @@ something to learn.
    room cannot open empty.
 8. **The stored view is the host's.** A student panning to their own corner must
    not decide where the next person to open the room lands.
+9. **Periodic resync is loss recovery, not the live path.** The normal frame is
+   relayed immediately. The 3s sync step 1 repairs an update deliberately shed
+   by signaling rate control; disabling it reproduced permanent divergence.
 
 ## 4. Corrections to the earlier record
 
@@ -124,106 +140,29 @@ something to learn.
 - **The 3s resync interval is not only a baseline workaround.**
   `decideSignalingAction` **sheds frames** under load (`e67db67`), so resync is
   also the only repair for a dropped update short of a reconnect. The original
-  "what gets deleted" list is wrong about this. See task 6.
+  "what gets deleted" list is wrong about this. See sections 5 and 7.
 - **`flushIfDue` is a throttle, not an idle debounce.** `befdfc5`'s commit
-  message calls it an "on idle" beat. It is not. See task 3.
+  message calls it an "on idle" beat. It is not. See sections 2 and 5.
 - **The viewport was never persisted before this work**, despite a column that
   looked like it was: nothing wrote it after a pan and nothing applied it to the
   canvas. `2bb52c5` wired both ends.
 
-## 5. Remaining work
+## 5. Completed corrective tasks
 
-Ordered by consequence. Red → green → refactor, one at a time, real workerd, no
-mocks. Do not commit red tests. `.playwright-mcp/` and `gemini_improvements.md`
-are the user's — never stage them.
+- **Deletion:** room DELETE, owner erasure and idle TTL purge now remove the
+  cached document, both retry markers and `ydoc:<roomId>` while preserving the
+  tombstone. Worker tests prove a later close/alarm cannot resurrect it.
+- **Durability:** the first dirty transition schedules a flush no later than 3s;
+  revocation checks retain their own cadence; failed SQL projections retry.
+- **Viewers:** read-only sync step 1 is answered, while update/step 2 is rejected
+  before document mutation or relay. A real-socket worker test keeps the owner
+  socket open and proves it neither receives nor persists a valid viewer update.
+- **Loss recovery:** the 3s resync remains. With it disabled, the overload E2E
+  left the host permanently empty; restored, the same test passed.
 
-### Task 1 — deletion must delete the board (do this first)
-
-**Why.** `deleteRoomScopedData` (`src/lib/whiteboard/roomSchema.ts:203`) deletes
-SQL rows only. Nothing removes `ydoc:<roomId>`, the cached `Y.Doc` in
-`RoomDO.docs`, or its entry in `RoomDO.dirtyRooms`. A deleted board is still
-stored, and a later close or alarm flush can write it back out. Owner erasure
-and the idle-TTL purge use the same incomplete path. This is a data-protection
-defect — see `SECURITY_DATA_PROTECTION.md`.
-
-**What.** `handleRoomDelete`, `handleRoomAccountErasure` and
-`purgeExpiredRoomsAndTombstones` must all drop the board state, and it is three
-things that go together: the stored value, `docs.delete(roomId)`,
-`dirtyRooms.delete(roomId)`. The SQL helpers are pure functions over a
-`RoomDatabase` with no access to `ctx.storage` or those maps, so the cleanup
-belongs on `RoomDO` — a private method the routes call after a successful
-delete, and a call from `alarm()` for the rooms the purge tombstoned. Have the
-purge report which ids it tombstoned rather than guessing.
-
-Keep the tombstone (invariant 6).
-
-**Tests** (workers). Write a non-empty board through a socket, then for each of
-delete / owner erasure / idle purge prove: SQL room rows gone,
-`ctx.storage.get('ydoc:<roomId>')` is `undefined`, and a following
-`webSocketClose` or `runDurableObjectAlarm` does not bring it back. That last
-assertion is the one that catches the cached-document half.
-
-### Task 3 — make the durability bound real
-
-**Why.** One edit followed by silence stays dirty until the 30s alarm or socket
-close, because `flushIfDue` only runs when another frame arrives.
-
-**What.** When a room becomes dirty, ensure the object's single alarm is set no
-later than `lastFlushAt + FLUSH_INTERVAL_MS`, taking the earlier of that and any
-pending revocation alarm.
-
-**The trap.** `alarm()` also runs the revocation check, which fetches the
-identity object. Firing every 3s while someone draws turns a 30s identity check
-into a 3s one, per room. Decouple them: record when the identity check last ran
-and skip it inside `alarm()` while its interval has not elapsed. Invariant 5
-applies — the existing revocation tests must stay green.
-
-**Also open:** `flushDirtyDocs` clears the dirty bit after the Yjs `put`, then
-projects into SQL in a separate `try`. A failed projection is forgotten, so the
-read path can stay stale forever. Give it its own retry set, drained next flush.
-
-**Tests** (workers). "Edit once, stay connected, go idle" — the snapshot appears
-within the flush interval with no further frame. Plus one proving the identity
-check does not run on every early alarm.
-
-### Task 5 — a viewer may read the board, never write it
-
-**Why.** `webSocketMessage` applies `canWriteBoard(role)` before the frame is
-parsed, so a granted viewer's sync step 1 is dropped and it never receives the
-server baseline. A viewer sees a board only if an editor happens to broadcast
-while it is watching.
-
-**What.** Parse the y-protocol subtype first. A viewer's **step 1** is answered
-from the server document; its **step 2 / update** is neither applied nor
-relayed, as today. Editors unchanged. `handleSyncFrame` wants a read-only mode,
-not a second copy of the protocol handling.
-
-This is an authorization boundary. Per `AGENTS.md` the negative test comes
-first: a viewer's update reaches neither the document nor another socket. Then
-mutation-test the guard — break it, watch a test fail, restore it — and report
-which mutant and which test.
-
-### Task 6 — retire the resync interval only if the flows survive without it
-
-`RESYNC_INTERVAL_MS` in `src/lib/whiteboard/yWebsocketProvider.ts` is still 3s
-and its comment still says the Worker holds no server-side document, which is
-false. But see the correction in section 4: frames are shed under load, so
-deleting it removes a recovery path the server document does not replace.
-
-Disable it, run the late-join, reload, disconnect/reconnect and multi-peer e2e
-specs, and remove it only if they stay green **and** you can show a shed frame
-still recovers. Otherwise keep it, raise the interval now that a real authority
-can answer a baseline, and rewrite the comment to say what it is for. Report
-which you did and on what evidence.
-
-While in there: `src/components/whiteboard/ExcalidrawWrapper.tsx` still has
-comments describing a debounced HTTP whole-board persist. No client uploads a
-board any more.
-
-### Then update this document
-
-Move whatever you finish out of section 5 and into sections 2–4, the way tasks 2
-and 4 were folded in. A stale record is how the 128 KiB mistake happened.
+Targeted mutants killed during this pass: omitting durable snapshot deletion,
+disabling the read-only subtype/relay gate, disabling periodic resync, and
+removing signaling-upgrade revocation scheduling.
 
 ## 6. Verification gate
 
@@ -245,7 +184,35 @@ Useful while working:
   tears the instance down the way hibernation does and keeps storage. Use it
   rather than inventing a test-only hook; there used to be one and it was worse.
 
-## 7. Out of scope, on purpose
+## 7. ChatGPT improvements and suggestions for the main model
+
+The next main-model pass should treat perceived fluidity as a measured latency
+problem, not another persistence rewrite. The live relay is already ahead of
+document and storage work; keep it there.
+
+Recommended order:
+
+1. Instrument publish-to-render p50/p95 separately for strokes and cursors on
+   host→peer and peer→host. Record shedding and resync recovery as separate
+   events so a repaired frame is not mistaken for ordinary latency.
+2. Add browser assertions for continuous strokes, not only final elements. The
+   user-visible target should be a smooth remote stroke while persistence stays
+   on the 3s durability cadence.
+3. Prioritize protocol control frames under overload. Today one account budget
+   covers JSON discovery and Yjs bytes; a burst can shed the recovery handshake
+   itself until the window clears. A small reserved lane for sync step 1/2 is a
+   better next experiment than raising every rate limit.
+4. Measure cursor churn in stored snapshots. If it materially grows snapshots,
+   move ephemeral cursors to awareness or a non-persisted channel; do not change
+   this protocol without size evidence.
+5. Keep `RESYNC_INTERVAL_MS = 3_000` until an alternative loss-recovery test is
+   green with resync disabled. A server-held document does not by itself repair
+   a frame the server never received.
+
+Do not reintroduce client whole-board uploads. They create two authorities and
+make latency, conflict resolution and deletion correctness harder at once.
+
+## 8. Out of scope, on purpose
 
 - **The latency workstream** — p95 targets, publish-to-render instrumentation,
   bidirectional drawing e2e. Worth doing, but it is a workstream, not a
@@ -258,7 +225,7 @@ Useful while working:
   admission latency for the student is untouched. That is a security question
   before it is a performance one.
 
-## 8. Provenance
+## 9. Provenance
 
 An implementation review from another model prompted tasks 1–7; it was appended
 to this file on 2026-08-22 and is preserved in git history at `764c660~1`. Its

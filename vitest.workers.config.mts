@@ -19,9 +19,10 @@ export default defineConfig({
             ACCESS_JWKS_URL: `${issuer}/jwks`,
             TEACHER_HOSTNAME: 'example.com',
             GUEST_HOSTNAME: 'join.example.com',
-            // Short enough for a test to wait for the real alarm rather than
-            // triggering it by hand. Production uses the 30s default.
-            REVOCATION_CHECK_INTERVAL_MS: '100',
+            // Keep unrelated sockets from creating recurring alarms during the
+            // worker suite. Tests that exercise revocation set their own
+            // deadline; the self-scheduling test configures a short alarm.
+            REVOCATION_CHECK_INTERVAL_MS: '3600000',
           },
         },
       };
