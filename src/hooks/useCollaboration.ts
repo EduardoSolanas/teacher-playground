@@ -23,6 +23,7 @@ import { shouldPollRoomApiFallback } from '@/lib/whiteboard/providerStatus';
 import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 import { roomSceneSaveDebounceMs } from '@/lib/whiteboard/persistDebounce';
 import { snapshotElements } from '@/lib/whiteboard/sceneSnapshot';
+import { shouldPersistBoard } from '@/lib/whiteboard/persistOwnership';
 import { shouldPollPresence } from '@/lib/whiteboard/presencePolling';
 import { cursorPublishDelay } from '@/lib/whiteboard/cursorPublishRate';
 import { moderationTargetBody } from '@/lib/whiteboard/moderationTarget';
@@ -69,6 +70,8 @@ export function useCollaboration(roomId: string) {
   const [grantRole, setGrantRole] = useState<GrantedPublicRole | null>(null);
   const [collaborationEpoch, setCollaborationEpoch] = useState(0);
   const [moderationError, setModerationError] = useState<string | null>(null);
+  /** Whether this peer is the one writing the stored board right now. */
+  const persistOwnershipRef = useRef(true);
   const elementsRef = useRef<CanvasElement[]>([]);
   const viewportRef = useRef<Viewport>({ x: 0, y: 0, zoom: 1 });
   const lastRoomUpdatedAtRef = useRef(0);
@@ -300,11 +303,21 @@ export function useCollaboration(roomId: string) {
 
   // Debounced save to API
   const saveState = useCallback(
-    (newElements: CanvasElement[], newViewport: Viewport) => {
+    (_newElements: CanvasElement[], _newViewport: Viewport) => {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(async () => {
+        /*
+         * Read the board as it is now, not as it was when this was scheduled.
+         *
+         * The arguments are a snapshot from up to three seconds ago. Writing
+         * those overwrote the stored board with a view taken before another
+         * peer's strokes had arrived, so a lesson could reload missing work
+         * that everyone had watched appear.
+         */
+        if (!persistOwnershipRef.current) return;
         try {
-          const liveElements = snapshotElements(newElements);
+          const liveElements = snapshotElements(elementsRef.current);
+          const newViewport = viewportRef.current;
           const res = await ajaxFetch(`/api/whiteboard/room/${roomId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -511,6 +524,18 @@ export function useCollaboration(roomId: string) {
   useEffect(() => {
     applyPresenceRef.current = applyPresencePayload as (data: unknown) => void;
   }, [applyPresencePayload]);
+
+  /*
+   * Who writes the stored board, recomputed as the roster changes.
+   *
+   * Held in a ref because the decision is read inside the debounced save,
+   * which fires long after the render that scheduled it.
+   */
+  useEffect(() => {
+    const isHost = isLocalRoomHost(grantRole, users, localPeerId);
+    const hostPresent = users.some((user) => Boolean(user.isHost));
+    persistOwnershipRef.current = shouldPersistBoard({ isHost, hostPresent });
+  }, [grantRole, users, localPeerId]);
 
   useEffect(() => {
     if (!roomLoaded || !hasJoined) return;
