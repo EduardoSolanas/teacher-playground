@@ -103,6 +103,8 @@ export default function ExcalidrawWrapper({
   const REMOTE_STATE_FLUSH_MS = 200;
   const pendingRemoteStateRef = useRef<any[] | null>(null);
   const remoteStateTimerRef = useRef<number | null>(null);
+  /** Every element id the room has ever shown this peer. */
+  const seenRemoteIdsRef = useRef<Set<string>>(new Set());
   const pendingElementsRef = useRef<any[] | null>(null);
   /** Scene captured mid-stroke, flushed to React state on pointer up. */
   const deferredElementsRef = useRef<any[] | null>(null);
@@ -115,7 +117,10 @@ export default function ExcalidrawWrapper({
     const remoteIds = new Set<string>();
     for (const element of remoteElements) {
       const id = (element as { id?: unknown })?.id;
-      if (typeof id === 'string' && id.length > 0) remoteIds.add(id);
+      if (typeof id === 'string' && id.length > 0) {
+        remoteIds.add(id);
+        seenRemoteIdsRef.current.add(id);
+      }
     }
 
     const localElements = apiRef.current?.getSceneElements?.() ?? [];
@@ -126,6 +131,45 @@ export default function ExcalidrawWrapper({
         { repairBindings: true },
       ) as Array<{ id?: unknown }>,
     );
+
+    /*
+     * Keep work this peer has drawn but not yet published.
+     *
+     * restoreElements does not union the local scene into the remote one — it
+     * takes localElements only to preserve version numbers — so applying a
+     * remote scene replaces what is on this canvas. Anything drawn here in the
+     * gap before it round-trips is erased by the next update that arrives, and
+     * while another peer draws one arrives every ~50ms. That is why a student
+     * could not get a shape to stay on their own board while the teacher drew.
+     *
+     * Only elements the room has never known about come back: an id missing
+     * from the remote scene that this peer has also never seen arrive and
+     * never published. Anything the room has held before and dropped was
+     * deleted by somebody and must stay deleted.
+     *
+     * Bounded to a drag in progress. On pointer-up the stroke is written to
+     * the document synchronously, so after that the room knows about it and
+     * nothing here needs to defend it. Leaving the rule unbounded let a board
+     * clear be undone by whatever happened to still be on the canvas.
+     *
+     * Neither the version baseline nor the last-published ids can answer this.
+     * The baseline is rebuilt from whatever arrives, so a board clear empties
+     * it and every element looks brand new; and a peer never publishes the
+     * elements it merely received, so those look new to it as well. Either way
+     * a clear would undo itself, which is what both of them did.
+     */
+    const unpublishedLocal = isPointerDownRef.current
+      ? (localElements as Array<{ id?: unknown }>).filter((element) => {
+        const id = element?.id;
+        return typeof id === 'string'
+          && !remoteIds.has(id)
+          && !seenRemoteIdsRef.current.has(id)
+          && !lastPublishedIdsRef.current.includes(id);
+      })
+      : [];
+    const sceneToApply = unpublishedLocal.length > 0
+      ? [...restoredElements, ...unpublishedLocal]
+      : restoredElements;
 
     /*
      * The canvas is updated below immediately — that is what the user watches.
@@ -140,7 +184,7 @@ export default function ExcalidrawWrapper({
      * Nothing downstream of it needs 20 updates a second: it drives an
      * is-the-board-empty check and a save that is debounced anyway.
      */
-    pendingRemoteStateRef.current = restoredElements;
+    pendingRemoteStateRef.current = sceneToApply;
     if (remoteStateTimerRef.current === null) {
       remoteStateTimerRef.current = window.setTimeout(() => {
         remoteStateTimerRef.current = null;
@@ -161,13 +205,13 @@ export default function ExcalidrawWrapper({
     if (apiRef.current) {
       try {
         apiRef.current.updateScene({
-          elements: restoredElements,
+          elements: sceneToApply,
         });
       } catch {
         // ignore
       }
     } else {
-      pendingElementsRef.current = restoredElements;
+      pendingElementsRef.current = sceneToApply;
     }
 
     hasAcceptedInitialSceneRef.current = true;

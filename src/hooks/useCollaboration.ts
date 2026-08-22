@@ -73,6 +73,16 @@ export function useCollaboration(roomId: string) {
   const viewportRef = useRef<Viewport>({ x: 0, y: 0, zoom: 1 });
   const lastRoomUpdatedAtRef = useRef(0);
   const localPeerIdRef = useRef(`user-${randomHexId()}`);
+  /*
+   * The presence applier, reachable from a callback created before it exists.
+   *
+   * ensureCollaboration hands a presence handler to the provider while
+   * applyPresencePayload is still further down the hook. Closing over it
+   * directly happens to work — the closure resolves when the frame arrives,
+   * long after declaration — but it reads as use-before-declare and lint
+   * refuses it. A ref makes the ordering explicit instead of incidental.
+   */
+  const applyPresenceRef = useRef<(data: unknown) => void>(() => {});
   const [localPeerId, setLocalPeerId] = useState(localPeerIdRef.current);
   /** First user to join the room (from presence API), not "this browser". */
   const hostPeerIdRef = useRef<string | null>(null);
@@ -96,7 +106,7 @@ export function useCollaboration(roomId: string) {
 
       // Create callback to handle presence messages from the WebSocket push channel
       const handlePresence = (payload: unknown) => {
-        applyPresencePayload(payload as any);
+        applyPresenceRef.current(payload);
       };
 
       collaborationRef.current = createCollaboration(roomId, peerId, handlePresence);
@@ -497,6 +507,10 @@ export function useCollaboration(roomId: string) {
       }
     }
   }, [roomId]);
+
+  useEffect(() => {
+    applyPresenceRef.current = applyPresencePayload as (data: unknown) => void;
+  }, [applyPresencePayload]);
 
   useEffect(() => {
     if (!roomLoaded || !hasJoined) return;

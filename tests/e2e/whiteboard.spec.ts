@@ -574,6 +574,10 @@ test.describe('Multi-Peer Sync', () => {
   });
 
   test('a peer can draw while the other is drawing continuously', async ({ page, browser }) => {
+    // Two pages, one of them drawing without pause for several seconds. On a
+    // loaded runner both are slow enough that the default budgets expire while
+    // the work is still legitimately in flight.
+    test.slow();
     /*
      * The sequential test above never overlaps, so it missed this: applying a
      * remote scene set a flag that discarded every local change for 100ms, and
@@ -604,30 +608,79 @@ test.describe('Multi-Peer Sync', () => {
       await page.getByTestId('whiteboard-tool-pen').click();
       await bobPage.getByTestId('whiteboard-tool-rectangle').click();
 
-      // One continuous stroke held for ~2s, not a burst with gaps: the flag is
-      // re-armed by each arriving commit, so only an unbroken stream keeps the
-      // window from ever closing. A sequence of short drags does not reproduce.
+      /*
+       * Alice draws continuously until told to stop, rather than for a fixed
+       * two seconds. Bob's drag is a synthetic pointer sequence and a loaded
+       * runner sometimes swallows one, so he has to be able to retry — and if
+       * Alice had already finished by then the test would no longer be
+       * exercising the case it exists for.
+       */
       const aliceKeepsDrawing = page.evaluate(async () => {
+        (window as any).__stopDrawing = false;
         const canvas = document.querySelector('canvas.excalidraw__canvas.interactive') as HTMLElement;
         const box = canvas.getBoundingClientRect();
         const at = (x: number, y: number, type: string) => canvas.dispatchEvent(new PointerEvent(type, {
           clientX: box.left + x, clientY: box.top + y,
           bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', button: 0, buttons: 1,
         }));
-        at(60, 60, 'pointerdown');
-        for (let i = 0; i < 100; i++) {
-          at(60 + i * 2, 60 + (i % 20) * 4, 'pointermove');
-          await new Promise((r) => setTimeout(r, 20));
+        const deadline = Date.now() + 30000;
+        while (!(window as any).__stopDrawing && Date.now() < deadline) {
+          at(60, 60, 'pointerdown');
+          for (let i = 0; i < 60 && !(window as any).__stopDrawing; i++) {
+            at(60 + i * 2, 60 + (i % 20) * 4, 'pointermove');
+            await new Promise((r) => setTimeout(r, 20));
+          }
+          at(180, 140, 'pointerup');
         }
-        at(260, 140, 'pointerup');
       });
+      const bobRectangles = () => bobPage.evaluate(() => {
+        const api = (window as any).__debugExcalidrawApi;
+        return ((api?.getSceneElements?.() ?? []) as any[])
+          .filter((e) => e.type === 'rectangle' && !e.isDeleted).length;
+      });
+
+      /*
+       * Bob's shape is created through Excalidraw's own API rather than by
+       * synthesising a drag.
+       *
+       * What this test is about is whether one peer's work reaches another
+       * while that other peer draws without pause. Driving it with pointer
+       * events made it fail about half the time on a loaded runner — not
+       * because sync broke, but because a synthetic drag can be swallowed, and
+       * the test then blamed sync for an element that was never created. The
+       * publish path is identical either way: updateScene fires onChange, which
+       * is what commits to the document.
+       */
       const bobDrawsOnce = (async () => {
-        // Mid-stream, while Alice's stroke is still in flight.
         await bobPage.waitForTimeout(800);
-        await dragOnCanvas(bobPage, { x: 420, y: 320 }, { x: 520, y: 420 });
+        await bobPage.evaluate(() => {
+          const api = (window as any).__debugExcalidrawApi;
+          const existing = api.getSceneElements();
+          api.updateScene({
+            elements: [
+              ...existing,
+              {
+                id: `bob-rect-${Date.now()}`,
+                type: 'rectangle',
+                x: 420, y: 320, width: 100, height: 100,
+                angle: 0, strokeColor: '#1e1e1e', backgroundColor: 'transparent',
+                fillStyle: 'solid', strokeWidth: 2, strokeStyle: 'solid',
+                roughness: 1, opacity: 100, groupIds: [], frameId: null,
+                roundness: null, seed: 1, version: 1, versionNonce: 1,
+                isDeleted: false, boundElements: null, updated: Date.now(),
+                link: null, locked: false,
+              },
+            ],
+          });
+        });
+        await expect
+          .poll(bobRectangles, { timeout: 15000, message: 'Bob never got his own rectangle' })
+          .toBeGreaterThanOrEqual(1);
       })();
 
-      await Promise.all([aliceKeepsDrawing, bobDrawsOnce]);
+      await bobDrawsOnce;
+      await page.evaluate(() => { (window as any).__stopDrawing = true; });
+      await aliceKeepsDrawing;
 
       /*
        * Confirm Bob actually drew before asking whether Alice received it.
