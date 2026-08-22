@@ -603,21 +603,25 @@ export class RoomDO extends DurableObject {
   /** Broadcasts presence updates to all connected sockets in this room. */
   private broadcastPresence(roomId: string): void {
     for (const socket of this.ctx.getWebSockets()) {
-      const attachment = socket.deserializeAttachment() as SocketIdentity | null;
-      // Skip sockets with no identity or from a different room
-      if (!attachment?.roomId || attachment.roomId !== roomId) {
-        continue;
-      }
       try {
+        // Reading the attachment can throw on a socket that is already gone,
+        // and one of those must not end the loop for everybody else.
+        const attachment = socket.deserializeAttachment() as SocketIdentity | null;
+        if (!attachment?.roomId || attachment.roomId !== roomId) continue;
+
+        /*
+         * Redacted per recipient, never once for the room.
+         *
+         * The payload carries the waiting queue and account ids only for an
+         * owner. Building it once and fanning it out would put the names of
+         * children waiting to be let in onto every student's connection.
+         */
         const payload = presencePayloadForAccount(this.db, roomId, attachment.accountId);
         socket.send(JSON.stringify({ type: 'presence', payload }));
       } catch {
-        // One dead socket should not stop broadcasting to others
-        try {
-          socket.close();
-        } catch {
-          // Already gone.
-        }
+        // A presence update is not worth dropping a lesson's connection over:
+        // this socket misses one frame and the next one reaches it. The 2s
+        // poll is still there as the client's fallback.
       }
     }
   }
