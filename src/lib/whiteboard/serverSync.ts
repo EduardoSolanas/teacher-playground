@@ -45,3 +45,17 @@ export function handleSyncFrame(doc: Y.Doc, bytes: Uint8Array, origin?: unknown)
     return [];
   }
 }
+
+/**
+ * Wraps a document update as a sync frame the clients already understand.
+ *
+ * The object usually answers the socket that spoke to it; this is for the
+ * updates it makes on its own — sweeping a departed peer's cursor — which have
+ * to reach every socket in the room unprompted.
+ */
+export function encodeUpdateFrame(update: Uint8Array): Uint8Array {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MESSAGE_SYNC);
+  syncProtocol.writeUpdate(encoder, update);
+  return encoding.toUint8Array(encoder);
+}

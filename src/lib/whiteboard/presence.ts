@@ -3,6 +3,15 @@ import { getRoomAllowFirstUserHost } from './roomSchema';
 
 const ACTIVE_WINDOW_MS = 10_000;
 
+/** The peers a room still counts as present, by the same window as the roster. */
+export function activePeerIds(db: RoomDatabase, roomId: string): Set<string> {
+  const cutoff = Date.now() - ACTIVE_WINDOW_MS;
+  const rows = db.prepare(
+    `SELECT peer_id FROM room_presence WHERE room_id = ? AND last_seen >= ?`,
+  ).all(roomId, cutoff) as Array<{ peer_id: string }>;
+  return new Set(rows.map((row) => row.peer_id));
+}
+
 export function readActiveUsers(db: RoomDatabase, roomId: string) {
   const cutoff = Date.now() - ACTIVE_WINDOW_MS;
   db.prepare(`DELETE FROM room_presence WHERE last_seen < ?`).run(cutoff);

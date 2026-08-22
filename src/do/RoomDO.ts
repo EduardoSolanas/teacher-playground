@@ -34,6 +34,7 @@ import {
   handlePresenceDelete,
   presencePayloadForAccount,
 } from '../lib/whiteboard/handlers/presence';
+import { activePeerIds } from '../lib/whiteboard/presence';
 import { presenceSignature } from '../lib/whiteboard/presence';
 import { encodePresenceMessage } from '../lib/whiteboard/presenceMessage';
 import {
@@ -65,9 +66,10 @@ import { decideSignalingAction } from '../lib/worker/signalingBudget';
 import { createRateLimiter } from '../lib/http/rateLimit';
 import { logSocketClose } from '../lib/security/authEvents';
 import * as Y from 'yjs';
-import { handleSyncFrame } from '../lib/whiteboard/serverSync';
+import { encodeUpdateFrame, handleSyncFrame } from '../lib/whiteboard/serverSync';
 import { replaceSharedElements, getElementsFromArray } from '../lib/whiteboard/yjsDoc';
 import { snapshotElements } from '../lib/whiteboard/sceneSnapshot';
+import { snapshotBudgetState } from '../lib/whiteboard/snapshotBudget';
 
 /**
  * How often live sockets are re-checked against the identity store. This is the
@@ -95,6 +97,25 @@ function resolveCheckInterval(env: RoomEnv): number {
     return REVOCATION_CHECK_INTERVAL_MS;
   }
   return configured;
+}
+
+/**
+ * One structured line about a board write, in the shape the auth log uses.
+ *
+ * Room ids are share identifiers rather than secrets, and no board content goes
+ * in here — the size and the outcome are the whole point.
+ */
+function logBoardSnapshot(entry: {
+  roomId: string;
+  bytes: number;
+  outcome: string;
+  reason?: string;
+}): void {
+  try {
+    console.warn(JSON.stringify({ event: 'board_snapshot', ...entry }));
+  } catch {
+    // Logging must never break a flush.
+  }
 }
 
 function forbidden(message = 'Forbidden'): Response {
@@ -503,7 +524,14 @@ export class RoomDO extends DurableObject {
     switch (section) {
       case '':
         if (method === 'GET') return handleRoomGet(this.db, roomId, request);
-        if (method === 'POST') return handleRoomPost(this.db, roomId, request);
+        if (method === 'POST') {
+          // Cloned before the handler consumes the body.
+          const written = request.clone();
+          return handleRoomPost(this.db, roomId, request).then(async (response) => {
+            if (response.ok) await this.forgetBoardIfElementsWritten(roomId, written);
+            return response;
+          });
+        }
         if (method === 'DELETE') {
           return handleRoomDelete(this.db, roomId, request).then((response) => {
             if (response.ok) this.deleteSockets();
@@ -684,6 +712,85 @@ export class RoomDO extends DurableObject {
     await this.flushDirtyDocs();
   }
 
+  /** Sends one frame to every socket this object holds for a room. */
+  private broadcastToRoom(roomId: string, frame: Uint8Array): void {
+    for (const socket of this.ctx.getWebSockets()) {
+      try {
+        const attachment = socket.deserializeAttachment() as SocketIdentity | null;
+        if (attachment?.roomId !== roomId) continue;
+        socket.send(frame);
+      } catch {
+        // One unreachable socket must not stop the others being told.
+      }
+    }
+  }
+
+  /**
+   * Removes the cursors of peers the room no longer counts as present.
+   *
+   * A cursor is written into the document by the peer that owns it and nothing
+   * ever removed it, so a departed peer left a pointer sitting on everyone
+   * else's canvas for the rest of the lesson. Presence is the authority on who
+   * is still here: the closing socket's attachment carries an account, and a
+   * peer id can change at an admission boundary, so it cannot be trusted for
+   * this.
+   */
+  private sweepDepartedCursors(roomId: string): void {
+    const doc = this.docs.get(roomId);
+    if (!doc) return;
+    const cursors = doc.getMap('cursors');
+    if (cursors.size === 0) return;
+
+    const present = activePeerIds(this.db, roomId);
+    const departed = [...cursors.keys()].filter((peerId) => !present.has(peerId));
+    if (departed.length === 0) return;
+
+    let sweep: Uint8Array | null = null;
+    const capture = (update: Uint8Array, origin: unknown) => {
+      if (origin === 'sweep') sweep = update;
+    };
+    doc.on('update', capture);
+    try {
+      doc.transact(() => {
+        for (const peerId of departed) cursors.delete(peerId);
+      }, 'sweep');
+    } finally {
+      doc.off('update', capture);
+    }
+
+    // The peers hold their own copies, so the deletion has to travel; the
+    // dirty marker the transaction set takes care of the stored copy.
+    if (sweep) this.broadcastToRoom(roomId, encodeUpdateFrame(sweep));
+  }
+
+  /**
+   * Drops the document after a board is written straight to the row.
+   *
+   * The scene route still accepts `elements`, so a write can arrive that the
+   * document never saw. Letting both stand would be split-brain: the next
+   * flush would put the document's version back over the row. Forgetting the
+   * document instead makes the next open re-seed from what was just written.
+   *
+   * An **empty** array is not such a write. Creating a room posts
+   * `{elements: [], viewport}` (see `src/app/whiteboard/page.tsx`), so treating
+   * that as "the board is now empty" would erase a lesson the moment anyone
+   * re-issued the create call. No client empties a board through this route
+   * any more — an erase travels over the socket like every other edit.
+   */
+  private async forgetBoardIfElementsWritten(roomId: string, request: Request): Promise<void> {
+    try {
+      const body = await request.json() as Record<string, unknown> | null;
+      if (!body || typeof body !== 'object') return;
+      const elements = body.elements;
+      if (!Array.isArray(elements) || elements.length === 0) return;
+      this.docs.delete(roomId);
+      this.dirtyRooms.delete(roomId);
+      await this.ctx.storage.delete(`ydoc:${roomId}`);
+    } catch {
+      // A body that will not parse was refused by the handler anyway.
+    }
+  }
+
   /** Writes every document that has changed since the last flush. */
   private async flushDirtyDocs(): Promise<void> {
     for (const roomId of this.dirtyRooms) {
@@ -693,10 +800,24 @@ export class RoomDO extends DurableObject {
         continue;
       }
 
+      const snapshot = Y.encodeStateAsUpdate(doc);
+      const budget = snapshotBudgetState(snapshot.byteLength);
+      if (budget !== 'fine') {
+        // Said out loud on purpose: an unwritable board is indistinguishable
+        // from a safe one from the outside, because the retry below is silent.
+        logBoardSnapshot({ roomId, bytes: snapshot.byteLength, outcome: budget });
+      }
+
       try {
-        await this.ctx.storage.put(`ydoc:${roomId}`, Y.encodeStateAsUpdate(doc));
+        await this.ctx.storage.put(`ydoc:${roomId}`, snapshot);
         this.dirtyRooms.delete(roomId);
-      } catch {
+      } catch (error) {
+        logBoardSnapshot({
+          roomId,
+          bytes: snapshot.byteLength,
+          outcome: 'write_failed',
+          reason: error instanceof Error ? error.name : 'unknown',
+        });
         // Still dirty, so the next flush retries it. Nothing is lost meanwhile:
         // the document is in memory and every peer still holds its own copy.
         continue;
@@ -860,6 +981,10 @@ export class RoomDO extends DurableObject {
     for (const roomId of roomIds) {
       purgeExpiredGrants(this.db, roomId, now);
       purgeExpiredRoomLifecycle(this.db, roomId, now);
+      // Presence outlives a socket by its ten-second window, so a peer that
+      // dropped mid-lesson was still "present" when its close ran. This is
+      // where that cursor finally goes.
+      this.sweepDepartedCursors(roomId);
     }
     if (sockets.length === 0) return;
 
@@ -1119,6 +1244,13 @@ export class RoomDO extends DurableObject {
     reason: string,
     wasClean: boolean,
   ): Promise<void> {
+    try {
+      const attachment = ws.deserializeAttachment() as SocketIdentity | null;
+      if (attachment?.roomId) this.sweepDepartedCursors(attachment.roomId);
+    } catch {
+      // A socket with no attachment leaves nothing to sweep by.
+    }
+
     // The closing socket is still in the list, so 1 means this was the last
     // one: the object is about to go quiet and the board must be on disk.
     if (this.ctx.getWebSockets().length <= 1) {

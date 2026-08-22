@@ -3,7 +3,7 @@ import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
-import { MESSAGE_SYNC, handleSyncFrame } from './serverSync';
+import { MESSAGE_SYNC, encodeUpdateFrame, handleSyncFrame } from './serverSync';
 import { encodePresenceMessage } from './presenceMessage';
 
 describe('serverSync', () => {
@@ -164,5 +164,21 @@ describe('serverSync', () => {
       expect(origins).toEqual([socket]);
     });
 
+  });
+
+  describe('encodeUpdateFrame', () => {
+    it('wraps an update so a client applies it as an ordinary sync frame', () => {
+      const source = new Y.Doc();
+      source.getMap('cursors').set('peer-1', { x: 1 });
+
+      const target = new Y.Doc();
+      const frame = encodeUpdateFrame(Y.encodeStateAsUpdate(source));
+
+      const decoder = decoding.createDecoder(frame);
+      expect(decoding.readVarUint(decoder)).toBe(MESSAGE_SYNC);
+      syncProtocol.readSyncMessage(decoder, encoding.createEncoder(), target, undefined);
+
+      expect(target.getMap('cursors').get('peer-1')).toEqual({ x: 1 });
+    });
   });
 });

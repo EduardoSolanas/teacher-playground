@@ -4395,6 +4395,104 @@ describe('server-side y-websocket sync', () => {
     joiner.close();
   });
 
+  /** A frame that puts one peer's cursor in the shared document. */
+  function cursorFrame(peerId: string): Uint8Array {
+    const doc = new Y.Doc();
+    doc.getMap('cursors').set(peerId, { peerId, x: 1, y: 2 });
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, 0);
+    syncProtocol.writeUpdate(encoder, Y.encodeStateAsUpdate(doc));
+    return encoding.toUint8Array(encoder);
+  }
+
+  /** Applies one server frame to a document, the way a client would. */
+  function applyFrame(doc: Y.Doc, frame: ArrayBuffer): void {
+    const decoder = decoding.createDecoder(new Uint8Array(frame));
+    expect(decoding.readVarUint(decoder)).toBe(0);
+    syncProtocol.readSyncMessage(decoder, encoding.createEncoder(), doc, undefined);
+  }
+
+  it('sweeps a departed peer cursor and tells the peers still connected', async () => {
+    const roomId = 'ghost-cursor-room';
+    const leaving = await connect(roomId);
+    const staying = await openSocket(roomId);
+
+    // No presence row was ever written for this peer id, so once its socket is
+    // gone nothing in the room claims it.
+    const watcher = new Y.Doc();
+    const relayed = nextBinaryMessage(staying);
+    leaving.send(cursorFrame('ghost-peer'));
+    applyFrame(watcher, await relayed);
+    expect(watcher.getMap('cursors').has('ghost-peer')).toBe(true);
+
+    const swept = nextBinaryMessage(staying);
+    leaving.close();
+    applyFrame(watcher, await swept);
+    expect(watcher.getMap('cursors').has('ghost-peer')).toBe(false);
+
+    staying.close();
+  });
+
+  it('re-seeds from the row when a board is written straight to it', async () => {
+    const roomId = 'direct-write-room';
+    await writeBoardAndClose(roomId, board);
+    expect(await storedBoard(roomId)).toEqual(board);
+
+    // A write that bypasses the document entirely. The snapshot has to give
+    // way to it, or the room would keep serving the board it remembers.
+    const replacement = [{ id: 'e9', type: 'ellipse', x: 1, y: 2 }];
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: replacement }),
+    })).status).toBe(200);
+
+    const joiner = await openSocket(roomId);
+    joiner.send(syncStepOneFrame());
+    expect(boardFromReply(await nextBinaryMessage(joiner))).toEqual(replacement);
+
+    joiner.close();
+  });
+
+  it('sweeps a departed cursor on the alarm, for a peer whose row outlived its socket', async () => {
+    const roomId = 'alarm-sweep-room';
+    const peer = await connect(roomId);
+
+    const watcher = new Y.Doc();
+    const relayed = nextBinaryMessage(peer);
+    // A second socket writes the cursor so the first one is told about it.
+    const writer = await openSocket(roomId);
+    writer.send(cursorFrame('stale-peer'));
+    applyFrame(watcher, await relayed);
+    expect(watcher.getMap('cursors').has('stale-peer')).toBe(true);
+
+    // Presence keeps a peer for ten seconds after its last beat, so a socket
+    // that drops mid-lesson is still "present" when webSocketClose runs. The
+    // alarm is what catches it afterwards.
+    const swept = nextBinaryMessage(peer);
+    await runDurableObjectAlarm(roomStub(roomId));
+    applyFrame(watcher, await swept);
+    expect(watcher.getMap('cursors').has('stale-peer')).toBe(false);
+
+    writer.close();
+    peer.close();
+  });
+
+  it('keeps the board when a room is created again with no elements', async () => {
+    const roomId = 'recreate-room';
+    await writeBoardAndClose(roomId, board);
+
+    // The create call posts an empty elements array. Reading that as "the board
+    // is empty now" would erase a lesson.
+    expect((await createRoom(roomId)).status).toBe(200);
+
+    const joiner = await openSocket(roomId);
+    joiner.send(syncStepOneFrame());
+    expect(boardFromReply(await nextBinaryMessage(joiner))).toEqual(board);
+
+    joiner.close();
+  });
+
   it('keeps the stored row truthful with no client upload', async () => {
     const roomId = 'sql-truthful-room';
 
