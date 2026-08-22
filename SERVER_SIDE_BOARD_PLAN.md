@@ -333,22 +333,33 @@ review above. Its findings are accepted except where a task says otherwise, and
 two of them were checked against the repo and the current Cloudflare docs before
 being written down here.
 
-### State of the tree when this was written
+### State of the tree (updated 2026-08-22)
 
-`HEAD` is `2bb52c5`. Uncommitted, and deliberately left for you:
+`HEAD` is `4e3c41d` and the tree is clean: **tasks 2 and 4 are done**, and the
+tests that were red when this list was written are green. Everything the list
+said was waiting uncommitted has landed. Start at task 1.
 
-- `src/do/roomDO.workers.test.ts` — two **red** tests inside
-  `describe('server-side y-websocket sync')`: `sweeps a departed peer cursor and
-  tells the peers still connected`, and `re-seeds from the row when a board is
-  written straight to it`. They fail for the right reasons. Finish their cycles;
-  do not weaken them.
-- `src/lib/whiteboard/presence.ts` — a new `activePeerIds(db, roomId)` helper,
-  using the roster's own 10s window, added for the sweep. Nothing calls it yet.
-- `src/lib/whiteboard/snapshotBudget.ts` and its test — **built on the wrong
-  limit**. See task 4.
+Nothing untracked is yours: `.playwright-mcp/` and `gemini_improvements.md`
+belong to the user. Leave them alone and never stage them.
 
-Also untracked and **not yours**: `.playwright-mcp/`, `gemini_improvements.md`.
-Leave them alone and never stage them.
+What tasks 2 and 4 turned into, so you are not surprised by the code:
+
+- `RoomDO.sweepDepartedCursors` deletes the cursors of peers
+  `activePeerIds(db, roomId)` no longer counts, in one `'sweep'` transaction,
+  and broadcasts the resulting update with `encodeUpdateFrame`
+  (`src/lib/whiteboard/serverSync.ts`). It runs on `webSocketClose` **and** on
+  the alarm: presence keeps a peer for ten seconds after its last beat, so a
+  socket that drops mid-lesson is still "present" when its close runs, and the
+  alarm is what catches it afterwards.
+- `RoomDO.forgetBoardIfElementsWritten` drops the document, its dirty marker and
+  `ydoc:<roomId>` after a scene POST that carried a **non-empty** elements
+  array. Non-empty matters: creating a room posts `{elements: [], viewport}`
+  (`src/app/whiteboard/page.tsx:111`), so superseding on any array at all erased
+  a board the moment anyone re-issued the create call. Two existing tests caught
+  that; a third now holds the line deliberately.
+- `snapshotBudget.ts` is rebuilt on the real ceiling — 2 MB for key and value
+  together — and `flushDirtyDocs` logs a `board_snapshot` line when a snapshot
+  approaches it and when a write fails.
 
 ### Ground rules
 
@@ -394,7 +405,7 @@ assertion is the one that catches the cached-document half.
 
 ---
 
-### Task 2 — finish the two red tests
+### Task 2 — finish the two red tests — DONE (`4e3c41d`)
 
 **Ghost cursors.** On `webSocketClose`, delete from the room document's `cursors`
 map every entry whose peer id is not in `activePeerIds(db, roomId)`, in one
@@ -425,6 +436,10 @@ now sends on every pan, must **not** invalidate anything.
 ---
 
 ### Task 3 — make the durability bound real
+
+Note the second half of this task is still open exactly as written: the SQL
+projection has no retry bit, so a failed row update is still forgotten.
+
 
 **Why.** `flushIfDue()` is a throttle on incoming frames, not an idle debounce.
 One edit followed by silence stays dirty until the 30s alarm or the socket
@@ -457,7 +472,7 @@ every early alarm.
 
 ---
 
-### Task 4 — rebuild the snapshot budget on the right limit
+### Task 4 — rebuild the snapshot budget on the right limit — DONE (`4e3c41d`)
 
 `snapshotBudget.ts` in the tree is built on 128 KiB. That is the **legacy
 KV-backed** Durable Object limit. `wrangler.toml:71` puts `RoomDO` in
