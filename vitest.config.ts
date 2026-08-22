@@ -19,7 +19,11 @@ export default defineConfig({
     env: {
       WHITEBOARD_DB_PATH: ":memory:",
     },
-    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    // scripts/ is included so build-time transforms are testable: the
+    // Excalidraw font patch decides whether a whiteboard fetches its fonts
+    // from our origin or from a third-party CDN, which is too consequential
+    // to live as an untested regex inside a build script.
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx", "scripts/**/*.test.ts"],
     exclude: [
       "node_modules",
       "dist",

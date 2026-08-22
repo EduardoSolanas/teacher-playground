@@ -48,10 +48,8 @@ export default function ExcalidrawWrapper({
 }: ExcalidrawWrapperProps) {
   const apiRef = useRef<any>(null);
   const [isClient, setIsClient] = useState(false);
-  const isRemoteUpdateRef = useRef(false);
   const isPointerDownRef = useRef(false);
   const activeToolRef = useRef(activeTool);
-  const remoteUpdateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSyncedElementsRef = useRef<any[]>([]);
   const lastPublishedIdsRef = useRef<string[]>([]);
   /** id -> Excalidraw `version` at the last publish, for O(changed) diffing. */
@@ -81,15 +79,6 @@ export default function ExcalidrawWrapper({
   const localPeerIdRef = useRef(localPeerId);
   localPeerIdRef.current = localPeerId;
 
-  const finishRemoteUpdateSoon = useCallback(() => {
-    if (remoteUpdateTimeoutRef.current) {
-      clearTimeout(remoteUpdateTimeoutRef.current);
-    }
-    remoteUpdateTimeoutRef.current = setTimeout(() => {
-      isRemoteUpdateRef.current = false;
-      remoteUpdateTimeoutRef.current = null;
-    }, 100);
-  }, []);
 
   const applyRemoteElements = useCallback((remoteElements: any[]) => {
     const localElements = apiRef.current?.getSceneElements?.() ?? [];
@@ -103,8 +92,15 @@ export default function ExcalidrawWrapper({
 
     onElementsChange(restoredElements);
 
+    /*
+     * Adopt what actually lands in the scene, not what arrived on the wire.
+     * restoreElements can renumber versions, and a baseline taken from the raw
+     * remote scene would then read every restored element as locally changed
+     * and publish it straight back.
+     */
+    adoptVersionBaseline(restoredElements);
+
     if (apiRef.current) {
-      isRemoteUpdateRef.current = true;
       try {
         apiRef.current.updateScene({
           elements: restoredElements,
@@ -112,21 +108,16 @@ export default function ExcalidrawWrapper({
       } catch {
         // ignore
       }
-      finishRemoteUpdateSoon();
     } else {
       pendingElementsRef.current = restoredElements;
-      isRemoteUpdateRef.current = false;
     }
 
     hasAcceptedInitialSceneRef.current = true;
-  }, [finishRemoteUpdateSoon, onElementsChange]);
+  }, [adoptVersionBaseline, onElementsChange]);
 
   useEffect(() => {
     setIsClient(true);
     return () => {
-      if (remoteUpdateTimeoutRef.current) {
-        clearTimeout(remoteUpdateTimeoutRef.current);
-      }
       if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
         if ((window as any).__debugExcalidrawApi === apiRef.current) {
           delete (window as any).__debugExcalidrawApi;
@@ -206,13 +197,11 @@ export default function ExcalidrawWrapper({
       if (excalidrawElementsEqual(shared, lastSyncedElementsRef.current)) return;
       lastSyncedElementsRef.current = shared;
       adoptVersionBaseline(shared);
-      isRemoteUpdateRef.current = true;
       try {
         api.updateScene({ elements: serializeExcalidrawElements(shared) as any });
       } catch {
         // A malformed stored scene must not stop the board from opening.
       }
-      finishRemoteUpdateSoon();
     }, 100);
 
     // E2E runs against a production build, so the handle is also exposed when
@@ -226,7 +215,6 @@ export default function ExcalidrawWrapper({
     if (pendingElementsRef.current) {
       const queuedElements = pendingElementsRef.current;
       pendingElementsRef.current = null;
-      isRemoteUpdateRef.current = true;
       try {
         const restoredElements = uniqueElementsById(
           restoreElements(
@@ -241,7 +229,6 @@ export default function ExcalidrawWrapper({
       } catch {
         // ignore
       }
-      finishRemoteUpdateSoon();
     }
 
     setTimeout(() => {
@@ -253,7 +240,7 @@ export default function ExcalidrawWrapper({
         }
       }
     }, 100);
-  }, [finishRemoteUpdateSoon, readSharedElements]);
+  }, [adoptVersionBaseline, readSharedElements]);
 
   useEffect(() => {
     if (!apiRef.current || !activeTool) return;
@@ -346,8 +333,20 @@ export default function ExcalidrawWrapper({
 
   const handleElementsChange = useCallback(
     (el: readonly any[], _appState: any) => {
-      if (isRemoteUpdateRef.current) return;
-
+      /*
+       * No remote-update flag here.
+       *
+       * Applying a remote scene used to set one and clear it 100ms later, and
+       * every local change in between was discarded. A drawing peer commits
+       * every 50ms, so while one person drew the other's window never closed
+       * and their own strokes were dropped for as long as it lasted — the host
+       * drew fine and the student could not draw at all.
+       *
+       * Echoes are already prevented exactly, per element, by the version
+       * baseline adopted in applyRemoteElements: a scene that only contains
+       * what a peer just sent produces no changed ids and publishes nothing.
+       * That needs no window, and it does not starve anyone.
+       */
       if (!hasAcceptedInitialSceneRef.current && el.length === 0) {
         return;
       }

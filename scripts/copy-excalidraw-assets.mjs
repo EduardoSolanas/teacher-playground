@@ -16,9 +16,10 @@
  * on upgrade — which is exactly what happened: public/excalidraw-assets held
  * the 0.17 layout, which 0.18 no longer looks for.
  */
-import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isPatched, patchAssetsFallback } from './lib/excalidrawFontFallback.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = join(root, 'node_modules/@excalidraw/excalidraw/dist/prod');
@@ -43,4 +44,50 @@ for (const name of ['fonts', 'data']) {
   copied += 1;
 }
 
-console.log(`Copied ${copied} Excalidraw asset directories into public/.`);
+/*
+ * Copying the fonts is not enough on its own.
+ *
+ * Excalidraw resolves each font to two candidates: one under
+ * window.EXCALIDRAW_ASSET_PATH, and one under a hardcoded CDN base. We set the
+ * variable and ship the fonts — the documented recipe — and every request still
+ * went to the CDN and none to us, which is excalidraw/excalidraw#8228, open and
+ * unfixed. So the fallback is rewritten to this page's own origin here.
+ */
+let patchedFiles = 0;
+let alreadyPatched = 0;
+for (const name of readdirSync(source)) {
+  if (!name.endsWith('.js')) continue;
+  const file = join(source, name);
+  const contents = readFileSync(file, 'utf8');
+  if (!contents.includes('ASSETS_FALLBACK_URL')) continue;
+  if (isPatched(contents)) {
+    alreadyPatched += 1;
+    continue;
+  }
+  const { source: next, replaced } = patchAssetsFallback(contents);
+  if (replaced === 0) {
+    console.error(
+      `Found ASSETS_FALLBACK_URL in ${file} but could not rewrite it. Excalidraw's `
+      + 'bundle has changed shape: fonts would silently load from its CDN again and '
+      + 'be refused by font-src. Update scripts/lib/excalidrawFontFallback.mjs.',
+    );
+    process.exit(1);
+  }
+  writeFileSync(file, next);
+  patchedFiles += 1;
+}
+
+if (patchedFiles === 0 && alreadyPatched === 0) {
+  console.error(
+    "No ASSETS_FALLBACK_URL found in Excalidraw's bundle. Either the fonts no longer "
+    + 'fall back to a CDN, or the constant was renamed. Verify in a browser that no font '
+    + 'request leaves the origin before removing this check.',
+  );
+  process.exit(1);
+}
+
+console.log(
+  `Copied ${copied} Excalidraw asset directories into public/. `
+  + `Font fallback: ${patchedFiles} file(s) rewritten to the local origin`
+  + `${alreadyPatched > 0 ? `, ${alreadyPatched} already done` : ''}.`,
+);

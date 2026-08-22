@@ -515,6 +515,80 @@ test.describe('Multi-Peer Sync', () => {
     }
   });
 
+  test('a peer can draw while the other is drawing continuously', async ({ page, browser }) => {
+    /*
+     * The sequential test above never overlaps, so it missed this: applying a
+     * remote scene set a flag that discarded every local change for 100ms, and
+     * a drawing peer commits every 50ms. The window never closed, so whoever
+     * was not the busiest peer had their own strokes dropped entirely — the
+     * host drew fine and the student could not.
+     */
+    await cleanContextAndJoin(page, 'BusyAlice');
+    const roomUrl = page.url();
+
+    const bobContext = await newAuthenticatedContext(browser);
+    const bobPage = await bobContext.newPage();
+    try {
+      await bobContext.addInitScript(() => {
+        localStorage.removeItem('whiteboard_username');
+        localStorage.removeItem('whiteboard_user_color');
+      });
+      await bobPage.goto(roomUrl);
+      await bobPage.getByTestId('whiteboard-username-input').fill('BusyBob');
+      await bobPage.getByTestId('whiteboard-join-room-btn').click();
+      await approveWaitingPeerIfPresent(page);
+      await expect(bobPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+
+      await waitForProviderConnected(page);
+      await waitForProviderConnected(bobPage);
+      await page.waitForTimeout(2000);
+
+      await page.getByTestId('whiteboard-tool-pen').click();
+      await bobPage.getByTestId('whiteboard-tool-rectangle').click();
+
+      // One continuous stroke held for ~2s, not a burst with gaps: the flag is
+      // re-armed by each arriving commit, so only an unbroken stream keeps the
+      // window from ever closing. A sequence of short drags does not reproduce.
+      const aliceKeepsDrawing = page.evaluate(async () => {
+        const canvas = document.querySelector('canvas.excalidraw__canvas.interactive') as HTMLElement;
+        const box = canvas.getBoundingClientRect();
+        const at = (x: number, y: number, type: string) => canvas.dispatchEvent(new PointerEvent(type, {
+          clientX: box.left + x, clientY: box.top + y,
+          bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', button: 0, buttons: 1,
+        }));
+        at(60, 60, 'pointerdown');
+        for (let i = 0; i < 100; i++) {
+          at(60 + i * 2, 60 + (i % 20) * 4, 'pointermove');
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        at(260, 140, 'pointerup');
+      });
+      const bobDrawsOnce = (async () => {
+        // Mid-stream, while Alice's stroke is still in flight.
+        await bobPage.waitForTimeout(800);
+        await dragOnCanvas(bobPage, { x: 420, y: 320 }, { x: 520, y: 420 });
+      })();
+
+      await Promise.all([aliceKeepsDrawing, bobDrawsOnce]);
+
+      // Polled, not slept on: a fixed wait passed alone and failed under the
+      // parallel suite, where both pages are slower. The claim is that the
+      // rectangle arrives, not that it arrives within three seconds.
+      await expect
+        .poll(
+          () => page.evaluate(() => {
+            const api = (window as any).__debugExcalidrawApi;
+            const elements = api?.getSceneElements?.() ?? [];
+            return elements.filter((e: any) => e.type === 'rectangle' && !e.isDeleted).length;
+          }),
+          { timeout: 25000, message: "Bob's rectangle never reached Alice" },
+        )
+        .toBeGreaterThanOrEqual(1);
+    } finally {
+      await bobContext.close();
+    }
+  });
+
   test('both peers draw simultaneously, both see each other', async ({ page, browser }) => {
       await cleanContextAndJoin(page, 'SimAlice');
     const roomUrl = page.url();
