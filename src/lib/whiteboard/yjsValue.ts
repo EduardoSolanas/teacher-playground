@@ -32,6 +32,23 @@ export function valuesEqual(left: unknown, right: unknown, depth = 0): boolean {
   if (left === null || right === null) return false;
   if (typeof left !== 'object' || typeof right !== 'object') return false;
 
+  // Fast path: compare typed arrays by byte content
+  const leftIsTypedArray = ArrayBuffer.isView(left);
+  const rightIsTypedArray = ArrayBuffer.isView(right);
+  if (leftIsTypedArray || rightIsTypedArray) {
+    if (!leftIsTypedArray || !rightIsTypedArray) return false;
+    const leftBuf = left as ArrayBufferView;
+    const rightBuf = right as ArrayBufferView;
+    if (leftBuf.byteLength !== rightBuf.byteLength) return false;
+    // Compare byte-by-byte
+    const leftBytes = new Uint8Array(leftBuf.buffer, leftBuf.byteOffset, leftBuf.byteLength);
+    const rightBytes = new Uint8Array(rightBuf.buffer, rightBuf.byteOffset, rightBuf.byteLength);
+    for (let i = 0; i < leftBytes.length; i++) {
+      if (leftBytes[i] !== rightBytes[i]) return false;
+    }
+    return true;
+  }
+
   const leftIsArray = Array.isArray(left);
   if (leftIsArray !== Array.isArray(right)) return false;
 

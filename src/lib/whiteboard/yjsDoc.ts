@@ -1,5 +1,6 @@
 import * as Y from 'yjs';
 import { cloneForYjs, valuesEqual } from './yjsValue';
+import { encodePoints, decodePoints } from './pointCodec';
 import type { CanvasElement } from '@/types/whiteboard';
 
 export function createWhiteboardDoc(roomId: string) {
@@ -19,7 +20,12 @@ export function addElementToArray(
   const yMap = new Y.Map();
   yMap.set('id', element.id);
   yMap.set('type', element.type);
-  yMap.set('points', JSON.stringify((element as any).points || []));
+
+  // Use binary encoding for points if possible, fall back to JSON
+  const points = (element as any).points || [];
+  const encoded = encodePoints(points);
+  yMap.set('points', encoded || JSON.stringify(points));
+
   yMap.set('color', (element as any).color || '');
   yMap.set('strokeWidth', (element as any).strokeWidth || 2);
   yMap.set('x', (element as any).x || 0);
@@ -66,7 +72,9 @@ export function updateElementInArray(
   const yMap = items[index];
   for (const [key, value] of Object.entries(updates)) {
     if (key === 'points') {
-      yMap.set(key, JSON.stringify(value || []));
+      // Use binary encoding for points if possible, fall back to JSON
+      const encoded = encodePoints(value || []);
+      yMap.set(key, encoded || JSON.stringify(value || []));
     } else {
       yMap.set(key, value);
     }
@@ -160,12 +168,10 @@ export function getElementsFromArray(
     yMap.forEach((value: unknown, key: string) => {
       element[key] = value;
     });
-    if (typeof element.points === 'string') {
-      try {
-        element.points = JSON.parse(element.points);
-      } catch {
-        // Keep the raw string when a legacy row is not JSON.
-      }
+    // Use decodePoints to handle all four forms: binary Uint8Array, JSON string, plain array, or already-decoded
+    const decoded = decodePoints(element.points);
+    if (decoded !== null) {
+      element.points = decoded;
     }
     return element as CanvasElement;
   });

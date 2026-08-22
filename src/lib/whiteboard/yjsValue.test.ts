@@ -67,6 +67,37 @@ describe('valuesEqual', () => {
 
     expect(() => valuesEqual(left, right)).not.toThrow();
   });
+
+  it('compares typed arrays quickly by byte content', () => {
+    const buf1 = new Uint8Array([1, 2, 3, 4]);
+    const buf2 = new Uint8Array([1, 2, 3, 4]);
+    const buf3 = new Uint8Array([1, 2, 3, 5]);
+
+    expect(valuesEqual(buf1, buf2)).toBe(true);
+    expect(valuesEqual(buf1, buf3)).toBe(false);
+  });
+
+  it('rejects typed arrays of different length', () => {
+    const buf1 = new Uint8Array([1, 2, 3]);
+    const buf2 = new Uint8Array([1, 2, 3, 4]);
+
+    expect(valuesEqual(buf1, buf2)).toBe(false);
+  });
+
+  it('rejects mixed types (typed array vs plain object)', () => {
+    const buf = new Uint8Array([1, 2, 3]);
+    const obj = { 0: 1, 1: 2, 2: 3 };
+
+    expect(valuesEqual(buf, obj)).toBe(false);
+  });
+
+  it('exits early on byte difference in middle of buffer', () => {
+    const buf1 = new Uint8Array(1000);
+    buf1[500] = 255; // Difference in middle
+    const buf2 = new Uint8Array(1000);
+
+    expect(valuesEqual(buf1, buf2)).toBe(false);
+  });
 });
 
 describe('cloneForYjs', () => {
