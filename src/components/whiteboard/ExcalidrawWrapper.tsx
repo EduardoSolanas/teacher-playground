@@ -62,16 +62,43 @@ export default function ExcalidrawWrapper({
    * next local commit would see every remote element as "changed" and publish
    * it straight back — peers echoing each other's work.
    */
-  const adoptVersionBaseline = useCallback((elements: readonly any[]) => {
+  const adoptVersionBaseline = useCallback((
+    elements: readonly any[],
+    remoteIds?: ReadonlySet<string>,
+  ) => {
     const versions = new Map<string, number>();
     for (const element of elements) {
       const id = (element as { id?: unknown })?.id;
       if (typeof id !== 'string' || id.length === 0) continue;
+
+      /*
+       * An element the remote scene did not contain is ours and unsent.
+       *
+       * restoreElements merges the local scene into the remote one, so the
+       * result includes anything drawn here that has not round-tripped yet.
+       * Recording those as published claimed they had been sent when they had
+       * not, and they were never published at all — one peer's shape simply
+       * never arrived, intermittently, depending on what was in flight.
+       */
+      if (remoteIds && !remoteIds.has(id)) {
+        const previous = publishedVersionsRef.current.get(id);
+        if (previous !== undefined) versions.set(id, previous);
+        continue;
+      }
+
       const version = (element as { version?: unknown }).version;
       versions.set(id, typeof version === 'number' ? version : 0);
     }
     publishedVersionsRef.current = versions;
   }, []);
+  /** Latest onElementsChange, so the unmount flush needs no dependency on it. */
+  const onElementsChangeRef = useRef(onElementsChange);
+  useEffect(() => { onElementsChangeRef.current = onElementsChange; }, [onElementsChange]);
+
+  /** Remote scenes coalesce into one React update rather than ~20 a second. */
+  const REMOTE_STATE_FLUSH_MS = 200;
+  const pendingRemoteStateRef = useRef<any[] | null>(null);
+  const remoteStateTimerRef = useRef<number | null>(null);
   const pendingElementsRef = useRef<any[] | null>(null);
   /** Scene captured mid-stroke, flushed to React state on pointer up. */
   const deferredElementsRef = useRef<any[] | null>(null);
@@ -81,6 +108,12 @@ export default function ExcalidrawWrapper({
 
 
   const applyRemoteElements = useCallback((remoteElements: any[]) => {
+    const remoteIds = new Set<string>();
+    for (const element of remoteElements) {
+      const id = (element as { id?: unknown })?.id;
+      if (typeof id === 'string' && id.length > 0) remoteIds.add(id);
+    }
+
     const localElements = apiRef.current?.getSceneElements?.() ?? [];
     const restoredElements = uniqueElementsById(
       restoreElements(
@@ -90,7 +123,28 @@ export default function ExcalidrawWrapper({
       ) as Array<{ id?: unknown }>,
     );
 
-    onElementsChange(restoredElements);
+    /*
+     * The canvas is updated below immediately — that is what the user watches.
+     * What is deferred is the React hop.
+     *
+     * onElementsChange re-renders the room subtree and feeds the debounced
+     * whole-board persist, and a drawing peer sends ~20 updates a second. Doing
+     * that per update made the receiving side crawl while the sender, which
+     * already defers its own state hop mid-stroke, stayed fast — so whoever was
+     * watching fell behind whoever was drawing.
+     *
+     * Nothing downstream of it needs 20 updates a second: it drives an
+     * is-the-board-empty check and a save that is debounced anyway.
+     */
+    pendingRemoteStateRef.current = restoredElements;
+    if (remoteStateTimerRef.current === null) {
+      remoteStateTimerRef.current = window.setTimeout(() => {
+        remoteStateTimerRef.current = null;
+        const pending = pendingRemoteStateRef.current;
+        pendingRemoteStateRef.current = null;
+        if (pending) onElementsChange(pending);
+      }, REMOTE_STATE_FLUSH_MS);
+    }
 
     /*
      * Adopt what actually lands in the scene, not what arrived on the wire.
@@ -98,7 +152,7 @@ export default function ExcalidrawWrapper({
      * remote scene would then read every restored element as locally changed
      * and publish it straight back.
      */
-    adoptVersionBaseline(restoredElements);
+    adoptVersionBaseline(restoredElements, remoteIds);
 
     if (apiRef.current) {
       try {
@@ -118,6 +172,16 @@ export default function ExcalidrawWrapper({
   useEffect(() => {
     setIsClient(true);
     return () => {
+      // Flush any coalesced remote scene, so leaving a room cannot drop the
+      // last change from the empty-board check or the debounced persist.
+      if (remoteStateTimerRef.current !== null) {
+        window.clearTimeout(remoteStateTimerRef.current);
+        remoteStateTimerRef.current = null;
+      }
+      const pendingRemote = pendingRemoteStateRef.current;
+      pendingRemoteStateRef.current = null;
+      if (pendingRemote) onElementsChangeRef.current(pendingRemote);
+
       if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
         if ((window as any).__debugExcalidrawApi === apiRef.current) {
           delete (window as any).__debugExcalidrawApi;
