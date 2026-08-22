@@ -17,10 +17,12 @@ export function UserProfileMenu({
   displayName,
   onDisplayNameChange,
   triggerClassName = DEFAULT_TRIGGER_CLASS,
+  showDisplayName = true,
 }: {
   displayName: string | null;
   onDisplayNameChange: (name: string) => void;
   triggerClassName?: string;
+  showDisplayName?: boolean;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -128,6 +130,7 @@ export function UserProfileMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={labelId}
+        aria-label={`Open profile for ${label}`}
         onClick={() => {
           setOpen((current) => !current);
           setEditing(false);
@@ -142,7 +145,7 @@ export function UserProfileMenu({
         >
           {label.slice(0, 1).toUpperCase()}
         </span>
-        <span className="truncate">{label}</span>
+        {showDisplayName && <span className="truncate">{label}</span>}
       </button>
 
       {open && (

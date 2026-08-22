@@ -20,8 +20,7 @@ import { shouldExpandForArrival } from '@/lib/whiteboard/waitingArrival';
 import RemoteCursorOverlay from '@/components/whiteboard/RemoteCursorOverlay';
 import ClearBoardModal from '@/components/whiteboard/ClearBoardModal';
 import ToolSidebar from '@/components/whiteboard/ToolSidebar';
-import BackToRoomsLink from '@/components/whiteboard/BackToRoomsLink';
-import RoomAccountMenu from '@/components/whiteboard/RoomAccountMenu';
+import RoomTopNav from '@/components/whiteboard/RoomTopNav';
 import { LibraryPanel } from '@/components/whiteboard/LibraryPanel';
 import { ShortcutsHelp } from '@/components/whiteboard/ShortcutsHelp';
 import { UndoRedoBar } from '@/components/whiteboard/UndoRedoBar';
@@ -43,6 +42,10 @@ const ExcalidrawWrapper = dynamic(
     loading: () => <div className="w-full h-full min-h-[25rem]" />,
   },
 );
+
+export function roomCanvasTopClass(guestHost: boolean): string {
+  return guestHost ? 'top-0 sm:top-12' : 'top-[calc(3rem+env(safe-area-inset-top))] sm:top-12';
+}
 
 function RoomContent({ roomId }: { roomId: string }) {
   const router = useRouter();
@@ -254,10 +257,10 @@ function RoomContent({ roomId }: { roomId: string }) {
     if (guestHost) {
       return (
         <>
-          <BackToRoomsLink onNavigate={handleBackToRooms} />
-          <RoomAccountMenu
+          <RoomTopNav
             displayName={userName}
             onDisplayNameChange={handleJoin}
+            onNavigate={handleBackToRooms}
             rosterExpanded={false}
           />
           <GuestJoinPrompt
@@ -272,10 +275,10 @@ function RoomContent({ roomId }: { roomId: string }) {
     }
     return (
       <>
-        <BackToRoomsLink onNavigate={handleBackToRooms} />
-        <RoomAccountMenu
+        <RoomTopNav
           displayName={userName}
           onDisplayNameChange={handleJoin}
+          onNavigate={handleBackToRooms}
           rosterExpanded={false}
         />
         <UserNamePrompt onJoin={handleJoin} roomId={roomId} />
@@ -286,10 +289,10 @@ function RoomContent({ roomId }: { roomId: string }) {
   if (isWaiting) {
     return (
       <>
-        <BackToRoomsLink onNavigate={handleBackToRooms} />
-        <RoomAccountMenu
+        <RoomTopNav
           displayName={userName}
           onDisplayNameChange={handleJoin}
+          onNavigate={handleBackToRooms}
           rosterExpanded={false}
         />
         <WaitingRoom
@@ -314,10 +317,10 @@ function RoomContent({ roomId }: { roomId: string }) {
   if (!boardEverShown && status !== 'synced' && status !== 'connected' && status !== 'connecting') {
     return (
       <>
-        <BackToRoomsLink onNavigate={handleBackToRooms} />
-        <RoomAccountMenu
+        <RoomTopNav
           displayName={userName}
           onDisplayNameChange={handleJoin}
+          onNavigate={handleBackToRooms}
           rosterExpanded={false}
         />
         <LoadingScreen error={error} />
@@ -330,10 +333,10 @@ function RoomContent({ roomId }: { roomId: string }) {
       className="room-shell"
       onPointerMove={(event) => setCursor(event.clientX, event.clientY)}
     >
-      <BackToRoomsLink onNavigate={handleBackToRooms} />
-      <RoomAccountMenu
+      <RoomTopNav
         displayName={userName}
         onDisplayNameChange={handleJoin}
+        onNavigate={handleBackToRooms}
         rosterExpanded={!presenceCollapsed}
       />
       <ToolSidebar
@@ -343,7 +346,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         onOpenHelp={() => setShowShortcutsHelp(true)}
         showHostTools={isLocalHost}
       />
-      <div className={`absolute inset-0 overflow-hidden bg-slate-50 sm:inset-auto sm:left-14 sm:top-12 sm:h-[calc(100vh-3rem)] sm:rounded-tl-2xl ${presenceCollapsed ? 'sm:w-[calc(100vw-4.25rem)]' : 'sm:w-[calc(100vw-17.25rem)]'}`} data-testid="whiteboard-canvas-area">
+      <div className={`absolute inset-x-0 bottom-0 ${roomCanvasTopClass(guestHost)} overflow-hidden bg-slate-50 sm:inset-auto sm:left-14 sm:h-[calc(100vh-3rem)] sm:rounded-tl-2xl ${presenceCollapsed ? 'sm:w-[calc(100vw-4.25rem)]' : 'sm:w-[calc(100vw-17.25rem)]'}`} data-testid="whiteboard-canvas-area">
         <ExcalidrawWrapper
           roomId={roomId}
           userName={userName}

@@ -6,8 +6,11 @@ import { isGuestHostname } from '@/lib/guest/guestHost';
 
 export default function BackToRoomsLink({
   onNavigate,
+  embedded = false,
 }: {
   onNavigate?: () => void;
+  /** Render as part of RoomTopNav instead of as a standalone floating control. */
+  embedded?: boolean;
 }) {
   // "Back to rooms" is a teacher affordance: it goes to /whiteboard, which is
   // teacher-host-only and 404s on the guest hostname. Guests have no room list
@@ -33,7 +36,9 @@ export default function BackToRoomsLink({
         event.preventDefault();
         onNavigate();
       }}
-      className="fixed left-[max(0.5rem,env(safe-area-inset-left))] top-[max(0.5rem,env(safe-area-inset-top))] z-[1100] inline-flex h-11 items-center gap-1.5 rounded-xl border border-slate-700/80 bg-slate-900/95 pl-2.5 pr-3.5 text-[0.8125rem] font-medium text-slate-200 no-underline shadow-lg shadow-slate-950/30 backdrop-blur-md transition-colors hover:bg-slate-800 hover:text-white active:bg-slate-700"
+      className={embedded
+        ? 'inline-flex h-full items-center gap-1.5 pl-[max(0.75rem,env(safe-area-inset-left))] pr-3 text-[0.8125rem] font-medium text-slate-300 no-underline transition-colors hover:bg-slate-800/80 hover:text-white active:bg-slate-700'
+        : 'fixed left-[max(0.5rem,env(safe-area-inset-left))] top-[max(0.5rem,env(safe-area-inset-top))] z-[1100] inline-flex h-11 items-center gap-1.5 rounded-xl border border-slate-700/80 bg-slate-900/95 pl-2.5 pr-3.5 text-[0.8125rem] font-medium text-slate-200 no-underline shadow-lg shadow-slate-950/30 backdrop-blur-md transition-colors hover:bg-slate-800 hover:text-white active:bg-slate-700'}
     >
       <svg
         aria-hidden="true"
