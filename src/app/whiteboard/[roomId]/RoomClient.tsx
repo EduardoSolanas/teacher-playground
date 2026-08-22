@@ -114,9 +114,22 @@ function RoomContent({ roomId }: { roomId: string }) {
     yElementsArray,
     yCursorsMap,
     setElements,
+    viewport,
+    storeViewport,
   } = useCollaboration(roomId);
 
   const { clearState, clearSession } = usePersistence(roomId, elements, { x: 0, y: 0, zoom: 1 } as any);
+
+  /*
+   * A pan feeds the cursor overlay as it always did, and now also the stored
+   * room view. Only the overlay needs it in React state; the store call is
+   * debounced inside the hook, so panning does not turn into a request per
+   * frame.
+   */
+  const handleViewportChange = useCallback((next: CanvasViewport) => {
+    setCanvasViewport(next);
+    storeViewport({ x: next.scrollX, y: next.scrollY, zoom: next.zoom });
+  }, [storeViewport]);
 
   useClearSessionOnEviction(clearSession, { wasKicked, wasRejected, wasSuspended });
 
@@ -361,7 +374,8 @@ function RoomContent({ roomId }: { roomId: string }) {
           activeTool={activeTool}
           isLocalHost={isLocalHost}
           onToolChange={handleToolChange}
-          onViewportChange={setCanvasViewport}
+          initialViewport={viewport}
+          onViewportChange={handleViewportChange}
           onCursorMove={setCursor}
           onElementsChange={setElements}
         />

@@ -4184,6 +4184,53 @@ describe('presence broadcast over WebSocket', () => {
   });
 });
 
+describe('storing the room view', () => {
+  it('does not wipe the board when only the view is written', async () => {
+    const roomId = 'viewport-only-room';
+    const elements = [{ id: 'e1', type: 'rectangle', x: 10, y: 20 }];
+    expect((await createRoom(roomId)).status).toBe(200);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements }),
+    })).status).toBe(200);
+
+    // The host pans. The board is not in this body and must not be read as
+    // "the board is now empty".
+    const view = { x: 128, y: -64, zoom: 1.5 };
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ viewport: view }),
+    })).status).toBe(200);
+
+    const res = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session);
+    const room = await res.json() as { elements: unknown[]; viewport: unknown };
+    expect(room.elements).toEqual(elements);
+    expect(room.viewport).toEqual(view);
+  });
+
+  it('leaves the stored view alone when only the board is written', async () => {
+    const roomId = 'board-only-room';
+    const view = { x: 5, y: 6, zoom: 2 };
+    expect((await createRoom(roomId)).status).toBe(200);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ viewport: view }),
+    })).status).toBe(200);
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [{ id: 'e2', type: 'ellipse' }] }),
+    })).status).toBe(200);
+
+    const res = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session);
+    expect((await res.json() as { viewport: unknown }).viewport).toEqual(view);
+  });
+});
+
 describe('server-side y-websocket sync', () => {
   type BoardElement = { id: string; type: string; x: number; y: number };
 

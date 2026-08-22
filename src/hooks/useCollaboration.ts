@@ -21,6 +21,7 @@ import { admissionFromPresenceStatus } from '@/lib/whiteboard/presenceAdmission'
 import { mergeCursorPresence } from '@/lib/whiteboard/mergeCursorPresence';
 import { shouldPollRoomApiFallback } from '@/lib/whiteboard/providerStatus';
 import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
+import { VIEWPORT_SAVE_DEBOUNCE_MS, shouldStoreViewport } from '@/lib/whiteboard/viewportPersist';
 import { shouldPollPresence } from '@/lib/whiteboard/presencePolling';
 import { cursorPublishDelay } from '@/lib/whiteboard/cursorPublishRate';
 import { moderationTargetBody } from '@/lib/whiteboard/moderationTarget';
@@ -90,6 +91,11 @@ export function useCollaboration(roomId: string) {
   const [hasJoined, setHasJoined] = useState(false);
   const hasJoinedRef = useRef(false);
   const collaborationRef = useRef<ReturnType<typeof createCollaboration> | null>(null);
+  /** Host-ness as of the last roster change, read inside the debounced view save. */
+  const isHostRef = useRef(false);
+  const lastStoredViewportRef = useRef<Viewport | null>(null);
+  const pendingViewportRef = useRef<Viewport | null>(null);
+  const viewportSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingUserNameRef = useRef(localUserName);
   const localUserColorRef = useRef('#3498db');
   const isRemoteUpdateRef = useRef(false);
@@ -214,6 +220,8 @@ export function useCollaboration(roomId: string) {
           const data = await res.json();
           const loadedElements = data.elements || [];
           const loadedViewport = data.viewport || { x: 0, y: 0, zoom: 1 };
+          // Already the stored view: opening a room should not write it back.
+          lastStoredViewportRef.current = loadedViewport;
           lastRoomUpdatedAtRef.current = data.updated_at || Date.now();
           setMaxUsers(data.maxUsers || DEFAULT_MAX_USERS);
           applyHostFromApi(hostPeerIdRef, data.hostPeerId, setHostPeerId);
@@ -481,6 +489,47 @@ export function useCollaboration(roomId: string) {
   useEffect(() => {
     applyPresenceRef.current = applyPresencePayload as (data: unknown) => void;
   }, [applyPresencePayload]);
+
+  useEffect(() => {
+    isHostRef.current = isLocalRoomHost(grantRole, users, localPeerId);
+  }, [grantRole, users, localPeerId]);
+
+  /*
+   * Store where the host left the board.
+   *
+   * The room keeps one view and the host's is the one worth reopening at. This
+   * is the only scene write a client still makes: the board itself reaches
+   * storage through the room object now, and a view is a few dozen bytes.
+   */
+  const storeViewport = useCallback(
+    (next: Viewport) => {
+      pendingViewportRef.current = next;
+      if (viewportSaveTimeoutRef.current) clearTimeout(viewportSaveTimeoutRef.current);
+      viewportSaveTimeoutRef.current = setTimeout(async () => {
+        const view = pendingViewportRef.current;
+        if (!view) return;
+        if (!shouldStoreViewport({
+          isHost: isHostRef.current,
+          next: view,
+          lastStored: lastStoredViewportRef.current,
+        })) {
+          return;
+        }
+        lastStoredViewportRef.current = view;
+        try {
+          await ajaxFetch(`/api/whiteboard/room/${roomId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ viewport: view }),
+          });
+        } catch {
+          // The next pan tries again; a lost view is not worth a retry loop.
+          lastStoredViewportRef.current = null;
+        }
+      }, VIEWPORT_SAVE_DEBOUNCE_MS);
+    },
+    [roomId],
+  );
 
   useEffect(() => {
     if (!roomLoaded || !hasJoined) return;
@@ -791,6 +840,7 @@ export function useCollaboration(roomId: string) {
       setViewport(newViewport);
       store.setViewport(newViewport);
     },
+    storeViewport,
     collaboration: collaborationEpoch >= 0 ? collaborationRef.current : null,
     waitingPeers,
     isWaiting,

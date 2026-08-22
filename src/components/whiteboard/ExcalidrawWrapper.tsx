@@ -30,6 +30,8 @@ type ExcalidrawWrapperProps = {
   isLocalHost: boolean;
   onToolChange: (tool: string) => void;
   onViewportChange: (viewport: CanvasViewport) => void;
+  /** The room's stored view, applied once when the board opens. */
+  initialViewport: { x: number; y: number; zoom: number } | null;
   /** Local pointer, in scene coordinates. */
   onCursorMove: (sceneX: number, sceneY: number) => void;
   onElementsChange: (elements: any[]) => void;
@@ -47,6 +49,7 @@ export default function ExcalidrawWrapper({
   isLocalHost,
   onToolChange,
   onViewportChange,
+  initialViewport,
   onCursorMove,
   onElementsChange,
 }: ExcalidrawWrapperProps) {
@@ -285,6 +288,29 @@ export default function ExcalidrawWrapper({
     return getElementsFromArray(yElementsArray) as unknown as Record<string, unknown>[];
   }, [yElementsArray]);
 
+  /*
+   * Applied once, never on later changes.
+   *
+   * The stored view arrives with the room load, and the API poll can bring it
+   * round again while a lesson is running. Re-applying it then would drag the
+   * canvas out from under whoever is drawing, so the first one wins.
+   */
+  const appliedStoredViewRef = useRef(false);
+  const [apiReady, setApiReady] = useState(false);
+  useEffect(() => {
+    if (appliedStoredViewRef.current || !apiReady) return;
+    const api = apiRef.current;
+    if (!api || !initialViewport) return;
+    const { x, y, zoom } = initialViewport;
+    if (x === 0 && y === 0 && zoom === 1) return;
+    appliedStoredViewRef.current = true;
+    try {
+      api.updateScene({ appState: { scrollX: x, scrollY: y, zoom: { value: zoom } } });
+    } catch {
+      // A stored view must never stop the board from opening.
+    }
+  }, [initialViewport, apiReady]);
+
   const handleAPI = useCallback((api: any) => {
     apiRef.current = api;
 
@@ -299,6 +325,8 @@ export default function ExcalidrawWrapper({
     // reason.
     setTimeout(() => {
       if (apiRef.current !== api) return;
+      // Excalidraw has settled, so the stored view can be applied now.
+      setApiReady(true);
       const shared = readSharedElements();
       if (shared.length === 0) return;
       if (excalidrawElementsEqual(shared, lastSyncedElementsRef.current)) return;

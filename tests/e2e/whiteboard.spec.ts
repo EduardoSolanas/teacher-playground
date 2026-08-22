@@ -409,6 +409,50 @@ test.describe('Room Connection Lifecycle', () => {
   });
 });
 
+test.describe('Stored room view', () => {
+  test('the host view is stored and reopened at', async ({ page }) => {
+    const roomId = await createRoomWithMaxUsers(page, 'ViewHost', 2);
+    await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible();
+
+    await expect
+      .poll(async () => page.evaluate(() => !!(window as any).__debugExcalidrawApi), { timeout: 15000 })
+      .toBe(true);
+    await page.waitForTimeout(400);
+
+    // The host pans and zooms, the way scrolling the canvas would.
+    await page.evaluate(() => {
+      const api = (window as any).__debugExcalidrawApi;
+      api.updateScene({ appState: { scrollX: -320, scrollY: 240, zoom: { value: 1.5 } } });
+    });
+
+    await expect
+      .poll(
+        async () => {
+          const response = await page.request.get(appUrl(`/api/whiteboard/room/${roomId}`));
+          if (!response.ok()) return null;
+          return (await response.json()).viewport ?? null;
+        },
+        { timeout: 20000, message: 'the room view was never stored' },
+      )
+      .toMatchObject({ x: -320, y: 240, zoom: 1.5 });
+
+    // Reopening the room lands on that view rather than the origin.
+    await page.reload();
+    await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible();
+    await expect
+      .poll(
+        async () => page.evaluate(() => {
+          const api = (window as any).__debugExcalidrawApi;
+          if (!api) return null;
+          const state = api.getAppState();
+          return { x: state.scrollX, y: state.scrollY, zoom: state.zoom.value };
+        }),
+        { timeout: 20000, message: 'the board did not reopen at the stored view' },
+      )
+      .toMatchObject({ x: -320, y: 240, zoom: 1.5 });
+  });
+});
+
 test.describe('Multi-Peer Sync', () => {
   test('Alice draws rectangle, Bob sees it via Yjs WebRTC', async ({ page, browser }) => {
     // Alice creates room

@@ -190,11 +190,30 @@ export async function handleRoomPost(
       if (accountId && !canWriteBoard(role)) {
         return Response.json({ error: 'Room already exists' }, { status: 409 });
       }
-      db.prepare(
-        `UPDATE rooms
-         SET elements = ?, viewport = ?, updated_at = ?
-         WHERE room_id = ?`,
-      ).run(elementsJson, viewportJson, now, roomId);
+      /*
+       * Write only what the body carried.
+       *
+       * Both fields are optional, so writing the pair meant a view-only save —
+       * a pan — stored `elements || []` over the board and erased it, and a
+       * board-only save reset the stored view to the origin.
+       */
+      const columns: string[] = [];
+      const values: unknown[] = [];
+      if (elements !== undefined) {
+        columns.push('elements = ?');
+        values.push(elementsJson);
+      }
+      if (viewport !== undefined) {
+        columns.push('viewport = ?');
+        values.push(viewportJson);
+      }
+      if (columns.length > 0) {
+        db.prepare(
+          `UPDATE rooms
+           SET ${columns.join(', ')}, updated_at = ?
+           WHERE room_id = ?`,
+        ).run(...values, now, roomId);
+      }
     } else {
       db.transaction(() => {
         db.prepare(
