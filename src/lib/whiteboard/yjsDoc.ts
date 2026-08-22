@@ -131,7 +131,18 @@ export function replaceSharedElements(
       }
 
       for (const [key, value] of Object.entries(element)) {
-        const encoded = cloneForYjs(value);
+        /*
+         * Strokes are the reason the codec exists, and this is the path they
+         * take: every pointer sample reaches the document through here, not
+         * through addElementToArray. Encoding only there left the packing
+         * switched on in code and switched off in practice.
+         *
+         * A null means the codec could not represent these points exactly, so
+         * they are stored the ordinary way rather than approximated.
+         */
+        const encoded = key === 'points'
+          ? (encodePoints(value) ?? cloneForYjs(value))
+          : cloneForYjs(value);
         if (encoded === undefined) continue;
         if (!valuesEqual(map.get(key), encoded)) {
           map.set(key, encoded);

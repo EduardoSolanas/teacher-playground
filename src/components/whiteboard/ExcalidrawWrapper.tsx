@@ -15,7 +15,7 @@ import {
   toExcalidrawToolType,
   uniqueElementsById,
 } from '@/lib/whiteboard/excalidrawSync';
-import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
+import { getElementsFromArray, replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 
 
 type ExcalidrawWrapperProps = {
@@ -208,16 +208,15 @@ export default function ExcalidrawWrapper({
     const handler = (_events: Y.YEvent<any>[], transaction: Y.Transaction) => {
       if (transaction.origin === 'local') return;
 
-      const elements = elementsArray.toArray();
-      const remoteElements: any[] = [];
-
-      for (const yMap of elements) {
-        const el: Record<string, unknown> = {};
-        (yMap as Y.Map<unknown>).forEach((value: unknown, key: string) => {
-          el[key] = value;
-        });
-        remoteElements.push(el);
-      }
+      /*
+       * The one reader, not a second copy of it.
+       *
+       * This loop used to lift values straight out of the Yjs map, which
+       * silently stopped working the day `points` began arriving encoded: the
+       * canvas was handed a Uint8Array it cannot draw, and a peer's strokes
+       * simply never appeared. getElementsFromArray decodes every stored form.
+       */
+      const remoteElements: any[] = getElementsFromArray(elementsArray);
 
       const same = excalidrawElementsEqual(remoteElements, lastSyncedElementsRef.current);
       if (same) return;
@@ -237,13 +236,9 @@ export default function ExcalidrawWrapper({
   /** Snapshot of the shared document as plain Excalidraw elements. */
   const readSharedElements = useCallback((): Record<string, unknown>[] => {
     if (!yElementsArray) return [];
-    return yElementsArray.toArray().map((yMap) => {
-      const element: Record<string, unknown> = {};
-      (yMap as Y.Map<unknown>).forEach((value: unknown, key: string) => {
-        element[key] = value;
-      });
-      return element;
-    });
+    // Through the shared reader, never by copying the map directly: `points`
+    // is stored encoded and has to be decoded before it reaches the canvas.
+    return getElementsFromArray(yElementsArray) as unknown as Record<string, unknown>[];
   }, [yElementsArray]);
 
   const handleAPI = useCallback((api: any) => {

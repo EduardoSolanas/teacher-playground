@@ -515,6 +515,64 @@ test.describe('Multi-Peer Sync', () => {
     }
   });
 
+  test('a freehand stroke reaches the other peer with its points intact', async ({ page, browser }) => {
+    /*
+     * Every other sync test here draws a rectangle, which carries no `points`.
+     * So when strokes began travelling as encoded bytes, nothing noticed that
+     * the canvas was being handed an undecoded buffer it cannot draw: a peer's
+     * freehand simply never appeared on the other board. This is the only test
+     * that would have failed.
+     */
+    await cleanContextAndJoin(page, 'InkAlice');
+    const roomUrl = page.url();
+
+    const bobContext = await newAuthenticatedContext(browser);
+    const bobPage = await bobContext.newPage();
+    try {
+      await bobContext.addInitScript(() => {
+        localStorage.removeItem('whiteboard_username');
+        localStorage.removeItem('whiteboard_user_color');
+      });
+      await bobPage.goto(roomUrl);
+      await bobPage.getByTestId('whiteboard-username-input').fill('InkBob');
+      await bobPage.getByTestId('whiteboard-join-room-btn').click();
+      await approveWaitingPeerIfPresent(page);
+      await expect(bobPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+
+      await waitForProviderConnected(page);
+      await waitForProviderConnected(bobPage);
+      await page.waitForTimeout(2000);
+
+      await bobPage.getByTestId('whiteboard-tool-pen').click();
+      await dragOnCanvas(bobPage, { x: 160, y: 160 }, { x: 360, y: 300 });
+
+      const freedrawOnAlice = () => page.evaluate(() => {
+        const api = (window as any).__debugExcalidrawApi;
+        const elements = ((api?.getSceneElements?.() ?? []) as any[])
+          .filter((e) => e.type === 'freedraw' && !e.isDeleted);
+        const first = elements[0];
+        return {
+          count: elements.length,
+          points: Array.isArray(first?.points) ? first.points.length : -1,
+        };
+      });
+
+      await expect
+        .poll(async () => (await freedrawOnAlice()).count, {
+          timeout: 25000,
+          message: "Bob's freehand stroke never reached Alice",
+        })
+        .toBeGreaterThanOrEqual(1);
+
+      // Decoded into real coordinates, not handed over as an opaque buffer.
+      const arrived = await freedrawOnAlice();
+      expect(arrived.points, 'points did not arrive as an array of coordinates')
+        .toBeGreaterThan(1);
+    } finally {
+      await bobContext.close();
+    }
+  });
+
   test('a peer can draw while the other is drawing continuously', async ({ page, browser }) => {
     /*
      * The sequential test above never overlaps, so it missed this: applying a
