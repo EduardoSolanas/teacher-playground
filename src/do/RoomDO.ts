@@ -61,6 +61,7 @@ import {
   SIGNALING_RATE_WINDOW_MS,
 } from '../lib/worker/requestGuard';
 import { SIGNALING_ALLOWED_TOPIC } from '../lib/worker/signalingPolicy';
+import { decideSignalingAction } from '../lib/worker/signalingBudget';
 import { createRateLimiter } from '../lib/http/rateLimit';
 import { logSocketClose } from '../lib/security/authEvents';
 
@@ -153,6 +154,10 @@ export class RoomDO extends DurableObject {
   private readonly signalingMessageRate = createRateLimiter({
     windowMs: SIGNALING_RATE_WINDOW_MS,
     max: SIGNALING_MAX_MESSAGES_PER_WINDOW,
+    // Refused frames still count here: telling a burst of drawing apart from a
+    // client flooding the room needs to know what it sent, not what got
+    // through. Only this limiter opts in — see createRateLimiter.
+    countRejected: true,
   });
 
   /** Injectable hook; defaults to {@link removeLiveKitParticipant}. */
@@ -861,7 +866,15 @@ export class RoomDO extends DurableObject {
       return;
     }
 
-    if (!this.signalingMessageRate.take(attachment.accountId).ok) {
+    const rateCheckResult = this.signalingMessageRate.take(attachment.accountId);
+    const action = decideSignalingAction({ messagesInWindow: rateCheckResult.messagesInWindow });
+
+    if (action === 'drop') {
+      // Drop the frame silently; keep the socket open
+      return;
+    }
+
+    if (action === 'close') {
       try {
         logSocketClose({
           code: 1008,
@@ -878,6 +891,8 @@ export class RoomDO extends DurableObject {
       }
       return;
     }
+
+    // action === 'relay'; continue with normal processing
 
     // y-websocket sends Yjs updates as binary; relay to other peers, not back to sender.
     if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {

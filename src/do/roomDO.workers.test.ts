@@ -727,7 +727,7 @@ describe('signaling message rate limit', () => {
     });
   }
 
-  it('closes with 1008 when a granted owner exceeds SIGNALING_MAX_MESSAGES_PER_WINDOW', async () => {
+  it('closes with 1008 when a granted owner far exceeds the abuse ceiling', async () => {
     const owner = await bootstrapLocalSession('rate-limit-owner');
     const roomId = 'rate-limit-room';
 
@@ -736,15 +736,15 @@ describe('signaling message rate limit', () => {
     const ws = await connectGranted(owner, roomId);
     const closed = closeSignal(ws);
 
-    for (let i = 0; i < 60; i += 1) {
+    // Send 180+ messages to hit the abuse ceiling (3x * 60)
+    for (let i = 0; i < 181; i += 1) {
       ws.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
     }
-    ws.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
 
     expect(await closed).toBe(1008);
   });
 
-  it('still relays a peer under the rate limit while the attacker is closed', async () => {
+  it('still relays a peer under the rate limit while the abuser is closed', async () => {
     const owner = await bootstrapLocalSession('rate-limit-isolation-owner');
     const editor = await bootstrapLocalSession('rate-limit-isolation-editor');
     const roomId = 'rate-limit-isolation-room';
@@ -752,19 +752,127 @@ describe('signaling message rate limit', () => {
     expect((await writeRoom(roomId, owner)).status).toBe(200);
     await grantEditor(owner, editor, roomId);
 
-    const attacker = await connectGranted(owner, roomId);
+    const abuser = await connectGranted(owner, roomId);
     const survivor = await connectGranted(editor, roomId);
 
-    const attackerClosed = closeSignal(attacker);
-    for (let i = 0; i < 61; i += 1) {
-      attacker.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
+    const abuserClosed = closeSignal(abuser);
+    // Send 181+ messages to hit the abuse ceiling (3x * 60) and close
+    for (let i = 0; i < 181; i += 1) {
+      abuser.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
     }
-    expect(await attackerClosed).toBe(1008);
+    expect(await abuserClosed).toBe(1008);
 
     const received = nextMessage(survivor);
     survivor.send(JSON.stringify({ type: 'publish', topic: 'room', data: 'ok' }));
     expect(JSON.parse(await received)).toMatchObject({ type: 'publish', topic: 'room', data: 'ok' });
     expect(survivor.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it('keeps socket open when a peer exceeds budget but stays under abuse ceiling', async () => {
+    const owner = await bootstrapLocalSession('shed-on-breach-owner');
+    const roomId = 'shed-on-breach-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const ws = await connectGranted(owner, roomId);
+    const didNotClose = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(true), 500);
+      ws.addEventListener('close', () => {
+        clearTimeout(timer);
+        resolve(false);
+      }, { once: true });
+    });
+
+    // Send 61 messages to exceed the budget (60) but stay well under ceiling (180)
+    for (let i = 0; i < 61; i += 1) {
+      ws.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
+    }
+
+    expect(await didNotClose).toBe(true);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  });
+
+  it('closes with 1008 when a peer far exceeds the abuse ceiling', async () => {
+    const owner = await bootstrapLocalSession('abuse-ceiling-owner');
+    const roomId = 'abuse-ceiling-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const ws = await connectGranted(owner, roomId);
+    const closed = closeSignal(ws);
+
+    // Send 180+ messages to hit the abuse ceiling (3x * 60)
+    for (let i = 0; i < 181; i += 1) {
+      ws.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
+    }
+
+    expect(await closed).toBe(1008);
+  });
+
+  it('drops frames from over-budget peer that do not reach other peers', async () => {
+    const owner = await bootstrapLocalSession('shed-frames-owner');
+    const editor = await bootstrapLocalSession('shed-frames-editor');
+    const roomId = 'shed-frames-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+
+    const sender = await connectGranted(owner, roomId);
+    const receiver = await connectGranted(editor, roomId);
+
+    // Exceed the budget by 1
+    for (let i = 0; i < 61; i += 1) {
+      sender.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
+    }
+
+    // A publish from sender at this point should be dropped (not relayed to receiver)
+    let received = false;
+    receiver.addEventListener('message', () => { received = true; }, { once: true });
+
+    sender.send(JSON.stringify({ type: 'publish', topic: 'room', data: 'dropped' }));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(received).toBe(false);
+
+    // Socket should still be open so more messages later can get through
+    expect(sender.readyState).toBe(WebSocket.OPEN);
+    sender.close();
+    receiver.close();
+  });
+
+  it('allows a frame through again after the rate window passes', async () => {
+    const owner = await bootstrapLocalSession('window-pass-owner');
+    const editor = await bootstrapLocalSession('window-pass-editor');
+    const roomId = 'window-pass-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+
+    const sender = await connectGranted(owner, roomId);
+    const receiver = await connectGranted(editor, roomId);
+
+    // Exceed the budget by 1
+    for (let i = 0; i < 61; i += 1) {
+      sender.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
+    }
+
+    // A publish is dropped due to being over budget
+    let received = false;
+    receiver.addEventListener('message', () => { received = true; }, { once: true });
+    sender.send(JSON.stringify({ type: 'publish', topic: 'room', data: 'dropped' }));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(received).toBe(false);
+
+    // Wait for the rate window to pass (SIGNALING_RATE_WINDOW_MS = 1000ms)
+    await new Promise((r) => setTimeout(r, 1100));
+
+    // Now a new publish should get through (window reset)
+    const received2 = nextMessage(receiver);
+    sender.send(JSON.stringify({ type: 'publish', topic: 'room', data: 'ok' }));
+    expect(JSON.parse(await received2)).toMatchObject({ type: 'publish', topic: 'room', data: 'ok' });
+
+    sender.close();
+    receiver.close();
   });
 });
 
