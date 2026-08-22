@@ -488,12 +488,34 @@ export default function ExcalidrawWrapper({
     onCursorMove(x, y);
   }, [onCursorMove]);
 
-  /** Report this peer's transform so arriving cursors can be placed in it. */
+  /**
+   * Report this peer's transform, but only when it actually moves.
+   *
+   * This runs on every Excalidraw change — tens of times a second while
+   * drawing. Handing out a fresh object each time made every one of those a
+   * React state change in the room, re-rendering the whole subtree: the same
+   * storm that starved the receiving peer, reintroduced through the viewport.
+   * A pan or a zoom is rare; a pointer sample is not.
+   */
+  const lastViewportRef = useRef<CanvasViewport | null>(null);
   const publishViewport = useCallback(() => {
     const api = apiRef.current;
     if (!api?.getAppState) return;
     try {
-      onViewportChange(viewportFromAppState(api.getAppState()));
+      const next = viewportFromAppState(api.getAppState());
+      const previous = lastViewportRef.current;
+      if (
+        previous
+        && previous.scrollX === next.scrollX
+        && previous.scrollY === next.scrollY
+        && previous.zoom === next.zoom
+        && previous.offsetLeft === next.offsetLeft
+        && previous.offsetTop === next.offsetTop
+      ) {
+        return;
+      }
+      lastViewportRef.current = next;
+      onViewportChange(next);
     } catch {
       // A viewport read must never interrupt drawing.
     }

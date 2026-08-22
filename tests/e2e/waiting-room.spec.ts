@@ -209,7 +209,7 @@ test.describe('Waiting Room', () => {
     await joinExistingRoom(page2, roomId);
     await expectWaiting(page2);
 
-    await page2.getByTestId('whiteboard-room-account').getByRole('button').click();
+    await page2.getByTestId('whiteboard-room-top-nav').getByTestId('whiteboard-profile-btn').click();
     await expect(page2.getByTestId('whiteboard-logout-btn')).toBeVisible({ timeout: 15000 });
 
     await context1.close();
@@ -583,20 +583,29 @@ test.describe('Waiting Room', () => {
     await expect(peerCursor).toBeVisible({ timeout: 15000 });
     await expect(peerCursor).toContainText('CursorPeer');
 
-    const peerPenTool = peerPage.getByTestId('whiteboard-tool-pen');
-    const toolBox = await peerPenTool.boundingBox();
-    expect(toolBox).not.toBeNull();
-    await peerPage.mouse.move(toolBox!.x + toolBox!.width / 2, toolBox!.y + toolBox!.height / 2);
+    /*
+     * Cursors are published from the canvas, in scene coordinates.
+     *
+     * This used to move the peer's pointer onto their own tool sidebar and
+     * assert the host saw it travel there. A cursor is presence on the shared
+     * board, and a scene coordinate for a point outside the canvas means
+     * nothing to the other peer — Excalidraw's own collaborator cursors behave
+     * the same way. What still has to hold is that movement across the canvas
+     * tracks, so that is what is asserted.
+     */
+    const firstX = await expect
+      .poll(async () => (await peerCursor.boundingBox())?.x ?? -1, { timeout: 15000 })
+      .not.toBe(-1)
+      .then(async () => (await peerCursor.boundingBox())!.x);
+
+    await peerPage.mouse.move(peerBox!.x + 520, peerBox!.y + 300);
 
     await expect
       .poll(
-        async () => {
-          const box = await peerCursor.boundingBox();
-          return box?.x ?? Number.POSITIVE_INFINITY;
-        },
-        { timeout: 15000 },
+        async () => (await peerCursor.boundingBox())?.x ?? firstX,
+        { timeout: 15000, message: 'the peer cursor did not follow them across the canvas' },
       )
-      .toBeLessThan(80);
+      .toBeGreaterThan(firstX + 100);
 
     await context1.close();
     await context2.close();
