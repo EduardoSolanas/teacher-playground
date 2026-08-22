@@ -3820,6 +3820,53 @@ describe('presence broadcast over WebSocket', () => {
     ownerSocket.close();
   });
 
+  it('does not broadcast for a heartbeat that changed nothing', async () => {
+    /*
+     * The client heartbeats this same route every two seconds. Broadcasting on
+     * each one had every peer rebuild and re-send a payload for every other
+     * peer several times a second — more work for the room than the polling it
+     * replaces, and more frames competing with the strokes.
+     */
+    const owner = await bootstrapLocalSession('presence-heartbeat-owner');
+    const roomId = 'presence-heartbeat-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const beat = () => authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'owner-peer', userName: 'Owner', color: '#00ff00' }),
+    });
+
+    // The first one is a real join and does change presence.
+    expect((await beat()).status).toBe(200);
+
+    const ownerSocket = await vi.waitFor(async () => {
+      const res = await authenticatedFetch(`/signaling?room=${roomId}`, owner, {
+        headers: { Upgrade: 'websocket' },
+      });
+      expect(res.status).toBe(101);
+      const ws = res.webSocket;
+      if (!ws) throw new Error('no webSocket on response');
+      ws.accept();
+      return ws;
+    }, { timeout: SOCKET_EVENT_DEADLINE_MS });
+
+    const frames: string[] = [];
+    ownerSocket.addEventListener('message', (event: MessageEvent) => {
+      if (typeof event.data === 'string') frames.push(event.data);
+    });
+
+    // Subsequent identical heartbeats move only a timestamp.
+    expect((await beat()).status).toBe(200);
+    expect((await beat()).status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(frames.filter((f) => f.includes('"presence"'))).toEqual([]);
+
+    ownerSocket.close();
+  });
+
   it('does not send waitingPeers in presence frame to a non-owner peer', async () => {
     const owner = await bootstrapLocalSession('presence-noqueue-owner');
     const nonOwner = await bootstrapLocalSession('presence-noqueue-nonowner');

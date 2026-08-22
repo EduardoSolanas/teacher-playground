@@ -67,3 +67,29 @@ export function readWaitingPeers(db: RoomDatabase, roomId: string) {
     requestedAt: row.requested_at,
   }));
 }
+
+/**
+ * A cheap fingerprint of what a presence broadcast would say.
+ *
+ * The client heartbeats every two seconds and almost every one of those
+ * changes nothing but a timestamp. Broadcasting on each would have every peer
+ * rebuild and re-send a payload for every other peer, several times a second —
+ * more work for the room than the polling it replaced, and more traffic
+ * competing with the strokes. Comparing this before and after a mutation says
+ * whether anyone would have noticed the difference.
+ *
+ * It covers what the payload actually exposes: who is present, whether their
+ * hand is up, who is waiting, and which peer is host. A last_seen tick alone
+ * leaves it unchanged, which is the point.
+ */
+export function presenceSignature(db: RoomDatabase, roomId: string): string {
+  const active = readActiveUsers(db, roomId)
+    .map((user) => `${user.peerId}:${user.handRaised ? 1 : 0}:${user.isHost ? 1 : 0}`)
+    .sort()
+    .join(',');
+  const waiting = readWaitingPeers(db, roomId)
+    .map((peer) => peer.peerId)
+    .sort()
+    .join(',');
+  return `${active}|${waiting}`;
+}

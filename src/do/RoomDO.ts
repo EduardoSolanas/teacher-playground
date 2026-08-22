@@ -34,6 +34,7 @@ import {
   handlePresenceDelete,
   presencePayloadForAccount,
 } from '../lib/whiteboard/handlers/presence';
+import { presenceSignature } from '../lib/whiteboard/presence';
 import {
   handleWaitingGet,
   handleWaitingPost,
@@ -266,6 +267,11 @@ export class RoomDO extends DurableObject {
       headers: request.headers,
       body: bodyText,
     });
+    // Taken before the mutation so the broadcast below can tell a real change
+    // from a heartbeat that only moved a timestamp.
+    const signatureBefore = section === 'presence' && method === 'POST'
+      ? presenceSignature(this.db, roomId)
+      : null;
     const response = await this.route(forwarded, url, roomId);
 
     if (response.ok && accountId && joiningPeerId) {
@@ -285,8 +291,18 @@ export class RoomDO extends DurableObject {
           this.closeAccountSockets(targetAccountId, roomId);
         }
       }
-      // Broadcast presence after all presence mutations (raise-hand, lower-hand, kick, suspend, join, waiting)
-      this.broadcastPresence(roomId);
+      /*
+       * Only when something actually changed.
+       *
+       * This route carries the 2s heartbeat as well as real mutations, and a
+       * heartbeat moves nothing but a timestamp. Broadcasting on every one had
+       * each peer rebuild a payload for every other peer several times a
+       * second — more work for the room than the poll it replaces, and more
+       * frames competing with the strokes.
+       */
+      if (presenceSignature(this.db, roomId) !== signatureBefore) {
+        this.broadcastPresence(roomId);
+      }
     }
 
     if (response.ok && section === 'presence' && method === 'DELETE') {
