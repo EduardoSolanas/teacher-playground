@@ -1,4 +1,5 @@
 import * as Y from 'yjs';
+import { cloneForYjs, valuesEqual } from './yjsValue';
 import type { CanvasElement } from '@/types/whiteboard';
 
 export function createWhiteboardDoc(roomId: string) {
@@ -72,26 +73,6 @@ export function updateElementInArray(
   }
 }
 
-function toYjsValue(value: unknown): unknown {
-  if (value === undefined) return undefined;
-  try {
-    return JSON.parse(JSON.stringify(value));
-  } catch {
-    return undefined;
-  }
-}
-
-function valuesEqual(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) return true;
-  if (left == null || right == null) return left === right;
-  if (typeof left !== 'object' || typeof right !== 'object') return false;
-  try {
-    return JSON.stringify(left) === JSON.stringify(right);
-  } catch {
-    return false;
-  }
-}
-
 type ReplaceSharedOptions = {
   /** When set, only these ids may be deleted if they are missing from `nextElements`. */
   previousIds?: readonly string[];
@@ -142,7 +123,7 @@ export function replaceSharedElements(
       }
 
       for (const [key, value] of Object.entries(element)) {
-        const encoded = toYjsValue(value);
+        const encoded = cloneForYjs(value);
         if (encoded === undefined) continue;
         if (!valuesEqual(map.get(key), encoded)) {
           map.set(key, encoded);
