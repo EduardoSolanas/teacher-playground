@@ -64,6 +64,10 @@ import { SIGNALING_ALLOWED_TOPIC } from '../lib/worker/signalingPolicy';
 import { decideSignalingAction } from '../lib/worker/signalingBudget';
 import { createRateLimiter } from '../lib/http/rateLimit';
 import { logSocketClose } from '../lib/security/authEvents';
+import * as Y from 'yjs';
+import { handleSyncFrame } from '../lib/whiteboard/serverSync';
+import { replaceSharedElements, getElementsFromArray } from '../lib/whiteboard/yjsDoc';
+import { snapshotElements } from '../lib/whiteboard/sceneSnapshot';
 
 /**
  * How often live sockets are re-checked against the identity store. This is the
@@ -170,6 +174,17 @@ export class RoomDO extends DurableObject {
 
   /** Test-only override for the per-room socket cap; production always uses 32. */
   static signalingMaxSocketsPerRoomForTests: number | null = null;
+
+  /** Server-side Yjs documents per room, created lazily. */
+  private readonly docs = new Map<string, Y.Doc>();
+
+  /**
+   * Rooms whose document has changed since it was last written. Flushed at most
+   * once every {@link RoomDO.FLUSH_INTERVAL_MS} while drawing, on the alarm, and
+   * on last-socket-close; writing per update would trade the HTTP amplification
+   * this replaces for storage amplification.
+   */
+  private readonly dirtyRooms = new Set<string>();
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
@@ -606,6 +621,105 @@ export class RoomDO extends DurableObject {
     this.ctx.waitUntil(promise);
   }
 
+  // --- y-document persistence ---
+
+  /** Loads or creates the server document for a room. Rehydrates from storage if available. */
+  private async getRoomDoc(roomId: string): Promise<Y.Doc> {
+    let doc = this.docs.get(roomId);
+    if (doc) return doc;
+
+    doc = new Y.Doc();
+    const storedSnapshot = await this.ctx.storage.get(`ydoc:${roomId}`) as Uint8Array | undefined;
+    if (storedSnapshot) {
+      Y.applyUpdate(doc, storedSnapshot);
+    } else {
+      // Seed from SQL elements if no ydoc snapshot exists. Boards created before
+      // this work must not open empty; seeding on read ensures it is impossible to miss.
+      const row = this.db.prepare(
+        `SELECT elements FROM rooms WHERE room_id = ?`,
+      ).get(roomId) as { elements: string } | undefined;
+
+      if (row) {
+        try {
+          const elements = JSON.parse(row.elements);
+          if (Array.isArray(elements) && elements.length > 0) {
+            replaceSharedElements(doc, doc.getArray('elements'), elements, 'seed');
+          }
+        } catch {
+          // Malformed JSON is silently ignored; the document stays empty.
+        }
+      }
+    }
+
+    // Register listener *after* applying stored snapshot or seed, so rehydrating does not mark dirty.
+    doc.on('update', () => {
+      this.dirtyRooms.add(roomId);
+    });
+
+    this.docs.set(roomId, doc);
+    return doc;
+  }
+
+  /**
+   * Writes a changed board at most this often while drawing continues.
+   *
+   * The alarm and last-socket-close both flush, but on their own they leave a
+   * board unwritten for a whole revocation interval, which is a long time to
+   * lose a lesson's work to a crash. This is the "on idle" beat the plan asks
+   * for, done without a timer: a timer would hold the object out of
+   * hibernation, and the cost of a write here is bounded by the interval
+   * rather than by how fast someone draws.
+   */
+  private static readonly FLUSH_INTERVAL_MS = 3_000;
+
+  /** When the last flush ran, so drawing cannot turn every frame into a write. */
+  private lastFlushAt = 0;
+
+  /** Flushes if the interval has passed since the last write. */
+  private async flushIfDue(): Promise<void> {
+    if (this.dirtyRooms.size === 0) return;
+    const now = Date.now();
+    if (now - this.lastFlushAt < RoomDO.FLUSH_INTERVAL_MS) return;
+    this.lastFlushAt = now;
+    await this.flushDirtyDocs();
+  }
+
+  /** Writes every document that has changed since the last flush. */
+  private async flushDirtyDocs(): Promise<void> {
+    for (const roomId of this.dirtyRooms) {
+      const doc = this.docs.get(roomId);
+      if (!doc) {
+        this.dirtyRooms.delete(roomId);
+        continue;
+      }
+
+      try {
+        await this.ctx.storage.put(`ydoc:${roomId}`, Y.encodeStateAsUpdate(doc));
+        this.dirtyRooms.delete(roomId);
+      } catch {
+        // Still dirty, so the next flush retries it. Nothing is lost meanwhile:
+        // the document is in memory and every peer still holds its own copy.
+        continue;
+      }
+
+      try {
+        /*
+         * The stored row is no longer written by any client, and the read path
+         * still serves from it — a room whose row froze would hand a stale
+         * board to anyone loading over HTTP. Tombstones stay out of it for the
+         * reason sceneSnapshot.ts gives.
+         */
+        const elements = snapshotElements(getElementsFromArray(doc.getArray('elements')));
+        this.db.prepare(
+          `UPDATE rooms SET elements = ?, updated_at = ? WHERE room_id = ?`,
+        ).run(JSON.stringify(elements), Date.now(), roomId);
+      } catch {
+        // The Yjs snapshot above is the durable copy and it is already written;
+        // the row is a convenience for the read path, not the record.
+      }
+    }
+  }
+
   // --- y-webrtc signaling ---
   //
   // Replaces the previous in-process signaling topic map. Because this object
@@ -722,6 +836,10 @@ export class RoomDO extends DurableObject {
    * for as long as the socket stayed open.
    */
   async alarm(): Promise<void> {
+    // Before the early return below: the alarm is the only beat that still
+    // ticks once every socket has gone, so a board must be written here.
+    await this.flushDirtyDocs();
+
     const sockets = this.ctx.getWebSockets();
     const now = Date.now();
     const roomIds = new Set<string>();
@@ -914,6 +1032,30 @@ export class RoomDO extends DurableObject {
           }
         }
       }
+
+      // Relaying above is unchanged; this is the added path. The object answers
+      // the sender from its own document, so a peer that arrives alone is no
+      // longer talking into an empty room.
+      try {
+        const doc = await this.getRoomDoc(attachment.roomId);
+
+        const replies = handleSyncFrame(doc, bytes, ws);
+        for (const reply of replies) {
+          try {
+            ws.send(reply);
+          } catch {
+            try {
+              ws.close();
+            } catch {
+              // Already gone.
+            }
+          }
+        }
+        await this.flushIfDue();
+      } catch {
+        // A bug in server sync must not break peer relay; it is the fallback path.
+      }
+
       return;
     }
 
@@ -977,6 +1119,16 @@ export class RoomDO extends DurableObject {
     reason: string,
     wasClean: boolean,
   ): Promise<void> {
+    // The closing socket is still in the list, so 1 means this was the last
+    // one: the object is about to go quiet and the board must be on disk.
+    if (this.ctx.getWebSockets().length <= 1) {
+      try {
+        await this.flushDirtyDocs();
+      } catch {
+        // A failed flush must not throw out of webSocketClose.
+      }
+    }
+
     try {
       ws.close(code, reason);
     } catch {

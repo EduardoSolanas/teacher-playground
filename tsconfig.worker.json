@@ -20,6 +20,9 @@
     "src/lib/whiteboard/access.ts",
     "src/lib/whiteboard/authz.ts",
     "src/lib/whiteboard/presence.ts",
+    "src/lib/whiteboard/yjsDoc.ts",
+    "src/lib/whiteboard/sceneSnapshot.ts",
+    "src/lib/whiteboard/serverSync.ts",
     "src/lib/identity/**/*.ts",
     "src/test/**/*.ts",
     "src/**/*.workers.test.ts"
