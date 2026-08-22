@@ -178,14 +178,14 @@ export default function ExcalidrawWrapper({
      * The canvas is updated below immediately — that is what the user watches.
      * What is deferred is the React hop.
      *
-     * onElementsChange re-renders the room subtree and feeds the debounced
-     * whole-board persist, and a drawing peer sends ~20 updates a second. Doing
+     * onElementsChange re-renders the room subtree and feeds the local
+     * empty-board state, and a drawing peer sends ~20 updates a second. Doing
      * that per update made the receiving side crawl while the sender, which
      * already defers its own state hop mid-stroke, stayed fast — so whoever was
      * watching fell behind whoever was drawing.
      *
-     * Nothing downstream of it needs 20 updates a second: it drives an
-     * is-the-board-empty check and a save that is debounced anyway.
+     * Nothing downstream of it needs 20 updates a second: it only drives the
+     * is-the-board-empty check and the deferred React state hop.
      */
     pendingRemoteStateRef.current = sceneToApply;
     if (remoteStateTimerRef.current === null) {
@@ -224,7 +224,7 @@ export default function ExcalidrawWrapper({
     setIsClient(true);
     return () => {
       // Flush any coalesced remote scene, so leaving a room cannot drop the
-      // last change from the empty-board check or the debounced persist.
+      // last change from the empty-board check or the deferred React state hop.
       if (remoteStateTimerRef.current !== null) {
         window.clearTimeout(remoteStateTimerRef.current);
         remoteStateTimerRef.current = null;
@@ -278,7 +278,7 @@ export default function ExcalidrawWrapper({
     return () => {
       elementsArray.unobserveDeep(handler);
     };
-  }, [yDoc, yElementsArray, yCursorsMap, roomId, applyRemoteElements]);
+  }, [yDoc, yElementsArray, yCursorsMap, roomId, applyRemoteElements, adoptVersionBaseline]);
 
   /** Snapshot of the shared document as plain Excalidraw elements. */
   const readSharedElements = useCallback((): Record<string, unknown>[] => {
@@ -432,8 +432,8 @@ export default function ExcalidrawWrapper({
       // reproducible with the host alone.
       //
       // Nothing in that state is needed until the stroke ends: it drives an
-      // is-the-board-empty check and the debounced HTTP persist. The Yjs write
-      // below is NOT deferred, so remote peers still see the stroke live.
+      // is-the-board-empty check and the deferred React state hop. The Yjs
+      // write below is NOT deferred, so remote peers still see the stroke live.
       if (isPointerDownRef.current) {
         deferredElementsRef.current = serializedElements;
       } else {
@@ -459,7 +459,7 @@ export default function ExcalidrawWrapper({
             });
           }
         } catch {
-          // HTTP persist already ran; a Yjs write must not roll that back.
+          // A Yjs write must not roll back the local canvas state.
         }
       }
     },
@@ -616,7 +616,7 @@ export default function ExcalidrawWrapper({
       }
     }
     // Flush the scene the stroke produced, so the empty-board check and the
-    // debounced persist see the finished result exactly once.
+    // deferred React state hop see the finished result exactly once.
     const deferred = deferredElementsRef.current;
     if (deferred) {
       deferredElementsRef.current = null;

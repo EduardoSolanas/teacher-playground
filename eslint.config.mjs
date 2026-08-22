@@ -3,7 +3,7 @@ import coreWebVitals from "eslint-config-next/core-web-vitals";
 const config = [
   ...coreWebVitals,
   {
-    ignores: ["**/tailwind.config.js"],
+    ignores: ["**/tailwind.config.js", ".wrangler/**"],
   },
   {
     rules: {

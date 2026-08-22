@@ -793,7 +793,7 @@ function accessLogoutResponse(url: URL, env: Env): Response {
   return withSecurityHeaders(new Response(null, { status: 302, headers }));
 }
 
-export default {
+const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
@@ -1107,3 +1107,5 @@ export default {
     });
   },
 };
+
+export default worker;

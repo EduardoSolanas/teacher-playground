@@ -100,7 +100,7 @@ export function useCollaboration(roomId: string) {
   const localUserColorRef = useRef('#3498db');
   const isRemoteUpdateRef = useRef(false);
 
-  function ensureCollaboration() {
+  const ensureCollaboration = useCallback(() => {
     if (!collaborationRef.current) {
       const peerId = peerIdWhenJoined(hasJoinedRef.current, roomId);
       if (!peerId) return null;
@@ -125,14 +125,14 @@ export function useCollaboration(roomId: string) {
       setCollaborationEpoch((epoch) => epoch + 1);
     }
     return collaborationRef.current;
-  }
+  }, [roomId]);
 
-  function destroyCollaboration() {
+  const destroyCollaboration = useCallback(() => {
     if (!collaborationRef.current) return;
     collaborationRef.current.destroy();
     collaborationRef.current = null;
     setCollaborationEpoch((epoch) => epoch + 1);
-  }
+  }, []);
 
   const mayStartCollaboration =
     shouldStartCollaboration({
@@ -298,7 +298,7 @@ export function useCollaboration(roomId: string) {
     return () => {
       destroyCollaboration();
     };
-  }, [roomId, mayStartCollaboration]);
+  }, [mayStartCollaboration, ensureCollaboration, destroyCollaboration, applyElements, applyViewport]);
 
   // Excalidraw is the source of truth for elements — no store-to-Yjs sync needed
   // Yjs sync is handled entirely by ExcalidrawWrapper via onChange/onPointerUpdate
@@ -360,7 +360,7 @@ export function useCollaboration(roomId: string) {
       window.clearInterval(interval);
       window.clearInterval(publishTimer);
     };
-  }, [roomId, applyElements, applyViewport]);
+  }, [roomId, applyElements, applyViewport, publishToSharedDoc]);
 
   // Broadcast local cursor
   const cursorSentAtRef = useRef<number | null>(null);
@@ -746,7 +746,7 @@ export function useCollaboration(roomId: string) {
     } catch {
       // still drop local waiting/join so the prompt can return
     }
-  }, [roomId, localPeerId]);
+  }, [roomId]);
 
   const leaveRoom = useCallback(async () => {
     destroyCollaboration();
@@ -760,7 +760,7 @@ export function useCollaboration(roomId: string) {
     } catch {
       // still drop local join state so the prompt can return
     }
-  }, [roomId]);
+  }, [roomId, destroyCollaboration]);
 
   const kickPeer = useCallback(async (peerId: string, accountId?: string | null) => {
     try {
