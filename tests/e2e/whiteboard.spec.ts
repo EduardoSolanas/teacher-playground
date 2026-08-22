@@ -571,6 +571,23 @@ test.describe('Multi-Peer Sync', () => {
 
       await Promise.all([aliceKeepsDrawing, bobDrawsOnce]);
 
+      /*
+       * Confirm Bob actually drew before asking whether Alice received it.
+       * Under a loaded suite a drag can land before Excalidraw is ready and
+       * silently produce nothing, and then this test blames sync for a
+       * rectangle that never existed.
+       */
+      await expect
+        .poll(
+          () => bobPage.evaluate(() => {
+            const api = (window as any).__debugExcalidrawApi;
+            return ((api?.getSceneElements?.() ?? []) as any[])
+              .filter((e) => e.type === 'rectangle' && !e.isDeleted).length;
+          }),
+          { timeout: 15000, message: 'Bob never drew a rectangle at all' },
+        )
+        .toBeGreaterThanOrEqual(1);
+
       // Polled, not slept on: a fixed wait passed alone and failed under the
       // parallel suite, where both pages are slower. The claim is that the
       // rectangle arrives, not that it arrives within three seconds.

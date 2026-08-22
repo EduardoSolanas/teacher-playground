@@ -5,7 +5,7 @@ import type {
   Viewport,
   RemoteCursor,
 } from '@/types/whiteboard';
-import { createCollaboration } from '@/lib/whiteboard/collaboration';
+import { createCollaboration, type PresencePayload } from '@/lib/whiteboard/collaboration';
 import {
   shouldStartCollaboration,
   type GrantedPublicRole,
@@ -23,6 +23,7 @@ import { shouldPollRoomApiFallback } from '@/lib/whiteboard/providerStatus';
 import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 import { roomSceneSaveDebounceMs } from '@/lib/whiteboard/persistDebounce';
 import { snapshotElements } from '@/lib/whiteboard/sceneSnapshot';
+import { shouldPollPresence } from '@/lib/whiteboard/presencePolling';
 import { cursorPublishDelay } from '@/lib/whiteboard/cursorPublishRate';
 import { moderationTargetBody } from '@/lib/whiteboard/moderationTarget';
 import { DEFAULT_MAX_USERS } from '@/lib/plan/limits';
@@ -92,7 +93,13 @@ export function useCollaboration(roomId: string) {
       if (!peerId) return null;
       localPeerIdRef.current = peerId;
       setLocalPeerId(peerId);
-      collaborationRef.current = createCollaboration(roomId, peerId);
+
+      // Create callback to handle presence messages from the WebSocket push channel
+      const handlePresence = (payload: unknown) => {
+        applyPresencePayload(payload as any);
+      };
+
+      collaborationRef.current = createCollaboration(roomId, peerId, handlePresence);
       if (pendingUserNameRef.current) {
         collaborationRef.current.setLocalUserName(pendingUserNameRef.current);
       }
@@ -428,6 +435,69 @@ export function useCollaboration(roomId: string) {
     collaborationRef.current?.setLocalCursor(0, 0);
   }, [roomId]);
 
+  /**
+   * Applies presence payload to update users, waiting peers, host peer id, and admission status.
+   * Used by both HTTP polling and WebSocket push.
+   */
+  const applyPresencePayload = useCallback((data: PresencePayload & {
+    isKicked?: boolean;
+    isWaiting?: boolean;
+    peerId?: string;
+  }) => {
+    if (data.hostPeerId != null) {
+      applyHostFromApi(hostPeerIdRef, data.hostPeerId, setHostPeerId);
+    }
+    if (Array.isArray(data.users) && data.users.length > 0) {
+      setUsers(data.users as WhiteboardUser[]);
+    }
+    if (Array.isArray(data.waitingPeers)) {
+      setWaitingPeers(
+        data.waitingPeers.map((p: any) => ({
+          peerId: p.peerId,
+          accountId: p.accountId,
+          userName: p.userName,
+          color: p.color,
+          isHost: false,
+          isWaiting: true,
+        })),
+      );
+    }
+    if (data.isKicked) {
+      hasJoinedRef.current = false;
+      setHasJoined(false);
+      setIsWaiting(false);
+      setWasKicked(true);
+      setUsers([]);
+      setWaitingPeers([]);
+      return;
+    }
+    if (typeof data.isWaiting === 'boolean') {
+      if (!data.isWaiting) admittedRef.current = true;
+      else if (admittedRef.current) setWasSuspended(true);
+      setIsWaiting(data.isWaiting);
+    }
+    // A heartbeat still in flight when the user leaves must not re-seed
+    // the session keys that leaving just cleared.
+    if (typeof data.peerId === 'string' && data.peerId.length > 0 && hasJoinedRef.current) {
+      rememberIssuedPeerId(roomId, data.peerId);
+      // Only when the label actually changes. Re-seeding the cursor on
+      // every heartbeat published a Yjs update every 2s per client.
+      if (data.peerId !== localPeerIdRef.current) {
+        localPeerIdRef.current = data.peerId;
+        setLocalPeerId(data.peerId);
+        const collab = collaborationRef.current;
+        collab?.adoptLocalPeerId(data.peerId);
+        if (collab) {
+          const entry = collab.cursorsMap.get(data.peerId) as { x?: number; y?: number } | undefined;
+          collab.setLocalCursor(
+            typeof entry?.x === 'number' ? entry.x : 0,
+            typeof entry?.y === 'number' ? entry.y : 0,
+          );
+        }
+      }
+    }
+  }, [roomId]);
+
   useEffect(() => {
     if (!roomLoaded || !hasJoined) return;
 
@@ -467,58 +537,7 @@ export function useCollaboration(roomId: string) {
 
         if (!cancelled && presenceAdmission === 'ok') {
           const data = await res.json();
-          if (data.hostPeerId != null) {
-            applyHostFromApi(hostPeerIdRef, data.hostPeerId, setHostPeerId);
-          }
-          if (Array.isArray(data.users) && data.users.length > 0) {
-            setUsers(data.users as WhiteboardUser[]);
-          }
-          if (Array.isArray(data.waitingPeers)) {
-            setWaitingPeers(
-              data.waitingPeers.map((p: WhiteboardUser & { accountId?: string }) => ({
-                peerId: p.peerId,
-                accountId: p.accountId,
-                userName: p.userName,
-                color: p.color,
-                isHost: false,
-                isWaiting: true,
-              })),
-            );
-          }
-          if (data.isKicked) {
-            hasJoinedRef.current = false;
-            setHasJoined(false);
-            setIsWaiting(false);
-            setWasKicked(true);
-            setUsers([]);
-            setWaitingPeers([]);
-            return;
-          }
-          if (typeof data.isWaiting === 'boolean') {
-            if (!data.isWaiting) admittedRef.current = true;
-            else if (admittedRef.current) setWasSuspended(true);
-            setIsWaiting(data.isWaiting);
-          }
-          // A heartbeat still in flight when the user leaves must not re-seed
-          // the session keys that leaving just cleared.
-          if (typeof data.peerId === 'string' && data.peerId.length > 0 && hasJoinedRef.current) {
-            rememberIssuedPeerId(roomId, data.peerId);
-            // Only when the label actually changes. Re-seeding the cursor on
-            // every heartbeat published a Yjs update every 2s per client.
-            if (data.peerId !== localPeerIdRef.current) {
-              localPeerIdRef.current = data.peerId;
-              setLocalPeerId(data.peerId);
-              const collab = collaborationRef.current;
-              collab?.adoptLocalPeerId(data.peerId);
-              if (collab) {
-                const entry = collab.cursorsMap.get(data.peerId) as { x?: number; y?: number } | undefined;
-                collab.setLocalCursor(
-                  typeof entry?.x === 'number' ? entry.x : 0,
-                  typeof entry?.y === 'number' ? entry.y : 0,
-                );
-              }
-            }
-          }
+          applyPresencePayload(data);
         }
       } catch {
         // WebRTC/Yjs can still provide presence when the API heartbeat is unavailable.
@@ -526,7 +545,46 @@ export function useCollaboration(roomId: string) {
     }
 
     updatePresence();
-    const interval = window.setInterval(updatePresence, 2_000);
+
+    // Polling management: stop when socket is connected, restart when disconnected.
+    // A peer in WAITING room has no socket, so keep polling for them.
+    let pollInterval: number | null = null;
+
+    const startPolling = () => {
+      if (pollInterval === null) {
+        pollInterval = window.setInterval(updatePresence, 2_000);
+      }
+    };
+
+    const stopPolling = () => {
+      if (pollInterval !== null) {
+        window.clearInterval(pollInterval);
+        pollInterval = null;
+      }
+    };
+
+    const onConnectionChange = () => {
+      const collab = collaborationRef.current;
+      const socketConnected = Boolean(collab?.provider)
+        && (collab!.provider as any).connected === true;
+      if (shouldPollPresence({ isWaiting, socketConnected })) startPolling();
+      else stopPolling();
+    };
+
+    /*
+     * Decide once up front, not only when the socket next changes state.
+     *
+     * This used to start the interval solely from a 'status' event, so a peer
+     * whose collaboration had not been created yet — or whose socket never
+     * connected and never announced it — attached no listener and started no
+     * poll. They fetched presence once and then heard nothing again: no push,
+     * no poll, a room that silently stops updating.
+     */
+    onConnectionChange();
+
+    if (collaborationRef.current) {
+      (collaborationRef.current.provider as any).on?.('status', onConnectionChange);
+    }
 
     // Browsers throttle background-tab timers to roughly once a minute, so a
     // student who switches away (or whose phone locks) can sit on the waiting
@@ -540,10 +598,13 @@ export function useCollaboration(roomId: string) {
 
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      stopPolling();
+      if (collaborationRef.current) {
+        (collaborationRef.current.provider as any).off?.('status', onConnectionChange);
+      }
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [roomLoaded, hasJoined, roomId, localUserName]);
+  }, [roomLoaded, hasJoined, roomId, localUserName, isWaiting, applyPresencePayload]);
 
   /**
    * Releases the presence row only when this room is actually left. Doing it in

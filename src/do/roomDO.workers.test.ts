@@ -6,6 +6,7 @@ import { RoomDO } from './RoomDO';
 import { ROOM_SETTINGS_KEYS } from '../lib/whiteboard/requestSchemas';
 import { MAX_BODY_BYTES } from '../lib/worker/requestGuard';
 import { issueGuestPin } from '../lib/whiteboard/guestPin';
+import { decodePresenceMessage } from '../lib/whiteboard/presenceMessage';
 import {
   accessFetch,
   authenticatedFetch,
@@ -3765,16 +3766,22 @@ describe('guest authorization matrix', () => {
 });
 
 describe('presence broadcast over WebSocket', () => {
-  function nextTextMessage(ws: WebSocket): Promise<string> {
+  function nextPresenceMessage(ws: WebSocket): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('timed out waiting for text frame')), SOCKET_EVENT_DEADLINE_MS);
+      const timer = setTimeout(() => reject(new Error('timed out waiting for presence frame')), SOCKET_EVENT_DEADLINE_MS);
       ws.addEventListener('message', (event: MessageEvent) => {
         clearTimeout(timer);
-        if (typeof event.data !== 'string') {
-          reject(new Error('expected text frame, got binary'));
+        if (typeof event.data === 'string') {
+          reject(new Error('expected binary frame, got text'));
           return;
         }
-        resolve(event.data);
+        // Decode the binary presence message
+        const payload = decodePresenceMessage(new Uint8Array(event.data));
+        if (payload === null) {
+          reject(new Error('failed to decode presence message'));
+          return;
+        }
+        resolve(payload);
       }, { once: true });
     });
   }
@@ -3797,7 +3804,7 @@ describe('presence broadcast over WebSocket', () => {
       return ws;
     }, { timeout: SOCKET_EVENT_DEADLINE_MS });
 
-    const presenceFrame = nextTextMessage(ownerSocket);
+    const presenceFrame = nextPresenceMessage(ownerSocket);
 
     // Requester joins waiting queue
     const joinRes = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, requester, {
@@ -3811,11 +3818,10 @@ describe('presence broadcast over WebSocket', () => {
     });
     expect(joinRes.status).toBe(200);
 
-    const frame = JSON.parse(await presenceFrame);
-    expect(frame.type).toBe('presence');
-    expect(frame.payload).toBeDefined();
-    expect(frame.payload.waitingPeers).toBeDefined();
-    expect(frame.payload.waitingPeers.length).toBeGreaterThan(0);
+    const payload = await presenceFrame;
+    expect(payload).toBeDefined();
+    expect((payload as any).waitingPeers).toBeDefined();
+    expect((payload as any).waitingPeers.length).toBeGreaterThan(0);
 
     ownerSocket.close();
   });
@@ -3852,9 +3858,9 @@ describe('presence broadcast over WebSocket', () => {
       return ws;
     }, { timeout: SOCKET_EVENT_DEADLINE_MS });
 
-    const frames: string[] = [];
+    const frames: ArrayBuffer[] = [];
     ownerSocket.addEventListener('message', (event: MessageEvent) => {
-      if (typeof event.data === 'string') frames.push(event.data);
+      if (event.data instanceof ArrayBuffer) frames.push(event.data);
     });
 
     // Subsequent identical heartbeats move only a timestamp.
@@ -3862,7 +3868,7 @@ describe('presence broadcast over WebSocket', () => {
     expect((await beat()).status).toBe(200);
     await new Promise((resolve) => setTimeout(resolve, 300));
 
-    expect(frames.filter((f) => f.includes('"presence"'))).toEqual([]);
+    expect(frames.length).toBe(0);
 
     ownerSocket.close();
   });
@@ -3902,7 +3908,7 @@ describe('presence broadcast over WebSocket', () => {
       return ws;
     }, { timeout: SOCKET_EVENT_DEADLINE_MS });
 
-    const presenceFrame = nextTextMessage(nonOwnerSocket);
+    const presenceFrame = nextPresenceMessage(nonOwnerSocket);
 
     // Another requester joins waiting queue
     const requester = await bootstrapLocalSession('presence-noqueue-requester');
@@ -3917,13 +3923,12 @@ describe('presence broadcast over WebSocket', () => {
     });
     expect(joinRes.status).toBe(200);
 
-    const frame = JSON.parse(await presenceFrame);
-    expect(frame.type).toBe('presence');
-    expect(frame.payload).toBeDefined();
-    expect(frame.payload.waitingPeers).toBeUndefined();
+    const payload = await presenceFrame;
+    expect(payload).toBeDefined();
+    expect((payload as any).waitingPeers).toBeUndefined();
     // Should not include account IDs for non-owner
-    if (frame.payload.users) {
-      for (const user of frame.payload.users) {
+    if ((payload as any).users) {
+      for (const user of (payload as any).users) {
         expect(user.accountId).toBeUndefined();
       }
     }
@@ -3973,7 +3978,7 @@ describe('presence broadcast over WebSocket', () => {
     otherSocket.close();
   });
 
-  it('sends presence as text frame and does not interfere with binary relay', async () => {
+  it('sends presence as binary frame and does not interfere with binary relay', async () => {
     const owner = await bootstrapLocalSession('presence-binary-owner');
     const editor = await bootstrapLocalSession('presence-binary-editor');
     const roomId = 'presence-binary-room';
@@ -4019,8 +4024,8 @@ describe('presence broadcast over WebSocket', () => {
       return ws;
     }, { timeout: SOCKET_EVENT_DEADLINE_MS });
 
-    // Get the presence text frame from someone joining the queue
-    const presenceFrame = nextTextMessage(ownerSocket);
+    // Get the presence binary frame from someone joining the queue
+    const presenceFrame = nextPresenceMessage(ownerSocket);
     const requester = await bootstrapLocalSession('presence-binary-requester');
     const joinRes = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, requester, {
       method: 'POST',
@@ -4033,8 +4038,9 @@ describe('presence broadcast over WebSocket', () => {
     });
     expect(joinRes.status).toBe(200);
 
-    const frame = JSON.parse(await presenceFrame);
-    expect(frame.type).toBe('presence');
+    const payload = await presenceFrame;
+    expect(payload).toBeDefined();
+    expect((payload as any).waitingPeers).toBeDefined();
 
     // Now test binary relay still works
     const binaryPayload = new Uint8Array([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
@@ -4042,18 +4048,17 @@ describe('presence broadcast over WebSocket', () => {
       const timer = setTimeout(() => reject(new Error('timed out waiting for binary frame')), SOCKET_EVENT_DEADLINE_MS);
       ownerSocket.addEventListener('message', (event: MessageEvent) => {
         clearTimeout(timer);
-        if (typeof event.data === 'string') {
-          // This is a text frame, skip it and wait for the next message
+        if (!(event.data instanceof ArrayBuffer)) {
+          reject(new Error('expected ArrayBuffer'));
           return;
         }
-        if (event.data instanceof ArrayBuffer) {
-          resolve(event.data);
+        // Check if this is a presence message (starts with message type)
+        const view = new Uint8Array(event.data);
+        if (view[0] === 100) {
+          // This is a presence message, skip it and wait for the next message
           return;
         }
-        const view = event.data as ArrayBufferView;
-        const copy = new Uint8Array(view.byteLength);
-        copy.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
-        resolve(copy.buffer);
+        resolve(event.data);
       }, { once: true });
     });
 

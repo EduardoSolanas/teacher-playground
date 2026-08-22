@@ -1,6 +1,7 @@
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import { getSignalingUrls } from './ywebrtcProvider';
+import { PRESENCE_MESSAGE_TYPE, decodePresenceMessage } from './presenceMessage';
 
 type ProviderLike = {
   connected?: boolean;
@@ -55,7 +56,13 @@ class SignalingWebsocketProvider extends WebsocketProvider {
   }
 }
 
-export function createYWebsocketProvider(doc: Y.Doc, roomId: string): ProviderEntry {
+export type PresenceCallback = (payload: unknown) => void;
+
+export function createYWebsocketProvider(
+  doc: Y.Doc,
+  roomId: string,
+  onPresence?: PresenceCallback,
+): ProviderEntry {
   const cacheKey = `whiteboard-${roomId}`;
 
   if (providerCache.has(cacheKey)) {
@@ -79,6 +86,19 @@ export function createYWebsocketProvider(doc: Y.Doc, roomId: string): ProviderEn
     (provider as ProviderLike).synced = synced;
     if (synced) entry.status = 'synced';
   });
+
+  // Register presence message handler
+  if (onPresence && typeof window !== 'undefined') {
+    const wsProvider = provider as any;
+    if (wsProvider.messageHandlers && Array.isArray(wsProvider.messageHandlers)) {
+      wsProvider.messageHandlers[PRESENCE_MESSAGE_TYPE] = (data: Uint8Array) => {
+        const payload = decodePresenceMessage(data);
+        if (payload !== null) {
+          onPresence(payload);
+        }
+      };
+    }
+  }
 
   if (typeof window !== 'undefined' && provider.shouldConnect !== false) {
     provider.connect();

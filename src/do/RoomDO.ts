@@ -35,6 +35,7 @@ import {
   presencePayloadForAccount,
 } from '../lib/whiteboard/handlers/presence';
 import { presenceSignature } from '../lib/whiteboard/presence';
+import { encodePresenceMessage } from '../lib/whiteboard/presenceMessage';
 import {
   handleWaitingGet,
   handleWaitingPost,
@@ -633,7 +634,8 @@ export class RoomDO extends DurableObject {
          * children waiting to be let in onto every student's connection.
          */
         const payload = presencePayloadForAccount(this.db, roomId, attachment.accountId);
-        socket.send(JSON.stringify({ type: 'presence', payload }));
+        const frame = encodePresenceMessage(payload);
+        socket.send(frame);
       } catch {
         // A presence update is not worth dropping a lesson's connection over:
         // this socket misses one frame and the next one reaches it. The 2s

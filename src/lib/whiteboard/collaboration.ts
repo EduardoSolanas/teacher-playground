@@ -6,7 +6,7 @@ import {
   updateElementInArray,
   getElementsFromArray,
 } from './yjsDoc';
-import { createYWebsocketProvider, destroyProvider } from './yWebsocketProvider';
+import { createYWebsocketProvider, destroyProvider, type PresenceCallback } from './yWebsocketProvider';
 import { isYjsProviderConnected } from './providerStatus';
 import { randomHexId } from '@/lib/crypto/randomId';
 import type { CanvasElement, WhiteboardUser, RemoteCursor } from '@/types/whiteboard';
@@ -26,9 +26,19 @@ function readProviderStatus(provider: ReturnType<typeof createYWebsocketProvider
   };
 }
 
-export function createCollaboration(roomId: string, peerId?: string) {
+export type PresencePayload = {
+  users?: Array<{ peerId: string; userName: string; color: string; accountId?: string }>;
+  hostPeerId?: string;
+  waitingPeers?: Array<{ peerId: string; userName: string; color: string; accountId?: string }>;
+};
+
+export function createCollaboration(
+  roomId: string,
+  peerId?: string,
+  onPresence?: PresenceCallback,
+) {
   const { doc, elementsArray, viewportMap, cursorsMap } = createWhiteboardDoc(roomId);
-  const { provider, status } = createYWebsocketProvider(doc, roomId);
+  const { provider, status } = createYWebsocketProvider(doc, roomId, onPresence);
 
   let localPeerId = peerId || `user-${randomHexId()}`;
   let localUserName = 'Anonymous';
