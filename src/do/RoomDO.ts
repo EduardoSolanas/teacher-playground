@@ -32,6 +32,7 @@ import {
   handlePresenceGet,
   handlePresencePost,
   handlePresenceDelete,
+  presencePayloadForAccount,
 } from '../lib/whiteboard/handlers/presence';
 import {
   handleWaitingGet,
@@ -284,6 +285,23 @@ export class RoomDO extends DurableObject {
           this.closeAccountSockets(targetAccountId, roomId);
         }
       }
+      // Broadcast presence after all presence mutations (raise-hand, lower-hand, kick, suspend, join, waiting)
+      this.broadcastPresence(roomId);
+    }
+
+    if (response.ok && section === 'presence' && method === 'DELETE') {
+      // Broadcast presence after leaving
+      this.broadcastPresence(roomId);
+    }
+
+    if (response.ok && section === 'waiting' && method === 'POST') {
+      // Broadcast presence after approve/reject
+      this.broadcastPresence(roomId);
+    }
+
+    if (response.ok && section === 'waiting' && method === 'DELETE') {
+      // Broadcast presence after deleting from waiting
+      this.broadcastPresence(roomId);
     }
 
     return response;
@@ -580,6 +598,28 @@ export class RoomDO extends DurableObject {
       if (attachment?.accountId === accountId) count += 1;
     }
     return count;
+  }
+
+  /** Broadcasts presence updates to all connected sockets in this room. */
+  private broadcastPresence(roomId: string): void {
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = socket.deserializeAttachment() as SocketIdentity | null;
+      // Skip sockets with no identity or from a different room
+      if (!attachment?.roomId || attachment.roomId !== roomId) {
+        continue;
+      }
+      try {
+        const payload = presencePayloadForAccount(this.db, roomId, attachment.accountId);
+        socket.send(JSON.stringify({ type: 'presence', payload }));
+      } catch {
+        // One dead socket should not stop broadcasting to others
+        try {
+          socket.close();
+        } catch {
+          // Already gone.
+        }
+      }
+    }
   }
 
   private async handleSignalingUpgrade(request: Request, url: URL): Promise<Response> {

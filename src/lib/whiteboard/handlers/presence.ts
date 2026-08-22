@@ -38,13 +38,13 @@ function withoutAccountId<T extends { accountId?: unknown }>(rows: T[]) {
   });
 }
 
-function presencePayload(
+export function presencePayloadForAccount(
   db: RoomDatabase,
   roomId: string,
-  request: Request,
+  accountId: string | null,
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> {
-  const ownerView = callerSeesWaitingQueue(db, roomId, request);
+  const ownerView = accountId ? getGrantRole(db, roomId, accountId) === 'owner' : false;
   const users = readActiveUsers(db, roomId);
   const payload: Record<string, unknown> = {
     users: ownerView ? users : withoutAccountId(users),
@@ -55,6 +55,16 @@ function presencePayload(
     payload.waitingPeers = readWaitingPeers(db, roomId);
   }
   return payload;
+}
+
+function presencePayload(
+  db: RoomDatabase,
+  roomId: string,
+  request: Request,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const accountId = verifiedAccountId(request);
+  return presencePayloadForAccount(db, roomId, accountId, extra);
 }
 
 export async function handlePresenceGet(
