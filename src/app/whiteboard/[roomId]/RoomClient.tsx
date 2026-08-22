@@ -18,6 +18,7 @@ import { shouldCollapsePresenceForViewport } from '@/lib/whiteboard/presenceView
 import { shouldOverlayConnectingScreen } from '@/lib/whiteboard/connectingOverlay';
 import { shouldExpandForArrival } from '@/lib/whiteboard/waitingArrival';
 import RemoteCursorOverlay from '@/components/whiteboard/RemoteCursorOverlay';
+import { IDENTITY_VIEWPORT, type CanvasViewport } from '@/lib/whiteboard/cursorViewport';
 import ClearBoardModal from '@/components/whiteboard/ClearBoardModal';
 import ToolSidebar from '@/components/whiteboard/ToolSidebar';
 import RoomTopNav from '@/components/whiteboard/RoomTopNav';
@@ -73,6 +74,11 @@ function RoomContent({ roomId }: { roomId: string }) {
   }, []);
   const [boardEverShown, setBoardEverShown] = useState(false);
   const [presenceCollapsed, setPresenceCollapsed] = useState(false);
+  /*
+   * This peer's canvas transform, so a cursor that arrived in scene
+   * coordinates can be drawn where it belongs on this screen.
+   */
+  const [canvasViewport, setCanvasViewport] = useState<CanvasViewport>(IDENTITY_VIEWPORT);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const { activeShortcuts, showShortcutsHelp, setShowShortcutsHelp } = useKeyboardShortcuts();
 
@@ -329,10 +335,7 @@ function RoomContent({ roomId }: { roomId: string }) {
   }
 
   return (
-    <div
-      className="room-shell"
-      onPointerMove={(event) => setCursor(event.clientX, event.clientY)}
-    >
+    <div className="room-shell">
       <RoomTopNav
         displayName={userName}
         onDisplayNameChange={handleJoin}
@@ -358,11 +361,12 @@ function RoomContent({ roomId }: { roomId: string }) {
           activeTool={activeTool}
           isLocalHost={isLocalHost}
           onToolChange={handleToolChange}
-          onViewportChange={noopViewportChange}
+          onViewportChange={setCanvasViewport}
+          onCursorMove={setCursor}
           onElementsChange={setElements}
         />
       </div>
-      <RemoteCursorOverlay cursors={cursors} users={users} />
+      <RemoteCursorOverlay cursors={cursors} users={users} viewport={canvasViewport} />
       <RaisedHandCue users={users} localPeerId={localPeerId} isLocalHost={isLocalHost} />
       <PresencePanel
         users={users}
@@ -456,7 +460,6 @@ function useRoomIdFromPath(): string | null {
 }
 
 /** Stable identity: an inline arrow would be a new prop on every render. */
-const noopViewportChange = () => {};
 
 export default function WhiteboardRoomPage() {
   const roomId = useRoomIdFromPath();

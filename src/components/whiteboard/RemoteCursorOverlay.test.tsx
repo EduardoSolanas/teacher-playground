@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
 import RemoteCursorOverlay from './RemoteCursorOverlay';
+import { IDENTITY_VIEWPORT } from '@/lib/whiteboard/cursorViewport';
 import type { RemoteCursor, WhiteboardUser } from '@/types/whiteboard';
 
 function makeCursor(overrides: Partial<RemoteCursor> = {}): RemoteCursor {
@@ -31,6 +32,7 @@ describe('RemoteCursorOverlay host label', () => {
       <RemoteCursorOverlay
         cursors={[makeCursor({ peerId: 'peer-owner', userName: 'Teacher' })]}
         users={[makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true })]}
+        viewport={IDENTITY_VIEWPORT}
       />,
     );
 
@@ -48,6 +50,7 @@ describe('RemoteCursorOverlay host label', () => {
           makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true }),
           makeUser({ peerId: 'peer-impostor', userName: 'Teacher', isHost: false }),
         ]}
+        viewport={IDENTITY_VIEWPORT}
       />,
     );
 

@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useEffect, useState } from 'react';
 import { diffScene, shouldPublish, elementsToPublish } from '@/lib/whiteboard/scenePublish';
+import { viewportFromAppState, type CanvasViewport } from '@/lib/whiteboard/cursorViewport';
 // MUST stay above the Excalidraw import: it sets EXCALIDRAW_ASSET_PATH, and ES
 // module imports are evaluated in order, before this module's own body runs.
 import '@/lib/whiteboard/excalidrawAssetPath';
@@ -28,7 +29,9 @@ type ExcalidrawWrapperProps = {
   activeTool: string;
   isLocalHost: boolean;
   onToolChange: (tool: string) => void;
-  onViewportChange: (viewport: { x: number; y: number; zoom: number }) => void;
+  onViewportChange: (viewport: CanvasViewport) => void;
+  /** Local pointer, in scene coordinates. */
+  onCursorMove: (sceneX: number, sceneY: number) => void;
   onElementsChange: (elements: any[]) => void;
 };
 
@@ -44,6 +47,7 @@ export default function ExcalidrawWrapper({
   isLocalHost,
   onToolChange,
   onViewportChange,
+  onCursorMove,
   onElementsChange,
 }: ExcalidrawWrapperProps) {
   const apiRef = useRef<any>(null);
@@ -467,6 +471,34 @@ export default function ExcalidrawWrapper({
     if (strokeTrailingTimerRef.current !== null) window.clearTimeout(strokeTrailingTimerRef.current);
   }, []);
 
+  /*
+   * The one place a cursor is published, and it publishes scene coordinates.
+   *
+   * Excalidraw hands us the pointer already in scene space, the only frame two
+   * peers share. RoomClient used to publish its own viewport pixels from a root
+   * onPointerMove; two writers on one key made the pointer flicker, and
+   * viewport pixels land in the wrong place on any screen that is not the same
+   * size, scroll and zoom as the sender's.
+   */
+  const handlePointerUpdate = useCallback((payload: any) => {
+    const pointer = payload?.pointer ?? payload;
+    const x = typeof pointer?.x === 'number' ? pointer.x : null;
+    const y = typeof pointer?.y === 'number' ? pointer.y : null;
+    if (x === null || y === null) return;
+    onCursorMove(x, y);
+  }, [onCursorMove]);
+
+  /** Report this peer's transform so arriving cursors can be placed in it. */
+  const publishViewport = useCallback(() => {
+    const api = apiRef.current;
+    if (!api?.getAppState) return;
+    try {
+      onViewportChange(viewportFromAppState(api.getAppState()));
+    } catch {
+      // A viewport read must never interrupt drawing.
+    }
+  }, [onViewportChange]);
+
   const handlePointerDown = useCallback(() => {
     isPointerDownRef.current = true;
   }, []);
@@ -514,7 +546,8 @@ export default function ExcalidrawWrapper({
     >
       <Excalidraw
         excalidrawAPI={handleAPI}
-        onChange={handleElementsChange}
+        onChange={(el: any, appState: any) => { handleElementsChange(el, appState); publishViewport(); }}
+        onPointerUpdate={handlePointerUpdate}
         onPointerDown={handlePointerDown}
         onPointerUp={handlePointerUp}
         UIOptions={{

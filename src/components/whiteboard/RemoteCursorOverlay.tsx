@@ -1,17 +1,21 @@
 import type { RemoteCursor, WhiteboardUser } from '@/types/whiteboard';
+import { sceneToViewport, type CanvasViewport } from '@/lib/whiteboard/cursorViewport';
 
 interface RemoteCursorOverlayProps {
   cursors: RemoteCursor[];
   users: WhiteboardUser[];
+  /** This peer's canvas transform; cursors arrive in scene coordinates. */
+  viewport: CanvasViewport;
 }
 
-export default function RemoteCursorOverlay({ cursors, users }: RemoteCursorOverlayProps) {
+export default function RemoteCursorOverlay({ cursors, users, viewport }: RemoteCursorOverlayProps) {
   const hostByPeerId = new Map(users.filter((user) => user.isHost).map((user) => [user.peerId, true]));
 
   return (
     <>
       {cursors.map((cursor) => {
         const isHostUser = hostByPeerId.has(cursor.peerId);
+        const at = sceneToViewport({ x: cursor.x, y: cursor.y }, viewport);
 
         return (
           <div
@@ -19,8 +23,8 @@ export default function RemoteCursorOverlay({ cursors, users }: RemoteCursorOver
             data-testid={`whiteboard-peer-cursor-${cursor.peerId}`}
             className="pointer-events-none fixed z-[300] flex items-start gap-1"
             style={{
-              left: Math.max(0, cursor.x),
-              top: Math.max(0, cursor.y),
+              left: Math.max(0, at.x),
+              top: Math.max(0, at.y),
               color: cursor.color,
             }}
           >
