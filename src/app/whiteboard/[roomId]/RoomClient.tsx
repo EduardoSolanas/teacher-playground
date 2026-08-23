@@ -27,6 +27,7 @@ import { ShortcutsHelp } from '@/components/whiteboard/ShortcutsHelp';
 import { UndoRedoBar } from '@/components/whiteboard/UndoRedoBar';
 import AvSessionPanel from '@/components/av/AvSessionPanel';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
+import { useScopedUndo } from '@/hooks/useScopedUndo';
 import * as store from '@/lib/whiteboard/store';
 import { cleanupStaleRooms } from '@/lib/whiteboard/persistence';
 import { isWhiteboardDebugEnabled } from '@/lib/whiteboard/ywebrtcProvider';
@@ -80,8 +81,6 @@ function RoomContent({ roomId }: { roomId: string }) {
    */
   const [canvasViewport, setCanvasViewport] = useState<CanvasViewport>(IDENTITY_VIEWPORT);
   const [libraryOpen, setLibraryOpen] = useState(false);
-  const { activeShortcuts, showShortcutsHelp, setShowShortcutsHelp } = useKeyboardShortcuts();
-
   const {
     isConnected,
     isSynced,
@@ -117,6 +116,12 @@ function RoomContent({ roomId }: { roomId: string }) {
     viewport,
     storeViewport,
   } = useCollaboration(roomId);
+
+  const scopedUndo = useScopedUndo(yElementsArray);
+  const { activeShortcuts, showShortcutsHelp, setShowShortcutsHelp } = useKeyboardShortcuts({
+    undo: scopedUndo.undo,
+    redo: scopedUndo.redo,
+  });
 
   const { clearState, clearSession } = usePersistence(roomId, elements, { x: 0, y: 0, zoom: 1 } as any);
 
@@ -420,7 +425,12 @@ function RoomContent({ roomId }: { roomId: string }) {
       />
       {/* Stacked above the mobile tool bar; centred on its own row from sm: up. */}
       <div className="fixed bottom-[calc(max(0.5rem,env(safe-area-inset-bottom))+4rem)] left-1/2 -translate-x-1/2 flex items-center gap-2 z-[200] rounded-xl border border-slate-700/80 bg-slate-900 p-1 shadow-xl shadow-slate-900/20 sm:bottom-4" data-testid="whiteboard-bottom-controls">
-        <UndoRedoBar canUndo={store.canUndo()} canRedo={store.canRedo()} onUndo={() => store.undo()} onRedo={() => store.redo()} />
+        <UndoRedoBar
+          canUndo={scopedUndo.canUndo}
+          canRedo={scopedUndo.canRedo}
+          onUndo={scopedUndo.undo}
+          onRedo={scopedUndo.redo}
+        />
         <button
           data-testid="whiteboard-clear-btn"
           onClick={() => setClearModalOpen(true)}

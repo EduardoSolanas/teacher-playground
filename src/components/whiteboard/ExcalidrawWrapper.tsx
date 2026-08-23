@@ -6,7 +6,7 @@ import { viewportFromAppState, type CanvasViewport } from '@/lib/whiteboard/curs
 // MUST stay above the Excalidraw import: it sets EXCALIDRAW_ASSET_PATH, and ES
 // module imports are evaluated in order, before this module's own body runs.
 import '@/lib/whiteboard/excalidrawAssetPath';
-import { Excalidraw } from '@excalidraw/excalidraw';
+import { CaptureUpdateAction, Excalidraw } from '@excalidraw/excalidraw';
 import '@excalidraw/excalidraw/index.css';
 import * as Y from 'yjs';
 import {
@@ -208,6 +208,7 @@ export default function ExcalidrawWrapper({
       try {
         apiRef.current.updateScene({
           elements: sceneToApply,
+          captureUpdate: CaptureUpdateAction.NEVER,
         });
 
         if (shouldRecordRemoteRender) {
@@ -345,7 +346,10 @@ export default function ExcalidrawWrapper({
       lastSyncedElementsRef.current = shared;
       adoptVersionBaseline(shared);
       try {
-        api.updateScene({ elements: serializeExcalidrawElements(shared) as any });
+        api.updateScene({
+          elements: serializeExcalidrawElements(shared) as any,
+          captureUpdate: CaptureUpdateAction.NEVER,
+        });
       } catch {
         // A malformed stored scene must not stop the board from opening.
       }
@@ -365,6 +369,7 @@ export default function ExcalidrawWrapper({
       try {
         api.updateScene({
           elements: queuedElements,
+          captureUpdate: CaptureUpdateAction.NEVER,
         });
       } catch {
         // ignore

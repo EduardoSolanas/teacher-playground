@@ -91,7 +91,18 @@ function rectangle(
 async function sceneElementIds(page: Page): Promise<string[]> {
   return page.evaluate(() => {
     const api = (window as any).__debugExcalidrawApi;
-    return (api?.getSceneElements?.() ?? []).map((e: { id: string }) => e.id);
+    return (api?.getSceneElements?.() ?? [])
+      .map((e: { id: string }) => e.id)
+      .sort();
+  });
+}
+
+async function sharedElementIds(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const elements = (window as any).__whiteboardCollab?.provider?.doc?.getArray('elements');
+    return (elements?.toArray?.() ?? [])
+      .map((element: any) => element.get('id'))
+      .sort();
   });
 }
 
@@ -226,6 +237,57 @@ test.describe('Excalidraw scene sync', () => {
       }), { timeout: 20000 }).toEqual({ x: 410, version: 5, versionNonce: 5 });
     } finally {
       await peerContext.close();
+    }
+  });
+
+  test('undoes only Alice local work and redoes it across both peers', async ({ page, browser }) => {
+    const roomId = await createRoomWithMaxUsers(page, 'UndoAlice', 2);
+    const bobContext = await newAuthenticatedContext(browser);
+    const bobPage = await bobContext.newPage();
+    try {
+      await joinExistingRoom(bobPage, roomId, 'UndoBob');
+      await expect(bobPage.getByRole('heading', { name: /Room is Full/ })).toBeVisible({ timeout: 15000 });
+      await approveFirstWaitingPeer(page);
+      await expect(bobPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+
+      await expect.poll(async () => page.evaluate(() => (window as any).__whiteboardCollab?.isSynced), { timeout: 20000 })
+        .toBe(true);
+      await expect.poll(async () => bobPage.evaluate(() => (window as any).__whiteboardCollab?.isSynced), { timeout: 20000 })
+        .toBe(true);
+
+      await waitForExcalidrawApi(bobPage);
+      await bobPage.evaluate((element) => {
+        const api = (window as any).__debugExcalidrawApi;
+        api.updateScene({ elements: [...api.getSceneElements(), element], captureUpdate: 'IMMEDIATELY' });
+      }, rectangle('undo-bob', 120, 120, 5, 'a0'));
+      await expect.poll(async () => sceneElementIds(page), { timeout: 20000 }).toContain('undo-bob');
+
+      await waitForExcalidrawApi(page);
+      await page.evaluate((element) => {
+        const api = (window as any).__debugExcalidrawApi;
+        api.updateScene({ elements: [...api.getSceneElements(), element], captureUpdate: 'IMMEDIATELY' });
+      }, rectangle('undo-alice', 420, 120, 6, 'b0'));
+      await expect.poll(async () => sceneElementIds(bobPage), { timeout: 20000 })
+        .toEqual(expect.arrayContaining(['undo-alice', 'undo-bob']));
+      await expect.poll(async () => sharedElementIds(page), { timeout: 20000 })
+        .toEqual(['undo-alice', 'undo-bob']);
+
+      await expect(page.getByTestId('whiteboard-undo-btn')).toBeEnabled();
+      await page.getByTestId('whiteboard-undo-btn').click();
+      await expect.poll(async () => sceneElementIds(page), { timeout: 20000 }).toEqual(['undo-bob']);
+      await expect.poll(async () => sceneElementIds(bobPage), { timeout: 20000 }).toEqual(['undo-bob']);
+      await expect.poll(async () => sharedElementIds(page), { timeout: 20000 }).toEqual(['undo-bob']);
+
+      await expect(page.getByTestId('whiteboard-redo-btn')).toBeEnabled();
+      await page.getByTestId('whiteboard-redo-btn').click();
+      await expect.poll(async () => sharedElementIds(page), { timeout: 20000 })
+        .toEqual(['undo-alice', 'undo-bob']);
+      await expect.poll(async () => sceneElementIds(page), { timeout: 20000 })
+        .toEqual(['undo-alice', 'undo-bob']);
+      await expect.poll(async () => sceneElementIds(bobPage), { timeout: 20000 })
+        .toEqual(['undo-alice', 'undo-bob']);
+    } finally {
+      await bobContext.close();
     }
   });
 
