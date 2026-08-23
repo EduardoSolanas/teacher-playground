@@ -115,6 +115,51 @@ follows another's. In a classroom that is "everyone look at what I am looking
 at", which we currently cannot offer at all. Cheap to evaluate now that the
 stored host view already exists.
 
+### 7. Stop typing the boundary as `any`
+
+**What hurts.** `ExcalidrawWrapper.tsx` opts out of the type system 18 times:
+`useRef<any>`, `(el: readonly any[], appState: any)`, `Y.Map<any>`,
+`(window as any)`. Our `tsconfig.json` sets `strict: true`, and the file doing
+the most delicate work in the codebase waives it at exactly the boundary where
+mistakes are expensive.
+
+**What to do.** Use the types upstream already ships:
+`ExcalidrawImperativeAPI`, `OrderedExcalidrawElement`, `AppState`,
+`Collaborator`, `BinaryFiles`. Excalidraw compiles under `strict: true` itself,
+and its public surface is clean — one `any` in the whole of `types.d.ts`. The
+types are better than our use of them.
+
+**Why it comes first in practice.** Items 1, 2 and 3 mean adopting
+`reconcileElements`, `CaptureUpdateAction` and the `Collaborator` map. Adopting
+them through `any` is how you get a runtime shape error instead of a compile
+error, which is precisely the failure this repo already had once, when the canvas
+was handed encoded points it could not draw and peers' strokes silently
+disappeared.
+
+## Upgrades and dependencies
+
+**There is nothing to upgrade to.** `0.18.1` is the `latest` dist-tag on npm and
+it is what we depend on. The other tags — `next` (`0.18.0-abeeaeb`), `rc`,
+`preview` — are main-branch builds numbered *below* the stable release, so
+"upgrade for improvements" is not available on the stable channel. Improvements
+come from one of three places: their main branch (tracking it is a
+fork-adjacent commitment, not an upgrade), upstream contributions we make, or
+the deletions listed above.
+
+**We already override their dependency graph.** Excalidraw pins its
+dependencies exactly (`clsx` 1.1.1, `@braintree/sanitize-url` 6.0.2,
+`fractional-indexing` 3.2.0, and it ships `cross-env` as a runtime dependency).
+Our `package.json` carries `overrides` forcing `nanoid`, `dompurify`,
+`immutable`, `mermaid` and `lodash-es` versions through their tree, plus more
+under `@excalidraw/mermaid-to-excalidraw`. That is a second place where we are
+already patching around upstream — and the thing that gets strictly worse in a
+fork, because then the graph is ours to keep current, including the parts of it
+that exist to draw mermaid diagrams we may not even offer.
+
+**React is not a blocker.** Their peer range is
+`^17.0.2 || ^18.2.0 || ^19.0.0`, so Excalidraw does not stand in the way of
+moving this app off React 18.
+
 ## What genuinely is not in the API
 
 These are the only real fork candidates left.
