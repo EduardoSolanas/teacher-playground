@@ -153,7 +153,92 @@ Assets and locales are vendored into `public/` and copied by
 through `window.__debugExcalidrawApi` behind a build flag. Both are annoyances,
 neither is worth a fork.
 
-## Recommendation
+## If the fork is an overhaul
+
+Everything above optimises for the smallest possible delta, which is the right
+objective for carrying patches and the wrong one for an overhaul. If the reason
+to fork is that we want an editor shaped around a classroom, the question is not
+"what can we not reach through the API" — it is "what will we take ownership
+of, and what will we never take ownership of".
+
+### What an overhaul buys that the API cannot
+
+Checked against `dist/types/excalidraw/element/types.d.ts`:
+
+- **Per-role editability.** `locked: boolean` is a property of the *element*,
+  not of the *viewer*. A worksheet the teacher can edit and a child cannot is
+  not expressible: locking it locks it for everyone. This is the single most
+  classroom-shaped thing upstream does not have.
+- **Authorship as a rule, not a label.** `customData` can carry an author id
+  today, so we could mark who drew what without forking — but nothing enforces
+  it. "A child may move only their own work" lives in the editor's interaction
+  handlers, and there is no hook into them.
+- **Refusal.** Upstream assumes the local scene is truth: a mutation happens and
+  is then published. There is no "ask before you commit this" seam, so a client
+  that misbehaves has already drawn before the server sees it. Server-side
+  validation after the fact is possible without a fork, but it can only undo,
+  never prevent.
+- **A CRDT-native document.** `version` / `versionNonce` / `index` exist because
+  upstream reconciles by version. Our document is a Yjs document, so we convert
+  between the two models on every frame, and `pointCodec.ts`, the tombstone
+  rules and the publish/apply layer all descend from that seam. A fork whose
+  scene store *is* the Yjs document deletes the seam rather than smoothing it.
+- **Deleting attack surface.** Library sharing, external links, third-party
+  image handling, export paths, anything that phones out. `UIOptions` hides
+  them; a fork removes them. This repo has a shelf of `SECURITY_*` documents
+  that would be shorter if the surface were not there.
+
+### What an overhaul forces us to own
+
+The parts nobody wants: the canvas renderer, text editing and wrapping, arrow
+binding and geometry, image and file handling, export, accessibility, and the
+long tail of shape-editing bugs. These are the hard, boring, well-tested parts of
+Excalidraw and they carry no classroom value — owning them is pure cost, paid
+forever, in exchange for the five bullets above.
+
+That is the trade to be explicit about. Not "can we fork" — we can — but
+"which half do we want to be responsible for".
+
+### The shape worth forking
+
+**Fork the document and permission layer. Do not fork the editor.**
+
+Take ownership of: the scene store (make it the Yjs document), the interaction
+gate (may this pointer move this element, given this role and this author), and
+the collaboration surface (cursors, selection, follow). Leave upstream owning:
+rendering, text editing, geometry, binding, images, export.
+
+That boundary is worth writing down before a single line is changed, because
+every future decision either respects it or turns this into a project that
+maintains a drawing editor.
+
+### Sequencing, and the gate
+
+1. **Name the outcomes first**, as things a teacher can do: a worksheet children
+   cannot move, each child confined to their own area, "everyone look at my
+   screen", "only your own work is yours to erase", freeze the board.
+2. **Spike each one against the current API.** Frames exist (`frameId`), locking
+   exists, follow exists (`onUserFollow`), authorship can live in `customData`.
+   Some of that list will turn out to be reachable — those are not fork
+   arguments and must be struck off before the decision.
+3. **Fork only on what survives.** If the list is one item, build it above the
+   API and accept the awkwardness. If it is per-role editability plus refusal
+   plus the CRDT document, the fork is justified and the boundary above is the
+   plan.
+4. **Decide the maintenance policy on day one.** An overhaul creates a deep
+   delta, so plan to stop rebasing: fork at the pinned tag, keep a written log of
+   every divergence, and cherry-pick only security and geometry fixes. Pretending
+   the fork will track upstream is how forks die half-merged.
+
+### Do these anyway
+
+Items 1–5 above are worth doing before any fork decision, not instead of it.
+They shrink the wrapper, and a smaller wrapper is less to port and fewer of our
+own bugs to carry across. The one exception is `reconcileElements`: if the
+CRDT-native document is where this is going, that code is deleted rather than
+replaced — so take it now for the bug reduction, and expect to remove it later.
+
+## Recommendation for a minimal delta
 
 **Do not fork.** Items 1–5 are deletions available today against the pinned
 version, and they remove the parts of the wrapper most likely to hide a bug: the
