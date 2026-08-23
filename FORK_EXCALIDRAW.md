@@ -1,188 +1,178 @@
-# Forking Excalidraw: what we would change
+# Excalidraw: what to change, and what not to fork
 
 `@excalidraw/excalidraw` is embedded as a black box and driven from
 `src/components/whiteboard/ExcalidrawWrapper.tsx` (696 lines, most of which
-exists to work around what the component does not let us say). This document
-lists what a fork would change, what each change deletes on our side, and
-whether it is worth the cost of owning a fork at all.
+exists to work around what we believed the component would not let us say).
 
-Read the last section first if you want the recommendation.
+Reading the installed type definitions changed the conclusion of the first
+version of this document. **Most of what we hand-rolled is already in the public
+API of the version we depend on.** The fork case is much smaller than it looked;
+what remains is a list of things to delete.
 
-## The rule for what belongs in a fork
+> **Correction.** The first version of this file claimed Excalidraw "renders
+> collaborator cursors internally but does not let us supply them". That is
+> wrong: `updateScene({ collaborators })` has been the supported path all along,
+> and the type is rich — pointer, button, username, colour, selection, laser
+> tool, idle state. The item below replaces that one.
 
-A change belongs in the fork only if **it cannot be expressed through the public
-API and its absence costs us code we would otherwise not write**. Anything that
-is merely a preference — toolbar contents, theme, which tools are enabled — is
-already reachable through `UIOptions` and props and must stay out.
+## How updates get in and out
 
-Two things are ours regardless and must never move into a fork: the authority
-model (the room object holds the document, see `SERVER_SIDE_BOARD_PLAN.md`) and
-everything about identity, roles and presence. A fork that starts absorbing
-those becomes a second application.
+Everything here is in `@excalidraw/excalidraw@0.18.1`, verified against
+`dist/types/excalidraw/types.d.ts` in `node_modules`.
 
-## Changes, by payoff
+| Direction | API | Do we use it |
+| --- | --- | --- |
+| Scene changed | `onChange(elements, appState, files)` | yes — whole scene, per pointer sample |
+| Pointer moved | `onPointerUpdate({ pointer: {x, y, tool}, button, pointersMap })` | **no** |
+| Pointer down / up | `excalidrawAPI.onPointerDown` / `onPointerUp` | **no** — we infer it |
+| Pan / zoom | `onScrollChange(scrollX, scrollY, zoom)`, also on the API | **no** — we derive it from `onChange` |
+| Someone followed you | `onUserFollow(payload)` | **no** — feature we do not have |
+| Push a scene in | `updateScene({ elements, appState, collaborators, captureUpdate })` | partly — never with `collaborators` or `captureUpdate` |
+| Merge remote with local | `reconcileElements(local, remote, appState)` (exported) | **no** — hand-rolled |
+| Keep an update out of undo | `CaptureUpdateAction.NEVER` (exported) | **no** |
 
-### 1. A change feed instead of whole-scene `onChange`
+The four "no"s in the middle are the answer to "how do we get updates from
+drawing, cursor, etc.": upstream already publishes them, in scene coordinates,
+with button state. We are reconstructing all of it from the whole-scene callback.
 
-**What hurts.** `onChange` fires for every pointer sample and hands over the
-entire scene. We rebuild the delta ourselves on every one of them: an id →
-`version` map (`publishedVersionsRef`), a serialize pass, an id list for the
-previous publish, and an equality check against the last synced scene
-(`ExcalidrawWrapper.tsx:440-470`). Handing that whole scene to React per sample
-re-rendered the board subtree mid-stroke and was the drawing lag users reported,
-so there is now a second mechanism — deferring the React hop while the pointer
-is down — to undo the damage of the first.
+## Fix without forking, by payoff
 
-**What the fork changes.** Emit changed and deleted element ids alongside the
-scene, or in place of it: `onElementsChanged({ changed, deleted, appState })`.
-Excalidraw already knows precisely what it touched; we are reconstructing it
-from the outside, once per sample, at a cost that grows with board size.
+### 1. Use `reconcileElements` instead of our own merge
 
-**What it deletes here.** The version-baseline bookkeeping, the per-sample
-serialize, and most of the deferral machinery — the React hop stays deferred by
-choice rather than by necessity.
+**What hurts.** Applying a peer's edit means deciding what to keep: we track
+`seenRemoteIds`, `lastPublishedIds`, a per-id `version` map, and a set of
+"unpublished local" ids to avoid clobbering a stroke in progress
+(`ExcalidrawWrapper.tsx:170-200`). This is a reimplementation of the merge
+Excalidraw's own collaborative app uses — and it is exported.
 
-**Risk.** Low. Additive to the existing callback, easy to keep behind a prop.
+**What to do.** `reconcileElements(localElements, remoteElements, appState)`
+returns the merged scene, version-aware, including the ordering rules we do not
+implement at all.
 
-### 2. A remote-apply path that does not fight the local one
+**Deletes.** Most of the bookkeeping above, and the class of bug where a local
+stroke in flight loses to a remote frame.
 
-**What hurts.** Applying a peer's edit means calling `updateScene`, which then
-comes back out through `onChange` as though we had drawn it. We suppress the
-echo with `excalidrawElementsEqual`, `adoptVersionBaseline`, a set of
-`seenRemoteIds` and a list of unpublished local ids
-(`ExcalidrawWrapper.tsx:170-200, 275-300`). Separately, a scene written
-synchronously in the API callback is discarded — Excalidraw is still
-initialising — so the mount path defers by 100ms and hopes
-(`ExcalidrawWrapper.tsx:325-345`).
+### 2. Apply remote scenes with `captureUpdate: CaptureUpdateAction.NEVER`
 
-**What the fork changes.** `updateScene(scene, { origin })`, with the origin
-carried into whatever `onChange` reports, plus a settled/ready signal so the
-first scene write does not have to be a timing guess. This is the same idea Yjs
-already uses for transaction origins, and for the same reason.
+**What hurts.** Undo is scene-wide, so in a shared room it reaches into other
+people's work. We answered that by not using it: `scopedUndo.ts` drives a
+`Y.UndoManager` filtered to our own origin, with a 300ms capture window.
 
-**What it deletes here.** The echo-suppression bookkeeping and the mount race.
-Both are the kind of code that works until someone adds a case.
+**What to do.** `CaptureUpdateAction.NEVER` is documented for exactly this —
+"use for updates which should never be recorded, such as remote updates or scene
+initialization". Local edits stay `IMMEDIATELY` and remain undoable; remote ones
+never enter the local stack.
 
-**Risk.** Low-moderate. Touches the reconciler's entry point.
+**Deletes.** Possibly `scopedUndo.ts` entirely. Test it before removing: our
+version also groups a stroke into one undo step, and the built-in one must be
+shown to do the same.
 
-### 3. Origin-aware history
+### 3. Hand cursors to `updateScene({ collaborators })`
 
-**What hurts.** Excalidraw's undo is scene-wide, so in a shared room undo
-reaches into other people's work. We do not use it: `scopedUndo.ts` drives a
-`Y.UndoManager` filtered to our own origin, with a 300ms capture window chosen
-to make one stroke one undo step. That means two history models exist, and the
-built-in one has to stay unreachable.
+**What hurts.** `RemoteCursorOverlay` positions DOM nodes above the canvas in
+viewport pixels, so Excalidraw's scroll and zoom must be published back out on
+every pan to place them (`ExcalidrawWrapper.tsx:560-575`) — React state churning
+on a gesture, which the comment there records once starved the receiving peer.
 
-**What the fork changes.** Make history origin-aware — undo only what this
-client did — or expose the history stack so an embedder can drive it.
+**What to do.** Build a `Map<SocketId, Collaborator>` from our presence data and
+pass it to `updateScene`. The type carries `pointer`, `button`, `username`,
+`color`, `selectedElementIds`, `userState` (idle), and the laser tool.
 
-**What it deletes here.** `scopedUndo.ts` and its integration, if the fork's
-version is good enough. Possibly nothing, if we prefer Yjs semantics; then the
-fork change is just "let us turn the built-in one off cleanly".
+**Deletes.** The overlay component, the pan-driven React state, and the
+viewport-to-pixel maths in `cursorViewport.ts` that exists to serve it.
 
-**Risk.** Moderate, and the one most likely to be wanted upstream: every
-collaborative integrator hits it.
+**Bonus.** Selection highlighting and idle state come free; today we have
+neither.
 
-### 4. Collaborator cursors on the canvas
+### 4. Take cursors from `onPointerUpdate`
 
-**What hurts.** Excalidraw renders collaborator cursors internally but does not
-let us supply them, so `RemoteCursorOverlay` draws DOM nodes above the canvas in
-viewport pixels. To position them we publish Excalidraw's own scroll/zoom back
-out on every pan (`ExcalidrawWrapper.tsx:560-575`), which is React state
-churning on a gesture — the comment there records that this once starved the
-receiving peer.
+**What hurts.** We derive the local pointer ourselves and infer whether the
+pointer is down (`isPointerDownRef`) to decide when to defer the React hop.
 
-**What the fork changes.** Accept a collaborator list and render the cursors in
-the canvas layer, where the coordinates already are.
+**What to do.** `onPointerUpdate` gives `{ pointer: { x, y, tool }, button }` in
+scene coordinates — the units the shared document wants — and says whether the
+button is down. `excalidrawAPI.onPointerDown` / `onPointerUp` are there too.
 
-**What it deletes here.** The overlay component and the pan-driven React state.
-Note the stored host view still needs scroll and zoom, so the reporting does not
-disappear entirely — it stops being per-frame.
+**Deletes.** Our pointer plumbing and the inference, and it removes a coordinate
+conversion rather than adding one.
 
-**Risk.** Low. The rendering already exists; only the input is missing.
+### 5. Take the viewport from `onScrollChange`
 
-### 5. A serialization hook for points
+**What hurts.** `publishViewport` runs on every `onChange` and compares five
+fields against the last value to decide whether a pan actually happened
+(`ExcalidrawWrapper.tsx:540-560`).
 
-**What hurts.** Freehand points are the bulk of a board's bytes, and they travel
-and are stored as JSON. `pointCodec.ts` exists to pack them, and every reader
-has to know that `points` may arrive as a `Uint8Array`, a JSON string, or a
-plain array — a lesson learned when the canvas was handed bytes it could not
-draw and peers' strokes silently stopped appearing.
+**What to do.** `onScrollChange(scrollX, scrollY, zoom)` fires when the viewport
+changes and only then. It is the natural feed for the stored host view
+(`viewportPersist.ts`).
 
-**What the fork changes.** Either a typed-array representation for points, or a
-per-element serialization hook so an embedder can encode without the rest of the
-system needing to know.
+**Deletes.** The dedupe, and the coupling between drawing and viewport reporting.
 
-**What it deletes here.** Not the codec — that is ours — but the "four possible
-shapes" rule that every reader currently has to obey.
+### 6. `onUserFollow` — a feature we do not have
 
-**Risk.** High if it changes the element shape; low if it is only a hook. Prefer
-the hook.
+Not a cleanup: upstream supports follow-mode, where one participant's viewport
+follows another's. In a classroom that is "everyone look at what I am looking
+at", which we currently cannot offer at all. Cheap to evaluate now that the
+stored host view already exists.
 
-### 6. Self-contained asset and locale delivery
+## What genuinely is not in the API
 
-**What hurts.** Assets and locales are vendored into `public/` and copied by
-`scripts/copy-excalidraw-assets.mjs` in `prebuild`, with
-`excalidrawAssetPath.ts` pointing the runtime at them. It works, but the vendored
-files are in the repo and drift with every upgrade.
+These are the only real fork candidates left.
 
-**What the fork changes.** A build that resolves assets from a configurable base
-path with no copy step.
+### A. A change feed instead of whole-scene `onChange`
 
-**What it deletes here.** The copy script, the path shim, and a large vendored
-tree.
+`onChange` hands over the entire scene on every pointer sample, and no delta or
+store-increment API is exported. We rebuild the delta per sample — a serialize
+pass and a version map — and had to defer the React hop mid-stroke to undo the
+cost, which is where the reported drawing lag came from
+(`ExcalidrawWrapper.tsx:440-470`). `reconcileElements` (item 1) fixes the merge
+direction, not this one.
 
-**Risk.** Low, but this is packaging, not capability — the least valuable item
-here despite being the most visible in a diff.
+Worth raising upstream: every collaborative embedder pays this.
 
-### 7. A supported test handle
+### B. Origin tagging on `onChange`
 
-**What hurts.** E2E needs the scene API, so we hang it on
-`window.__debugExcalidrawApi` and gate it on a build flag
-(`ExcalidrawWrapper.tsx:365-370`). It is a global on a production build,
-switched off by an environment variable.
+A scene we push in comes back out through `onChange` as though the user drew it,
+so the echo has to be filtered. `captureUpdate` controls *history*, not
+*notification*. An origin carried through the callback — the same idea Yjs
+transaction origins use — would remove the filtering entirely.
 
-**What the fork changes.** A documented way to obtain the API in a test build.
+### C. A serialization hook for points
 
-**Risk.** Trivial, and honestly this one is fine as it is.
+Freehand points are the bulk of a board's bytes; `pointCodec.ts` packs them, and
+every reader must know `points` can arrive as a `Uint8Array`, a JSON string, or a
+plain array — a rule learned when the canvas was handed bytes it could not draw
+and peers' strokes silently stopped appearing. A per-element serialization hook
+would contain that; changing the element shape upstream would not be worth it.
 
-## What a fork costs
+### D. Packaging and test handle
 
-- **Upstream moves.** We are on `^0.18.1`. Every upgrade becomes a merge, and
-  the reconciler and history are exactly where upstream churns.
-- **It is a build, not a file.** React plus SCSS plus a worker bundle; the
-  package we consume today is the output of that.
-- **Nobody else reviews it.** Bugs in a fork are ours, in code we did not write.
-
-Against that: items 1 and 2 are worth real latency and real deletion here, and
-items 1–4 are things any collaborative embedder wants — which is the argument
-for sending them upstream rather than keeping them.
+Assets and locales are vendored into `public/` and copied by
+`scripts/copy-excalidraw-assets.mjs` (which now skips the 13MB CJK font), with
+`excalidrawAssetPath.ts` pointing the runtime at them; and E2E reaches the API
+through `window.__debugExcalidrawApi` behind a build flag. Both are annoyances,
+neither is worth a fork.
 
 ## Recommendation
 
-**Do not fork wholesale.** Take it in three steps, and stop at whichever one
-pays:
+**Do not fork.** Items 1–5 are deletions available today against the pinned
+version, and they remove the parts of the wrapper most likely to hide a bug: the
+hand-rolled merge, the echo bookkeeping, the overlay, the pointer inference.
 
-1. **Patch, don't fork.** Carry items 1 and 2 as a minimal patch set against the
-   pinned version (the repo already uses `overrides` for transitive pins, so a
-   patch step is not new infrastructure). Measure the drawing path before and
-   after; if the deletions do not show up in the latency numbers, stop here.
-2. **Send 1–4 upstream.** They are general, and being carried by upstream is
-   worth more than being carried by us. A patch set that survives a review is
-   also evidence the change is right.
-3. **Fork only if 1 or 2 is rejected and the numbers justified it.** If it comes
-   to that, fork at the tag we are pinned to, keep the patch set as the entire
-   delta, and never let it grow to include anything from "what belongs in a
-   fork" above.
-
-Item 6 (assets) can be done at any time and is independent. Item 7 needs
-nothing. Item 5 should wait for evidence from a measured board that the codec's
-shape rule is actually costing us bugs rather than just looking untidy.
+Order: **1 and 2 first** (correctness — merge and undo), then **3–5** (deletion
+and latency), then evaluate **6** as a product question. Raise **A** and **B**
+upstream with the wrapper as the worked example; if both are refused and the
+latency numbers justify it, a fork whose entire delta is A and B is defensible.
+Nothing else on this page is.
 
 ## Before any of this
 
-The board's authority model landed recently and has open corrective work
-(`SERVER_SIDE_BOARD_PLAN.md`, section 5). Latency work on the client is listed
-there as a separate workstream and has not been measured yet. Items 1 and 2 are
-justified by that measurement — do it first, or this document is a list of
-plausible guesses rather than a plan.
+Two prerequisites, in order:
+
+1. The board's authority model has open corrective work
+   (`SERVER_SIDE_BOARD_PLAN.md`, section 5). Do not rewire the client under it.
+2. The client latency workstream is unmeasured. Items 3–5 claim to remove React
+   churn from the drawing path; without a p50/p95 baseline those are predictions.
+
+Each item is a red/green cycle of its own with the suites in `AGENTS.md`, and
+each should delete more than it adds. If one does not, it does not belong here.
