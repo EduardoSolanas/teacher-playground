@@ -16,6 +16,10 @@ import {
   uniqueElementsById,
 } from '@/lib/whiteboard/excalidrawSync';
 import { getElementsFromArray, replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
+import {
+  isWhiteboardLatencyProbeEnabled,
+  recordWhiteboardLatencyEvent,
+} from '@/lib/whiteboard/latencyProbe';
 
 
 type ExcalidrawWrapperProps = {
@@ -117,6 +121,8 @@ export default function ExcalidrawWrapper({
 
 
   const applyRemoteElements = useCallback((remoteElements: any[]) => {
+    const shouldRecordRemoteRender =
+      isWhiteboardLatencyProbeEnabled() && hasAcceptedInitialSceneRef.current;
     const remoteIds = new Set<string>();
     for (const element of remoteElements) {
       const id = (element as { id?: unknown })?.id;
@@ -210,6 +216,21 @@ export default function ExcalidrawWrapper({
         apiRef.current.updateScene({
           elements: sceneToApply,
         });
+
+        if (shouldRecordRemoteRender) {
+          window.requestAnimationFrame(() => {
+            for (const element of remoteElements) {
+              const elementId = (element as { id?: unknown })?.id;
+              const version = (element as { version?: unknown })?.version;
+              if (typeof elementId !== 'string' || elementId.length === 0 || typeof version !== 'number') continue;
+              recordWhiteboardLatencyEvent({
+                kind: 'stroke-render',
+                elementId,
+                version,
+              });
+            }
+          });
+        }
       } catch {
         // ignore
       }
@@ -442,6 +463,7 @@ export default function ExcalidrawWrapper({
       }
 
       if (yDoc && yElementsArray) {
+        const shouldRecordLatency = isWhiteboardLatencyProbeEnabled();
         try {
           const { elements: payload, wholeScene } = elementsToPublish(
             serializedElements,
@@ -457,6 +479,23 @@ export default function ExcalidrawWrapper({
             replaceSharedElements(yDoc, yElementsArray, payload, 'local', {
               deleteMissing: false,
             });
+          }
+
+          if (shouldRecordLatency) {
+            const publishedElements = serializedElements.filter((element) => {
+              const elementId = (element as { id?: unknown })?.id;
+              return typeof elementId === 'string' && diff.changedIds.has(elementId);
+            });
+            for (const element of publishedElements) {
+              const elementId = (element as { id?: unknown })?.id;
+              const version = (element as { version?: unknown })?.version;
+              if (typeof elementId !== 'string' || elementId.length === 0 || typeof version !== 'number') continue;
+              recordWhiteboardLatencyEvent({
+                kind: 'stroke-publish',
+                elementId,
+                version,
+              });
+            }
           }
         } catch {
           // A Yjs write must not roll back the local canvas state.

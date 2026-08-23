@@ -1,5 +1,10 @@
+import { useEffect } from 'react';
 import type { RemoteCursor, WhiteboardUser } from '@/types/whiteboard';
 import { sceneToViewport, type CanvasViewport } from '@/lib/whiteboard/cursorViewport';
+import {
+  isWhiteboardLatencyProbeEnabled,
+  recordWhiteboardLatencyEvent,
+} from '@/lib/whiteboard/latencyProbe';
 
 interface RemoteCursorOverlayProps {
   cursors: RemoteCursor[];
@@ -10,6 +15,19 @@ interface RemoteCursorOverlayProps {
 
 export default function RemoteCursorOverlay({ cursors, users, viewport }: RemoteCursorOverlayProps) {
   const hostByPeerId = new Map(users.filter((user) => user.isHost).map((user) => [user.peerId, true]));
+
+  useEffect(() => {
+    if (!isWhiteboardLatencyProbeEnabled()) return;
+    for (const cursor of cursors) {
+      if (typeof cursor.peerId !== 'string' || typeof cursor.x !== 'number' || typeof cursor.y !== 'number') continue;
+      recordWhiteboardLatencyEvent({
+        kind: 'cursor-render',
+        peerId: cursor.peerId,
+        x: cursor.x,
+        y: cursor.y,
+      });
+    }
+  }, [cursors, viewport]);
 
   return (
     <>

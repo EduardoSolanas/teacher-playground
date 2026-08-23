@@ -212,6 +212,34 @@ Recommended order:
 Do not reintroduce client whole-board uploads. They create two authorities and
 make latency, conflict resolution and deletion correctness harder at once.
 
+### Latency baseline (2026-08-23)
+
+The first measurement slice now lives in `tests/e2e/latency.spec.ts`. It uses
+two separately authenticated browser contexts, real Excalidraw canvases, the
+real y-websocket provider, and the local Worker. Debug-only bounded events
+correlate local publish with the other browser's canvas/DOM render; production
+builds do not collect them or perform the added scene walks.
+
+The main verifier's focused run measured:
+
+| Path | Samples | p50 | p95 | Gate |
+| --- | ---: | ---: | ---: | ---: |
+| stroke host -> peer | 4 | 13ms | 16ms | <= 2,000ms |
+| stroke peer -> host | 8 | 13ms | 22ms | <= 2,000ms |
+| cursor host -> peer | 4 | 3ms | 3ms | <= 1,000ms |
+| cursor peer -> host | 4 | 3ms | 4ms | <= 1,000ms |
+
+The overload test records loss recovery separately: a frame proven shed by the
+rate limiter reappeared through periodic Yjs resync in 2,921ms, under its
+8,000ms test ceiling. That number is not mixed into the ordinary live-path
+percentiles.
+
+These are local deterministic E2E baselines, not an Internet SLA. The current
+free-plan authority caps a room at two occupants (host plus one student), so
+10- and 15-peer browser tiers are not reachable product states. Do not bypass
+that authorization rule merely to manufacture a scale result; add those tiers
+when a server-verified paid entitlement makes them real.
+
 ## 8. Out of scope, on purpose
 
 - **The latency workstream** — p95 targets, publish-to-render instrumentation,

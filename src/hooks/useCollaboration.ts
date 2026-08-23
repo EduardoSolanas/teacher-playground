@@ -26,6 +26,10 @@ import { shouldPollPresence } from '@/lib/whiteboard/presencePolling';
 import { cursorPublishDelay } from '@/lib/whiteboard/cursorPublishRate';
 import { moderationTargetBody } from '@/lib/whiteboard/moderationTarget';
 import { DEFAULT_MAX_USERS } from '@/lib/plan/limits';
+import {
+  isWhiteboardLatencyProbeEnabled,
+  recordWhiteboardLatencyEvent,
+} from '@/lib/whiteboard/latencyProbe';
 
 function elementsEqual(a: CanvasElement[], b: CanvasElement[]) {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -368,8 +372,18 @@ export function useCollaboration(roomId: string) {
   const cursorTimerRef = useRef<number | null>(null);
 
   const publishCursor = useCallback((x: number, y: number) => {
+    const collaboration = collaborationRef.current;
+    if (!collaboration) return;
+    collaboration.setLocalCursor(x, y);
     cursorSentAtRef.current = Date.now();
-    collaborationRef.current?.setLocalCursor(x, y);
+    if (isWhiteboardLatencyProbeEnabled()) {
+      recordWhiteboardLatencyEvent({
+        kind: 'cursor-publish',
+        peerId: localPeerIdRef.current,
+        x,
+        y,
+      });
+    }
   }, []);
 
   /**

@@ -100,7 +100,7 @@ test.describe('Multi-peer collaboration', () => {
       // The Worker relays at most 60 messages per account per second and sheds
       // the rest. Start just after a periodic sync so the next repair is still
       // about three seconds away, then prove a probe is shed before updating.
-      const probeWasRelayed = await peerPage.evaluate(async (element) => {
+      const shedPublish = await peerPage.evaluate(async (element) => {
         const socket = (window as any).__whiteboardCollab?.provider?.ws as WebSocket | undefined;
         if (!socket || socket.readyState !== WebSocket.OPEN) {
           throw new Error('expected the peer y-websocket to be open');
@@ -153,20 +153,32 @@ test.describe('Multi-peer collaboration', () => {
         });
 
         const api = (window as any).__debugExcalidrawApi;
+        const publishedAtEpochMs = Date.now();
         api.updateScene({
           elements: [...api.getSceneElements(), element],
           captureUpdate: 'IMMEDIATELY',
         });
-        return relayed;
+        return { publishedAtEpochMs, relayed };
       }, rectangle('recovered-after-shed-rect-1', 320, 180));
 
-      expect(probeWasRelayed).toBe(false);
+      expect(shedPublish.relayed).toBe(false);
       const shedElementId = 'recovered-after-shed-rect-1';
 
       await expect.poll(async () => sceneElementIds(peerPage), { timeout: 5000 }).toContain(shedElementId);
       await page.waitForTimeout(1_000);
       expect(await sceneElementIds(page)).not.toContain(shedElementId);
-      await expect.poll(async () => sceneElementIds(page), { timeout: 10000 }).toContain(shedElementId);
+      let firstHostObservationAtEpochMs: number | undefined;
+      await expect.poll(async () => {
+        const ids = await sceneElementIds(page);
+        if (ids.includes(shedElementId) && firstHostObservationAtEpochMs === undefined) {
+          firstHostObservationAtEpochMs = Date.now();
+        }
+        return ids;
+      }, { timeout: 10000 }).toContain(shedElementId);
+      expect(firstHostObservationAtEpochMs).toBeDefined();
+      const recoveryMs = firstHostObservationAtEpochMs! - shedPublish.publishedAtEpochMs;
+      console.log(`RESYNC_RECOVERY_MS=${recoveryMs}`);
+      expect(recoveryMs).toBeLessThanOrEqual(8_000);
     } finally {
       await peerContext.close();
     }
