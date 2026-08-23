@@ -15,7 +15,7 @@ import { getStablePeerId, peerIdWhenJoined, rememberIssuedPeerId } from '@/lib/w
 import { randomHexId } from '@/lib/crypto/randomId';
 import * as store from '@/lib/whiteboard/store';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
-import { reconcileElements, uniqueElementsById } from '@/lib/whiteboard/excalidrawSync';
+import { mergeApiSnapshotElements, uniqueElementsById } from '@/lib/whiteboard/excalidrawSync';
 import { isLocalRoomHost } from '@/lib/whiteboard/localHost';
 import { admissionFromPresenceStatus } from '@/lib/whiteboard/presenceAdmission';
 import { mergeCursorPresence } from '@/lib/whiteboard/mergeCursorPresence';
@@ -334,7 +334,7 @@ export function useCollaboration(roomId: string) {
         // Reconcile rather than overwrite: the snapshot is written on a
         // debounce, so it can be older than what the user just drew. Merging
         // per element keeps unsaved local work while still catching up.
-        const merged = reconcileElements(
+        const merged = mergeApiSnapshotElements(
           elementsRef.current,
           remoteElements,
         ) as unknown as CanvasElement[];
@@ -353,7 +353,7 @@ export function useCollaboration(roomId: string) {
       if (!collaborationRef.current?.elementsArray) return;
       pendingPublishRef.current = null;
       publishToSharedDoc(
-        reconcileElements(pending, []) as unknown as CanvasElement[],
+        mergeApiSnapshotElements(pending, []) as unknown as CanvasElement[],
       );
     }
 

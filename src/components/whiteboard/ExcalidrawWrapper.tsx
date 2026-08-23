@@ -6,15 +6,15 @@ import { viewportFromAppState, type CanvasViewport } from '@/lib/whiteboard/curs
 // MUST stay above the Excalidraw import: it sets EXCALIDRAW_ASSET_PATH, and ES
 // module imports are evaluated in order, before this module's own body runs.
 import '@/lib/whiteboard/excalidrawAssetPath';
-import { Excalidraw, restoreElements } from '@excalidraw/excalidraw';
+import { Excalidraw } from '@excalidraw/excalidraw';
 import '@excalidraw/excalidraw/index.css';
 import * as Y from 'yjs';
 import {
   excalidrawElementsEqual,
   serializeExcalidrawElements,
   toExcalidrawToolType,
-  uniqueElementsById,
 } from '@/lib/whiteboard/excalidrawSync';
+import { reconcileRemoteElements } from '@/lib/whiteboard/excalidrawReconcile';
 import { getElementsFromArray, replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 import {
   isWhiteboardLatencyProbeEnabled,
@@ -75,8 +75,20 @@ export default function ExcalidrawWrapper({
    */
   const adoptVersionBaseline = useCallback((
     elements: readonly any[],
-    remoteIds?: ReadonlySet<string>,
+    remoteElements?: readonly any[],
   ) => {
+    const remoteById = new Map<string, any>();
+    const remoteVersions = new Map<string, number>();
+    if (remoteElements) {
+      for (const remoteElement of remoteElements) {
+        const id = (remoteElement as { id?: unknown })?.id;
+        if (typeof id !== 'string' || id.length === 0) continue;
+        remoteById.set(id, remoteElement);
+        const version = (remoteElement as { version?: unknown }).version;
+        remoteVersions.set(id, typeof version === 'number' ? version : 0);
+      }
+    }
+
     const versions = new Map<string, number>();
     for (const element of elements) {
       const id = (element as { id?: unknown })?.id;
@@ -85,19 +97,30 @@ export default function ExcalidrawWrapper({
       /*
        * An element the remote scene did not contain is ours and unsent.
        *
-       * restoreElements merges the local scene into the remote one, so the
-       * result includes anything drawn here that has not round-tripped yet.
-       * Recording those as published claimed they had been sent when they had
-       * not, and they were never published at all — one peer's shape simply
-       * never arrived, intermittently, depending on what was in flight.
+       * Reconciliation keeps a pointer-down local-only element in the scene,
+       * so the result can include anything drawn here that has not
+       * round-tripped yet. Recording those as published would claim they had
+       * been sent when they had not, and a peer's shape could disappear while
+       * it was still in flight.
        */
-      if (remoteIds && !remoteIds.has(id)) {
+      if (remoteElements && !remoteVersions.has(id)) {
         const previous = publishedVersionsRef.current.get(id);
         if (previous !== undefined) versions.set(id, previous);
         continue;
       }
 
-      const version = (element as { version?: unknown }).version;
+      const sceneVersion = (element as { version?: unknown }).version;
+      const remoteElement = remoteById.get(id);
+      const remoteVersion = remoteVersions.get(id);
+      const sameVersionDifferentPayload = remoteElements
+        && remoteElement
+        && typeof sceneVersion === 'number'
+        && sceneVersion === remoteVersion
+        && JSON.stringify(serializeExcalidrawElements([element]))
+          !== JSON.stringify(serializeExcalidrawElements([remoteElement]));
+      const version = sameVersionDifferentPayload
+        ? sceneVersion - 1
+        : (remoteElements ? remoteVersion : sceneVersion);
       versions.set(id, typeof version === 'number' ? version : 0);
     }
     publishedVersionsRef.current = versions;
@@ -123,62 +146,32 @@ export default function ExcalidrawWrapper({
   const applyRemoteElements = useCallback((remoteElements: any[]) => {
     const shouldRecordRemoteRender =
       isWhiteboardLatencyProbeEnabled() && hasAcceptedInitialSceneRef.current;
-    const remoteIds = new Set<string>();
     for (const element of remoteElements) {
       const id = (element as { id?: unknown })?.id;
       if (typeof id === 'string' && id.length > 0) {
-        remoteIds.add(id);
         seenRemoteIdsRef.current.add(id);
       }
     }
 
     const localElements = apiRef.current?.getSceneElements?.() ?? [];
-    const restoredElements = uniqueElementsById(
-      restoreElements(
-        serializeExcalidrawElements(remoteElements) as any,
-        localElements,
-        { repairBindings: true },
-      ) as Array<{ id?: unknown }>,
-    );
 
     /*
-     * Keep work this peer has drawn but not yet published.
-     *
-     * restoreElements does not union the local scene into the remote one — it
-     * takes localElements only to preserve version numbers — so applying a
-     * remote scene replaces what is on this canvas. Anything drawn here in the
-     * gap before it round-trips is erased by the next update that arrives, and
-     * while another peer draws one arrives every ~50ms. That is why a student
-     * could not get a shape to stay on their own board while the teacher drew.
-     *
-     * Only elements the room has never known about come back: an id missing
-     * from the remote scene that this peer has also never seen arrive and
-     * never published. Anything the room has held before and dropped was
-     * deleted by somebody and must stay deleted.
-     *
-     * Bounded to a drag in progress. On pointer-up the stroke is written to
-     * the document synchronously, so after that the room knows about it and
-     * nothing here needs to defend it. Leaving the rule unbounded let a board
-     * clear be undone by whatever happened to still be on the canvas.
-     *
-     * Neither the version baseline nor the last-published ids can answer this.
-     * The baseline is rebuilt from whatever arrives, so a board clear empties
-     * it and every element looks brand new; and a peer never publishes the
-     * elements it merely received, so those look new to it as well. Either way
-     * a clear would undo itself, which is what both of them did.
+     * Reconcile through Excalidraw's own multiplayer merge. Known local ids
+     * are included so a newer in-progress edit wins over a stale remote frame.
+     * Local-only ids are included only while a pointer is down and only when
+     * they have never reached the shared document; this keeps a remote clear
+     * authoritative while still protecting a stroke that is in flight.
      */
-    const unpublishedLocal = isPointerDownRef.current
-      ? (localElements as Array<{ id?: unknown }>).filter((element) => {
-        const id = element?.id;
-        return typeof id === 'string'
-          && !remoteIds.has(id)
-          && !seenRemoteIdsRef.current.has(id)
-          && !lastPublishedIdsRef.current.includes(id);
-      })
-      : [];
-    const sceneToApply = unpublishedLocal.length > 0
-      ? [...restoredElements, ...unpublishedLocal]
-      : restoredElements;
+    const sceneToApply = reconcileRemoteElements(
+      localElements,
+      remoteElements,
+      apiRef.current?.getAppState?.() ?? {},
+      {
+        isPointerDown: isPointerDownRef.current,
+        seenRemoteIds: seenRemoteIdsRef.current,
+        lastPublishedIds: lastPublishedIdsRef.current,
+      },
+    );
 
     /*
      * The canvas is updated below immediately — that is what the user watches.
@@ -205,11 +198,11 @@ export default function ExcalidrawWrapper({
 
     /*
      * Adopt what actually lands in the scene, not what arrived on the wire.
-     * restoreElements can renumber versions, and a baseline taken from the raw
-     * remote scene would then read every restored element as locally changed
+     * Reconciliation can renumber versions, and a baseline taken from the raw
+     * remote scene would then read every reconciled element as locally changed
      * and publish it straight back.
      */
-    adoptVersionBaseline(restoredElements, remoteIds);
+    adoptVersionBaseline(sceneToApply, remoteElements);
 
     if (apiRef.current) {
       try {
@@ -289,8 +282,6 @@ export default function ExcalidrawWrapper({
       const same = excalidrawElementsEqual(remoteElements, lastSyncedElementsRef.current);
       if (same) return;
       lastSyncedElementsRef.current = remoteElements;
-      adoptVersionBaseline(remoteElements);
-
       applyRemoteElements(remoteElements);
     };
 
@@ -372,15 +363,8 @@ export default function ExcalidrawWrapper({
       const queuedElements = pendingElementsRef.current;
       pendingElementsRef.current = null;
       try {
-        const restoredElements = uniqueElementsById(
-          restoreElements(
-            serializeExcalidrawElements(queuedElements) as any,
-            api.getSceneElements?.() ?? [],
-            { repairBindings: true },
-          ) as Array<{ id?: unknown }>,
-        );
         api.updateScene({
-          elements: restoredElements,
+          elements: queuedElements,
         });
       } catch {
         // ignore
