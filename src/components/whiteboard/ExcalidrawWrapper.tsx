@@ -5,8 +5,8 @@ import { diffScene, shouldPublish, elementsToPublish } from '@/lib/whiteboard/sc
 // MUST stay above the Excalidraw import: it sets EXCALIDRAW_ASSET_PATH, and ES
 // module imports are evaluated in order, before this module's own body runs.
 import '@/lib/whiteboard/excalidrawAssetPath';
-import { CaptureUpdateAction, Excalidraw } from '@excalidraw/excalidraw';
-import '@excalidraw/excalidraw/index.css';
+import { CaptureUpdateAction, Excalidraw } from '@teacher-playground/excalidraw';
+import '@teacher-playground/excalidraw/index.css';
 import * as Y from 'yjs';
 import {
   excalidrawElementsEqual,

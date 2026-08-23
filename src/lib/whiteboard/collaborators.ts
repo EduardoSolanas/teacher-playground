@@ -1,4 +1,4 @@
-import type { Collaborator, SocketId } from '@excalidraw/excalidraw/types';
+import type { Collaborator, SocketId } from '@teacher-playground/excalidraw/types';
 import type { RemoteCursor, WhiteboardUser } from '@/types/whiteboard';
 
 /**

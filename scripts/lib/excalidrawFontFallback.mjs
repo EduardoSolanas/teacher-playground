@@ -3,7 +3,7 @@
  *
  * Excalidraw resolves every font to two candidates: one under
  * `window.EXCALIDRAW_ASSET_PATH`, and one under a hardcoded
- * `ASSETS_FALLBACK_URL` of https://esm.sh/@excalidraw/excalidraw@VERSION/dist/prod/.
+ * `ASSETS_FALLBACK_URL` of https://esm.sh/@teacher-playground/excalidraw@VERSION/dist/prod/.
  *
  * We set the asset path and copy the fonts into public/, which is what the
  * documented self-hosting recipe asks for — and every font is still requested

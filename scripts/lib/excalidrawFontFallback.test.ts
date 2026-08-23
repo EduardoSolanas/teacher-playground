@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { patchAssetsFallback, isPatched, LOCAL_FALLBACK } from './excalidrawFontFallback.mjs';
 
-const REAL_CHUNK = 'node_modules/@excalidraw/excalidraw/dist/prod/chunk-K2UTITRG.js';
+const PROD_DIR = 'node_modules/@teacher-playground/excalidraw/dist/prod';
 
-const SAMPLE = 'P(jn,"ASSETS_FALLBACK_URL",`https://esm.sh/${M.PKG_NAME?`${M.PKG_NAME}@${M.PKG_VERSION}`:"@excalidraw/excalidraw"}/dist/prod/`);';
+const SAMPLE = 'P(jn,"ASSETS_FALLBACK_URL",`https://esm.sh/${M.PKG_NAME?`${M.PKG_NAME}@${M.PKG_VERSION}`:"@teacher-playground/excalidraw"}/dist/prod/`);';
 
 describe('patchAssetsFallback', () => {
   it('replaces the CDN base with this origin', () => {
@@ -59,7 +60,13 @@ describe('patchAssetsFallback', () => {
      * depends on whether a build has run. The invariant that matters is the
      * same either way — afterwards nothing points at the CDN.
      */
-    const source = readFileSync(REAL_CHUNK, 'utf8');
+    const realChunk = readdirSync(PROD_DIR)
+      .filter((name) => name.endsWith('.js'))
+      .map((name) => join(PROD_DIR, name))
+      .find((file) => readFileSync(file, 'utf8').includes('ASSETS_FALLBACK_URL'));
+
+    expect(realChunk).toBeDefined();
+    const source = readFileSync(realChunk!, 'utf8');
     const { source: patched } = patchAssetsFallback(source);
 
     expect(patched).toContain(LOCAL_FALLBACK);

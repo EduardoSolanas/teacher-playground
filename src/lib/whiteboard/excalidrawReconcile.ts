@@ -1,4 +1,4 @@
-import { reconcileElements as upstreamReconcileElements } from '@excalidraw/excalidraw';
+import { reconcileElements as upstreamReconcileElements } from '@teacher-playground/excalidraw';
 import { selectElementsForRemoteReconciliation, uniqueElementsById } from './excalidrawSyncCore';
 import type { RemoteReconciliationOptions } from './excalidrawSyncCore';
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { SocketId } from '@excalidraw/excalidraw/types';
+import type { SocketId } from '@teacher-playground/excalidraw/types';
 import type { RemoteCursor, WhiteboardUser } from '@/types/whiteboard';
 import { collaboratorsFromPresence } from './collaborators';
 
