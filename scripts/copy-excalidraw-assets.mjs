@@ -17,7 +17,7 @@
  * the 0.17 layout, which 0.18 no longer looks for.
  */
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isPatched, patchAssetsFallback } from './lib/excalidrawFontFallback.mjs';
 
@@ -30,7 +30,23 @@ if (!existsSync(source)) {
   process.exit(1);
 }
 
+/*
+ * Fonts we do not ship.
+ *
+ * Xiaolai is the handwriting face for CJK text: 209 subset files and 13MB of
+ * the 14MB under public/fonts, fetched one subset per glyph range — the ~230
+ * requests a single board was reported making. Nothing in this product is
+ * taught in Chinese, Japanese or Korean, so the cost is paid on every deploy by
+ * every room to render text nobody here writes.
+ *
+ * The consequence, stated plainly: CJK characters typed onto a board still
+ * appear, in whatever face the browser falls back to, without the handwriting
+ * look. Delete this list to get it back.
+ */
+const SKIPPED_FONT_DIRS = new Set(['Xiaolai']);
+
 let copied = 0;
+let skippedFonts = 0;
 for (const name of ['fonts', 'data']) {
   const from = join(source, name);
   if (!existsSync(from)) {
@@ -40,7 +56,14 @@ for (const name of ['fonts', 'data']) {
   const to = join(publicDir, name);
   rmSync(to, { recursive: true, force: true });
   mkdirSync(to, { recursive: true });
-  cpSync(from, to, { recursive: true });
+  cpSync(from, to, {
+    recursive: true,
+    filter: (src) => {
+      const skipped = SKIPPED_FONT_DIRS.has(basename(src)) && src !== from;
+      if (skipped) skippedFonts += 1;
+      return !skipped;
+    },
+  });
   copied += 1;
 }
 
@@ -87,7 +110,8 @@ if (patchedFiles === 0 && alreadyPatched === 0) {
 }
 
 console.log(
-  `Copied ${copied} Excalidraw asset directories into public/. `
+  `Copied ${copied} Excalidraw asset directories into public/`
+  + `${skippedFonts > 0 ? `, skipping ${[...SKIPPED_FONT_DIRS].join(', ')}` : ''}. `
   + `Font fallback: ${patchedFiles} file(s) rewritten to the local origin`
   + `${alreadyPatched > 0 ? `, ${alreadyPatched} already done` : ''}.`,
 );
