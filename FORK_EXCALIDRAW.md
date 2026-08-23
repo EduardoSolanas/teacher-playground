@@ -1,8 +1,51 @@
-# Excalidraw: what to change, and what not to fork
+# Teacher Playground Excalidraw fork
 
-`@excalidraw/excalidraw` is embedded as a black box and driven from
-`src/components/whiteboard/ExcalidrawWrapper.tsx` (696 lines, most of which
-exists to work around what we believed the component would not let us say).
+## Current decision and status
+
+Teacher Playground now owns a **minimal distribution fork**, not a rewritten
+drawing editor. The fork is kept in `excalidraw/` in the main checkout and at
+<https://github.com/EduardoSolanas/excalidraw>. It is pinned to upstream
+Excalidraw `v0.18.1`; our release branch is
+`teacher-playground/release-v0.18.1`, and our package identity is
+`@teacher-playground/excalidraw`.
+
+Release `teacher-playground-v0.18.1-tp.2` is the first version that uses the
+same Cloudflare CI contract as Teacher Playground:
+
+- GitHub environment: `prod`
+- secret: `CLOUDFLARE_API_TOKEN`
+- variable: `CLOUDFLARE_ACCOUNT_ID`
+- R2 bucket: `teacher-playground-excalidraw`
+
+The package, browser bundle, manifest, and checksums are produced by the fork's
+own GitHub Actions workflow. The tagged `tp.2` run passed validation and created
+the [GitHub Release](https://github.com/EduardoSolanas/excalidraw/releases/tag/teacher-playground-v0.18.1-tp.2).
+Teacher Playground now pins that immutable asset in `package.json` and
+`package-lock.json`:
+
+```text
+https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.2/package.tgz
+```
+
+R2 infrastructure is declared under `excalidraw/infra/cloudflare`. The pipeline
+will publish immutable `releases/<version>/...` objects and the mutable
+`latest/...` pointer after the fork repository's `prod` environment is given
+its own copy of `CLOUDFLARE_API_TOKEN`. GitHub secrets are repository-scoped and
+write-only, so matching the secret *name* does not copy its value from the
+Teacher Playground repository. The `tp.2` R2 step therefore failed at this
+credential check; no Cloudflare upload is claimed.
+
+The application-side simplification is also complete: remote scenes use the
+exported reconciliation API and never enter local history; cursors use native
+Excalidraw collaborators and pointer events; view persistence uses
+`onScrollChange`; the custom cursor DOM overlay and viewport conversion code
+have been removed. Scoped Yjs undo remains intentionally because it provides
+local-origin grouping for our shared Yjs document.
+
+`@teacher-playground/excalidraw` is embedded as a black box and driven from
+`src/components/whiteboard/ExcalidrawWrapper.tsx`. It was 696 lines when this
+analysis began, much of it working around what we believed the component would
+not let us say.
 
 Reading the installed type definitions changed the conclusion of the first
 version of this document. **Most of what we hand-rolled is already in the public
@@ -17,25 +60,26 @@ what remains is a list of things to delete.
 
 ## How updates get in and out
 
-Everything here is in `@excalidraw/excalidraw@0.18.1`, verified against
+Everything here is in the upstream base of
+`@teacher-playground/excalidraw@0.18.1-tp.2`, verified against
 `dist/types/excalidraw/types.d.ts` in `node_modules`.
 
 | Direction | API | Do we use it |
 | --- | --- | --- |
 | Scene changed | `onChange(elements, appState, files)` | yes — whole scene, per pointer sample |
-| Pointer moved | `onPointerUpdate({ pointer: {x, y, tool}, button, pointersMap })` | **no** |
-| Pointer down / up | `excalidrawAPI.onPointerDown` / `onPointerUp` | **no** — we infer it |
-| Pan / zoom | `onScrollChange(scrollX, scrollY, zoom)`, also on the API | **no** — we derive it from `onChange` |
+| Pointer moved | `onPointerUpdate({ pointer: {x, y, tool}, button, pointersMap })` | yes |
+| Pointer down / up | `excalidrawAPI.onPointerDown` / `onPointerUp` | yes |
+| Pan / zoom | `onScrollChange(scrollX, scrollY, zoom)`, also on the API | yes |
 | Someone followed you | `onUserFollow(payload)` | **no** — feature we do not have |
-| Push a scene in | `updateScene({ elements, appState, collaborators, captureUpdate })` | partly — never with `collaborators` or `captureUpdate` |
-| Merge remote with local | `reconcileElements(local, remote, appState)` (exported) | **no** — hand-rolled |
-| Keep an update out of undo | `CaptureUpdateAction.NEVER` (exported) | **no** |
+| Push a scene in | `updateScene({ elements, appState, collaborators, captureUpdate })` | yes |
+| Merge remote with local | `reconcileElements(local, remote, appState)` (exported) | yes |
+| Keep an update out of undo | `CaptureUpdateAction.NEVER` (exported) | yes |
 
-The four "no"s in the middle are the answer to "how do we get updates from
-drawing, cursor, etc.": upstream already publishes them, in scene coordinates,
-with button state. We are reconstructing all of it from the whole-scene callback.
+The completed rows are the answer to "how do we get updates from drawing,
+cursor, etc.": upstream already publishes them in scene coordinates, with
+button state. Follow mode is the only unused callback in this table.
 
-## Fix without forking, by payoff
+## Completed application simplifications, by payoff
 
 ### 1. Use `reconcileElements` instead of our own merge
 
@@ -63,9 +107,11 @@ people's work. We answered that by not using it: `scopedUndo.ts` drives a
 initialization". Local edits stay `IMMEDIATELY` and remain undoable; remote ones
 never enter the local stack.
 
-**Deletes.** Possibly `scopedUndo.ts` entirely. Test it before removing: our
-version also groups a stroke into one undo step, and the built-in one must be
-shown to do the same.
+**Decision.** Keep `scopedUndo.ts`. `CaptureUpdateAction.NEVER` prevents remote
+scene application from entering Excalidraw history, while the Yjs undo manager
+still scopes undo to this peer's transaction origin and groups the shared
+document updates that make up one stroke. A real two-browser test proves Alice
+cannot undo Bob's work.
 
 ### 3. Hand cursors to `updateScene({ collaborators })`
 
@@ -230,34 +276,44 @@ maintains a drawing editor.
    every divergence, and cherry-pick only security and geometry fixes. Pretending
    the fork will track upstream is how forks die half-merged.
 
-### Do these anyway
+### Completed before adopting the package fork
 
-Items 1–5 above are worth doing before any fork decision, not instead of it.
-They shrink the wrapper, and a smaller wrapper is less to port and fewer of our
-own bugs to carry across. The one exception is `reconcileElements`: if the
-CRDT-native document is where this is going, that code is deleted rather than
-replaced — so take it now for the bug reduction, and expect to remove it later.
+Items 1–5 above were completed before switching the package dependency. They
+shrank the wrapper and left the fork free of Teacher Playground collaboration
+logic. If a future CRDT-native editor fork is separately approved,
+`reconcileElements` would be deleted rather than replaced again.
 
-## Recommendation for a minimal delta
+## Adopted maintenance policy
 
-**Do not fork.** Items 1–5 are deletions available today against the pinned
-version, and they remove the parts of the wrapper most likely to hide a bug: the
-hand-rolled merge, the echo bookkeeping, the overlay, the pointer inference.
+The minimal fork is justified by ownership of packaging and distribution, not
+by duplicating editor internals. Teacher Playground keeps using public
+Excalidraw APIs in its wrapper. Fork changes should stay limited to package
+identity, release assembly, CI/CD, and a small written divergence log unless a
+separately tested classroom requirement cannot be expressed through the public
+API.
 
-Order: **1 and 2 first** (correctness — merge and undo), then **3–5** (deletion
-and latency), then evaluate **6** as a product question. Raise **A** and **B**
-upstream with the wrapper as the worked example; if both are refused and the
-latency numbers justify it, a fork whose entire delta is A and B is defensible.
-Nothing else on this page is.
+For every release:
 
-## Before any of this
+1. Start from the pinned upstream tag and record the upstream commit.
+2. Bump `packages/excalidraw/package.json` to `x.y.z-tp.n`.
+3. Run the release assembly tests, typecheck, lint/format, and package build.
+4. Push the release branch and require its validation workflow to pass.
+5. Create the annotated `teacher-playground-v<version>` tag. The tag workflow
+   creates the bundle, checksums, GitHub Release, and R2 upload.
+6. Consume an immutable version URL in Teacher Playground. Never install from
+   `latest/` and never build production from an untagged fork branch.
 
-Two prerequisites, in order:
+## Prerequisites completed
 
-1. The board's authority model has open corrective work
-   (`SERVER_SIDE_BOARD_PLAN.md`, section 5). Do not rewire the client under it.
-2. The client latency workstream is unmeasured. Items 3–5 claim to remove React
-   churn from the drawing path; without a p50/p95 baseline those are predictions.
+The earlier gates are no longer open:
 
-Each item is a red/green cycle of its own with the suites in `AGENTS.md`, and
-each should delete more than it adds. If one does not, it does not belong here.
+1. `RoomDO` owns the durable Yjs document and SQL projection; cursor/presence
+   remains ephemeral.
+2. Browser latency probes now exercise publish-to-render behavior. After the
+   native cursor migration, the focused local two-browser check measured
+   host-to-peer cursor p95 at 365 ms and peer-to-host p95 at 16 ms, both below
+   the 1,000 ms test budget. These are local regression measurements, not WAN
+   capacity claims.
+
+Follow mode remains a separate classroom product decision. It is not part of
+the fork distribution work and was not invented for this release.
