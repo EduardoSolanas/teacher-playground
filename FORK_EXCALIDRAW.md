@@ -145,13 +145,61 @@ plain array — a rule learned when the canvas was handed bytes it could not dra
 and peers' strokes silently stopped appearing. A per-element serialization hook
 would contain that; changing the element shape upstream would not be worth it.
 
-### D. Packaging and test handle
+### D. Asset loading — already broken, already patched
 
-Assets and locales are vendored into `public/` and copied by
-`scripts/copy-excalidraw-assets.mjs` (which now skips the 13MB CJK font), with
-`excalidrawAssetPath.ts` pointing the runtime at them; and E2E reaches the API
-through `window.__debugExcalidrawApi` behind a build flag. Both are annoyances,
-neither is worth a fork.
+This one is not hypothetical. Self-hosting Excalidraw's fonts does not work as
+documented, and the repo already carries a build-time patch of upstream's
+shipped JavaScript to make it work. It is the strongest existing evidence for
+what a fork would feel like, so it is worth stating in full.
+
+**What upstream does.** Fonts and data are fetched at runtime, not bundled. Each
+font resolves to two candidates: one under `window.EXCALIDRAW_ASSET_PATH`, and
+one under a hardcoded `ASSETS_FALLBACK_URL` pointing at
+`https://esm.sh/@excalidraw/excalidraw@VERSION/dist/prod/`.
+
+**What broke, in order:**
+
+1. **Nothing set the asset path early enough.** Assigning
+   `EXCALIDRAW_ASSET_PATH` at the top of the component file ran *after*
+   Excalidraw had initialised and read it, because ES module imports evaluate
+   before the importing module's body. The fix is `excalidrawAssetPath.ts`, a
+   module whose only job is to be imported *before* `@excalidraw/excalidraw` —
+   import order is the mechanism, which is why that import must stay first.
+2. **A vendored copy went stale.** Asset filenames are content-hashed per
+   release, so `public/excalidraw-assets` still held the 0.17 layout after the
+   0.18 upgrade, which 0.18 no longer looks for. The fix is to copy at build
+   time from `node_modules` (`prebuild`), never to commit the copy.
+3. **Self-hosting still did not work.** With the variable set and the fonts
+   copied — the documented recipe — every font was still requested from esm.sh
+   and never once from our origin. That is
+   [excalidraw/excalidraw#8228](https://github.com/excalidraw/excalidraw/issues/8228),
+   open and unfixed. Against `font-src 'self' data: blob:` the result was ~220
+   blocked requests per room, typefaces that never rendered, and every pupil's
+   browser reaching a third-party CDN to draw on a whiteboard.
+
+**How it is fixed.** `scripts/lib/excalidrawFontFallback.mjs` rewrites the
+hardcoded CDN base in upstream's `dist/prod` output to
+`${globalThis.location.origin}/` at build time, so both candidates resolve
+locally whether or not upstream ever honours the variable. It is idempotent
+(`isPatched`), and a zero-replacement result on an unpatched file fails the
+build — a silent no-op would put every font back on the CDN, and that is
+invisible until someone opens a console.
+
+**What this means for the fork question.** We already patch upstream's shipped
+bundle on every build, for a bug reported and unfixed. That is a fork with one
+patch in it, run by `prebuild`. Anyone arguing a fork is a big step should know
+the step is already taken; anyone arguing it is therefore cheap should note this
+patch is thirty lines and a regex, and an overhaul is not.
+
+**What a fork would do instead.** Resolve assets from one configurable base with
+no second candidate, no CDN constant, and no copy step — and drop the CJK
+handwriting font from the build rather than skipping it during a copy.
+
+### E. Test handle
+
+E2E reaches the scene API through `window.__debugExcalidrawApi` behind a build
+flag. A supported way to obtain the API in a test build would be neater. Not
+worth a fork on its own.
 
 ## If the fork is an overhaul
 
