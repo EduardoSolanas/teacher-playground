@@ -33,7 +33,9 @@ will publish immutable `releases/<version>/...` objects and the mutable
 its own copy of `CLOUDFLARE_API_TOKEN`. GitHub secrets are repository-scoped and
 write-only, so matching the secret *name* does not copy its value from the
 Teacher Playground repository. The `tp.2` R2 step therefore failed at this
-credential check; no Cloudflare upload is claimed.
+credential check; no Cloudflare upload is claimed. After adding the token, the
+fork's manual `recover-r2` workflow can rebuild and upload the existing `tp.2`
+tag without recreating its GitHub Release.
 
 The application-side simplification is also complete: remote scenes use the
 exported reconciliation API and never enter local history; cursors use native
