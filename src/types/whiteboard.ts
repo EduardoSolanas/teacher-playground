@@ -103,6 +103,7 @@ export type RemoteCursor = {
   color: string;
   x: number;
   y: number;
+  button: 'up' | 'down';
 };
 
 export type ToolType =

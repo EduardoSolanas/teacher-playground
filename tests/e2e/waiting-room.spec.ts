@@ -8,6 +8,12 @@ function appUrl(path: string) {
 
 async function joinExistingRoom(page: Page, roomId: string, name = 'Peer') {
   await page.goto(`/whiteboard/${roomId}`);
+  await expect
+    .poll(
+      async () => (await page.context().cookies()).some((cookie) => cookie.name === '__Host-teacher-session'),
+      { timeout: 25000, message: 'secure local session bootstrap did not set its cookie' },
+    )
+    .toBe(true);
   // Wait for the prompt rather than sampling isVisible() immediately after
   // navigation: the page has not rendered yet at that point, so the check
   // returned false and the peer silently never joined the room.
@@ -577,35 +583,45 @@ test.describe('Waiting Room', () => {
     await peerPage.mouse.move(peerBox!.x + 240, peerBox!.y + 180);
     await peerPage.mouse.move(peerBox!.x + 250, peerBox!.y + 190);
 
-    const peerCursor = hostPage.locator('[data-testid^="whiteboard-peer-cursor-"]').filter({
-      hasText: 'CursorPeer',
-    });
-    await expect(peerCursor).toBeVisible({ timeout: 15000 });
-    await expect(peerCursor).toContainText('CursorPeer');
+    const readCollaborator = () => hostPage.evaluate((id) => {
+      const collaborators = (window as any).__debugExcalidrawApi?.getAppState?.().collaborators;
+      const direct = collaborators?.get?.(id);
+      const entries = Array.from(
+        (collaborators?.entries?.() ?? []) as Iterable<[string, any]>,
+      );
+      const entry = direct ?? entries.find(([key, value]) => key === id || value?.id === id)?.[1];
+      return entry
+        ? {
+            username: entry.username,
+            pointer: entry.pointer,
+            button: entry.button,
+          }
+        : null;
+    }, peerId);
 
-    /*
-     * Cursors are published from the canvas, in scene coordinates.
-     *
-     * This used to move the peer's pointer onto their own tool sidebar and
-     * assert the host saw it travel there. A cursor is presence on the shared
-     * board, and a scene coordinate for a point outside the canvas means
-     * nothing to the other peer — Excalidraw's own collaborator cursors behave
-     * the same way. What still has to hold is that movement across the canvas
-     * tracks, so that is what is asserted.
-     */
-    const firstX = await expect
-      .poll(async () => (await peerCursor.boundingBox())?.x ?? -1, { timeout: 15000 })
-      .not.toBe(-1)
-      .then(async () => (await peerCursor.boundingBox())!.x);
+    await expect.poll(readCollaborator, { timeout: 15000 }).toMatchObject({
+      username: 'CursorPeer',
+      pointer: { tool: 'pointer' },
+      button: 'up',
+    });
+    await expect(hostPage.locator('[data-testid^="whiteboard-peer-cursor-"]')).toHaveCount(0);
+
+    const firstX = (await readCollaborator())?.pointer?.x ?? -1;
+    expect(firstX).not.toBe(-1);
 
     await peerPage.mouse.move(peerBox!.x + 520, peerBox!.y + 300);
 
     await expect
       .poll(
-        async () => (await peerCursor.boundingBox())?.x ?? firstX,
+        async () => (await readCollaborator())?.pointer?.x ?? firstX,
         { timeout: 15000, message: 'the peer cursor did not follow them across the canvas' },
       )
       .toBeGreaterThan(firstX + 100);
+
+    await peerPage.mouse.down();
+    await expect.poll(readCollaborator, { timeout: 15000 }).toMatchObject({ button: 'down' });
+    await peerPage.mouse.up();
+    await expect.poll(readCollaborator, { timeout: 15000 }).toMatchObject({ button: 'up' });
 
     await context1.close();
     await context2.close();

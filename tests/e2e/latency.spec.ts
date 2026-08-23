@@ -226,7 +226,22 @@ async function moveCursorAndAwaitRender(source: Page, target: Page, point: { x: 
     )
     .toBe(true);
 
-  await expect(target.locator(`[data-testid="whiteboard-peer-cursor-${peerId}"]`)).toBeVisible({ timeout: 15_000 });
+  await expect
+    .poll(
+      async () => target.evaluate((id) => {
+        const collaborators = (window as any).__debugExcalidrawApi?.getAppState?.().collaborators;
+        const direct = collaborators?.get?.(id);
+        const entries = Array.from(
+          (collaborators?.entries?.() ?? []) as Iterable<[string, any]>,
+        );
+        const entry = direct ?? entries.find(([key, value]) => key === id || value?.id === id)?.[1];
+        return entry
+          ? { username: entry.username, pointer: entry.pointer, button: entry.button }
+          : null;
+      }, peerId),
+      { timeout: 15_000, message: 'native collaborator cursor did not render' },
+    )
+    .toMatchObject({ pointer: { x, y, tool: 'pointer' }, button: 'up' });
 }
 
 async function setupPair(page: Page, browser: import('@playwright/test').Browser) {

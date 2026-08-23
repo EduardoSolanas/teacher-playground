@@ -121,3 +121,20 @@ describe('createCollaboration adoptLocalPeerId', () => {
     collab.destroy();
   });
 });
+
+describe('createCollaboration cursor payload', () => {
+  it('stores the latest pointer button in the real Yjs cursor map', () => {
+    const collab = createCollaboration('cursor-button-room', 'peer-local');
+
+    collab.setLocalCursor(12, 34, 'down');
+
+    expect(collab.cursorsMap.get('peer-local')).toMatchObject({
+      peerId: 'peer-local',
+      x: 12,
+      y: 34,
+      button: 'down',
+    });
+
+    collab.destroy();
+  });
+});

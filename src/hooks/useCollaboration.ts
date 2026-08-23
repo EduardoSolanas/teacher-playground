@@ -368,13 +368,13 @@ export function useCollaboration(roomId: string) {
 
   // Broadcast local cursor
   const cursorSentAtRef = useRef<number | null>(null);
-  const cursorPendingRef = useRef<{ x: number; y: number } | null>(null);
+  const cursorPendingRef = useRef<{ x: number; y: number; button: 'up' | 'down' } | null>(null);
   const cursorTimerRef = useRef<number | null>(null);
 
-  const publishCursor = useCallback((x: number, y: number) => {
+  const publishCursor = useCallback((x: number, y: number, button: 'up' | 'down' = 'up') => {
     const collaboration = collaborationRef.current;
     if (!collaboration) return;
-    collaboration.setLocalCursor(x, y);
+    collaboration.setLocalCursor(x, y, button);
     cursorSentAtRef.current = Date.now();
     if (isWhiteboardLatencyProbeEnabled()) {
       recordWhiteboardLatencyEvent({
@@ -394,24 +394,24 @@ export function useCollaboration(roomId: string) {
    * ends up where the pointer stopped.
    */
   const setCursor = useCallback(
-    (x: number, y: number) => {
+    (x: number, y: number, button: 'up' | 'down' = 'up') => {
       if (!hasJoinedRef.current) return;
 
       const delay = cursorPublishDelay(cursorSentAtRef.current, Date.now());
       if (delay === 0) {
         cursorPendingRef.current = null;
-        publishCursor(x, y);
+        publishCursor(x, y, button);
         return;
       }
 
-      cursorPendingRef.current = { x, y };
+      cursorPendingRef.current = { x, y, button };
       if (cursorTimerRef.current !== null) return;
       cursorTimerRef.current = window.setTimeout(() => {
         cursorTimerRef.current = null;
         const pending = cursorPendingRef.current;
         cursorPendingRef.current = null;
         if (!pending || !hasJoinedRef.current) return;
-        publishCursor(pending.x, pending.y);
+        publishCursor(pending.x, pending.y, pending.button);
       }, delay);
     },
     [publishCursor]

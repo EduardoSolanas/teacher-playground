@@ -53,7 +53,7 @@ export function createCollaboration(
     }
   }, 5_000);
 
-  function setLocalCursor(x: number, y: number) {
+  function setLocalCursor(x: number, y: number, button: 'up' | 'down' = 'up') {
     lastCursorX = x;
     lastCursorY = y;
     const cursorData = {
@@ -62,6 +62,7 @@ export function createCollaboration(
       userName: localUserName,
       color: localUserColor,
       peerId: localPeerId,
+      button,
     };
     cursorsMap.set(localPeerId, cursorData);
   }
@@ -123,6 +124,7 @@ export function createCollaboration(
         color: entry.color || '#3498db',
         x: typeof entry.x === 'number' ? entry.x : typeof pointer?.x === 'number' ? pointer.x : 0,
         y: typeof entry.y === 'number' ? entry.y : typeof pointer?.y === 'number' ? pointer.y : 0,
+        button: entry.button === 'down' ? 'down' : 'up',
       });
     });
     return cursors;

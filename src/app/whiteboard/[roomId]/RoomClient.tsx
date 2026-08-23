@@ -17,8 +17,6 @@ import RaisedHandCue from '@/components/whiteboard/RaisedHandCue';
 import { shouldCollapsePresenceForViewport } from '@/lib/whiteboard/presenceViewport';
 import { shouldOverlayConnectingScreen } from '@/lib/whiteboard/connectingOverlay';
 import { shouldExpandForArrival } from '@/lib/whiteboard/waitingArrival';
-import RemoteCursorOverlay from '@/components/whiteboard/RemoteCursorOverlay';
-import { IDENTITY_VIEWPORT, type CanvasViewport } from '@/lib/whiteboard/cursorViewport';
 import ClearBoardModal from '@/components/whiteboard/ClearBoardModal';
 import ToolSidebar from '@/components/whiteboard/ToolSidebar';
 import RoomTopNav from '@/components/whiteboard/RoomTopNav';
@@ -75,11 +73,6 @@ function RoomContent({ roomId }: { roomId: string }) {
   }, []);
   const [boardEverShown, setBoardEverShown] = useState(false);
   const [presenceCollapsed, setPresenceCollapsed] = useState(false);
-  /*
-   * This peer's canvas transform, so a cursor that arrived in scene
-   * coordinates can be drawn where it belongs on this screen.
-   */
-  const [canvasViewport, setCanvasViewport] = useState<CanvasViewport>(IDENTITY_VIEWPORT);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const {
     isConnected,
@@ -124,17 +117,6 @@ function RoomContent({ roomId }: { roomId: string }) {
   });
 
   const { clearState, clearSession } = usePersistence(roomId, elements, { x: 0, y: 0, zoom: 1 } as any);
-
-  /*
-   * A pan feeds the cursor overlay as it always did, and now also the stored
-   * room view. Only the overlay needs it in React state; the store call is
-   * debounced inside the hook, so panning does not turn into a request per
-   * frame.
-   */
-  const handleViewportChange = useCallback((next: CanvasViewport) => {
-    setCanvasViewport(next);
-    storeViewport({ x: next.scrollX, y: next.scrollY, zoom: next.zoom });
-  }, [storeViewport]);
 
   useClearSessionOnEviction(clearSession, { wasKicked, wasRejected, wasSuspended });
 
@@ -376,16 +358,16 @@ function RoomContent({ roomId }: { roomId: string }) {
           yElementsArray={yElementsArray}
           yCursorsMap={yCursorsMap}
           users={users}
+          cursors={cursors}
           activeTool={activeTool}
           isLocalHost={isLocalHost}
           onToolChange={handleToolChange}
           initialViewport={viewport}
-          onViewportChange={handleViewportChange}
+          onViewportChange={storeViewport}
           onCursorMove={setCursor}
           onElementsChange={setElements}
         />
       </div>
-      <RemoteCursorOverlay cursors={cursors} users={users} viewport={canvasViewport} />
       <RaisedHandCue users={users} localPeerId={localPeerId} isLocalHost={isLocalHost} />
       <PresencePanel
         users={users}
