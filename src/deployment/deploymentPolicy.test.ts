@@ -129,7 +129,18 @@ describe('production deployment policy', () => {
   });
 
   it('pins GitHub Actions to full commit SHAs on a maintained Node LTS', () => {
-    const workflowPaths = ['.github/workflows/ci.yml', '.github/workflows/deploy-cloudflare.yml'];
+    const workflowPaths = [
+      '.github/workflows/ci.yml',
+      '.github/workflows/deploy-cloudflare.yml',
+      '.github/workflows/provision-cloudflare-realtime.yml',
+    ];
+    const requiredActionPins = {
+      'actions/checkout': '3d3c42e5aac5ba805825da76410c181273ba90b1',
+      'actions/setup-node': '820762786026740c76f36085b0efc47a31fe5020',
+      'actions/upload-artifact': '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
+      'actions/dependency-review-action': 'a1d282b36b6f3519aa1f3fc636f609c47dddb294',
+      'cloudflare/wrangler-action': 'ebbaa1584979971c8614a24965b4405ff95890e0',
+    };
 
     for (const workflowPath of workflowPaths) {
       const workflow = readRepositoryFile(workflowPath);
@@ -144,6 +155,12 @@ describe('production deployment policy', () => {
 
       expect(workflow, workflowPath).not.toMatch(/^\s+node-version:\s*['"]?20(?:\.\d+)*['"]?\s*$/m);
       expect(workflow, workflowPath).toMatch(/^\s+node-version:\s*['"]?22(?:\.\d+){2}['"]?\s*$/m);
+
+      for (const [action, sha] of Object.entries(requiredActionPins)) {
+        const refs = [...workflow.matchAll(new RegExp(`^\\s+uses:\\s+${action.replace('/', '\\/')}@([0-9a-f]{40})`, 'gm'))]
+          .map((match) => match[1]);
+        if (refs.length > 0) expect(refs, `${workflowPath} ${action}`).toEqual([sha, ...refs.slice(1).map(() => sha)]);
+      }
     }
   });
 
@@ -321,6 +338,7 @@ describe('production deployment policy', () => {
     const workflowPaths = [
       '.github/workflows/ci.yml',
       '.github/workflows/deploy-cloudflare.yml',
+      '.github/workflows/provision-cloudflare-realtime.yml',
     ];
 
     for (const workflowPath of workflowPaths) {
@@ -333,8 +351,8 @@ describe('production deployment policy', () => {
       expect(npmCiCommands.length, workflowPath).toBeGreaterThan(0);
       for (const command of npmCiCommands) {
         expect(
-          command === 'run: npm ci --ignore-scripts'
-            || command === 'run: npm ci --omit=dev --ignore-scripts',
+          command === 'run: npm ci --ignore-scripts --loglevel=error'
+            || command === 'run: npm ci --omit=dev --ignore-scripts --loglevel=error',
           `${workflowPath}: ${command}`,
         ).toBe(true);
       }
