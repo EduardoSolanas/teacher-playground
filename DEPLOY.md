@@ -179,6 +179,13 @@ real Worker tests all passed; `Reconcile Excalidraw R2 CDN` then failed, and
 both `Upload immutable Excalidraw release assets` and `Deploy with Wrangler`
 were skipped. Nothing reached production.
 
+The dedicated `cdn` target was then exercised in GitHub Actions run
+`32688811548`. Secret scanning, Semgrep, typecheck, 904 unit tests, the static
+build, and 324 real Worker tests passed. Cloudflare rejected the first bucket
+list request with HTTP 403/code 10042 (`Please enable R2 through the Cloudflare
+Dashboard`), so reconciliation made no change and upload, public verification,
+and Wrangler were all skipped.
+
 Decide deliberately which failure is worse for this product. Coupling them is
 defensible — it keeps a deploy from shipping a build whose fonts 404 — but it
 is a choice, and it means the app's availability now depends on R2. To
