@@ -190,12 +190,12 @@ describe('production deployment policy', () => {
     const reconcileIndex = workflow.indexOf('scripts/excalidraw-cdn.mjs reconcile');
     const uploadIndex = workflow.indexOf('scripts/excalidraw-cdn.mjs upload');
     const verifyIndex = workflow.indexOf('scripts/excalidraw-cdn.mjs verify');
-    const deployIndex = workflow.indexOf('cloudflare/wrangler-action@');
+    const deployIndex = workflow.indexOf('- name: Deploy with Wrangler');
     expect(workersIndex).toBeGreaterThan(-1);
-    expect(reconcileIndex).toBeGreaterThan(workersIndex);
+    expect(deployIndex).toBeGreaterThan(workersIndex);
+    expect(reconcileIndex).toBeGreaterThan(deployIndex);
     expect(uploadIndex).toBeGreaterThan(reconcileIndex);
     expect(verifyIndex).toBeGreaterThan(uploadIndex);
-    expect(deployIndex).toBeGreaterThan(verifyIndex);
 
     const infraFiles = ['infra/cloudflare/excalidraw-cdn/main.tf', 'infra/cloudflare/excalidraw-cdn/versions.tf'];
     for (const file of infraFiles) expect(existsSync(resolve(repositoryRoot, file)), file).toBe(true);

@@ -67,6 +67,13 @@ jobs:
       - name: Worker tests (real workerd)
         run: npm run test:workers
 
+      - name: Deploy with Wrangler
+        if: github.event_name == 'push' || inputs.target == 'full'
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+
       - name: Reconcile Excalidraw R2 CDN
         run: node scripts/excalidraw-cdn.mjs reconcile
         env:
@@ -99,13 +106,6 @@ jobs:
       #       test-results/
       #       playwright-report/
       #     retention-days: 7
-
-      - name: Deploy with Wrangler
-        if: github.event_name == 'push' || inputs.target == 'full'
-        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
 
   provision-realtime:
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'realtime'
