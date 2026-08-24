@@ -6,6 +6,13 @@ import { diffScene, shouldPublish, elementsToPublish } from '@/lib/whiteboard/sc
 // module imports are evaluated in order, before this module's own body runs.
 import '@/lib/whiteboard/excalidrawAssetPath';
 import { CaptureUpdateAction, Excalidraw } from '@teacher-playground/excalidraw';
+import type {
+  ExcalidrawImperativeAPI,
+  ExcalidrawProps,
+  NormalizedZoomValue,
+  SocketId,
+} from '@teacher-playground/excalidraw/types';
+import type { ExcalidrawElement } from '@teacher-playground/excalidraw/element/types';
 import '@teacher-playground/excalidraw/index.css';
 import * as Y from 'yjs';
 import {
@@ -16,22 +23,54 @@ import {
 import { reconcileRemoteElements } from '@/lib/whiteboard/excalidrawReconcile';
 import { getElementsFromArray, replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 import { collaboratorsFromPresence } from '@/lib/whiteboard/collaborators';
-import type { RemoteCursor } from '@/types/whiteboard';
+import type { CanvasElement, RemoteCursor, WhiteboardUser } from '@/types/whiteboard';
 import type { FollowMessage } from '@/lib/whiteboard/followMessage';
 import {
   isWhiteboardLatencyProbeEnabled,
   recordWhiteboardLatencyEvent,
 } from '@/lib/whiteboard/latencyProbe';
 
+type SharedSceneElement = Record<string, unknown>;
+type ExcalidrawOnChange = NonNullable<ExcalidrawProps['onChange']>;
+type ExcalidrawPointerUpdate = NonNullable<ExcalidrawProps['onPointerUpdate']>;
+type ExcalidrawChangeElements = Parameters<ExcalidrawOnChange>[0];
+type ExcalidrawChangeAppState = Parameters<ExcalidrawOnChange>[1];
+type ExcalidrawPointerPayload = Parameters<ExcalidrawPointerUpdate>[0];
+type ExcalidrawTool = Parameters<ExcalidrawImperativeAPI['setActiveTool']>[0]['type'];
+type ExcalidrawStandardTool = Exclude<ExcalidrawTool, 'custom'>;
+
+function toExcalidrawElements(
+  elements: readonly SharedSceneElement[],
+): readonly ExcalidrawElement[] {
+  return elements as unknown as readonly ExcalidrawElement[];
+}
+
+function toCanvasElements(elements: readonly SharedSceneElement[]): CanvasElement[] {
+  return elements as unknown as CanvasElement[];
+}
+
+function toSharedSceneElements(elements: readonly unknown[]): SharedSceneElement[] {
+  return elements as SharedSceneElement[];
+}
+
+function toExcalidrawActiveTool(tool: string): { type: ExcalidrawStandardTool } {
+  return { type: toExcalidrawToolType(tool) as ExcalidrawStandardTool };
+}
+
+declare global {
+  interface Window {
+    __debugExcalidrawApi?: ExcalidrawImperativeAPI;
+  }
+}
 
 type ExcalidrawWrapperProps = {
   roomId: string;
   userName: string;
   localPeerId: string;
   yDoc: Y.Doc | null;
-  yElementsArray: Y.Array<Y.Map<any>> | null;
-  yCursorsMap: Y.Map<any> | null;
-  users: any[];
+  yElementsArray: Y.Array<Y.Map<unknown>> | null;
+  yCursorsMap: Y.Map<unknown> | null;
+  users: WhiteboardUser[];
   cursors: RemoteCursor[];
   activeTool: string;
   isLocalHost: boolean;
@@ -41,7 +80,7 @@ type ExcalidrawWrapperProps = {
   initialViewport: { x: number; y: number; zoom: number } | null;
   /** Local pointer, in scene coordinates. */
   onCursorMove: (sceneX: number, sceneY: number, button?: 'up' | 'down') => void;
-  onElementsChange: (elements: any[]) => void;
+  onElementsChange: (elements: CanvasElement[]) => void;
   hostPeerId: string | null;
   guideMessage: FollowMessage | null;
   isGuiding: boolean;
@@ -69,12 +108,12 @@ export default function ExcalidrawWrapper({
   isGuiding,
   onGuideViewport,
 }: ExcalidrawWrapperProps) {
-  const apiRef = useRef<any>(null);
+  const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const [isClient, setIsClient] = useState(false);
   const [apiReady, setApiReady] = useState(false);
   const isPointerDownRef = useRef(false);
   const activeToolRef = useRef(activeTool);
-  const lastSyncedElementsRef = useRef<any[]>([]);
+  const lastSyncedElementsRef = useRef<SharedSceneElement[]>([]);
   const lastPublishedIdsRef = useRef<string[]>([]);
   /** id -> Excalidraw `version` at the last publish, for O(changed) diffing. */
   const publishedVersionsRef = useRef<Map<string, number>>(new Map());
@@ -94,10 +133,10 @@ export default function ExcalidrawWrapper({
    * it straight back — peers echoing each other's work.
    */
   const adoptVersionBaseline = useCallback((
-    elements: readonly any[],
-    remoteElements?: readonly any[],
+    elements: readonly SharedSceneElement[],
+    remoteElements?: readonly SharedSceneElement[],
   ) => {
-    const remoteById = new Map<string, any>();
+    const remoteById = new Map<string, SharedSceneElement>();
     const remoteVersions = new Map<string, number>();
     if (remoteElements) {
       for (const remoteElement of remoteElements) {
@@ -151,13 +190,13 @@ export default function ExcalidrawWrapper({
 
   /** Remote scenes coalesce into one React update rather than ~20 a second. */
   const REMOTE_STATE_FLUSH_MS = 200;
-  const pendingRemoteStateRef = useRef<any[] | null>(null);
+  const pendingRemoteStateRef = useRef<SharedSceneElement[] | null>(null);
   const remoteStateTimerRef = useRef<number | null>(null);
   /** Every element id the room has ever shown this peer. */
   const seenRemoteIdsRef = useRef<Set<string>>(new Set());
-  const pendingElementsRef = useRef<any[] | null>(null);
+  const pendingElementsRef = useRef<SharedSceneElement[] | null>(null);
   /** Scene captured mid-stroke, flushed to React state on pointer up. */
-  const deferredElementsRef = useRef<any[] | null>(null);
+  const deferredElementsRef = useRef<SharedSceneElement[] | null>(null);
   const hasAcceptedInitialSceneRef = useRef(false);
   const localPeerIdRef = useRef(localPeerId);
   localPeerIdRef.current = localPeerId;
@@ -194,7 +233,7 @@ export default function ExcalidrawWrapper({
   }, [apiReady, collaborators, cursors]);
 
 
-  const applyRemoteElements = useCallback((remoteElements: any[]) => {
+  const applyRemoteElements = useCallback((remoteElements: SharedSceneElement[]) => {
     const shouldRecordRemoteRender =
       isWhiteboardLatencyProbeEnabled() && hasAcceptedInitialSceneRef.current;
     for (const element of remoteElements) {
@@ -243,7 +282,7 @@ export default function ExcalidrawWrapper({
         remoteStateTimerRef.current = null;
         const pending = pendingRemoteStateRef.current;
         pendingRemoteStateRef.current = null;
-        if (pending) onElementsChange(pending);
+        if (pending) onElementsChange(toCanvasElements(pending));
       }, REMOTE_STATE_FLUSH_MS);
     }
 
@@ -258,7 +297,7 @@ export default function ExcalidrawWrapper({
     if (apiRef.current) {
       try {
         apiRef.current.updateScene({
-          elements: sceneToApply,
+          elements: toExcalidrawElements(sceneToApply),
           captureUpdate: CaptureUpdateAction.NEVER,
         });
 
@@ -297,11 +336,11 @@ export default function ExcalidrawWrapper({
       }
       const pendingRemote = pendingRemoteStateRef.current;
       pendingRemoteStateRef.current = null;
-      if (pendingRemote) onElementsChangeRef.current(pendingRemote);
+      if (pendingRemote) onElementsChangeRef.current(toCanvasElements(pendingRemote));
 
       if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
-        if ((window as any).__debugExcalidrawApi === apiRef.current) {
-          delete (window as any).__debugExcalidrawApi;
+        if (window.__debugExcalidrawApi === apiRef.current) {
+          delete window.__debugExcalidrawApi;
         }
       }
     };
@@ -318,7 +357,7 @@ export default function ExcalidrawWrapper({
 
     // Listen only for element changes. Cursor/awareness updates must not rewrite
     // the Excalidraw scene.
-    const handler = (_events: Y.YEvent<any>[], transaction: Y.Transaction) => {
+    const handler = (_events: Y.YEvent<Y.Map<unknown>>[], transaction: Y.Transaction) => {
       if (transaction.origin === 'local') return;
 
       /*
@@ -329,7 +368,7 @@ export default function ExcalidrawWrapper({
        * canvas was handed a Uint8Array it cannot draw, and a peer's strokes
        * simply never appeared. getElementsFromArray decodes every stored form.
        */
-      const remoteElements: any[] = getElementsFromArray(elementsArray);
+      const remoteElements = toSharedSceneElements(getElementsFromArray(elementsArray));
 
       const same = excalidrawElementsEqual(remoteElements, lastSyncedElementsRef.current);
       if (same) return;
@@ -345,11 +384,11 @@ export default function ExcalidrawWrapper({
   }, [yDoc, yElementsArray, yCursorsMap, roomId, applyRemoteElements, adoptVersionBaseline]);
 
   /** Snapshot of the shared document as plain Excalidraw elements. */
-  const readSharedElements = useCallback((): Record<string, unknown>[] => {
+  const readSharedElements = useCallback((): SharedSceneElement[] => {
     if (!yElementsArray) return [];
     // Through the shared reader, never by copying the map directly: `points`
     // is stored encoded and has to be decoded before it reaches the canvas.
-    return getElementsFromArray(yElementsArray) as unknown as Record<string, unknown>[];
+    return toSharedSceneElements(getElementsFromArray(yElementsArray));
   }, [yElementsArray]);
 
   /*
@@ -369,19 +408,25 @@ export default function ExcalidrawWrapper({
     if (x === 0 && y === 0 && zoom === 1) return;
     appliedStoredViewRef.current = true;
     try {
-      api.updateScene({ appState: { scrollX: x, scrollY: y, zoom: { value: zoom } } });
+      api.updateScene({
+        appState: {
+          scrollX: x,
+          scrollY: y,
+          zoom: { value: zoom as NormalizedZoomValue },
+        },
+      });
     } catch {
       // A stored view must never stop the board from opening.
     }
   }, [initialViewport, apiReady]);
 
-  const handleAPI = useCallback((api: any) => {
+  const handleAPI = useCallback((api: ExcalidrawImperativeAPI) => {
     followUnsubscribeRef.current?.();
     followUnsubscribeRef.current = null;
     apiRef.current = api;
 
     if (typeof api.onUserFollow === 'function') {
-      followUnsubscribeRef.current = api.onUserFollow((payload: { action?: string }) => {
+      followUnsubscribeRef.current = api.onUserFollow((payload) => {
         if (payload?.action === 'UNFOLLOW' && !applyingGuideRef.current) {
           followOptedOutRef.current = true;
         }
@@ -408,7 +453,7 @@ export default function ExcalidrawWrapper({
       adoptVersionBaseline(shared);
       try {
         api.updateScene({
-          elements: serializeExcalidrawElements(shared) as any,
+          elements: toExcalidrawElements(serializeExcalidrawElements(shared)),
           captureUpdate: CaptureUpdateAction.NEVER,
         });
       } catch {
@@ -421,7 +466,7 @@ export default function ExcalidrawWrapper({
     const exposeDebugApi =
       process.env.NODE_ENV !== 'production' || process.env.NEXT_PUBLIC_E2E === '1';
     if (exposeDebugApi && typeof window !== 'undefined') {
-      (window as any).__debugExcalidrawApi = api;
+      window.__debugExcalidrawApi = api;
     }
 
     if (pendingElementsRef.current) {
@@ -429,7 +474,7 @@ export default function ExcalidrawWrapper({
       pendingElementsRef.current = null;
       try {
         api.updateScene({
-          elements: queuedElements,
+          elements: toExcalidrawElements(queuedElements),
           captureUpdate: CaptureUpdateAction.NEVER,
         });
       } catch {
@@ -440,7 +485,7 @@ export default function ExcalidrawWrapper({
     setTimeout(() => {
       if (apiRef.current && activeToolRef.current) {
         try {
-          apiRef.current.setActiveTool({ type: toExcalidrawToolType(activeToolRef.current) });
+          apiRef.current.setActiveTool(toExcalidrawActiveTool(activeToolRef.current));
         } catch {
           // ignore
         }
@@ -451,7 +496,7 @@ export default function ExcalidrawWrapper({
   useEffect(() => {
     if (!apiRef.current || !activeTool) return;
     try {
-      apiRef.current.setActiveTool({ type: toExcalidrawToolType(activeTool) });
+      apiRef.current.setActiveTool(toExcalidrawActiveTool(activeTool));
     } catch {
       // ignore
     }
@@ -477,7 +522,7 @@ export default function ExcalidrawWrapper({
   const strokeTrailingTimerRef = useRef<number | null>(null);
 
   const commitElements = useCallback(
-    (el: readonly any[], force = false) => {
+    (el: readonly ExcalidrawElement[], force = false) => {
       hasAcceptedInitialSceneRef.current = true;
 
       // Excalidraw stamps every element with a monotonic `version`, so what
@@ -509,7 +554,7 @@ export default function ExcalidrawWrapper({
         deferredElementsRef.current = serializedElements;
       } else {
         deferredElementsRef.current = null;
-        onElementsChange(serializedElements);
+        onElementsChange(toCanvasElements(serializedElements));
       }
 
       if (yDoc && yElementsArray) {
@@ -556,7 +601,7 @@ export default function ExcalidrawWrapper({
   );
 
   const handleElementsChange = useCallback(
-    (el: readonly any[], _appState: any) => {
+    (el: ExcalidrawChangeElements, _appState: ExcalidrawChangeAppState) => {
       /*
        * No remote-update flag here.
        *
@@ -618,10 +663,10 @@ export default function ExcalidrawWrapper({
    * Excalidraw hands us the pointer already in scene space, the only frame two
    * peers share. Forward its button state to the collaboration transport.
    */
-  const handlePointerUpdate = useCallback((payload: any) => {
-    const pointer = payload?.pointer ?? payload;
-    const x = typeof pointer?.x === 'number' ? pointer.x : null;
-    const y = typeof pointer?.y === 'number' ? pointer.y : null;
+  const handlePointerUpdate = useCallback((payload: ExcalidrawPointerPayload) => {
+    const { pointer } = payload;
+    const x = typeof pointer.x === 'number' ? pointer.x : null;
+    const y = typeof pointer.y === 'number' ? pointer.y : null;
     if (x === null || y === null) return;
     onCursorMove(x, y, payload?.button === 'down' ? 'down' : 'up');
   }, [onCursorMove]);
@@ -658,7 +703,7 @@ export default function ExcalidrawWrapper({
     const deferred = deferredElementsRef.current;
     if (deferred) {
       deferredElementsRef.current = null;
-      onElementsChange(deferred);
+      onElementsChange(toCanvasElements(deferred));
     }
   }, [commitElements, onElementsChange]);
 
@@ -709,7 +754,7 @@ export default function ExcalidrawWrapper({
     const userToFollow = currentUserToFollow?.socketId === followPeerId
       ? currentUserToFollow
       : {
-          socketId: followPeerId,
+          socketId: followPeerId as SocketId,
           username: host?.userName ?? 'Teacher',
         };
     api.updateScene({
@@ -717,7 +762,7 @@ export default function ExcalidrawWrapper({
         userToFollow,
         scrollX: guideMessage.viewport.x,
         scrollY: guideMessage.viewport.y,
-        zoom: { value: guideMessage.viewport.zoom },
+        zoom: { value: guideMessage.viewport.zoom as NormalizedZoomValue },
       },
       captureUpdate: CaptureUpdateAction.NEVER,
     });
@@ -735,7 +780,7 @@ export default function ExcalidrawWrapper({
     >
       <Excalidraw
         excalidrawAPI={handleAPI}
-        onChange={(el: any, appState: any) => { handleElementsChange(el, appState); }}
+        onChange={(el, appState) => { handleElementsChange(el, appState); }}
         onPointerUpdate={handlePointerUpdate}
         onScrollChange={(scrollX, scrollY, zoom) => {
           const viewport = { x: scrollX, y: scrollY, zoom: zoom.value };
