@@ -131,7 +131,7 @@ the Excalidraw distribution is published separately by its fork repository.
 
 The production build points Excalidraw at the immutable release base:
 
-`https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.2/dist/prod/`
+`https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.3/dist/prod/`
 
 The fork repository is the sole owner of the R2 bucket, custom domain, release
 objects, and release metadata. This repository only consumes the pinned

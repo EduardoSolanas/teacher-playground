@@ -9,7 +9,7 @@ Excalidraw `v0.18.1`; our release branch is
 `teacher-playground/release-v0.18.1`, and our package identity is
 `@teacher-playground/excalidraw`.
 
-Release `teacher-playground-v0.18.1-tp.2` is the first version that uses the
+Release `teacher-playground-v0.18.1-tp.3` is the current version that uses the
 same Cloudflare CI contract as Teacher Playground:
 
 - GitHub environment: `prod`
@@ -18,13 +18,13 @@ same Cloudflare CI contract as Teacher Playground:
 - R2 bucket: `teacher-playground-excalidraw`
 
 The package, browser bundle, manifest, and checksums are produced by the fork's
-own GitHub Actions workflow. The tagged `tp.2` run passed validation and created
-the [GitHub Release](https://github.com/EduardoSolanas/excalidraw/releases/tag/teacher-playground-v0.18.1-tp.2).
+own GitHub Actions workflow. The tagged `tp.3` run passed validation and created
+the [GitHub Release](https://github.com/EduardoSolanas/excalidraw/releases/tag/teacher-playground-v0.18.1-tp.3).
 Teacher Playground now pins that immutable asset in `package.json` and
 `package-lock.json`:
 
 ```text
-https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.2/package.tgz
+https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.3/package.tgz
 ```
 
 The fork is the sole owner of the R2 bucket, CORS, custom domain, release
@@ -32,7 +32,7 @@ objects, and release metadata. Its own tagged-release workflow uses the
 production `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable
 to publish the package's immutable release. The application consumes the
 immutable base
-`https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.2/dist/prod/`.
+`https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.3/dist/prod/`.
 Versioned objects receive one-year immutable cache headers. The old parent-side
 publisher was removed after production run `32680222826` showed that R2 was not
 enabled (HTTP 403/code 10042); that historical run does not claim a bucket,
@@ -65,7 +65,7 @@ what remains is a list of things to delete.
 ## How updates get in and out
 
 Everything here is in the upstream base of
-`@teacher-playground/excalidraw@0.18.1-tp.2`, verified against
+`@teacher-playground/excalidraw@0.18.1-tp.3`, verified against
 `dist/types/excalidraw/types.d.ts` in `node_modules`.
 
 | Direction | API | Do we use it |
