@@ -205,7 +205,7 @@ describe('production deployment policy', () => {
 
     const deploymentGuide = readRepositoryFile('DEPLOY.md');
     expect(deploymentGuide).toContain('fork repository is the sole owner');
-    expect(deploymentGuide).not.toContain('latest.json');
+    expect(deploymentGuide).toContain('latest.json');
     expect(deploymentGuide).not.toMatch(/scripts\/excalidraw-cdn\.mjs/);
 
     const e2eRunner = readRepositoryFile('scripts/run-e2e.mjs');
@@ -224,6 +224,12 @@ describe('production deployment policy', () => {
     expect(lockfile).toContain(`teacher-playground-v${release}/package.tgz`);
     expect(assetPath).toContain(`${origin}/releases/${release}/dist/prod/`);
     expect(requestGuard).toContain(`font-src 'self' data: blob: ${origin}`);
+    const deploymentGuide = readRepositoryFile('DEPLOY.md');
+    expect(deploymentGuide).toContain('32781207895');
+    expect(deploymentGuide).toContain('32783092806');
+    expect(deploymentGuide).toContain('9,445,242');
+    expect(deploymentGuide).toContain('bytes');
+    expect(deploymentGuide).not.toContain('Non-existent domain');
   });
 
   it('gates Realtime provisioning and preserves the one-time app secret contract', () => {
@@ -259,9 +265,10 @@ describe('production deployment policy', () => {
     expect(terraform).toContain('name       = "teacher-playground-voice"');
     expect(terraform).toContain('prevent_destroy = true');
     expect(readRepositoryFile('infra/cloudflare/realtime-sfu/outputs.tf')).toMatch(/sensitive\s*=\s*true/);
-    expect(readRepositoryFile('infra/cloudflare/realtime-sfu/README.md')).toMatch(/R2 service\s+is\s+not enabled;\s+account activation is a prerequisite/);
+    expect(readRepositoryFile('infra/cloudflare/realtime-sfu/README.md')).toContain('playground asset deployment is complete');
     expect(readRepositoryFile('infra/cloudflare/realtime-sfu/README.md')).toMatch(/Calls SFU app read\/write permission/);
-    expect(readRepositoryFile('DEPLOY.md')).toMatch(/R2 service\s+is\s+not enabled;\s+account activation is a prerequisite/);
+    expect(readRepositoryFile('DEPLOY.md')).toContain('The R2 asset deployment is complete');
+    expect(readRepositoryFile('DEPLOY.md')).toContain('32783632121');
 
     const secretListIndex = workflow.indexOf('wrangler secret list --config wrangler.toml --format json');
     expect(secretListIndex).toBeGreaterThan(ensureIndex);

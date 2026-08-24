@@ -13,17 +13,18 @@ production `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable as
 the playground deploy. Existing apps are never recreated and their secret is
 never fetched or replaced.
 
-The token must have account-level Calls SFU app read/write permission. The
-current playground asset deployment remains blocked because the R2 service is
-not enabled; account activation is a prerequisite, as recorded in GitHub
-Actions run `32680222826`. That R2 blocker is independent of this Realtime
-control-plane workflow.
+The token must have effective account-level Calls SFU app read/write permission
+(Calls Write/Edit), and it must be scoped to the correct Cloudflare account.
+The playground asset deployment is complete; the CDN and R2 release path are
+independent of this Realtime control-plane workflow.
 
-GitHub Actions run `32682568478` exercised this reconciler after all repository
-gates passed. The first Calls list request returned HTTP 403/code 10000
-(`Authentication error`), so the current production token still needs Calls
-Read and Calls Write. Cloudflare did not create an app and Wrangler did not
-write either Worker secret in that run.
+GitHub Actions run `32783632121` exercised this reconciler after installation,
+security scan, typecheck, 901 unit tests, static build, and 324 real Worker
+tests passed. The first Calls list request returned HTTP 403/code 10000
+(`Authentication error`), so the current production token still needs
+effective Calls SFU Read and Calls Write/Edit permission in the correct account
+scope. Cloudflare did not create an app; the UID and secret storage steps were
+skipped.
 
 Terraform state must be stored in an approved remote backend before using
 `terraform apply` for production. Until then, use the idempotent workflow as

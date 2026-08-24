@@ -131,12 +131,15 @@ the Excalidraw distribution is published separately by its fork repository.
 
 The production build points Excalidraw at the immutable release base:
 
-`https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.3/dist/prod/`
+`https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.6/dist/prod/`
 
 The fork repository is the sole owner of the R2 bucket, custom domain, release
 objects, and release metadata. This repository only consumes the pinned
 immutable base URL above; it does not provision the bucket or publish release
-objects. The local fallback remains `/` when running outside a production build
+objects. Release `0.18.1-tp.6` is published by fork workflow run
+`32781207895`; public `latest.json` points to it and the package is 9,445,242
+bytes. The CDN custom domain is live and serves immutable release objects. The
+local fallback remains `/` when running outside a production build
 or when `NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH=/` is supplied.
 
 #### Historical CDN publisher evidence
@@ -145,17 +148,16 @@ Earlier parent revisions contained a duplicate Terraform stack and an
 imperative publisher. Those were deliberately removed after the fork became
 the sole owner. Historical deployment runs `32680222826` and `32688811548`
 recorded the old publisher failing before R2 was enabled; they are retained as
-history only and are not current workflow behavior.
+history only and are not current workflow behavior. The current parent
+production deployment is green: run `32783092806` completed clean install,
+security scan, typecheck, unit tests, static export, real Worker tests, and
+Wrangler deployment while consuming `0.18.1-tp.6`.
 
 #### The production asset host must exist before the first production deploy
 
 `resolveExcalidrawAssetPath` returns the CDN base whenever
 `NODE_ENV === 'production'`, so the hostname is a hard production dependency
-rather than an enhancement. As of 2026-08-24 it does not resolve:
-
-```text
-excalidraw-assets.sen-tutor.co.uk: Non-existent domain
-```
+rather than an enhancement. The hostname is now provisioned and reachable.
 
 `NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH` overrides the default and is the rollback
 lever. Setting it to `/` restores same-origin assets from `public/`, which the
@@ -208,19 +210,18 @@ created. It never logs the secret or recreates an existing app. The Terraform
 specification is in `infra/cloudflare/realtime-sfu/` and uses
 `prevent_destroy`.
 
-The current R2 asset deployment is independently blocked because the R2 service
-is not enabled; account activation is a prerequisite, as observed in GitHub
-Actions run `32680222826`. That blocker does not prevent this Realtime
-provisioning workflow from being dispatched once the Calls permission
-prerequisite is met.
+The R2 asset deployment is complete through the fork-owned release workflow.
+The remaining independent blocker is Cloudflare Calls token permission; it does
+not affect the CDN or the playground deployment.
 
-The Realtime-only production attempt in GitHub Actions run `32682568478`
-passed secret scanning, typecheck, 903 unit tests, the static build, and 324
-real Worker tests. Cloudflare then rejected the first read-only
+The Realtime-only production attempt in GitHub Actions run `32783632121`
+passed installation, secret scanning, typecheck, 901 unit tests, the static
+build, and 324 real Worker tests. Cloudflare then rejected the first read-only
 `GET /accounts/{account_id}/calls/apps` request with HTTP 403/code 10000
-(`Authentication error`). No Calls app or Worker secret was created. Grant
-Calls Read and Calls Write to the existing production token before rerunning
-the `realtime` target.
+(`Authentication error`). No Calls app was created; the UID and secret storage
+steps were skipped. Grant the existing production token effective account-level
+Calls SFU Read and Calls Write/Edit permission, with the correct account scope,
+before rerunning the `realtime` target.
 
 ## Running locally
 
