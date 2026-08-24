@@ -36,8 +36,12 @@ immutable base
 `https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.2/dist/prod/`.
 Versioned objects receive one-year immutable cache headers and
 `latest.json` at the bucket root is mutable no-cache metadata. The IaC and workflow are
-implemented and tested locally; no live Cloudflare apply or upload is claimed
-until the deployment workflow runs with the production credentials.
+implemented and tested. Production run `32680222826` passed every repository
+gate, then Cloudflare rejected the first R2 reconciliation request with HTTP
+403/code 10042 because R2 is not enabled on the account. No bucket, custom
+domain, upload, Worker deployment, or playground tag is claimed from that run.
+Enable R2 for the account, then rerun the full deployment workflow before
+tagging the playground.
 
 The application-side simplification is also complete: remote scenes use the
 exported reconciliation API and never enter local history; cursors use native
@@ -226,11 +230,13 @@ would contain that; changing the element shape upstream would not be worth it.
 
 ### D. Packaging and test handle
 
-Assets and locales are vendored into `public/` and copied by
-`scripts/copy-excalidraw-assets.mjs` (which now skips the 13MB CJK font), with
-`excalidrawAssetPath.ts` pointing the runtime at them; and E2E reaches the API
-through `window.__debugExcalidrawApi` behind a build flag. Both are annoyances,
-neither is worth a fork.
+The package's production assets are assembled by
+`scripts/copy-excalidraw-assets.mjs`, published under the immutable versioned
+R2 prefix by the deployment workflow, and selected through
+`excalidrawAssetPath.ts`; local/E2E builds deliberately retain the `/` fallback.
+E2E reaches the API through `window.__debugExcalidrawApi` behind a build flag.
+Both are distribution concerns already handled by the minimal fork and
+playground IaC, not reasons to fork editor internals.
 
 ## If the fork is an overhaul
 
