@@ -205,6 +205,51 @@ describe('production deployment policy', () => {
     expect(e2eRunner).toContain("NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH: '/',");
   });
 
+  it('gates Realtime provisioning and preserves the one-time app secret contract', () => {
+    const workflowPath = '.github/workflows/provision-cloudflare-realtime.yml';
+    const workflow = readRepositoryFile(workflowPath);
+    expect(workflow).toContain('workflow_dispatch:');
+    expect(workflow).toContain('environment: prod');
+    expect(workflow).toContain('secrets.CLOUDFLARE_API_TOKEN');
+    expect(workflow).toContain('vars.CLOUDFLARE_ACCOUNT_ID');
+    expect(workflow).toContain('scripts/cloudflare-realtime.mjs ensure');
+    expect(workflow).toContain('CLOUDFLARE_REALTIME_APP_ID');
+    expect(workflow).toContain('CLOUDFLARE_REALTIME_APP_SECRET');
+    expect(workflow).toMatch(/if:\s*steps\.realtime\.outputs\.created\s*==\s*'true'/);
+    expect(workflow).toContain('printf \'%s\' "$APP_SECRET"');
+    expect(workflow).not.toContain('echo "$APP_SECRET"');
+
+    const gateNames = [
+      'npm run security:scan',
+      'npm run typecheck',
+      'npm test',
+      'npm run build',
+      'npm run test:workers',
+    ];
+    const ensureIndex = workflow.indexOf('scripts/cloudflare-realtime.mjs ensure');
+    expect(ensureIndex).toBeGreaterThan(-1);
+    for (const gate of gateNames) {
+      expect(workflow.indexOf(gate), gate).toBeGreaterThan(-1);
+      expect(workflow.indexOf(gate), gate).toBeLessThan(ensureIndex);
+    }
+
+    const terraform = readRepositoryFile('infra/cloudflare/realtime-sfu/main.tf');
+    expect(terraform).toContain('cloudflare_calls_sfu_app');
+    expect(terraform).toContain('name       = "teacher-playground-voice"');
+    expect(terraform).toContain('prevent_destroy = true');
+    expect(readRepositoryFile('infra/cloudflare/realtime-sfu/outputs.tf')).toMatch(/sensitive\s*=\s*true/);
+    expect(readRepositoryFile('infra/cloudflare/realtime-sfu/README.md')).toMatch(/R2 service\s+is\s+not enabled;\s+account activation is a prerequisite/);
+    expect(readRepositoryFile('infra/cloudflare/realtime-sfu/README.md')).toMatch(/Calls SFU app read\/write permission/);
+    expect(readRepositoryFile('DEPLOY.md')).toMatch(/R2 service\s+is\s+not enabled;\s+account activation is a prerequisite/);
+
+    const secretListIndex = workflow.indexOf('wrangler secret list --config wrangler.toml --format json');
+    expect(secretListIndex).toBeGreaterThan(ensureIndex);
+    expect(secretListIndex).toBeGreaterThan(workflow.indexOf('wrangler secret put CLOUDFLARE_REALTIME_APP_ID'));
+    expect(secretListIndex).toBeGreaterThan(workflow.indexOf('wrangler secret put CLOUDFLARE_REALTIME_APP_SECRET'));
+    expect(workflow.slice(secretListIndex)).toContain('CLOUDFLARE_REALTIME_APP_ID');
+    expect(workflow.slice(secretListIndex)).toContain('CLOUDFLARE_REALTIME_APP_SECRET');
+  });
+
   it('caps CI Playwright workers so the singleton IdentityDO is not queued past session bootstrap', () => {
     const playwrightConfig = readRepositoryFile('playwright.config.ts');
     expect(playwrightConfig).toMatch(/workers:\s*process\.env\.CI\s*\?\s*1\s*:/);

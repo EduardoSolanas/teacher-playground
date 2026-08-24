@@ -142,6 +142,29 @@ cache headers. It also publishes `latest.json` at the bucket root with no-cache 
 as mutable release metadata. The local fallback remains `/` when running
 outside a production build.
 
+### Cloudflare Realtime voice control plane
+
+The first voice slice provisions only the Cloudflare Calls SFU application;
+browser/provider migration and room media routes remain a separate change. Run
+the manually dispatched `.github/workflows/provision-cloudflare-realtime.yml`
+workflow after granting the production `CLOUDFLARE_API_TOKEN` account-level
+Calls SFU app read/write permission. It uses the same
+`CLOUDFLARE_ACCOUNT_ID` production variable as the playground deployment.
+
+The workflow runs security scan, typecheck, unit tests, build, and real Worker
+tests before its first Cloudflare API mutation. It reconciles the named app,
+stores `CLOUDFLARE_REALTIME_APP_ID` as a Worker secret on every run, and stores
+the one-time `CLOUDFLARE_REALTIME_APP_SECRET` only when the app is first
+created. It never logs the secret or recreates an existing app. The Terraform
+specification is in `infra/cloudflare/realtime-sfu/` and uses
+`prevent_destroy`.
+
+The current R2 asset deployment is independently blocked because the R2 service
+is not enabled; account activation is a prerequisite, as observed in GitHub
+Actions run `32680222826`. That blocker does not prevent this Realtime
+provisioning workflow from being dispatched once the Calls permission
+prerequisite is met.
+
 ## Running locally
 
 ```bash
