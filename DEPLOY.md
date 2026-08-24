@@ -123,16 +123,9 @@ which uploads the Worker together with the contents of `out/`.
 
 Pushes to `main` deploy automatically via
 `.github/workflows/deploy-cloudflare.yml`, which typechecks, runs both test
-suites, builds before deploying, reconciles the Excalidraw R2 CDN, uploads the
-pinned fork assets, and verifies the public custom-domain response. The
-workflow uses the existing production `CLOUDFLARE_API_TOKEN` secret and
-`CLOUDFLARE_ACCOUNT_ID` variable; no second credential is required.
-
-To publish only the Excalidraw assets without changing the Worker, manually
-dispatch the workflow with target `cdn`. It runs the same validation,
-reconciliation, upload, and public verification steps, then intentionally
-skips Wrangler. The `full` target (and pushes to `main`) also deploys the
-Worker after CDN verification succeeds.
+suites, builds, and deploys the Worker. The workflow uses the existing
+production `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable;
+the Excalidraw distribution is published separately by its fork repository.
 
 ### Excalidraw release CDN
 
@@ -140,58 +133,19 @@ The production build points Excalidraw at the immutable release base:
 
 `https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.2/dist/prod/`
 
-The declarative Cloudflare configuration is in
-`infra/cloudflare/excalidraw-cdn/`. The deploy workflow runs
-`node scripts/excalidraw-cdn.mjs reconcile` before uploading the installed
-`@teacher-playground/excalidraw` `dist/prod` tree with one-year immutable
-cache headers. It also publishes `latest.json` at the bucket root with no-cache headers
-as mutable release metadata. The local fallback remains `/` when running
-outside a production build.
+The fork repository is the sole owner of the R2 bucket, custom domain, release
+objects, and release metadata. This repository only consumes the pinned
+immutable base URL above; it does not provision the bucket or publish release
+objects. The local fallback remains `/` when running outside a production build
+or when `NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH=/` is supplied.
 
-#### The bucket has three writers
+#### Historical CDN publisher evidence
 
-`infra/cloudflare/excalidraw-cdn/` is not the only thing that reconciles
-`teacher-playground-excalidraw`. The fork repository carries its own Terraform
-for the same bucket, and `scripts/excalidraw-cdn.mjs reconcile` creates the
-bucket, CORS rule, and custom domain imperatively on every deploy when they are
-absent. Both Terraform stacks set `prevent_destroy` on the same name, and both
-publishers write the same `releases/<version>/dist/prod/**` keys and the same
-root `latest.json`.
-
-Nothing has diverged yet, because R2 is not enabled and none of the three has
-ever run. Choose a single owner for the bucket and its domain before that
-changes; the fork's `docs/teacher-playground-distribution.md` describes the same
-conflict from the distribution side.
-
-#### The CDN gates the full Worker deploy
-
-`Reconcile Excalidraw R2 CDN`, `Upload immutable Excalidraw release assets`, and
-`Verify public Excalidraw CDN` all run **before** `Deploy with Wrangler`, in the
-same job, with no `continue-on-error`. An unreachable or unprovisioned CDN therefore blocks the
-`full` application deployment entirely — the Worker and the room API do not
-ship because a font bucket is missing. The manual `cdn` target stops after
-verification and is intended for recovering or publishing the asset release
-independently.
-
-That is observed behaviour, not a projection. In GitHub Actions run
-`32680222826` the secret scan, typecheck, 903 unit tests, static build and 324
-real Worker tests all passed; `Reconcile Excalidraw R2 CDN` then failed, and
-both `Upload immutable Excalidraw release assets` and `Deploy with Wrangler`
-were skipped. Nothing reached production.
-
-The dedicated `cdn` target was then exercised in GitHub Actions run
-`32688811548`. Secret scanning, Semgrep, typecheck, 904 unit tests, the static
-build, and 324 real Worker tests passed. Cloudflare rejected the first bucket
-list request with HTTP 403/code 10042 (`Please enable R2 through the Cloudflare
-Dashboard`), so reconciliation made no change and upload, public verification,
-and Wrangler were all skipped.
-
-Decide deliberately which failure is worse for this product. Coupling them is
-defensible — it keeps a deploy from shipping a build whose fonts 404 — but it
-is a choice, and it means the app's availability now depends on R2. To
-decouple, move both CDN steps after `Deploy with Wrangler`, or mark them
-`continue-on-error: true`; if you do, pair the change with the asset-path
-override below, or production ships pointing at a host that may not exist.
+Earlier parent revisions contained a duplicate Terraform stack and an
+imperative publisher. Those were deliberately removed after the fork became
+the sole owner. Historical deployment runs `32680222826` and `32688811548`
+recorded the old publisher failing before R2 was enabled; they are retained as
+history only and are not current workflow behavior.
 
 #### The production asset host must exist before the first production deploy
 
@@ -225,10 +179,11 @@ The hostname is written in three places that must move together:
 A hostname change that misses the CSP produces a green test suite and a board
 with no fonts, because the failure appears only as a browser console violation.
 
-No automated check covers the cross-origin load itself. The unit suite asserts
-the header string, and `excalidraw-cdn.mjs verify` fetches the public origin —
-but reachability is not acceptance: a served font and a font the page's CSP
-permits are different claims, and only the second one puts glyphs on a board.
+No automated check covers the cross-origin load itself. Parent unit tests assert
+the CSP header string, and fork tests cover uploader MIME and cache contracts,
+but no live public-origin verification exists yet. Reachability is not
+acceptance: a served font and a font the page's CSP permits are different
+claims, and only the second one puts glyphs on a board.
 Before trusting a CDN deploy, open a room against the deployed hostname and
 confirm the console
 reports no CSP violation for either `font-src` or `connect-src`. `font-src`

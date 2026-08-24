@@ -27,21 +27,17 @@ Teacher Playground now pins that immutable asset in `package.json` and
 https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.2/package.tgz
 ```
 
-The playground's declarative R2 configuration is under
-`infra/cloudflare/excalidraw-cdn`. Its deploy workflow uses the existing
-playground `prod` environment's `CLOUDFLARE_API_TOKEN` secret and
-`CLOUDFLARE_ACCOUNT_ID` variable to reconcile the bucket, CORS, and custom
-domain, then uploads the installed fork package. The application consumes the
+The fork is the sole owner of the R2 bucket, CORS, custom domain, release
+objects, and release metadata. Its own tagged-release workflow uses the
+production `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable
+to publish the package's immutable release. The application consumes the
 immutable base
 `https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.2/dist/prod/`.
-Versioned objects receive one-year immutable cache headers and
-`latest.json` at the bucket root is mutable no-cache metadata. The IaC and workflow are
-implemented and tested. Production run `32680222826` passed every repository
-gate, then Cloudflare rejected the first R2 reconciliation request with HTTP
-403/code 10042 because R2 is not enabled on the account. No bucket, custom
-domain, upload, Worker deployment, or playground tag is claimed from that run.
-Enable R2 for the account, then rerun the full deployment workflow before
-tagging the playground.
+Versioned objects receive one-year immutable cache headers. The old parent-side
+publisher was removed after production run `32680222826` showed that R2 was not
+enabled (HTTP 403/code 10042); that historical run does not claim a bucket,
+custom domain, upload, Worker deployment, or playground tag. Enable R2 for the
+fork's release workflow before publishing a new version.
 
 The application-side simplification is also complete: remote scenes use the
 exported reconciliation API and never enter local history; cursors use native

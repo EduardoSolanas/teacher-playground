@@ -195,34 +195,35 @@ describe('production deployment policy', () => {
     expect(ciWorkflow).not.toContain('npm run security:scan || true');
   });
 
-  it('reconciles and uploads the pinned Excalidraw release with the playground deploy', () => {
+  it('consumes the fork-owned immutable Excalidraw release without publishing CDN state', () => {
     const workflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
-    expect(workflow).toContain('scripts/excalidraw-cdn.mjs reconcile');
-    expect(workflow).toContain('scripts/excalidraw-cdn.mjs upload');
-    expect(workflow).toContain('scripts/excalidraw-cdn.mjs verify');
-    expect(workflow).toContain('secrets.CLOUDFLARE_API_TOKEN');
-    expect(workflow).toContain('vars.CLOUDFLARE_ACCOUNT_ID');
+    expect(workflow).not.toMatch(/scripts\/excalidraw-cdn\.mjs/);
+    expect(workflow).not.toMatch(/\bcdn\b/);
+    expect(existsSync(resolve(repositoryRoot, 'scripts/excalidraw-cdn.mjs'))).toBe(false);
+    expect(existsSync(resolve(repositoryRoot, 'scripts/excalidraw-cdn.test.ts'))).toBe(false);
+    expect(existsSync(resolve(repositoryRoot, 'infra/cloudflare/excalidraw-cdn'))).toBe(false);
 
-    const workersIndex = workflow.indexOf('run: npm run test:workers');
-    const reconcileIndex = workflow.indexOf('scripts/excalidraw-cdn.mjs reconcile');
-    const uploadIndex = workflow.indexOf('scripts/excalidraw-cdn.mjs upload');
-    const verifyIndex = workflow.indexOf('scripts/excalidraw-cdn.mjs verify');
-    const deployIndex = workflow.indexOf('- name: Deploy with Wrangler');
-    expect(workersIndex).toBeGreaterThan(-1);
-    expect(deployIndex).toBeGreaterThan(workersIndex);
-    expect(reconcileIndex).toBeGreaterThan(deployIndex);
-    expect(uploadIndex).toBeGreaterThan(reconcileIndex);
-    expect(verifyIndex).toBeGreaterThan(uploadIndex);
-
-    const infraFiles = ['infra/cloudflare/excalidraw-cdn/main.tf', 'infra/cloudflare/excalidraw-cdn/versions.tf'];
-    for (const file of infraFiles) expect(existsSync(resolve(repositoryRoot, file)), file).toBe(true);
-
-    const terraform = readRepositoryFile('infra/cloudflare/excalidraw-cdn/main.tf');
-    expect(terraform).toContain('filter = {');
-    expect(terraform).toContain('account = { id = var.account_id }');
+    const deploymentGuide = readRepositoryFile('DEPLOY.md');
+    expect(deploymentGuide).toContain('fork repository is the sole owner');
+    expect(deploymentGuide).not.toContain('latest.json');
+    expect(deploymentGuide).not.toMatch(/scripts\/excalidraw-cdn\.mjs/);
 
     const e2eRunner = readRepositoryFile('scripts/run-e2e.mjs');
     expect(e2eRunner).toContain("NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH: '/',");
+  });
+
+  it('keeps the package, CDN asset path, and CSP on the same fork release', () => {
+    const packageJson = readRepositoryFile('package.json');
+    const lockfile = readRepositoryFile('package-lock.json');
+    const assetPath = readRepositoryFile('src/lib/whiteboard/excalidrawAssetPath.ts');
+    const requestGuard = readRepositoryFile('src/lib/worker/requestGuard.ts');
+    const release = '0.18.1-tp.2';
+    const origin = 'https://excalidraw-assets.sen-tutor.co.uk';
+
+    expect(packageJson).toContain(`teacher-playground-v${release}/package.tgz`);
+    expect(lockfile).toContain(`teacher-playground-v${release}/package.tgz`);
+    expect(assetPath).toContain(`${origin}/releases/${release}/dist/prod/`);
+    expect(requestGuard).toContain(`font-src 'self' data: blob: ${origin}`);
   });
 
   it('gates Realtime provisioning and preserves the one-time app secret contract', () => {
@@ -274,8 +275,8 @@ describe('production deployment policy', () => {
     const workflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
     expect(workflow).toMatch(/workflow_dispatch:\s*\n\s+inputs:\s*\n\s+target:/);
     expect(workflow).toMatch(/target:[\s\S]*default:\s*full/);
-    expect(workflow).toMatch(/target:[\s\S]*options:[\s\S]*-\s*full[\s\S]*-\s*cdn[\s\S]*-\s*realtime/);
-    expect(workflow).toContain("if: github.event_name == 'push' || inputs.target == 'full' || inputs.target == 'cdn'");
+    expect(workflow).toMatch(/target:[\s\S]*options:[\s\S]*-\s*full[\s\S]*-\s*realtime/);
+    expect(workflow).toContain("if: github.event_name == 'push' || inputs.target == 'full'");
     const wranglerIndex = workflow.indexOf('- name: Deploy with Wrangler');
     const realtimeIndex = workflow.indexOf('provision-realtime:');
     expect(wranglerIndex).toBeGreaterThan(-1);
