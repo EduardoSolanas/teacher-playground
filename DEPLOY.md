@@ -123,10 +123,16 @@ which uploads the Worker together with the contents of `out/`.
 
 Pushes to `main` deploy automatically via
 `.github/workflows/deploy-cloudflare.yml`, which typechecks, runs both test
-suites, builds before deploying, reconciles the Excalidraw R2 CDN, and uploads
-the pinned fork assets. The workflow uses the existing production
-`CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable; no second
-credential is required.
+suites, builds before deploying, reconciles the Excalidraw R2 CDN, uploads the
+pinned fork assets, and verifies the public custom-domain response. The
+workflow uses the existing production `CLOUDFLARE_API_TOKEN` secret and
+`CLOUDFLARE_ACCOUNT_ID` variable; no second credential is required.
+
+To publish only the Excalidraw assets without changing the Worker, manually
+dispatch the workflow with target `cdn`. It runs the same validation,
+reconciliation, upload, and public verification steps, then intentionally
+skips Wrangler. The `full` target (and pushes to `main`) also deploys the
+Worker after CDN verification succeeds.
 
 ### Excalidraw release CDN
 
@@ -141,6 +147,87 @@ The declarative Cloudflare configuration is in
 cache headers. It also publishes `latest.json` at the bucket root with no-cache headers
 as mutable release metadata. The local fallback remains `/` when running
 outside a production build.
+
+#### The bucket has three writers
+
+`infra/cloudflare/excalidraw-cdn/` is not the only thing that reconciles
+`teacher-playground-excalidraw`. The fork repository carries its own Terraform
+for the same bucket, and `scripts/excalidraw-cdn.mjs reconcile` creates the
+bucket, CORS rule, and custom domain imperatively on every deploy when they are
+absent. Both Terraform stacks set `prevent_destroy` on the same name, and both
+publishers write the same `releases/<version>/dist/prod/**` keys and the same
+root `latest.json`.
+
+Nothing has diverged yet, because R2 is not enabled and none of the three has
+ever run. Choose a single owner for the bucket and its domain before that
+changes; the fork's `docs/teacher-playground-distribution.md` describes the same
+conflict from the distribution side.
+
+#### The CDN gates the full Worker deploy
+
+`Reconcile Excalidraw R2 CDN`, `Upload immutable Excalidraw release assets`, and
+`Verify public Excalidraw CDN` all run **before** `Deploy with Wrangler`, in the
+same job, with no `continue-on-error`. An unreachable or unprovisioned CDN therefore blocks the
+`full` application deployment entirely — the Worker and the room API do not
+ship because a font bucket is missing. The manual `cdn` target stops after
+verification and is intended for recovering or publishing the asset release
+independently.
+
+That is observed behaviour, not a projection. In GitHub Actions run
+`32680222826` the secret scan, typecheck, 903 unit tests, static build and 324
+real Worker tests all passed; `Reconcile Excalidraw R2 CDN` then failed, and
+both `Upload immutable Excalidraw release assets` and `Deploy with Wrangler`
+were skipped. Nothing reached production.
+
+Decide deliberately which failure is worse for this product. Coupling them is
+defensible — it keeps a deploy from shipping a build whose fonts 404 — but it
+is a choice, and it means the app's availability now depends on R2. To
+decouple, move both CDN steps after `Deploy with Wrangler`, or mark them
+`continue-on-error: true`; if you do, pair the change with the asset-path
+override below, or production ships pointing at a host that may not exist.
+
+#### The production asset host must exist before the first production deploy
+
+`resolveExcalidrawAssetPath` returns the CDN base whenever
+`NODE_ENV === 'production'`, so the hostname is a hard production dependency
+rather than an enhancement. As of 2026-08-24 it does not resolve:
+
+```text
+excalidraw-assets.sen-tutor.co.uk: Non-existent domain
+```
+
+`NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH` overrides the default and is the rollback
+lever. Setting it to `/` restores same-origin assets from `public/`, which the
+`prebuild` copy still populates, and requires no code change:
+
+```sh
+NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH=/ npm run build
+```
+
+Keep that escape hatch working. It is the only way to ship the application
+while the CDN is unavailable.
+
+#### Changing the CDN hostname touches the CSP
+
+The hostname is written in three places that must move together:
+
+- `EXCALIDRAW_CDN_BASE_PATH` in `src/lib/whiteboard/excalidrawAssetPath.ts`
+- the `font-src` default in `src/lib/worker/requestGuard.ts`
+- the assertion covering that default in `src/lib/worker/requestGuard.test.ts`
+
+A hostname change that misses the CSP produces a green test suite and a board
+with no fonts, because the failure appears only as a browser console violation.
+
+No automated check covers the cross-origin load itself. The unit suite asserts
+the header string, and `excalidraw-cdn.mjs verify` fetches the public origin —
+but reachability is not acceptance: a served font and a font the page's CSP
+permits are different claims, and only the second one puts glyphs on a board.
+Before trusting a CDN deploy, open a room against the deployed hostname and
+confirm the console
+reports no CSP violation for either `font-src` or `connect-src`. `font-src`
+carries the CDN origin; `connect-src` does not, so any asset Excalidraw
+retrieves with `fetch` rather than the font loader would still be refused.
+That distinction is unverified and a browser is the only thing that settles it.
 
 ### Cloudflare Realtime voice control plane
 
