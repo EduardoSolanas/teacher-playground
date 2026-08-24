@@ -72,14 +72,16 @@ Everything here is in the upstream base of
 | Pointer moved | `onPointerUpdate({ pointer: {x, y, tool}, button, pointersMap })` | yes |
 | Pointer down / up | `excalidrawAPI.onPointerDown` / `onPointerUp` | yes |
 | Pan / zoom | `onScrollChange(scrollX, scrollY, zoom)`, also on the API | yes |
-| Someone followed you | `onUserFollow(payload)` | **no** — feature we do not have |
+| Someone followed you | `excalidrawAPI.onUserFollow(payload)` | yes — imperative subscription |
 | Push a scene in | `updateScene({ elements, appState, collaborators, captureUpdate })` | yes |
 | Merge remote with local | `reconcileElements(local, remote, appState)` (exported) | yes |
 | Keep an update out of undo | `CaptureUpdateAction.NEVER` (exported) | yes |
 
 The completed rows are the answer to "how do we get updates from drawing,
 cursor, etc.": upstream already publishes them in scene coordinates, with
-button state. Follow mode is the only unused callback in this table.
+button state. The follow callback is an imperative subscription on the
+`excalidrawAPI`; it is not a React prop and must be registered through the
+imperative API handle.
 
 ## Completed application simplifications, by payoff
 
@@ -156,12 +158,39 @@ changes and only then. It is the natural feed for the stored host view
 
 **Deletes.** The dedupe, and the coupling between drawing and viewport reporting.
 
-### 6. `onUserFollow` — a feature we do not have
+### 6. Teacher guide through native Excalidraw follow state
 
-Not a cleanup: upstream supports follow-mode, where one participant's viewport
-follows another's. In a classroom that is "everyone look at what I am looking
-at", which we currently cannot offer at all. Cheap to evaluate now that the
-stored host view already exists.
+Teacher Playground now implements the classroom follow outcome above the public
+API. The host's Guide control sends an ephemeral, server-mediated custom
+y-websocket message (`type 101`) containing the bounded viewport. The RoomDO
+accepts start, update, and stop frames only from the owner role, broadcasts them
+to granted peers, sends the active state to newcomers, and broadcasts an inactive
+frame when the last owner socket closes. Follow state is held in the DO instance
+only: it is never written to Yjs, SQL, local storage, or scene history.
+
+The student receives the viewport through `updateScene` with
+`CaptureUpdateAction.NEVER` and the native `userToFollow` app state. That keeps
+Excalidraw's own Following badge and unfollow action. A local student unfollow
+opts out of the current guide session; a later host session clears that opt-out.
+Host viewport updates are coalesced to a trailing 50 ms send so ordinary pan and
+zoom gestures remain fluid. The imperative `onUserFollow` subscription marks
+local native unfollows without treating server-applied follow updates as an
+opt-out.
+
+Verification is recorded against the implementation:
+
+- `npm test -- --run followMessage ToolSidebar presenceMessage RoomClient`: 4
+  files, 10 tests passed; full `npm test`: 90 files, 890 tests passed.
+- `npm run test:workers -- --run src/do/followGuide.workers.test.ts`: 1 test
+  passed; full `npm run test:workers`: 11 files, 324 tests passed.
+- `npm run typecheck`: both application and Worker TypeScript projects passed.
+- `npm run test:e2e -- --grep "the host can guide the class through the native
+  Excalidraw follow state"`: 1 test passed in 5.2 seconds after adding the
+  retrying debug-API readiness assertion required by the production-build E2E.
+- Mutation check: replacing the owner-only `!isOwnerRole(role)` guard with
+  `!isGrantedRole(role)` made the focused worker test fail because an editor's
+  forged stop frame reached the owner; the guard was restored and the focused
+  worker test passed again.
 
 ## What genuinely is not in the API
 
@@ -266,9 +295,9 @@ maintains a drawing editor.
    cannot move, each child confined to their own area, "everyone look at my
    screen", "only your own work is yours to erase", freeze the board.
 2. **Spike each one against the current API.** Frames exist (`frameId`), locking
-   exists, follow exists (`onUserFollow`), authorship can live in `customData`.
-   Some of that list will turn out to be reachable — those are not fork
-   arguments and must be struck off before the decision.
+   exists, follow exists (`onUserFollow`) and the teacher-guide flow is now
+   implemented above it, while authorship can live in `customData`. Reachable
+   outcomes stay above the fork boundary; they are not fork arguments.
 3. **Fork only on what survives.** If the list is one item, build it above the
    API and accept the awkwardness. If it is per-role editability plus refusal
    plus the CRDT document, the fork is justified and the boundary above is the
@@ -282,7 +311,8 @@ maintains a drawing editor.
 
 Items 1–5 above were completed before switching the package dependency. They
 shrank the wrapper and left the fork free of Teacher Playground collaboration
-logic. If a future CRDT-native editor fork is separately approved,
+logic; the teacher-guide transport remains application code in the wrapper and
+RoomDO. If a future CRDT-native editor fork is separately approved,
 `reconcileElements` would be deleted rather than replaced again.
 
 ## Adopted maintenance policy
@@ -317,5 +347,7 @@ The earlier gates are no longer open:
    the 1,000 ms test budget. These are local regression measurements, not WAN
    capacity claims.
 
-Follow mode remains a separate classroom product decision. It is not part of
-the fork distribution work and was not invented for this release.
+Teacher guide/follow is now implemented and verified in Teacher Playground using
+the fork's public Excalidraw API. The fork itself remains a minimal distribution
+fork: its own package, release bundle, CI, and Cloudflare R2 IaC are maintained
+there, while the classroom follow transport stays in the application layer.

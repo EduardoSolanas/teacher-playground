@@ -17,6 +17,7 @@ import { reconcileRemoteElements } from '@/lib/whiteboard/excalidrawReconcile';
 import { getElementsFromArray, replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 import { collaboratorsFromPresence } from '@/lib/whiteboard/collaborators';
 import type { RemoteCursor } from '@/types/whiteboard';
+import type { FollowMessage } from '@/lib/whiteboard/followMessage';
 import {
   isWhiteboardLatencyProbeEnabled,
   recordWhiteboardLatencyEvent,
@@ -41,6 +42,10 @@ type ExcalidrawWrapperProps = {
   /** Local pointer, in scene coordinates. */
   onCursorMove: (sceneX: number, sceneY: number, button?: 'up' | 'down') => void;
   onElementsChange: (elements: any[]) => void;
+  hostPeerId: string | null;
+  guideMessage: FollowMessage | null;
+  isGuiding: boolean;
+  onGuideViewport: (viewport: { x: number; y: number; zoom: number }) => void;
 };
 
 export default function ExcalidrawWrapper({
@@ -59,6 +64,10 @@ export default function ExcalidrawWrapper({
   initialViewport,
   onCursorMove,
   onElementsChange,
+  hostPeerId,
+  guideMessage,
+  isGuiding,
+  onGuideViewport,
 }: ExcalidrawWrapperProps) {
   const apiRef = useRef<any>(null);
   const [isClient, setIsClient] = useState(false);
@@ -69,6 +78,13 @@ export default function ExcalidrawWrapper({
   const lastPublishedIdsRef = useRef<string[]>([]);
   /** id -> Excalidraw `version` at the last publish, for O(changed) diffing. */
   const publishedVersionsRef = useRef<Map<string, number>>(new Map());
+  const latestViewportRef = useRef({ x: 0, y: 0, zoom: 1 });
+  const guideSendTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const guideActiveRef = useRef(false);
+  const followOptedOutRef = useRef(false);
+  const applyingGuideRef = useRef(false);
+  const previousIsGuidingRef = useRef(false);
+  const followUnsubscribeRef = useRef<(() => void) | null>(null);
 
   /**
    * Adopt a scene that arrived from a peer as the publish baseline.
@@ -349,6 +365,7 @@ export default function ExcalidrawWrapper({
     const api = apiRef.current;
     if (!api || !initialViewport) return;
     const { x, y, zoom } = initialViewport;
+    latestViewportRef.current = { x, y, zoom };
     if (x === 0 && y === 0 && zoom === 1) return;
     appliedStoredViewRef.current = true;
     try {
@@ -359,7 +376,17 @@ export default function ExcalidrawWrapper({
   }, [initialViewport, apiReady]);
 
   const handleAPI = useCallback((api: any) => {
+    followUnsubscribeRef.current?.();
+    followUnsubscribeRef.current = null;
     apiRef.current = api;
+
+    if (typeof api.onUserFollow === 'function') {
+      followUnsubscribeRef.current = api.onUserFollow((payload: { action?: string }) => {
+        if (payload?.action === 'UNFOLLOW' && !applyingGuideRef.current) {
+          followOptedOutRef.current = true;
+        }
+      });
+    }
 
     // The document may already hold the room's contents — restored from the
     // API after a reload, or synced before the board mounted. Read it directly
@@ -635,6 +662,68 @@ export default function ExcalidrawWrapper({
     }
   }, [commitElements, onElementsChange]);
 
+  useEffect(() => () => {
+    followUnsubscribeRef.current?.();
+    if (guideSendTimeoutRef.current) clearTimeout(guideSendTimeoutRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (!apiReady || !apiRef.current) return;
+    if (isGuiding && !previousIsGuidingRef.current) {
+      const state = apiRef.current.getAppState?.();
+      const viewport = state
+        ? { x: state.scrollX, y: state.scrollY, zoom: state.zoom.value }
+        : latestViewportRef.current;
+      latestViewportRef.current = viewport;
+      onGuideViewport(viewport);
+    }
+    if (!isGuiding && previousIsGuidingRef.current) {
+      guideActiveRef.current = false;
+    }
+    previousIsGuidingRef.current = isGuiding;
+  }, [apiReady, isGuiding, onGuideViewport]);
+
+  useEffect(() => {
+    const api = apiRef.current;
+    const host = users.find((user) => user.isHost);
+    const followPeerId = host?.peerId ?? hostPeerId;
+    if (!api || !guideMessage || !followPeerId || followPeerId === localPeerId) return;
+    if (!guideMessage.active) {
+      guideActiveRef.current = false;
+      followOptedOutRef.current = false;
+      applyingGuideRef.current = true;
+      api.updateScene({
+        appState: { userToFollow: null },
+        captureUpdate: CaptureUpdateAction.NEVER,
+      });
+      setTimeout(() => { applyingGuideRef.current = false; }, 0);
+      return;
+    }
+    if (!guideActiveRef.current) {
+      guideActiveRef.current = true;
+      followOptedOutRef.current = false;
+    }
+    if (followOptedOutRef.current) return;
+    applyingGuideRef.current = true;
+    const currentUserToFollow = api.getAppState?.().userToFollow;
+    const userToFollow = currentUserToFollow?.socketId === followPeerId
+      ? currentUserToFollow
+      : {
+          socketId: followPeerId,
+          username: host?.userName ?? 'Teacher',
+        };
+    api.updateScene({
+      appState: {
+        userToFollow,
+        scrollX: guideMessage.viewport.x,
+        scrollY: guideMessage.viewport.y,
+        zoom: { value: guideMessage.viewport.zoom },
+      },
+      captureUpdate: CaptureUpdateAction.NEVER,
+    });
+    setTimeout(() => { applyingGuideRef.current = false; }, 0);
+  }, [apiReady, guideMessage, hostPeerId, localPeerId, users]);
+
   if (!isClient) {
     return <div className="w-full h-full min-h-[25rem]" />;
   }
@@ -649,7 +738,16 @@ export default function ExcalidrawWrapper({
         onChange={(el: any, appState: any) => { handleElementsChange(el, appState); }}
         onPointerUpdate={handlePointerUpdate}
         onScrollChange={(scrollX, scrollY, zoom) => {
-          onViewportChange({ x: scrollX, y: scrollY, zoom: zoom.value });
+          const viewport = { x: scrollX, y: scrollY, zoom: zoom.value };
+          latestViewportRef.current = viewport;
+          onViewportChange(viewport);
+          if (isGuiding) {
+            if (guideSendTimeoutRef.current) clearTimeout(guideSendTimeoutRef.current);
+            guideSendTimeoutRef.current = setTimeout(() => {
+              guideSendTimeoutRef.current = null;
+              onGuideViewport(latestViewportRef.current);
+            }, 50);
+          }
         }}
         onPointerDown={handlePointerDown}
         onPointerUp={handlePointerUp}

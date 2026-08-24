@@ -6,7 +6,13 @@ import {
   updateElementInArray,
   getElementsFromArray,
 } from './yjsDoc';
-import { createYWebsocketProvider, destroyProvider, type PresenceCallback } from './yWebsocketProvider';
+import {
+  createYWebsocketProvider,
+  destroyProvider,
+  type FollowCallback,
+  type PresenceCallback,
+} from './yWebsocketProvider';
+import type { FollowMessage } from './followMessage';
 import { isYjsProviderConnected } from './providerStatus';
 import { randomHexId } from '@/lib/crypto/randomId';
 import type { CanvasElement, WhiteboardUser, RemoteCursor } from '@/types/whiteboard';
@@ -36,9 +42,11 @@ export function createCollaboration(
   roomId: string,
   peerId?: string,
   onPresence?: PresenceCallback,
+  onFollow?: FollowCallback,
 ) {
   const { doc, elementsArray, viewportMap, cursorsMap } = createWhiteboardDoc(roomId);
-  const { provider, status } = createYWebsocketProvider(doc, roomId, onPresence);
+  const providerEntry = createYWebsocketProvider(doc, roomId, onPresence, onFollow);
+  const { provider, status } = providerEntry;
 
   let localPeerId = peerId || `user-${randomHexId()}`;
   let localUserName = 'Anonymous';
@@ -216,6 +224,7 @@ export function createCollaboration(
     addElement,
     removeElement,
     updateElement,
+    sendFollowMessage: (message: FollowMessage) => providerEntry.sendFollowMessage?.(message) ?? false,
     onChange,
     destroy,
   };

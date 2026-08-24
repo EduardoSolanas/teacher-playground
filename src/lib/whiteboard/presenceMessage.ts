@@ -28,8 +28,16 @@ export function decodePresenceMessage(data: Uint8Array): unknown | null {
       return null;
     }
 
-    const jsonString = decoding.readVarString(decoder);
-    return JSON.parse(jsonString);
+    return decodePresenceMessagePayload(decoder);
+  } catch {
+    return null;
+  }
+}
+
+/** Decodes the JSON payload after y-websocket has consumed the message type. */
+export function decodePresenceMessagePayload(decoder: decoding.Decoder): unknown | null {
+  try {
+    return JSON.parse(decoding.readVarString(decoder));
   } catch {
     return null;
   }

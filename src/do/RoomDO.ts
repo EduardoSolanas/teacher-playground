@@ -66,10 +66,17 @@ import { decideSignalingAction } from '../lib/worker/signalingBudget';
 import { createRateLimiter } from '../lib/http/rateLimit';
 import { logSocketClose } from '../lib/security/authEvents';
 import * as Y from 'yjs';
+import * as decoding from 'lib0/decoding';
 import { encodeUpdateFrame, handleSyncFrame } from '../lib/whiteboard/serverSync';
 import { replaceSharedElements, getElementsFromArray } from '../lib/whiteboard/yjsDoc';
 import { snapshotElements } from '../lib/whiteboard/sceneSnapshot';
 import { snapshotBudgetState } from '../lib/whiteboard/snapshotBudget';
+import {
+  FOLLOW_MESSAGE_TYPE,
+  decodeFollowMessagePayload,
+  encodeFollowMessage,
+  type FollowMessage,
+} from '../lib/whiteboard/followMessage';
 
 /**
  * How often live sockets are re-checked against the identity store. This is the
@@ -198,6 +205,9 @@ export class RoomDO extends DurableObject {
 
   /** Server-side Yjs documents per room, created lazily. */
   private readonly docs = new Map<string, Y.Doc>();
+
+  /** Ephemeral teacher guide state; never written to Yjs, SQL, or storage. */
+  private activeFollow: FollowMessage | null = null;
 
   /**
    * Rooms whose document has changed since it was last written. Flushed at most
@@ -652,6 +662,28 @@ export class RoomDO extends DurableObject {
     this.scheduleLiveKitEviction(accountId, roomId);
   }
 
+  private broadcastFollow(message: FollowMessage, exclude?: WebSocket): void {
+    const frame = encodeFollowMessage(message);
+    for (const peer of this.ctx.getWebSockets()) {
+      if (peer === exclude) continue;
+      const identity = peer.deserializeAttachment() as SocketIdentity | null;
+      if (!identity?.accountId || !isGrantedRole(getGrantRole(this.db, identity.roomId, identity.accountId))) continue;
+      try {
+        peer.send(frame);
+      } catch {
+        try { peer.close(); } catch { /* Already gone. */ }
+      }
+    }
+  }
+
+  private hasOpenSocketForAccount(accountId: string, excluding?: WebSocket): boolean {
+    return this.ctx.getWebSockets().some((peer) => {
+      if (peer === excluding) return false;
+      const identity = peer.deserializeAttachment() as SocketIdentity | null;
+      return identity?.accountId === accountId && peer.readyState === WebSocket.OPEN;
+    });
+  }
+
   /** Drops the account from LiveKit without blocking the caller on HTTP errors. */
   private scheduleLiveKitEviction(accountId: string, roomId: string): void {
     const promise = this.evictLiveKitParticipant({
@@ -999,6 +1031,9 @@ export class RoomDO extends DurableObject {
       grantVersion: getGrantVersion(this.db, roomId),
     };
     server.serializeAttachment(identity);
+    if (this.activeFollow) {
+      try { server.send(encodeFollowMessage(this.activeFollow)); } catch { /* Best effort. */ }
+    }
     // Awaited, not floating: a storage write racing the returned response
     // shows up as "database is locked: SQLITE_BUSY".
     await this.scheduleRevocationCheck();
@@ -1237,6 +1272,22 @@ export class RoomDO extends DurableObject {
         ? new Uint8Array(raw)
         : new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
 
+      // Guide frames use a private y-websocket message type and must never be
+      // relayed as Yjs updates. The role comes from the socket attachment and
+      // database, not from any client-supplied identity.
+      try {
+        const decoder = decoding.createDecoder(bytes);
+        if (decoding.readVarUint(decoder) === FOLLOW_MESSAGE_TYPE) {
+          const message = decodeFollowMessagePayload(decoder);
+          if (!message || !isOwnerRole(role)) return;
+          this.activeFollow = message.active ? message : null;
+          this.broadcastFollow(message, ws);
+          return;
+        }
+      } catch {
+        return;
+      }
+
       if (!canWriteBoard(role)) {
         try {
           const doc = await this.getRoomDoc(attachment.roomId);
@@ -1349,6 +1400,15 @@ export class RoomDO extends DurableObject {
   ): Promise<void> {
     try {
       const attachment = ws.deserializeAttachment() as SocketIdentity | null;
+      if (
+        attachment?.accountId
+        && this.activeFollow
+        && isOwnerRole(getGrantRole(this.db, attachment.roomId, attachment.accountId))
+        && !this.hasOpenSocketForAccount(attachment.accountId, ws)
+      ) {
+        this.activeFollow = null;
+        this.broadcastFollow({ active: false }, ws);
+      }
       if (attachment?.roomId) this.sweepDepartedCursors(attachment.roomId);
     } catch {
       // A socket with no attachment leaves nothing to sweep by.

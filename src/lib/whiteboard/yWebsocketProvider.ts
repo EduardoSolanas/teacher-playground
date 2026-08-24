@@ -1,7 +1,16 @@
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import { getSignalingUrls } from './ywebrtcProvider';
-import { PRESENCE_MESSAGE_TYPE, decodePresenceMessage } from './presenceMessage';
+import {
+  PRESENCE_MESSAGE_TYPE,
+  decodePresenceMessagePayload,
+} from './presenceMessage';
+import {
+  FOLLOW_MESSAGE_TYPE,
+  decodeFollowMessagePayload,
+  encodeFollowMessage,
+  type FollowMessage,
+} from './followMessage';
 
 type ProviderLike = {
   connected?: boolean;
@@ -9,10 +18,16 @@ type ProviderLike = {
   synced?: boolean;
   connect: () => void;
   destroy: () => void;
+  sendFollowMessage?: (message: FollowMessage) => boolean;
   on: (eventName: string, callback: (...args: any[]) => void) => void;
 };
 
-type ProviderEntry = { provider: ProviderLike; status: string; synced: boolean };
+type ProviderEntry = {
+  provider: ProviderLike;
+  status: string;
+  synced: boolean;
+  sendFollowMessage: (message: FollowMessage) => boolean;
+};
 
 let providerCache: Map<string, ProviderEntry> = new Map();
 
@@ -55,11 +70,13 @@ class SignalingWebsocketProvider extends WebsocketProvider {
 }
 
 export type PresenceCallback = (payload: unknown) => void;
+export type FollowCallback = (payload: FollowMessage) => void;
 
 export function createYWebsocketProvider(
   doc: Y.Doc,
   roomId: string,
   onPresence?: PresenceCallback,
+  onFollow?: FollowCallback,
 ): ProviderEntry {
   const cacheKey = `whiteboard-${roomId}`;
 
@@ -71,7 +88,18 @@ export function createYWebsocketProvider(
     ? createServerProvider()
     : new SignalingWebsocketProvider(doc, roomId) as unknown as ProviderLike;
 
-  const entry = { provider, status: 'connecting', synced: false };
+  const entry: ProviderEntry = {
+    provider,
+    status: 'connecting',
+    synced: false,
+    sendFollowMessage: (message) => {
+      if (typeof window === 'undefined') return false;
+      const ws = (provider as any).ws as WebSocket | null | undefined;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      ws.send(encodeFollowMessage(message) as unknown as ArrayBuffer);
+      return true;
+    },
+  };
   providerCache.set(cacheKey, entry);
 
   provider.on('status', (event: { status?: string; connected?: boolean }) => {
@@ -89,11 +117,21 @@ export function createYWebsocketProvider(
   if (onPresence && typeof window !== 'undefined') {
     const wsProvider = provider as any;
     if (wsProvider.messageHandlers && Array.isArray(wsProvider.messageHandlers)) {
-      wsProvider.messageHandlers[PRESENCE_MESSAGE_TYPE] = (data: Uint8Array) => {
-        const payload = decodePresenceMessage(data);
+      wsProvider.messageHandlers[PRESENCE_MESSAGE_TYPE] = (_encoder: unknown, decoder: any) => {
+        const payload = decodePresenceMessagePayload(decoder);
         if (payload !== null) {
           onPresence(payload);
         }
+      };
+    }
+  }
+
+  if (onFollow && typeof window !== 'undefined') {
+    const wsProvider = provider as any;
+    if (wsProvider.messageHandlers && Array.isArray(wsProvider.messageHandlers)) {
+      wsProvider.messageHandlers[FOLLOW_MESSAGE_TYPE] = (_encoder: unknown, decoder: any) => {
+        const payload = decodeFollowMessagePayload(decoder);
+        if (payload) onFollow(payload);
       };
     }
   }

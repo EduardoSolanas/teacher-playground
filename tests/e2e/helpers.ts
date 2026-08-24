@@ -125,6 +125,37 @@ async function waitForExcalidrawApi(page: Page) {
     .toBe(true);
 }
 
+function excalidrawRectangle(id: string, x: number, y: number, version = 1) {
+  return {
+    id,
+    type: 'rectangle',
+    x,
+    y,
+    width: 100,
+    height: 50,
+    angle: 0,
+    strokeColor: '#1e1e1e',
+    backgroundColor: 'transparent',
+    fillStyle: 'solid',
+    strokeWidth: 2,
+    strokeStyle: 'solid',
+    roughness: 1,
+    opacity: 100,
+    groupIds: [],
+    frameId: null,
+    roundness: null,
+    seed: 12345 + version,
+    version,
+    versionNonce: version,
+    isDeleted: false,
+    boundElements: null,
+    updated: Date.now(),
+    link: null,
+    locked: false,
+    index: `a${version}`,
+  };
+}
+
 async function appendElement(page: Page, element: Record<string, unknown>) {
   await waitForExcalidrawApi(page);
   // Excalidraw's API callback applies a remote snapshot ~100ms after mount and
@@ -278,5 +309,6 @@ export {
   joinRoomApprovedViaUrl,
   expandPresenceIfCollapsed,
   waitForExcalidrawApi,
+  excalidrawRectangle,
   appendElement,
 };

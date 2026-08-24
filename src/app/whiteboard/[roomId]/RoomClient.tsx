@@ -74,6 +74,7 @@ function RoomContent({ roomId }: { roomId: string }) {
   const [boardEverShown, setBoardEverShown] = useState(false);
   const [presenceCollapsed, setPresenceCollapsed] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [isGuiding, setIsGuiding] = useState(false);
   const {
     isConnected,
     isSynced,
@@ -108,7 +109,23 @@ function RoomContent({ roomId }: { roomId: string }) {
     setElements,
     viewport,
     storeViewport,
+    hostPeerId,
+    guideMessage,
+    sendFollowMessage,
   } = useCollaboration(roomId);
+
+  const handleGuideViewport = useCallback((nextViewport: { x: number; y: number; zoom: number }) => {
+    sendFollowMessage({ active: true, viewport: nextViewport });
+  }, [sendFollowMessage]);
+
+  const handleToggleGuide = useCallback(() => {
+    if (isGuiding) {
+      sendFollowMessage({ active: false });
+      setIsGuiding(false);
+      return;
+    }
+    setIsGuiding(true);
+  }, [isGuiding, sendFollowMessage]);
 
   const scopedUndo = useScopedUndo(yElementsArray);
   const { activeShortcuts, showShortcutsHelp, setShowShortcutsHelp } = useKeyboardShortcuts({
@@ -348,6 +365,8 @@ function RoomContent({ roomId }: { roomId: string }) {
         onOpenLibrary={() => setLibraryOpen(true)}
         onOpenHelp={() => setShowShortcutsHelp(true)}
         showHostTools={isLocalHost}
+        isGuiding={isGuiding}
+        onToggleGuide={handleToggleGuide}
       />
       <div className={`absolute inset-x-0 bottom-0 ${roomCanvasTopClass(guestHost)} overflow-hidden bg-slate-50 sm:inset-auto sm:left-14 sm:h-[calc(100vh-3rem)] sm:rounded-tl-2xl ${presenceCollapsed ? 'sm:w-[calc(100vw-4.25rem)]' : 'sm:w-[calc(100vw-17.25rem)]'}`} data-testid="whiteboard-canvas-area">
         <ExcalidrawWrapper
@@ -366,6 +385,10 @@ function RoomContent({ roomId }: { roomId: string }) {
           onViewportChange={storeViewport}
           onCursorMove={setCursor}
           onElementsChange={setElements}
+          hostPeerId={hostPeerId}
+          guideMessage={guideMessage}
+          isGuiding={isGuiding}
+          onGuideViewport={handleGuideViewport}
         />
       </div>
       <RaisedHandCue users={users} localPeerId={localPeerId} isLocalHost={isLocalHost} />
