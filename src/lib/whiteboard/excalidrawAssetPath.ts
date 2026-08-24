@@ -1,5 +1,5 @@
 /**
- * Point Excalidraw at the fonts and locales vendored in `public/excalidraw-assets`.
+ * Point Excalidraw at the immutable fork release hosted by Cloudflare R2.
  *
  * Left unset, Excalidraw resolves those against its public CDN, and `font-src`
  * carries no third-party origin — so every font request is refused and the
@@ -11,11 +11,28 @@
  * already initialised and read the path. Import order is the mechanism, so keep
  * this import first.
  *
- * Excalidraw appends "excalidraw-assets/" to the value, so "/" resolves to the
- * path the Worker routing already allows on every hostname.
+ * The local fallback remains available when this module is evaluated outside a
+ * production build (for example, local development and preview builds).
  */
+export const EXCALIDRAW_CDN_BASE_PATH =
+  'https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.2/dist/prod/';
+
+export function resolveExcalidrawAssetPath(env: {
+  NODE_ENV?: string;
+  NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH?: string;
+} = process.env): string {
+  return env.NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH
+    ?? (env.NODE_ENV === 'production' ? EXCALIDRAW_CDN_BASE_PATH : '/');
+}
+
+export const EXCALIDRAW_ASSET_PATH = resolveExcalidrawAssetPath();
+
+export const EXCALIDRAW_ASSET_ORIGIN = EXCALIDRAW_ASSET_PATH.startsWith('http')
+  ? new URL(EXCALIDRAW_ASSET_PATH).origin
+  : null;
+
 if (typeof window !== 'undefined') {
-  (window as unknown as { EXCALIDRAW_ASSET_PATH?: string }).EXCALIDRAW_ASSET_PATH = '/';
+  (window as unknown as { EXCALIDRAW_ASSET_PATH?: string }).EXCALIDRAW_ASSET_PATH = EXCALIDRAW_ASSET_PATH;
 }
 
 export {};

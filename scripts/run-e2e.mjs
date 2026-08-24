@@ -191,6 +191,10 @@ try {
           ...process.env,
           NEXT_PUBLIC_E2E: '1',
           NEXT_PUBLIC_GUEST_HOSTNAME: 'join.localhost',
+          // Local E2E must never depend on the production CDN being deployed.
+          // The production workflow does not set this, so production builds
+          // continue to use the immutable release base.
+          NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH: '/',
         },
       });
       buildDone = waitForChild(buildProcess);

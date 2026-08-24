@@ -123,7 +123,24 @@ which uploads the Worker together with the contents of `out/`.
 
 Pushes to `main` deploy automatically via
 `.github/workflows/deploy-cloudflare.yml`, which typechecks, runs both test
-suites, and builds before deploying.
+suites, builds before deploying, reconciles the Excalidraw R2 CDN, and uploads
+the pinned fork assets. The workflow uses the existing production
+`CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable; no second
+credential is required.
+
+### Excalidraw release CDN
+
+The production build points Excalidraw at the immutable release base:
+
+`https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.2/dist/prod/`
+
+The declarative Cloudflare configuration is in
+`infra/cloudflare/excalidraw-cdn/`. The deploy workflow runs
+`node scripts/excalidraw-cdn.mjs reconcile` before uploading the installed
+`@teacher-playground/excalidraw` `dist/prod` tree with one-year immutable
+cache headers. It also publishes `latest.json` at the bucket root with no-cache headers
+as mutable release metadata. The local fallback remains `/` when running
+outside a production build.
 
 ## Running locally
 

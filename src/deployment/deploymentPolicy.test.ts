@@ -178,6 +178,33 @@ describe('production deployment policy', () => {
     expect(ciWorkflow).not.toContain('npm run security:scan || true');
   });
 
+  it('reconciles and uploads the pinned Excalidraw release with the playground deploy', () => {
+    const workflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
+    expect(workflow).toContain('scripts/excalidraw-cdn.mjs reconcile');
+    expect(workflow).toContain('scripts/excalidraw-cdn.mjs upload');
+    expect(workflow).toContain('secrets.CLOUDFLARE_API_TOKEN');
+    expect(workflow).toContain('vars.CLOUDFLARE_ACCOUNT_ID');
+
+    const workersIndex = workflow.indexOf('run: npm run test:workers');
+    const reconcileIndex = workflow.indexOf('scripts/excalidraw-cdn.mjs reconcile');
+    const uploadIndex = workflow.indexOf('scripts/excalidraw-cdn.mjs upload');
+    const deployIndex = workflow.indexOf('cloudflare/wrangler-action@');
+    expect(workersIndex).toBeGreaterThan(-1);
+    expect(reconcileIndex).toBeGreaterThan(workersIndex);
+    expect(uploadIndex).toBeGreaterThan(reconcileIndex);
+    expect(deployIndex).toBeGreaterThan(uploadIndex);
+
+    const infraFiles = ['infra/cloudflare/excalidraw-cdn/main.tf', 'infra/cloudflare/excalidraw-cdn/versions.tf'];
+    for (const file of infraFiles) expect(existsSync(resolve(repositoryRoot, file)), file).toBe(true);
+
+    const terraform = readRepositoryFile('infra/cloudflare/excalidraw-cdn/main.tf');
+    expect(terraform).toContain('filter = {');
+    expect(terraform).toContain('account = { id = var.account_id }');
+
+    const e2eRunner = readRepositoryFile('scripts/run-e2e.mjs');
+    expect(e2eRunner).toContain("NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH: '/',");
+  });
+
   it('caps CI Playwright workers so the singleton IdentityDO is not queued past session bootstrap', () => {
     const playwrightConfig = readRepositoryFile('playwright.config.ts');
     expect(playwrightConfig).toMatch(/workers:\s*process\.env\.CI\s*\?\s*1\s*:/);

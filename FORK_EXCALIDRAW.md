@@ -27,15 +27,17 @@ Teacher Playground now pins that immutable asset in `package.json` and
 https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.2/package.tgz
 ```
 
-R2 infrastructure is declared under `excalidraw/infra/cloudflare`. The pipeline
-will publish immutable `releases/<version>/...` objects and the mutable
-`latest/...` pointer after the fork repository's `prod` environment is given
-its own copy of `CLOUDFLARE_API_TOKEN`. GitHub secrets are repository-scoped and
-write-only, so matching the secret *name* does not copy its value from the
-Teacher Playground repository. The `tp.2` R2 step therefore failed at this
-credential check; no Cloudflare upload is claimed. After adding the token, the
-fork's manual `recover-r2` workflow can rebuild and upload the existing `tp.2`
-tag without recreating its GitHub Release.
+The playground's declarative R2 configuration is under
+`infra/cloudflare/excalidraw-cdn`. Its deploy workflow uses the existing
+playground `prod` environment's `CLOUDFLARE_API_TOKEN` secret and
+`CLOUDFLARE_ACCOUNT_ID` variable to reconcile the bucket, CORS, and custom
+domain, then uploads the installed fork package. The application consumes the
+immutable base
+`https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.2/dist/prod/`.
+Versioned objects receive one-year immutable cache headers and
+`latest.json` at the bucket root is mutable no-cache metadata. The IaC and workflow are
+implemented and tested locally; no live Cloudflare apply or upload is claimed
+until the deployment workflow runs with the production credentials.
 
 The application-side simplification is also complete: remote scenes use the
 exported reconciliation API and never enter local history; cursors use native
@@ -333,7 +335,7 @@ For every release:
 5. Create the annotated `teacher-playground-v<version>` tag. The tag workflow
    creates the bundle, checksums, GitHub Release, and R2 upload.
 6. Consume an immutable version URL in Teacher Playground. Never install from
-   `latest/` and never build production from an untagged fork branch.
+   `latest.json` and never build production from an untagged fork branch.
 
 ## Prerequisites completed
 

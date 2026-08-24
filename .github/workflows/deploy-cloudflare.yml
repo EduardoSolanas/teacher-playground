@@ -56,6 +56,18 @@ jobs:
       - name: Worker tests (real workerd)
         run: npm run test:workers
 
+      - name: Reconcile Excalidraw R2 CDN
+        run: node scripts/excalidraw-cdn.mjs reconcile
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Upload immutable Excalidraw release assets
+        run: node scripts/excalidraw-cdn.mjs upload
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+
       # TEMP: e2e skipped until Phase 2 client changes are pushed
       # - name: Install Playwright browser
       #   run: npx playwright install --with-deps chromium

@@ -343,7 +343,7 @@ export function applyCspNonceToHtml(html: string, nonce: string): string {
  */
 export function withSecurityHeaders(
   response: Response,
-  options?: { indexable?: boolean; scriptNonce?: string; connectSrc?: string },
+  options?: { indexable?: boolean; scriptNonce?: string; connectSrc?: string; fontSrc?: string },
 ): Response {
   const headers = new Headers(response.headers);
   const contentType = response.headers.get('content-type') ?? '';
@@ -375,7 +375,8 @@ export function withSecurityHeaders(
         // Excalidraw registers its bundled fonts through blob: URLs built at
         // runtime, so 'self' and data: alone are not enough — the browser
         // reported the block hundreds of times on a single board.
-        "font-src 'self' data: blob:",
+        options?.fontSrc
+          ?? "font-src 'self' data: blob: https://excalidraw-assets.sen-tutor.co.uk",
         "style-src 'self' 'unsafe-inline'",
         options?.scriptNonce
           ? `script-src 'self' 'nonce-${options.scriptNonce}' 'strict-dynamic'`
@@ -401,7 +402,7 @@ export function withSecurityHeaders(
  */
 export async function withNonceHtmlSecurityHeaders(
   response: Response,
-  options?: { indexable?: boolean; connectSrc?: string },
+  options?: { indexable?: boolean; connectSrc?: string; fontSrc?: string },
 ): Promise<Response> {
   const contentType = response.headers.get('content-type') ?? '';
   if (!contentType.toLowerCase().includes('text/html')) {

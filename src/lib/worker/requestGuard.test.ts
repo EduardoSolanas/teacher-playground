@@ -390,6 +390,22 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(body).toContain(`<script nonce="${nonce}" src="/_next/static/chunks/app.js">`);
     });
 
+    it('lets nonce-trusted Excalidraw dynamic data modules inherit strict-dynamic trust', async () => {
+      // Excalidraw imports data/*.js with import() from its nonce-bearing
+      // application module; it is not a new parser-inserted script. CSP
+      // strict-dynamic therefore permits that descendant without adding the
+      // CDN to script-src or weakening the host policy.
+      const wrapped = await withNonceHtmlSecurityHeaders(
+        new Response('<html><script src="/_next/static/chunks/app.js"></script></html>', {
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        }),
+      );
+      const csp = wrapped.headers.get('Content-Security-Policy') ?? '';
+      const scriptSrc = csp.split('; ').find((directive) => directive.startsWith('script-src')) ?? '';
+      expect(scriptSrc).toContain("'strict-dynamic'");
+      expect(scriptSrc).not.toContain('excalidraw-assets.sen-tutor.co.uk');
+    });
+
     it('drops validators so a 304 cannot pair a stale body with a fresh nonce', async () => {
       // The nonce is minted per response and written into the body, so a
       // conditional request that returns 304 would reuse the cached body (old
@@ -485,6 +501,20 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       );
       expect(wrapped.headers.get('X-Robots-Tag')).toBe('noindex');
     });
+  });
+
+  it('allows the immutable Excalidraw CDN as a font source', () => {
+    const response = withSecurityHeaders(
+      new Response('<html></html>', {
+        headers: { 'content-type': 'text/html' },
+      }),
+      {
+        fontSrc: "font-src 'self' data: blob: https://excalidraw-assets.sen-tutor.co.uk",
+      },
+    );
+    expect(response.headers.get('Content-Security-Policy')).toContain(
+      "font-src 'self' data: blob: https://excalidraw-assets.sen-tutor.co.uk",
+    );
   });
 
   describe('stripForwardedIdentityHeaders (SEC-004)', () => {
