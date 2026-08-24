@@ -182,17 +182,20 @@ describe('production deployment policy', () => {
     const workflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
     expect(workflow).toContain('scripts/excalidraw-cdn.mjs reconcile');
     expect(workflow).toContain('scripts/excalidraw-cdn.mjs upload');
+    expect(workflow).toContain('scripts/excalidraw-cdn.mjs verify');
     expect(workflow).toContain('secrets.CLOUDFLARE_API_TOKEN');
     expect(workflow).toContain('vars.CLOUDFLARE_ACCOUNT_ID');
 
     const workersIndex = workflow.indexOf('run: npm run test:workers');
     const reconcileIndex = workflow.indexOf('scripts/excalidraw-cdn.mjs reconcile');
     const uploadIndex = workflow.indexOf('scripts/excalidraw-cdn.mjs upload');
+    const verifyIndex = workflow.indexOf('scripts/excalidraw-cdn.mjs verify');
     const deployIndex = workflow.indexOf('cloudflare/wrangler-action@');
     expect(workersIndex).toBeGreaterThan(-1);
     expect(reconcileIndex).toBeGreaterThan(workersIndex);
     expect(uploadIndex).toBeGreaterThan(reconcileIndex);
-    expect(deployIndex).toBeGreaterThan(uploadIndex);
+    expect(verifyIndex).toBeGreaterThan(uploadIndex);
+    expect(deployIndex).toBeGreaterThan(verifyIndex);
 
     const infraFiles = ['infra/cloudflare/excalidraw-cdn/main.tf', 'infra/cloudflare/excalidraw-cdn/versions.tf'];
     for (const file of infraFiles) expect(existsSync(resolve(repositoryRoot, file)), file).toBe(true);
@@ -254,8 +257,16 @@ describe('production deployment policy', () => {
     const workflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
     expect(workflow).toMatch(/workflow_dispatch:\s*\n\s+inputs:\s*\n\s+target:/);
     expect(workflow).toMatch(/target:[\s\S]*default:\s*full/);
-    expect(workflow).toMatch(/target:[\s\S]*options:[\s\S]*-\s*full[\s\S]*-\s*realtime/);
-    expect(workflow).toContain("if: github.event_name == 'push' || inputs.target == 'full'");
+    expect(workflow).toMatch(/target:[\s\S]*options:[\s\S]*-\s*full[\s\S]*-\s*cdn[\s\S]*-\s*realtime/);
+    expect(workflow).toContain("if: github.event_name == 'push' || inputs.target == 'full' || inputs.target == 'cdn'");
+    const wranglerIndex = workflow.indexOf('- name: Deploy with Wrangler');
+    const realtimeIndex = workflow.indexOf('provision-realtime:');
+    expect(wranglerIndex).toBeGreaterThan(-1);
+    expect(realtimeIndex).toBeGreaterThan(wranglerIndex);
+    const wranglerStep = workflow.slice(wranglerIndex, realtimeIndex);
+    expect(wranglerStep).toContain('cloudflare/wrangler-action@');
+    expect(wranglerStep).toContain("if: github.event_name == 'push' || inputs.target == 'full'");
+    expect(wranglerStep).not.toContain("inputs.target == 'cdn'");
     expect(workflow).toContain('provision-realtime:');
     expect(workflow).toContain("if: github.event_name == 'workflow_dispatch' && inputs.target == 'realtime'");
     expect(workflow).toContain('scripts/cloudflare-realtime.mjs ensure');

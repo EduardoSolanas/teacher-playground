@@ -17,6 +17,7 @@ import {
   buildR2CorsPolicy,
   isCustomDomainReady,
   upload,
+  verify,
 } from './excalidraw-cdn.mjs';
 
 describe('Excalidraw CDN deployment contract', () => {
@@ -104,5 +105,48 @@ describe('Excalidraw CDN deployment contract', () => {
 
     const metadata = requests.find((request) => request.path.endsWith('/objects/latest.json'));
     expect(metadata?.headers['cache-control']).toBe(MUTABLE_CACHE_CONTROL);
+  });
+
+  it('verifies the public manifest and immutable asset contract', async () => {
+    const requests: Array<{ path: string; origin: string | undefined }> = [];
+    const server = createServer((request, response) => {
+      requests.push({ path: request.url ?? '', origin: request.headers.origin });
+      response.setHeader('access-control-allow-origin', '*');
+      if (request.url === '/latest.json') {
+        response.setHeader('cache-control', MUTABLE_CACHE_CONTROL);
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({
+          version: '0.18.1-tp.2',
+          baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/${CDN_RELEASE_PREFIX}`,
+        }));
+        return;
+      }
+      if (request.url === `/${CDN_RELEASE_PREFIX}index.js`) {
+        response.setHeader('cache-control', IMMUTABLE_CACHE_CONTROL);
+        response.setHeader('content-type', 'text/javascript; charset=utf-8');
+        response.end('window.__teacherPlaygroundExcalidraw = true;');
+        return;
+      }
+      response.statusCode = 404;
+      response.end('not found');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server did not bind');
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    try {
+      await expect(verify({
+        origin,
+        expectedBaseUrl: `${origin}/${CDN_RELEASE_PREFIX}`,
+      })).resolves.toMatchObject({ version: '0.18.1-tp.2' });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+
+    expect(requests).toEqual([
+      { path: '/latest.json', origin: 'https://teacher-playground.example' },
+      { path: `/${CDN_RELEASE_PREFIX}index.js`, origin: 'https://teacher-playground.example' },
+    ]);
   });
 });

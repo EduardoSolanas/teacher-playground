@@ -214,11 +214,57 @@ export async function upload({
   console.log(`Uploaded ${files.length} immutable Excalidraw objects and latest.json.`);
 }
 
+function normalizeOrigin(origin) {
+  return origin.endsWith('/') ? origin : `${origin}/`;
+}
+
+async function requirePublicResponse(response, label, expectedCacheControl) {
+  if (!response.ok) throw new Error(`CDN ${label} request failed (${response.status}).`);
+  if (response.headers.get('cache-control') !== expectedCacheControl) {
+    throw new Error(`CDN ${label} has unexpected Cache-Control metadata.`);
+  }
+  if (response.headers.get('access-control-allow-origin') !== '*') {
+    throw new Error(`CDN ${label} did not return wildcard CORS for an Origin request.`);
+  }
+}
+
+/**
+ * Verify the public custom-domain contract after an upload.
+ * @param {{origin?: string, expectedVersion?: string, expectedBaseUrl?: string, fetchImpl?: typeof fetch}} options
+ */
+export async function verify({
+  origin = `https://${CDN_DOMAIN}`,
+  expectedVersion = '0.18.1-tp.2',
+  expectedBaseUrl = `${normalizeOrigin(origin)}${CDN_RELEASE_PREFIX}`,
+  fetchImpl = fetch,
+} = {}) {
+  const publicOrigin = normalizeOrigin(origin);
+  const requestInit = { headers: { Origin: 'https://teacher-playground.example' } };
+  const metadataResponse = await fetchImpl(new URL('latest.json', publicOrigin), requestInit);
+  await requirePublicResponse(metadataResponse, 'latest.json', MUTABLE_CACHE_CONTROL);
+  const metadata = await metadataResponse.json();
+  if (metadata?.version !== expectedVersion) {
+    throw new Error(`CDN manifest version ${metadata?.version ?? 'missing'} does not match ${expectedVersion}.`);
+  }
+  if (metadata?.baseUrl !== expectedBaseUrl) {
+    throw new Error(`CDN manifest baseUrl ${metadata?.baseUrl ?? 'missing'} does not match ${expectedBaseUrl}.`);
+  }
+
+  const assetUrl = new URL(`${CDN_RELEASE_PREFIX}index.js`, publicOrigin);
+  const assetResponse = await fetchImpl(assetUrl, requestInit);
+  await requirePublicResponse(assetResponse, 'index.js', IMMUTABLE_CACHE_CONTROL);
+  const asset = await assetResponse.arrayBuffer();
+  if (asset.byteLength === 0) throw new Error('CDN index.js asset is empty.');
+
+  console.log(`Verified public Excalidraw CDN ${metadata.version} at ${metadata.baseUrl}.`);
+  return { ...metadata, assetUrl: assetUrl.toString(), assetBytes: asset.byteLength };
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const command = process.argv[2];
-  if (command !== 'reconcile' && command !== 'upload') {
-    console.error('Usage: node scripts/excalidraw-cdn.mjs <reconcile|upload>');
+  if (command !== 'reconcile' && command !== 'upload' && command !== 'verify') {
+    console.error('Usage: node scripts/excalidraw-cdn.mjs <reconcile|upload|verify>');
     process.exit(1);
   }
-  await (command === 'reconcile' ? reconcile() : upload());
+  await (command === 'reconcile' ? reconcile() : command === 'upload' ? upload() : verify());
 }
