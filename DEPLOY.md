@@ -219,9 +219,10 @@ passed installation, secret scanning, typecheck, 901 unit tests, the static
 build, and 324 real Worker tests. Cloudflare then rejected the first read-only
 `GET /accounts/{account_id}/calls/apps` request with HTTP 403/code 10000
 (`Authentication error`). No Calls app was created; the UID and secret storage
-steps were skipped. Grant the existing production token effective account-level
-Calls SFU Read and Calls Write/Edit permission, with the correct account scope,
-before rerunning the `realtime` target.
+steps were skipped. Grant the existing production token the account-level
+`Calls Write` permission, with the correct account scope, before rerunning the
+`realtime` target. Cloudflare documents `Calls Write` as sufficient for both
+listing SFU apps and creating one.
 
 ## Running locally
 

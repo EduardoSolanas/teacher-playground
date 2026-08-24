@@ -266,7 +266,7 @@ describe('production deployment policy', () => {
     expect(terraform).toContain('prevent_destroy = true');
     expect(readRepositoryFile('infra/cloudflare/realtime-sfu/outputs.tf')).toMatch(/sensitive\s*=\s*true/);
     expect(readRepositoryFile('infra/cloudflare/realtime-sfu/README.md')).toContain('playground asset deployment is complete');
-    expect(readRepositoryFile('infra/cloudflare/realtime-sfu/README.md')).toMatch(/Calls SFU app read\/write permission/);
+    expect(readRepositoryFile('infra/cloudflare/realtime-sfu/README.md')).toContain('`Calls Write` permission');
     expect(readRepositoryFile('DEPLOY.md')).toContain('The R2 asset deployment is complete');
     expect(readRepositoryFile('DEPLOY.md')).toContain('32783632121');
 
