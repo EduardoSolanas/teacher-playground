@@ -452,9 +452,21 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
     it('sends a minimal Permissions Policy that denies unused capabilities', () => {
       const wrapped = withSecurityHeaders(new Response('ok'));
       const policy = wrapped.headers.get('Permissions-Policy') ?? '';
-      for (const feature of ['camera', 'microphone', 'geolocation', 'payment', 'usb']) {
+      for (const feature of ['geolocation', 'payment', 'usb', 'midi', 'serial']) {
         expect(policy).toContain(`${feature}=()`);
       }
+    });
+
+    // An empty allowlist is a document-level disable, not a prompt: getUserMedia
+    // rejects before the browser ever asks the user. The A/V panel needs these
+    // two, so they are granted to this origin only — never to an embedder,
+    // which `X-Frame-Options: DENY` already forbids anyway.
+    it('allows camera and microphone for this origin so A/V can start', () => {
+      const policy = withSecurityHeaders(new Response('ok')).headers.get('Permissions-Policy') ?? '';
+      expect(policy).toContain('camera=(self)');
+      expect(policy).toContain('microphone=(self)');
+      expect(policy).not.toContain('camera=()');
+      expect(policy).not.toContain('microphone=()');
     });
 
     it('varies cached non-HTML responses on the credentials that select them', () => {

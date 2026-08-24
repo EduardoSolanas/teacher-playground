@@ -273,8 +273,11 @@ test.describe('security headers on every response', () => {
       expect(headers['x-content-type-options']).toBe('nosniff');
       expect(headers['referrer-policy']).toBe('no-referrer');
       expect(headers['x-frame-options']).toBe('DENY');
-      expect(headers['permissions-policy']).toContain('camera=()');
-      expect(headers['permissions-policy']).toContain('microphone=()');
+      // Granted to this origin only: an empty allowlist would disable A/V
+      // outright rather than prompting. See requestGuard.ts.
+      expect(headers['permissions-policy']).toContain('camera=(self)');
+      expect(headers['permissions-policy']).toContain('microphone=(self)');
+      expect(headers['permissions-policy']).toContain('geolocation=()');
       expect(headers['cache-control']).toBe('no-store');
     }
   });

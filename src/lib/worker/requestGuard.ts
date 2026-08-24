@@ -352,11 +352,18 @@ export function withSecurityHeaders(
   headers.set('X-Content-Type-Options', 'nosniff');
   headers.set('Referrer-Policy', 'no-referrer');
   headers.set('X-Frame-Options', 'DENY');
-  // Nothing in a whiteboard needs these, so deny them outright rather than
-  // leaving them to whatever the browser defaults to.
+  // Everything unused is denied outright rather than left to whatever the
+  // browser defaults to.
+  //
+  // `camera` and `microphone` are the exceptions, and they are granted to
+  // `self` only. An empty allowlist is not "prompt the user" — it disables the
+  // capability for the document, so `getUserMedia` rejects with
+  // NotAllowedError before any permission prompt appears and the LiveKit A/V
+  // panel can never start. `self` restores the normal browser prompt for this
+  // origin while still refusing the capability to any embedder.
   headers.set(
     'Permissions-Policy',
-    'camera=(), microphone=(), geolocation=(), payment=(), usb=(), midi=(), serial=()',
+    'camera=(self), microphone=(self), geolocation=(), payment=(), usb=(), midi=(), serial=()',
   );
 
   headers.set('Cache-Control', 'no-store');
