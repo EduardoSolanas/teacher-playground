@@ -250,6 +250,36 @@ describe('production deployment policy', () => {
     expect(workflow.slice(secretListIndex)).toContain('CLOUDFLARE_REALTIME_APP_SECRET');
   });
 
+  it('exposes the Realtime provisioning path from the default deploy workflow', () => {
+    const workflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
+    expect(workflow).toMatch(/workflow_dispatch:\s*\n\s+inputs:\s*\n\s+target:/);
+    expect(workflow).toMatch(/target:[\s\S]*default:\s*full/);
+    expect(workflow).toMatch(/target:[\s\S]*options:[\s\S]*-\s*full[\s\S]*-\s*realtime/);
+    expect(workflow).toContain("if: github.event_name == 'push' || inputs.target == 'full'");
+    expect(workflow).toContain('provision-realtime:');
+    expect(workflow).toContain("if: github.event_name == 'workflow_dispatch' && inputs.target == 'realtime'");
+    expect(workflow).toContain('scripts/cloudflare-realtime.mjs ensure');
+    expect(workflow).toContain('wrangler secret put CLOUDFLARE_REALTIME_APP_ID');
+    expect(workflow).toContain('wrangler secret put CLOUDFLARE_REALTIME_APP_SECRET');
+    expect(workflow).toContain('wrangler secret list --config wrangler.toml --format json');
+    expect(workflow).toContain('secrets.CLOUDFLARE_API_TOKEN');
+    expect(workflow).toContain('vars.CLOUDFLARE_ACCOUNT_ID');
+
+    const ensureIndex = workflow.indexOf('scripts/cloudflare-realtime.mjs ensure');
+    for (const gate of [
+      'npm run security:scan',
+      'npm run typecheck',
+      'npm test',
+      'npm run build',
+      'npm run test:workers',
+    ]) {
+      expect(workflow.indexOf(gate), gate).toBeGreaterThan(-1);
+      expect(workflow.indexOf(gate), gate).toBeLessThan(ensureIndex);
+    }
+    expect(workflow.indexOf('wrangler secret list --config wrangler.toml --format json'))
+      .toBeGreaterThan(workflow.indexOf('wrangler secret put CLOUDFLARE_REALTIME_APP_SECRET'));
+  });
+
   it('caps CI Playwright workers so the singleton IdentityDO is not queued past session bootstrap', () => {
     const playwrightConfig = readRepositoryFile('playwright.config.ts');
     expect(playwrightConfig).toMatch(/workers:\s*process\.env\.CI\s*\?\s*1\s*:/);
