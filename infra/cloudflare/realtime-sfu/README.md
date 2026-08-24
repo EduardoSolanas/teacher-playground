@@ -19,6 +19,12 @@ not enabled; account activation is a prerequisite, as recorded in GitHub
 Actions run `32680222826`. That R2 blocker is independent of this Realtime
 control-plane workflow.
 
+GitHub Actions run `32682568478` exercised this reconciler after all repository
+gates passed. The first Calls list request returned HTTP 403/code 10000
+(`Authentication error`), so the current production token still needs Calls
+Read and Calls Write. Cloudflare did not create an app and Wrangler did not
+write either Worker secret in that run.
+
 Terraform state must be stored in an approved remote backend before using
 `terraform apply` for production. Until then, use the idempotent workflow as
 the live reconciler and keep the generated secret in Wrangler/Worker secret

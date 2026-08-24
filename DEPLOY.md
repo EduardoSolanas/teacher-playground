@@ -165,6 +165,14 @@ Actions run `32680222826`. That blocker does not prevent this Realtime
 provisioning workflow from being dispatched once the Calls permission
 prerequisite is met.
 
+The Realtime-only production attempt in GitHub Actions run `32682568478`
+passed secret scanning, typecheck, 903 unit tests, the static build, and 324
+real Worker tests. Cloudflare then rejected the first read-only
+`GET /accounts/{account_id}/calls/apps` request with HTTP 403/code 10000
+(`Authentication error`). No Calls app or Worker secret was created. Grant
+Calls Read and Calls Write to the existing production token before rerunning
+the `realtime` target.
+
 ## Running locally
 
 ```bash
