@@ -56,6 +56,20 @@ jobs:
       - name: Worker tests (real workerd)
         run: npm run test:workers
 
+      - name: Verify required LiveKit secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          secret_names="$(npx wrangler secret list --config wrangler.toml --format json | jq -r '.[].name')"
+          for required in LIVEKIT_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
+            if ! grep -Fxq "$required" <<<"$secret_names"; then
+              echo "Missing required LiveKit secret: $required" >&2
+              exit 1
+            fi
+          done
+
       - name: Deploy with Wrangler
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:

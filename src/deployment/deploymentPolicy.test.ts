@@ -255,6 +255,23 @@ describe('production deployment policy', () => {
     expect(readme).toContain('LiveKit SFU for A/V');
   });
 
+  it('preflights required LiveKit secrets before deploying with Wrangler', () => {
+    const workflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
+    const preflight = workflow.indexOf('npx wrangler secret list --config wrangler.toml --format json');
+    const deploy = workflow.indexOf('- name: Deploy with Wrangler');
+
+    expect(preflight).toBeGreaterThanOrEqual(0);
+    expect(deploy).toBeGreaterThan(preflight);
+    expect(workflow).toContain('CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}');
+    expect(workflow).toContain('CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}');
+    expect(workflow).toContain("jq -r '.[].name'");
+    expect(workflow).toContain('LIVEKIT_URL');
+    expect(workflow).toContain('LIVEKIT_API_KEY');
+    expect(workflow).toContain('LIVEKIT_API_SECRET');
+    expect(workflow).toContain('Missing required LiveKit secret');
+    expect(workflow).not.toMatch(/(?:echo|printf).*(?:LIVEKIT_URL|LIVEKIT_API_KEY|LIVEKIT_API_SECRET)=?/);
+  });
+
   it('keeps LiveKit secret synchronization manual, production-scoped, and non-logging', () => {
     const workflow = readRepositoryFile('.github/workflows/configure-livekit.yml');
 
