@@ -193,37 +193,6 @@ carries the CDN origin; `connect-src` does not, so any asset Excalidraw
 retrieves with `fetch` rather than the font loader would still be refused.
 That distinction is unverified and a browser is the only thing that settles it.
 
-### Cloudflare Realtime voice control plane
-
-The first voice slice provisions only the Cloudflare Calls SFU application;
-browser/provider migration and room media routes remain a separate change. Run
-the manually dispatched `.github/workflows/provision-cloudflare-realtime.yml`
-workflow after granting the production `CLOUDFLARE_API_TOKEN` account-level
-Calls SFU app read/write permission. It uses the same
-`CLOUDFLARE_ACCOUNT_ID` production variable as the playground deployment.
-
-The workflow runs security scan, typecheck, unit tests, build, and real Worker
-tests before its first Cloudflare API mutation. It reconciles the named app,
-stores `CLOUDFLARE_REALTIME_APP_ID` as a Worker secret on every run, and stores
-the one-time `CLOUDFLARE_REALTIME_APP_SECRET` only when the app is first
-created. It never logs the secret or recreates an existing app. The Terraform
-specification is in `infra/cloudflare/realtime-sfu/` and uses
-`prevent_destroy`.
-
-The R2 asset deployment is complete through the fork-owned release workflow.
-The remaining independent blocker is Cloudflare Calls token permission; it does
-not affect the CDN or the playground deployment.
-
-The Realtime-only production attempt in GitHub Actions run `32783632121`
-passed installation, secret scanning, typecheck, 901 unit tests, the static
-build, and 324 real Worker tests. Cloudflare then rejected the first read-only
-`GET /accounts/{account_id}/calls/apps` request with HTTP 403/code 10000
-(`Authentication error`). No Calls app was created; the UID and secret storage
-steps were skipped. Grant the existing production token the account-level
-`Calls Write` permission, with the correct account scope, before rerunning the
-`realtime` target. Cloudflare documents `Calls Write` as sufficient for both
-listing SFU apps and creating one.
-
 ## Running locally
 
 ```bash

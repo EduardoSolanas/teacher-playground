@@ -132,7 +132,6 @@ describe('production deployment policy', () => {
     const workflowPaths = [
       '.github/workflows/ci.yml',
       '.github/workflows/deploy-cloudflare.yml',
-      '.github/workflows/provision-cloudflare-realtime.yml',
     ];
     const requiredActionPins = {
       'actions/checkout': '3d3c42e5aac5ba805825da76410c181273ba90b1',
@@ -232,64 +231,27 @@ describe('production deployment policy', () => {
     expect(deploymentGuide).not.toContain('Non-existent domain');
   });
 
-  it('gates Realtime provisioning and preserves the one-time app secret contract', () => {
-    const workflowPath = '.github/workflows/provision-cloudflare-realtime.yml';
-    const workflow = readRepositoryFile(workflowPath);
-    expect(workflow).toContain('workflow_dispatch:');
-    expect(workflow).toContain('environment: prod');
-    expect(workflow).toContain('secrets.CLOUDFLARE_API_TOKEN');
-    expect(workflow).toContain('vars.CLOUDFLARE_ACCOUNT_ID');
-    expect(workflow).toContain('scripts/cloudflare-realtime.mjs ensure');
-    expect(workflow).toContain('CLOUDFLARE_REALTIME_APP_ID');
-    expect(workflow).toContain('CLOUDFLARE_REALTIME_APP_SECRET');
-    expect(workflow).toMatch(/if:\s*steps\.realtime\.outputs\.created\s*==\s*'true'/);
-    expect(workflow).toContain('printf \'%s\' "$APP_SECRET"');
-    expect(workflow).not.toContain('echo "$APP_SECRET"');
-
-    const gateNames = [
-      'npm run security:scan',
-      'npm run typecheck',
-      'npm test',
-      'npm run build',
-      'npm run test:workers',
-    ];
-    const ensureIndex = workflow.indexOf('scripts/cloudflare-realtime.mjs ensure');
-    expect(ensureIndex).toBeGreaterThan(-1);
-    for (const gate of gateNames) {
-      expect(workflow.indexOf(gate), gate).toBeGreaterThan(-1);
-      expect(workflow.indexOf(gate), gate).toBeLessThan(ensureIndex);
-    }
-
-    const terraform = readRepositoryFile('infra/cloudflare/realtime-sfu/main.tf');
-    expect(terraform).toContain('cloudflare_calls_sfu_app');
-    expect(terraform).toContain('name       = "teacher-playground-voice"');
-    expect(terraform).toContain('prevent_destroy = true');
-    expect(readRepositoryFile('infra/cloudflare/realtime-sfu/outputs.tf')).toMatch(/sensitive\s*=\s*true/);
-    expect(readRepositoryFile('infra/cloudflare/realtime-sfu/README.md')).toContain('playground asset deployment is complete');
-    expect(readRepositoryFile('infra/cloudflare/realtime-sfu/README.md')).toContain('`Calls Write` permission');
-    expect(readRepositoryFile('DEPLOY.md')).toContain('The R2 asset deployment is complete');
-    expect(readRepositoryFile('DEPLOY.md')).toContain('32783632121');
-
-    const secretListIndex = workflow.indexOf('wrangler secret list --config wrangler.toml --format json');
-    expect(secretListIndex).toBeGreaterThan(ensureIndex);
-    expect(secretListIndex).toBeGreaterThan(workflow.indexOf('wrangler secret put CLOUDFLARE_REALTIME_APP_ID'));
-    expect(secretListIndex).toBeGreaterThan(workflow.indexOf('wrangler secret put CLOUDFLARE_REALTIME_APP_SECRET'));
-    expect(workflow.slice(secretListIndex)).toContain('CLOUDFLARE_REALTIME_APP_ID');
-    expect(workflow.slice(secretListIndex)).toContain('CLOUDFLARE_REALTIME_APP_SECRET');
-  });
-
-
-  // A/V is LiveKit. Nothing in src/lib/av calls Cloudflare Calls, so the deploy
-  // workflow must not reach for a Calls permission to provision an SFU app no
-  // code consumes — that only widens what a leaked production token can do.
-  // The standalone provision-cloudflare-realtime.yml keeps the option alive.
-  it('keeps Realtime provisioning out of the default deploy workflow', () => {
+  it('uses LiveKit as the only A/V provider and tracks no Cloudflare Calls provisioning', () => {
     const workflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
+    const deploymentGuide = readRepositoryFile('DEPLOY.md');
+    const readme = readRepositoryFile('README.md');
+
     expect(workflow).not.toContain('provision-realtime:');
     expect(workflow).not.toContain('cloudflare-realtime.mjs');
     expect(workflow).not.toContain('CLOUDFLARE_REALTIME_APP_ID');
     expect(workflow).not.toContain('inputs.target');
     expect(workflow).toContain('- name: Deploy with Wrangler');
+    for (const callsPath of [
+      '.github/workflows/provision-cloudflare-realtime.yml',
+      'scripts/cloudflare-realtime.mjs',
+      'scripts/cloudflare-realtime.test.ts',
+      'infra/cloudflare/realtime-sfu',
+    ]) {
+      expect(existsSync(resolve(repositoryRoot, callsPath)), callsPath).toBe(false);
+    }
+    expect(deploymentGuide).not.toContain('Cloudflare Realtime voice control plane');
+    expect(deploymentGuide).toContain('LIVEKIT_API_SECRET');
+    expect(readme).toContain('LiveKit SFU for A/V');
   });
 
   it('caps CI Playwright workers so the singleton IdentityDO is not queued past session bootstrap', () => {
@@ -322,7 +284,6 @@ describe('production deployment policy', () => {
     const workflowPaths = [
       '.github/workflows/ci.yml',
       '.github/workflows/deploy-cloudflare.yml',
-      '.github/workflows/provision-cloudflare-realtime.yml',
     ];
 
     for (const workflowPath of workflowPaths) {
