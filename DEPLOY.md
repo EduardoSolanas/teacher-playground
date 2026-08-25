@@ -103,8 +103,14 @@ that evidence exists, production custom-hostname closure remains incomplete.
 
 ### LiveKit voice secrets (optional)
 
-When enabling voice calling, set LiveKit credentials as Wrangler secrets (never
-commit them). See README “Voice calling” for local smoke steps.
+When enabling voice calling, add `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and
+`LIVEKIT_API_SECRET` as GitHub `prod` environment secrets, then manually run
+the **Configure LiveKit secrets** workflow. It validates all three values before
+changing Cloudflare, syncs them to the Worker in one request, and verifies only
+their names. Never commit or paste their values into a workflow log. See README
+“Voice calling” for local smoke steps.
+
+For an operator working directly with Wrangler, the equivalent commands are:
 
 ```bash
 npx wrangler secret put LIVEKIT_URL

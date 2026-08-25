@@ -132,6 +132,7 @@ describe('production deployment policy', () => {
     const workflowPaths = [
       '.github/workflows/ci.yml',
       '.github/workflows/deploy-cloudflare.yml',
+      '.github/workflows/configure-livekit.yml',
     ];
     const requiredActionPins = {
       'actions/checkout': '3d3c42e5aac5ba805825da76410c181273ba90b1',
@@ -254,6 +255,31 @@ describe('production deployment policy', () => {
     expect(readme).toContain('LiveKit SFU for A/V');
   });
 
+  it('keeps LiveKit secret synchronization manual, production-scoped, and non-logging', () => {
+    const workflow = readRepositoryFile('.github/workflows/configure-livekit.yml');
+
+    expect(workflow).toMatch(/^on:\s*$/m);
+    expect(workflow).toMatch(/^\s+workflow_dispatch:\s*$/m);
+    expect(workflow).not.toMatch(/^\s+(?:push|pull_request|schedule):/m);
+    expect(workflow).toMatch(/^permissions:\s*\n\s+contents:\s+read\s*$/m);
+    expect(workflow).toMatch(/^\s+environment:\s+prod\s*$/m);
+    expect(workflow).toContain('secrets.CLOUDFLARE_API_TOKEN');
+    expect(workflow).toContain('vars.CLOUDFLARE_ACCOUNT_ID');
+    expect(workflow).toContain('secrets.LIVEKIT_URL');
+    expect(workflow).toContain('secrets.LIVEKIT_API_KEY');
+    expect(workflow).toContain('secrets.LIVEKIT_API_SECRET');
+    expect(workflow).toContain('npm ci --ignore-scripts --loglevel=error');
+    expect(workflow).toContain('wrangler secret bulk --config wrangler.toml');
+    expect(workflow).toContain('wrangler secret list --config wrangler.toml --format json');
+    expect(workflow).not.toContain('wrangler secret put');
+    expect(workflow).not.toMatch(/(?:echo|printf).*\$(?:LIVEKIT_URL|LIVEKIT_API_KEY|LIVEKIT_API_SECRET)/);
+
+    const preflight = workflow.indexOf('Missing required LiveKit secret');
+    const bulk = workflow.indexOf('wrangler secret bulk --config wrangler.toml');
+    expect(preflight).toBeGreaterThanOrEqual(0);
+    expect(bulk).toBeGreaterThan(preflight);
+  });
+
   it('caps CI Playwright workers so the singleton IdentityDO is not queued past session bootstrap', () => {
     const playwrightConfig = readRepositoryFile('playwright.config.ts');
     expect(playwrightConfig).toMatch(/workers:\s*process\.env\.CI\s*\?\s*1\s*:/);
@@ -284,6 +310,7 @@ describe('production deployment policy', () => {
     const workflowPaths = [
       '.github/workflows/ci.yml',
       '.github/workflows/deploy-cloudflare.yml',
+      '.github/workflows/configure-livekit.yml',
     ];
 
     for (const workflowPath of workflowPaths) {
