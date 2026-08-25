@@ -64,6 +64,57 @@ describe('WhiteboardRoute room list', () => {
     expect(screen.queryByTestId('whiteboard-room-name-input')).toBeNull();
   });
 
+  it('renders the rooms page with the dark room-style top navigation', async () => {
+    ajaxFetch.mockResolvedValue(jsonResponse({ rooms: [] }));
+
+    render(<WhiteboardRoute />);
+    await waitFor(() => expect(screen.queryByTestId('whiteboard-room-list-loading')).toBeNull());
+
+    const header = screen.getByTestId('whiteboard-rooms-top-nav');
+    const headerClasses = header.className;
+    for (const className of [
+      'fixed',
+      'inset-x-0',
+      'top-0',
+      'h-[calc(3rem+env(safe-area-inset-top))]',
+      'border-b',
+      'border-slate-700/80',
+      'bg-slate-900/95',
+      'shadow-lg',
+      'backdrop-blur-md',
+      'pt-[env(safe-area-inset-top)]',
+    ]) {
+      expect(headerClasses).toContain(className);
+    }
+    expect(header.textContent).toContain('Teacher Playground');
+    expect(document.querySelector('.app-topline')).toBeNull();
+
+    const profile = screen.getByTestId('whiteboard-profile-btn');
+    expect(profile.getAttribute('aria-label')).toBe('Open profile for Account');
+    const profileClasses = profile.className;
+    for (const className of [
+      'inline-flex',
+      'h-9',
+      'w-9',
+      'rounded-full',
+      'border-slate-600',
+      'bg-slate-800',
+    ]) {
+      expect(profileClasses).toContain(className);
+    }
+    expect(profile.querySelector('span.truncate')).toBeNull();
+    expect(profile.closest('[data-testid="whiteboard-rooms-top-nav"]')).toBe(header);
+    const profileWrapperClasses = profile.parentElement?.parentElement?.className ?? '';
+    for (const className of [
+      'flex',
+      'h-full',
+      'items-center',
+      'pr-[max(0.5rem,env(safe-area-inset-right))]',
+    ]) {
+      expect(profileWrapperClasses).toContain(className);
+    }
+  });
+
   it('opens a listed room via the router', async () => {
     ajaxFetch.mockResolvedValue(
       jsonResponse({
