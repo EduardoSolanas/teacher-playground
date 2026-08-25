@@ -211,11 +211,8 @@ export default function WhiteboardRoute() {
     <div className="app-screen pt-[calc(3rem+env(safe-area-inset-top))]">
       <header
         data-testid="whiteboard-rooms-top-nav"
-        className="fixed inset-x-0 top-0 z-[1100] flex h-[calc(3rem+env(safe-area-inset-top))] items-center justify-between border-b border-slate-700/80 bg-slate-900/95 pt-[env(safe-area-inset-top)] text-slate-200 shadow-lg shadow-slate-950/20 backdrop-blur-md"
+        className="fixed inset-x-0 top-0 z-[1100] flex h-[calc(3rem+env(safe-area-inset-top))] items-center justify-end border-b border-slate-700/80 bg-slate-900/95 pt-[env(safe-area-inset-top)] text-slate-200 shadow-lg shadow-slate-950/20 backdrop-blur-md"
       >
-        <span className="brand pl-[max(1rem,env(safe-area-inset-left))]">
-          <span className="mark !text-white">Teacher <u className="!border-white">Playground</u></span>
-        </span>
         <div className="flex h-full items-center pr-[max(0.5rem,env(safe-area-inset-right))]">
           <UserProfileMenu
             displayName={hostDisplayName}

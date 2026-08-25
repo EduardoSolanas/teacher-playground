@@ -76,6 +76,7 @@ describe('WhiteboardRoute room list', () => {
       'fixed',
       'inset-x-0',
       'top-0',
+      'justify-end',
       'h-[calc(3rem+env(safe-area-inset-top))]',
       'border-b',
       'border-slate-700/80',
@@ -86,7 +87,8 @@ describe('WhiteboardRoute room list', () => {
     ]) {
       expect(headerClasses).toContain(className);
     }
-    expect(header.textContent).toContain('Teacher Playground');
+    expect(header.textContent).not.toContain('Teacher Playground');
+    expect(header.querySelector('.brand')).toBeNull();
     expect(document.querySelector('.app-topline')).toBeNull();
 
     const profile = screen.getByTestId('whiteboard-profile-btn');
