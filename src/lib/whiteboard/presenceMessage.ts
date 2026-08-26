@@ -15,6 +15,20 @@ export function encodePresenceMessage(payload: unknown): Uint8Array {
 }
 
 /**
+ * Reads the presence body from a decoder that has already consumed the type varint.
+ * Returns null if the payload is not valid JSON. Never throws on malformed input.
+ * This is used by y-websocket message handlers, which consume the type varint before dispatch.
+ */
+export function readPresenceBody(decoder: decoding.Decoder): unknown | null {
+  try {
+    const jsonString = decoding.readVarString(decoder);
+    return JSON.parse(jsonString);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Decodes a presence message from binary.
  * Returns null if the message type is not PRESENCE_MESSAGE_TYPE or if the
  * payload is not valid JSON. Never throws on malformed input.
@@ -28,8 +42,7 @@ export function decodePresenceMessage(data: Uint8Array): unknown | null {
       return null;
     }
 
-    const jsonString = decoding.readVarString(decoder);
-    return JSON.parse(jsonString);
+    return readPresenceBody(decoder);
   } catch {
     return null;
   }

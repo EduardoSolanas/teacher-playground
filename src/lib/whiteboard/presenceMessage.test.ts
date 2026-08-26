@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { encodePresenceMessage, decodePresenceMessage, PRESENCE_MESSAGE_TYPE } from './presenceMessage';
+import { encodePresenceMessage, decodePresenceMessage, PRESENCE_MESSAGE_TYPE, readPresenceBody } from './presenceMessage';
 import * as encoding from 'lib0/encoding';
+import * as decoding from 'lib0/decoding';
 
 describe('presenceMessage codec', () => {
   it('encodes and decodes a presence payload round trip', () => {
@@ -63,5 +64,56 @@ describe('presenceMessage codec', () => {
     // First byte should be the varint for PRESENCE_MESSAGE_TYPE (100)
     // 100 < 128, so it's a single byte
     expect(encoded[0]).toBe(PRESENCE_MESSAGE_TYPE);
+  });
+});
+
+describe('readPresenceBody', () => {
+  it('reads a presence body from a decoder pointing at the body (after type varint consumed)', () => {
+    const payload = {
+      users: [{ peerId: 'peer1', userName: 'User 1', color: '#ff0000' }],
+      hostPeerId: 'peer0',
+    };
+
+    // Build a frame and manually advance past the type varint
+    const frame = encodePresenceMessage(payload);
+    const decoder = decoding.createDecoder(frame);
+    decoding.readVarUint(decoder); // consume type varint
+
+    // readPresenceBody should read the body and parse JSON
+    const result = readPresenceBody(decoder);
+    expect(result).toEqual(payload);
+  });
+
+  it('returns null on malformed input (truncated body) without throwing', () => {
+    // Create an encoder with just a type varint, no body
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, PRESENCE_MESSAGE_TYPE);
+    // Intentionally no writeVarString
+
+    const frame = encoding.toUint8Array(encoder);
+    const decoder = decoding.createDecoder(frame);
+    decoding.readVarUint(decoder); // consume type varint
+
+    // Decoder now points at empty/invalid body
+    expect(() => {
+      const result = readPresenceBody(decoder);
+      expect(result).toBeNull();
+    }).not.toThrow();
+  });
+
+  it('returns null on invalid JSON without throwing', () => {
+    // Create a frame with garbage after the type varint (invalid UTF-8)
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, PRESENCE_MESSAGE_TYPE);
+    encoding.writeVarUint(encoder, 255); // Invalid UTF-8 length marker
+
+    const frame = encoding.toUint8Array(encoder);
+    const decoder = decoding.createDecoder(frame);
+    decoding.readVarUint(decoder); // consume type varint
+
+    expect(() => {
+      const result = readPresenceBody(decoder);
+      expect(result).toBeNull();
+    }).not.toThrow();
   });
 });

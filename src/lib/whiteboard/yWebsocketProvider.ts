@@ -1,12 +1,13 @@
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import { getSignalingUrls } from './ywebrtcProvider';
-import { PRESENCE_MESSAGE_TYPE, decodePresenceMessage } from './presenceMessage';
+import { PRESENCE_MESSAGE_TYPE, readPresenceBody } from './presenceMessage';
 
 type ProviderLike = {
   connected?: boolean;
   shouldConnect?: boolean;
   synced?: boolean;
+  doc?: Y.Doc;
   connect: () => void;
   destroy: () => void;
   on: (eventName: string, callback: (...args: any[]) => void) => void;
@@ -64,12 +65,23 @@ export function createYWebsocketProvider(
   const cacheKey = `whiteboard-${roomId}`;
 
   if (providerCache.has(cacheKey)) {
-    return providerCache.get(cacheKey)!;
+    const cached = providerCache.get(cacheKey)!;
+    // A stale binding is silent: local edits go into the wrong doc, remote updates
+    // land nowhere. The doc identity must be part of cache validity.
+    if (cached.provider.doc === doc) {
+      return cached;
+    }
+    // Doc mismatch: the cached provider is bound to a dead doc. Destroy it and
+    // fall through to create a fresh provider for the requested doc.
+    cached.provider.destroy();
+    providerCache.delete(cacheKey);
   }
 
   const provider: ProviderLike = typeof window === 'undefined'
     ? createServerProvider()
     : new SignalingWebsocketProvider(doc, roomId) as unknown as ProviderLike;
+
+  provider.doc = doc;
 
   const entry = { provider, status: 'connecting', synced: false };
   providerCache.set(cacheKey, entry);
@@ -89,8 +101,10 @@ export function createYWebsocketProvider(
   if (onPresence && typeof window !== 'undefined') {
     const wsProvider = provider as any;
     if (wsProvider.messageHandlers && Array.isArray(wsProvider.messageHandlers)) {
-      wsProvider.messageHandlers[PRESENCE_MESSAGE_TYPE] = (data: Uint8Array) => {
-        const payload = decodePresenceMessage(data);
+      // y-websocket invokes handlers as handler(encoder, decoder, provider, emitSynced, messageType),
+      // having already consumed the message type varint. Read the body from the decoder, not a whole frame.
+      wsProvider.messageHandlers[PRESENCE_MESSAGE_TYPE] = (_encoder: any, decoder: any) => {
+        const payload = readPresenceBody(decoder);
         if (payload !== null) {
           onPresence(payload);
         }
