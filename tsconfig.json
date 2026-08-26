@@ -37,6 +37,7 @@
   ],
   "exclude": [
     "node_modules",
+    "excalidraw",
     "src/worker.ts",
     "src/do/**/*.ts",
     "src/test/**/*.ts",
