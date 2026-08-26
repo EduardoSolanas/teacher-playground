@@ -3,7 +3,6 @@ import type { Browser, Page } from '@playwright/test';
 import { request as httpRequest } from 'node:http';
 import {
   appUrl,
-  appendElement,
   approveFirstWaitingPeer,
   createRoomWithMaxUsers,
   expectNotWaiting,
@@ -17,41 +16,74 @@ const GUEST_PIN_ERROR = "That PIN didn't work. Check with your teacher and try a
 const GUEST_SESSION_COOKIE = '__Host-teacher-guest';
 const HEX_ROOM = 'a'.repeat(32);
 
-function rectangle(id: string, x: number, y: number) {
-  return {
-    id,
-    type: 'rectangle',
-    x,
-    y,
-    width: 200,
-    height: 120,
-    angle: 0,
-    strokeColor: '#1e1e1e',
-    backgroundColor: 'transparent',
-    fillStyle: 'solid',
-    strokeWidth: 2,
-    strokeStyle: 'solid',
-    roughness: 1,
-    opacity: 100,
-    groupIds: [],
-    frameId: null,
-    roundness: null,
-    seed: 12345,
-    version: 1,
-    versionNonce: 1,
-    isDeleted: false,
-    boundElements: null,
-    updated: Date.now(),
-    link: null,
-    locked: false,
-  };
-}
-
 async function sceneElementIds(page: Page): Promise<string[]> {
   return page.evaluate(() => {
     const api = (window as unknown as { __debugExcalidrawApi?: { getSceneElements?: () => { id: string }[] } }).__debugExcalidrawApi;
     return (api?.getSceneElements?.() ?? []).map((element) => element.id);
   });
+}
+
+async function drawPenStroke(page: Page, points: Array<{ x: number; y: number }>) {
+  await page.getByTestId('whiteboard-tool-pen').click();
+  await expect.poll(() => page.evaluate(() => (
+    (window as unknown as {
+      __debugExcalidrawApi?: { getAppState?: () => { activeTool?: { type?: string } } };
+    }).__debugExcalidrawApi?.getAppState?.().activeTool?.type ?? null
+  ))).toBe('freedraw');
+
+  const canvasArea = page.getByTestId('whiteboard-canvas-area');
+  const box = await canvasArea.boundingBox();
+  expect(box).not.toBeNull();
+  await page.locator('canvas.excalidraw__canvas.interactive').first().waitFor({
+    state: 'attached',
+    timeout: 15_000,
+  });
+
+  await page.evaluate(async ({ originX, originY, relativePoints }) => {
+    const canvas = document.querySelector('canvas.excalidraw__canvas.interactive');
+    if (!canvas) throw new Error('Excalidraw interactive canvas not found');
+    const pointer = (type: string, x: number, y: number, buttons: number) => new PointerEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      clientX: x,
+      clientY: y,
+      pointerId: 1,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      buttons,
+    });
+    const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const absolute = relativePoints.map((point) => ({
+      x: originX + point.x,
+      y: originY + point.y,
+    }));
+    const first = absolute[0];
+    const last = absolute.at(-1);
+    if (!first || !last) throw new Error('drawPenStroke requires points');
+    canvas.dispatchEvent(pointer('pointerdown', first.x, first.y, 1));
+    for (const point of absolute.slice(1)) {
+      await nextFrame();
+      canvas.dispatchEvent(pointer('pointermove', point.x, point.y, 1));
+    }
+    await nextFrame();
+    window.dispatchEvent(pointer('pointerup', last.x, last.y, 0));
+  }, { originX: box!.x, originY: box!.y, relativePoints: points });
+}
+
+async function expectPenStrokes(page: Page, count: number) {
+  await expect.poll(() => page.evaluate(() => (
+    ((window as unknown as {
+      __debugExcalidrawApi?: {
+        getSceneElements?: () => Array<{ isDeleted?: boolean; type?: string; points?: unknown[] }>;
+      };
+    }).__debugExcalidrawApi?.getSceneElements?.() ?? [])
+      .filter((element) => !element.isDeleted
+        && element.type === 'freedraw'
+        && Array.isArray(element.points)
+        && element.points.length >= 4).length
+  )), { timeout: 20_000 }).toBeGreaterThanOrEqual(count);
 }
 
 function guestOriginGet(path: string) {
@@ -165,7 +197,7 @@ test.describe('guest join on split hostnames', () => {
     }
   });
 
-  test('guest joins with PIN, is admitted, draws, and is kicked', async ({ page, browser }) => {
+  test('guest joins with PIN, syncs real drawing both ways, and is kicked', async ({ page, browser }) => {
     test.setTimeout(60_000);
     const roomId = await createRoomWithMaxUsers(page, 'GuestHost', 2);
     const pin = await enableGuestAndReadPin(page, roomId);
@@ -184,9 +216,23 @@ test.describe('guest join on split hostnames', () => {
       await expect(guestPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
       await expectNotWaiting(guestPage);
 
-      const elementId = 'guest-drawn-rect-1';
-      await appendElement(guestPage, rectangle(elementId, 160, 120));
-      await expect.poll(async () => sceneElementIds(page), { timeout: 20000 }).toContain(elementId);
+      await drawPenStroke(page, [
+        { x: 180, y: 180 },
+        { x: 230, y: 220 },
+        { x: 290, y: 175 },
+        { x: 350, y: 230 },
+      ]);
+      await expectPenStrokes(page, 1);
+      await expectPenStrokes(guestPage, 1);
+
+      await drawPenStroke(guestPage, [
+        { x: 420, y: 180 },
+        { x: 470, y: 225 },
+        { x: 530, y: 185 },
+        { x: 590, y: 235 },
+      ]);
+      await expectPenStrokes(guestPage, 2);
+      await expectPenStrokes(page, 2);
 
       const guestPeerId = await peerIdByName(page, 'GuestAda');
       await moderateApprovedPeer(page, guestPeerId, 'kick');
