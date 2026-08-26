@@ -337,6 +337,7 @@ export class RoomDO extends DurableObject {
         if (targetAccountId) {
           incrementGrantVersion(this.db, roomId);
           this.closeAccountSockets(targetAccountId, roomId);
+          this.restampRoomSockets(roomId);
         }
       }
       /*
@@ -941,6 +942,31 @@ export class RoomDO extends DurableObject {
         // A presence update is not worth dropping a lesson's connection over:
         // this socket misses one frame and the next one reaches it. The 2s
         // poll is still there as the client's fallback.
+      }
+    }
+  }
+
+  /**
+   * Re-stamps the grantVersion on all remaining sockets in a room that still
+   * hold a granted role. Called after incrementing the room's grant_version to
+   * prevent uninvolved sockets from being marked as stale.
+   */
+  private restampRoomSockets(roomId: string): void {
+    const newGrantVersion = getGrantVersion(this.db, roomId);
+    for (const socket of this.ctx.getWebSockets()) {
+      try {
+        const attachment = socket.deserializeAttachment() as SocketIdentity | null;
+        if (!attachment?.roomId || attachment.roomId !== roomId) continue;
+
+        // Skip sockets whose account no longer holds a granted role.
+        if (!attachment.accountId || !isGrantedRole(getGrantRole(this.db, roomId, attachment.accountId))) {
+          continue;
+        }
+
+        // Re-stamp the socket with the new grant version.
+        socket.serializeAttachment({ ...attachment, grantVersion: newGrantVersion });
+      } catch {
+        // One dead socket cannot stop the others from being re-stamped.
       }
     }
   }
