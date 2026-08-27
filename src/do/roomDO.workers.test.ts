@@ -12,6 +12,7 @@ import { ROOM_SETTINGS_KEYS } from '../lib/whiteboard/requestSchemas';
 import { MAX_BODY_BYTES } from '../lib/worker/requestGuard';
 import { issueGuestPin } from '../lib/whiteboard/guestPin';
 import { decodePresenceMessage } from '../lib/whiteboard/presenceMessage';
+import { encodeUpdateFrame } from '../lib/whiteboard/serverSync';
 import {
   accessFetch,
   authenticatedFetch,
@@ -549,6 +550,13 @@ describe('y-websocket document bytes over RoomDO WebSockets', () => {
     expect(leaked).toBe(false);
   });
 
+  /** A well-formed sync frame carrying one cursor, for probing the relay. */
+  function cursorUpdateFrame(peerId: string): Uint8Array {
+    const doc = new Y.Doc();
+    doc.getMap('cursors').set(peerId, { x: 1, y: 2 });
+    return encodeUpdateFrame(Y.encodeStateAsUpdate(doc));
+  }
+
   it('does not relay binary ArrayBuffer frames from a viewer', async () => {
     const owner = await bootstrapLocalSession('binary-viewer-owner');
     const viewer = await bootstrapLocalSession('binary-viewer-viewer');
@@ -563,15 +571,17 @@ describe('y-websocket document bytes over RoomDO WebSockets', () => {
     let received = false;
     ownerSocket.addEventListener('message', () => { received = true; }, { once: true });
 
-    const payload = new Uint8Array([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
-    viewerSocket.send(payload.buffer);
+    // Both frames are well-formed sync frames, so what separates them is the
+    // sender's role and nothing else. An arbitrary byte string would be dropped
+    // for being off-protocol and the role check would go untested.
+    viewerSocket.send(cursorUpdateFrame('viewer-peer').buffer as ArrayBuffer);
 
     await new Promise((r) => setTimeout(r, 200));
     expect(received).toBe(false);
 
-    const ownerPayload = new Uint8Array([0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11]);
+    const ownerPayload = cursorUpdateFrame('owner-peer');
     const receivedFromOwner = nextBinaryMessage(viewerSocket);
-    ownerSocket.send(ownerPayload.buffer);
+    ownerSocket.send(ownerPayload.buffer as ArrayBuffer);
     expect(Array.from(new Uint8Array(await receivedFromOwner))).toEqual(Array.from(ownerPayload));
   });
 });
@@ -985,11 +995,13 @@ describe('signaling message size limit', () => {
     const sender = await connectGranted(owner, roomId);
     const receiver = await connectGranted(editor, roomId);
 
-    const payload = new Uint8Array([0x42]);
+    // One byte, and still on-protocol: a bare sync type varint with no body.
+    // The size limit is what is under test, not the relay's type allowlist.
+    const payload = new Uint8Array([0x00]);
     const received = nextBinaryMessage(receiver);
-    sender.send(payload.buffer);
+    sender.send(payload.buffer as ArrayBuffer);
 
-    expect(Array.from(new Uint8Array(await received))).toEqual([0x42]);
+    expect(Array.from(new Uint8Array(await received))).toEqual([0x00]);
   });
 });
 

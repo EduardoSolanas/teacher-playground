@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { runInDurableObject } from 'cloudflare:test';
+import * as Y from 'yjs';
 import { ROOM_SETTINGS_KEYS } from '../lib/whiteboard/requestSchemas';
+import { encodeUpdateFrame } from '../lib/whiteboard/serverSync';
 import { RoomDO } from './RoomDO';
 import { authenticatedFetch, bootstrapLocalSession, type LocalAuthSession } from '../test/workerAuth';
 
@@ -168,12 +170,16 @@ describe('kick increments room grant version', () => {
       body: JSON.stringify({ action: 'kick', peerId: kickedPeerId }),
     })).status).toBe(200);
 
-    // Owner sends a binary frame
-    const payload = new Uint8Array([0x42, 0x43, 0x44]);
+    // Owner sends a binary frame. It has to be a real sync frame: the object
+    // relays the y-protocol types and drops everything else, so an arbitrary
+    // byte string would prove nothing about whether the socket still works.
+    const doc = new Y.Doc();
+    doc.getMap('cursors').set('probe-peer', { x: 1, y: 2 });
+    const payload = encodeUpdateFrame(Y.encodeStateAsUpdate(doc));
     const bystanderReceived = nextBinaryMessage(bystanderSocket);
     const ownerClosed = closeCodeWithin(ownerSocket, 1_000);
 
-    ownerSocket.send(payload.buffer);
+    ownerSocket.send(payload.buffer as ArrayBuffer);
 
     try {
       // Before the fix this was 4401: the kick bumped the room's grant version,

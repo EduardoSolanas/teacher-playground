@@ -37,6 +37,7 @@ import {
 import { activePeerIds } from '../lib/whiteboard/presence';
 import { presenceSignature } from '../lib/whiteboard/presence';
 import { encodePresenceMessage } from '../lib/whiteboard/presenceMessage';
+import { isRelayableFrame } from '../lib/whiteboard/relayPolicy';
 import {
   handleWaitingGet,
   handleWaitingPost,
@@ -1274,15 +1275,19 @@ export class RoomDO extends DurableObject {
         return;
       }
 
-      for (const peer of this.ctx.getWebSockets()) {
-        if (peer === ws) continue;
-        try {
-          peer.send(bytes);
-        } catch {
+      // Only relay frames that belong in the y-protocol: sync (0) and awareness (1).
+      // Forged presence frames (100) and unknown types are not relayed to peers.
+      if (isRelayableFrame(bytes)) {
+        for (const peer of this.ctx.getWebSockets()) {
+          if (peer === ws) continue;
           try {
-            peer.close();
+            peer.send(bytes);
           } catch {
-            // Already gone.
+            try {
+              peer.close();
+            } catch {
+              // Already gone.
+            }
           }
         }
       }
@@ -1367,12 +1372,7 @@ export class RoomDO extends DurableObject {
     }
   }
 
-  async webSocketClose(
-    ws: WebSocket,
-    code: number,
-    reason: string,
-    wasClean: boolean,
-  ): Promise<void> {
+  private async handleSocketGone(ws: WebSocket): Promise<void> {
     try {
       const attachment = ws.deserializeAttachment() as SocketIdentity | null;
       if (attachment?.roomId) this.sweepDepartedCursors(attachment.roomId);
@@ -1386,14 +1386,37 @@ export class RoomDO extends DurableObject {
       try {
         await this.flushDirtyDocs();
       } catch {
-        // A failed flush must not throw out of webSocketClose.
+        // A failed flush must not throw out of handleSocketGone.
       }
     }
+  }
+
+  async webSocketClose(
+    ws: WebSocket,
+    code: number,
+    reason: string,
+    wasClean: boolean,
+  ): Promise<void> {
+    await this.handleSocketGone(ws);
 
     try {
       ws.close(code, reason);
     } catch {
       // Already closed.
+    }
+  }
+
+  async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
+    // workerd routes an error close to a different handler than webSocketClose,
+    // so cleanup that only lives on the clean path is cleanup that does not run
+    // when it matters most. This handler ensures cursor sweeps and board flushes
+    // happen on both clean closes and abnormal disconnects (network drops, crashes).
+    await this.handleSocketGone(ws);
+
+    try {
+      ws.close();
+    } catch {
+      // Socket already closed.
     }
   }
 }
