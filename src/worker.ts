@@ -933,12 +933,17 @@ const worker = {
     let guestCaller = false;
     if (url.pathname.startsWith('/api/') || url.pathname === '/signaling') {
       if (isGuestHost) {
+        // A guest session is bound to one room, so the room has to be known
+        // before the session is validated. Most routes name it in the path;
+        // signaling and the A/V token carry it on the query string instead.
         const guestRoomId = url.pathname === '/signaling'
           ? url.searchParams.get('room')
-          : (() => {
-            const roomMatch = url.pathname.match(ROOM_API);
-            return roomMatch ? decodeURIComponent(roomMatch[1]) : null;
-          })();
+          : url.pathname === AV_TOKEN
+            ? url.searchParams.get('roomId')
+            : (() => {
+              const roomMatch = url.pathname.match(ROOM_API);
+              return roomMatch ? decodeURIComponent(roomMatch[1]) : null;
+            })();
         if (!guestRoomId || !isValidRoomId(guestRoomId)) {
           return url.pathname === '/signaling'
             ? withSecurityHeaders(new Response('Missing or invalid room', { status: 400 }))

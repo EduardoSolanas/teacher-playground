@@ -339,6 +339,19 @@ describe('Task 8c — guest API forwarding', () => {
     expect(response.status).toBe(404);
   });
 
+  it('binds an A/V token request to the room named on the query string', async () => {
+    // The room travels as ?roomId= here, not in the path. Deriving the guest
+    // session's room from the path alone rejected every guest call for a
+    // credential the guest surface is meant to issue.
+    const { roomId } = await createTeacherRoom('guest-av-token');
+    const cookie = await issueGuestCookie(roomId);
+    const response = await SELF.fetch(`${GUEST}/api/av/token?roomId=${roomId}&name=Ada`, {
+      method: 'POST',
+      headers: { Origin: GUEST, Cookie: cookie },
+    });
+    expect(response.status).not.toBe(400);
+  });
+
   it('does not let a teacher client stamp guest=1 onto a teacher request', async () => {
     const { roomId, owner } = await createTeacherRoom('guest-stamp-teacher');
     const settings = await authenticatedFetch(
