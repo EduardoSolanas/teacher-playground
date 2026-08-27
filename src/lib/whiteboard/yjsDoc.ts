@@ -171,6 +171,9 @@ export function replaceSharedElements(
   }, origin);
 }
 
+/** Element types whose geometry lives in `points` rather than width/height. */
+const POINT_BEARING_TYPES = new Set(['line', 'arrow', 'freedraw']);
+
 export function getElementsFromArray(
   elementsArray: Y.Array<Y.Map<any>>
 ): CanvasElement[] {
@@ -183,6 +186,20 @@ export function getElementsFromArray(
     const decoded = decodePoints(element.points);
     if (decoded !== null) {
       element.points = decoded;
+    } else if (POINT_BEARING_TYPES.has(element.type as string)) {
+      /*
+       * Excalidraw reads `points.length` on these types without checking the
+       * field is there, and it does so inside restore(), which runs over the
+       * whole scene. One element that arrives without readable points -- a map
+       * that never held them, or bytes this codec cannot read -- therefore
+       * throws out of the observer and blanks the board for every peer, not
+       * just for the element that is broken.
+       *
+       * Empty is the honest answer when the geometry cannot be recovered, and
+       * it degrades the way it should: Excalidraw treats a linear element with
+       * fewer than two points as invisibly small and drops that one element.
+       */
+      element.points = [];
     }
     return element as CanvasElement;
   });

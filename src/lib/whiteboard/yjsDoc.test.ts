@@ -217,3 +217,50 @@ describe('replaceSharedElements', () => {
     });
   });
 });
+
+describe('getElementsFromArray point recovery', () => {
+  function seed(entries: Record<string, unknown>): Y.Array<Y.Map<unknown>> {
+    const { doc } = createWhiteboardDoc('points-room');
+    const array = doc.getArray<Y.Map<unknown>>('elements');
+    const map = new Y.Map<unknown>();
+    for (const [key, value] of Object.entries(entries)) map.set(key, value);
+    array.push([map]);
+    return array;
+  }
+
+  /*
+   * Excalidraw's restore() reads `points.length` on a linear or freedraw
+   * element without checking it is there, so one element missing its points
+   * throws out of the observer and takes the whole scene down for every peer
+   * -- not just the element that is broken. Empty points is the honest answer
+   * when the geometry cannot be recovered, and Excalidraw then drops that one
+   * element as invisibly small.
+   */
+  it('gives a linear element empty points when the map holds none', () => {
+    const [element] = getElementsFromArray(seed({ id: 'line-1', type: 'line' }));
+    expect((element as { points?: unknown }).points).toEqual([]);
+  });
+
+  it('gives a freedraw element empty points when the encoding is unreadable', () => {
+    // A leading byte that is not the codec version: decode refuses it.
+    const corrupt = new Uint8Array([9, 9, 9, 9]);
+    const [element] = getElementsFromArray(
+      seed({ id: 'draw-1', type: 'freedraw', points: corrupt }),
+    );
+    expect((element as { points?: unknown }).points).toEqual([]);
+  });
+
+  it('leaves a shape that never had points alone', () => {
+    const [element] = getElementsFromArray(seed({ id: 'rect-1', type: 'rectangle' }));
+    expect((element as { points?: unknown }).points).toBeUndefined();
+  });
+
+  it('still decodes points it can read', () => {
+    const { doc, elementsArray: array } = createWhiteboardDoc('points-ok');
+    replaceSharedElements(doc, array, [
+      { id: 'line-2', type: 'line', points: [[0, 0], [10, 5]] },
+    ] as never);
+    const [element] = getElementsFromArray(array);
+    expect((element as { points?: unknown }).points).toEqual([[0, 0], [10, 5]]);
+  });
+});
