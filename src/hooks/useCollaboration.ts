@@ -68,6 +68,9 @@ export function useCollaboration(roomId: string) {
   const [wasSuspended, setWasSuspended] = useState(false);
   const admittedRef = useRef(false);
   const [roomGranted, setRoomGranted] = useState(false);
+  // The poll below runs on an interval that must not be torn down and rebuilt
+  // every time admission changes, so it reads the grant through a ref.
+  const roomGrantedRef = useRef(false);
   const [accessStatus, setAccessStatus] = useState<RoomAccessStatus | null>(null);
   const [grantRole, setGrantRole] = useState<GrantedPublicRole | null>(null);
   const [collaborationEpoch, setCollaborationEpoch] = useState(0);
@@ -200,6 +203,7 @@ export function useCollaboration(roomId: string) {
     let cancelled = false;
     setRoomLoaded(false);
     setRoomGranted(false);
+    roomGrantedRef.current = false;
 
     async function loadRoom() {
       try {
@@ -219,6 +223,7 @@ export function useCollaboration(roomId: string) {
         }
 
         setRoomGranted(res.ok);
+        roomGrantedRef.current = res.ok;
 
         if (res.ok) {
           const data = await res.json();
@@ -318,7 +323,7 @@ export function useCollaboration(roomId: string) {
       // suppresses the catch-up fallback. See the fixme'd
       // "disconnected peer catches up from API fallback" e2e test.
       const entry = collaborationRef.current;
-      if (!shouldPollRoomApiFallback(entry?.provider)) return;
+      if (!shouldPollRoomApiFallback(entry?.provider, roomGrantedRef.current)) return;
 
       try {
         const res = await ajaxFetch(`/api/whiteboard/room/${roomId}`);
