@@ -370,6 +370,26 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(csp).not.toMatch(/connect-src[^;]*wss:(;|$)/);
     });
 
+    it('admits the LiveKit host so the A/V client can reach it', () => {
+      // The token is useless if the browser refuses the connection: the client
+      // fetches settings over https and opens the media session over wss, both
+      // against the LiveKit host, neither of which is the page origin.
+      expect(
+        connectSrcForPageOrigin('https://app.example', 'wss://project.livekit.cloud'),
+      ).toBe(
+        "connect-src 'self' https://app.example wss://app.example"
+        + ' https://project.livekit.cloud wss://project.livekit.cloud',
+      );
+    });
+
+    it('leaves connect-src alone when LiveKit is unconfigured or unparseable', () => {
+      const bare = "connect-src 'self' https://app.example wss://app.example";
+      expect(connectSrcForPageOrigin('https://app.example')).toBe(bare);
+      expect(connectSrcForPageOrigin('https://app.example', null)).toBe(bare);
+      expect(connectSrcForPageOrigin('https://app.example', '')).toBe(bare);
+      expect(connectSrcForPageOrigin('https://app.example', 'not a url')).toBe(bare);
+    });
+
     it('stamps HTML script tags with a CSP nonce so Next inline bootstraps can run', async () => {
       const html = [
         '<html><head>',

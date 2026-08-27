@@ -300,10 +300,35 @@ export function isPublicPath(pathname: string): boolean {
 /**
  * Same-origin HTTP and WebSocket only. Never a wildcard `wss:` scheme.
  */
-export function connectSrcForPageOrigin(pageOrigin: string): string {
+export function connectSrcForPageOrigin(
+  pageOrigin: string,
+  livekitUrl?: string | null,
+): string {
   const url = new URL(pageOrigin);
   const wsProtocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `connect-src 'self' ${url.origin} ${wsProtocol}//${url.host}`;
+  const sources = ["'self'", url.origin, `${wsProtocol}//${url.host}`];
+
+  // A/V lives on a third-party host, so the page origin does not cover it and
+  // the browser refuses the connection however good the token is. The client
+  // reads region settings over https and opens the media session over wss, so
+  // both schemes are needed. Nothing is added when LiveKit is unconfigured:
+  // the room answers 503 there and no connection is attempted.
+  const livekitHost = hostOf(livekitUrl);
+  if (livekitHost) {
+    sources.push(`https://${livekitHost}`, `wss://${livekitHost}`);
+  }
+
+  return `connect-src ${sources.join(' ')}`;
+}
+
+/** The host of a configured URL, or null when it is absent or unparseable. */
+function hostOf(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    return new URL(value).host;
+  } catch {
+    return null;
+  }
 }
 
 /**

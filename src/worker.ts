@@ -837,7 +837,7 @@ const worker = {
       const asset = await env.ASSETS.fetch(request);
       return withNonceHtmlSecurityHeaders(asset, {
         indexable: (MARKETING_PAGES as readonly string[]).includes(url.pathname),
-        connectSrc: connectSrcForPageOrigin(url.origin),
+        connectSrc: connectSrcForPageOrigin(url.origin, env.LIVEKIT_URL),
       });
     }
     if (
@@ -875,7 +875,7 @@ const worker = {
       const response = await env.ASSETS.fetch(request);
       return withNonceHtmlSecurityHeaders(response, {
         indexable: (MARKETING_PAGES as readonly string[]).includes(url.pathname),
-        connectSrc: connectSrcForPageOrigin(url.origin),
+        connectSrc: connectSrcForPageOrigin(url.origin, env.LIVEKIT_URL),
       });
     }
 
@@ -1103,12 +1103,12 @@ const worker = {
       const rewritten = new URL(request.url);
       rewritten.pathname = ROOM_PLACEHOLDER;
       return withNonceHtmlSecurityHeaders(await env.ASSETS.fetch(new Request(rewritten, request)), {
-        connectSrc: connectSrcForPageOrigin(url.origin),
+        connectSrc: connectSrcForPageOrigin(url.origin, env.LIVEKIT_URL),
       });
     }
 
     return withNonceHtmlSecurityHeaders(await env.ASSETS.fetch(request), {
-      connectSrc: connectSrcForPageOrigin(url.origin),
+      connectSrc: connectSrcForPageOrigin(url.origin, env.LIVEKIT_URL),
     });
   },
 };
