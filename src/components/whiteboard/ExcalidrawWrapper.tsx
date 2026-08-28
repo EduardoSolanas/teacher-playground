@@ -29,12 +29,15 @@ import {
   isWhiteboardLatencyProbeEnabled,
   recordWhiteboardLatencyEvent,
 } from '@/lib/whiteboard/latencyProbe';
+import { bytesToDataURL, dataURLToBytes, filesToUpload, isAllowedMimeType } from '@/lib/whiteboard/boardFiles';
+import { ajaxFetch } from '@/lib/http/ajaxFetch';
 
 type SharedSceneElement = Record<string, unknown>;
 type ExcalidrawOnChange = NonNullable<ExcalidrawProps['onChange']>;
 type ExcalidrawPointerUpdate = NonNullable<ExcalidrawProps['onPointerUpdate']>;
 type ExcalidrawChangeElements = Parameters<ExcalidrawOnChange>[0];
 type ExcalidrawChangeAppState = Parameters<ExcalidrawOnChange>[1];
+type ExcalidrawChangeFiles = Parameters<ExcalidrawOnChange>[2];
 type ExcalidrawPointerPayload = Parameters<ExcalidrawPointerUpdate>[0];
 type ExcalidrawTool = Parameters<ExcalidrawImperativeAPI['setActiveTool']>[0]['type'];
 type ExcalidrawStandardTool = Exclude<ExcalidrawTool, 'custom'>;
@@ -122,6 +125,15 @@ export default function ExcalidrawWrapper({
   const applyingGuideRef = useRef(false);
   const previousIsGuidingRef = useRef(false);
   const followUnsubscribeRef = useRef<(() => void) | null>(null);
+  /*
+   * Image bytes do not travel in the document -- an element carries only a
+   * fileId and the bytes go to the room's store -- so each side of that is
+   * tracked here. Marked before the request rather than after, because
+   * onChange fires about twenty times a second while drawing and would
+   * otherwise send the same picture on every one of them.
+   */
+  const uploadedFileIdsRef = useRef<Set<string>>(new Set());
+  const fetchingFileIdsRef = useRef<Set<string>>(new Set());
 
   /**
    * Adopt a scene that arrived from a peer as the publish baseline.
@@ -231,7 +243,84 @@ export default function ExcalidrawWrapper({
   }, [apiReady, collaborators, cursors]);
 
 
+  /**
+   * Sends one image to the room's store.
+   *
+   * Fire and forget: a slow or failed upload must never hold up a stroke. The
+   * id is marked before the request so a burst of onChange calls sends the
+   * picture once, and un-marked on failure -- leaving the mark in place would
+   * strand the image for good and every peer would show a broken picture for
+   * the rest of the lesson.
+   */
+  const uploadBoardFile = useCallback(
+    async (fileId: string, dataUrl: string) => {
+      try {
+        const converted = dataURLToBytes(dataUrl);
+        if (!converted || !isAllowedMimeType(converted.mimeType)) return;
+        const response = await ajaxFetch(
+          `/api/whiteboard/room/${roomId}/files/${fileId}`,
+          {
+            method: 'PUT',
+            body: converted.bytes as unknown as BodyInit,
+            headers: { 'content-type': converted.mimeType },
+          },
+        );
+        if (!response.ok) uploadedFileIdsRef.current.delete(fileId);
+      } catch {
+        uploadedFileIdsRef.current.delete(fileId);
+      }
+    },
+    [roomId],
+  );
+
+  /**
+   * Fetches an image this peer was never sent.
+   *
+   * A peer that joins after a picture was added receives the element over the
+   * document but not the bytes, so it has to notice the fileId it does not hold
+   * and ask for it. Lazy on purpose: a slow image must not stall drawing.
+   */
+  const fetchBoardFile = useCallback(
+    async (fileId: string) => {
+      if (fetchingFileIdsRef.current.has(fileId)) return;
+      fetchingFileIdsRef.current.add(fileId);
+      try {
+        const response = await ajaxFetch(`/api/whiteboard/room/${roomId}/files/${fileId}`);
+        if (!response.ok) return;
+        const mimeType = response.headers.get('content-type');
+        if (!mimeType || !isAllowedMimeType(mimeType)) return;
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        apiRef.current?.addFiles([{
+          id: fileId,
+          dataURL: bytesToDataURL(bytes, mimeType),
+          mimeType,
+          created: Date.now(),
+        }] as never);
+      } catch {
+        // The next scene carrying this element asks again.
+      } finally {
+        fetchingFileIdsRef.current.delete(fileId);
+      }
+    },
+    [roomId],
+  );
+
+  /** Asks for any image referenced by the scene that this peer does not hold. */
+  const fetchMissingBoardFiles = useCallback((elements: readonly unknown[]) => {
+    const api = apiRef.current;
+    if (!api) return;
+    const held = api.getFiles?.() ?? {};
+    for (const element of elements) {
+      const fileId = (element as { fileId?: unknown } | null)?.fileId;
+      if (typeof fileId !== 'string' || fileId.length === 0) continue;
+      if (held[fileId] || fetchingFileIdsRef.current.has(fileId)) continue;
+      void fetchBoardFile(fileId);
+    }
+  }, [fetchBoardFile]);
+
   const applyRemoteElements = useCallback((remoteElements: SharedSceneElement[]) => {
+    // The elements arrive over the document; the bytes never do.
+    fetchMissingBoardFiles(remoteElements);
     const shouldRecordRemoteRender =
       isWhiteboardLatencyProbeEnabled() && hasAcceptedInitialSceneRef.current;
     for (const element of remoteElements) {
@@ -321,7 +410,7 @@ export default function ExcalidrawWrapper({
     }
 
     hasAcceptedInitialSceneRef.current = true;
-  }, [adoptVersionBaseline, onElementsChange]);
+  }, [adoptVersionBaseline, onElementsChange, fetchMissingBoardFiles]);
 
   useEffect(() => {
     setIsClient(true);
@@ -599,7 +688,18 @@ export default function ExcalidrawWrapper({
   );
 
   const handleElementsChange = useCallback(
-    (el: ExcalidrawChangeElements, _appState: ExcalidrawChangeAppState) => {
+    (el: ExcalidrawChangeElements, _appState: ExcalidrawChangeAppState, files?: ExcalidrawChangeFiles) => {
+      // The bytes are Excalidraw's to hand over and nobody else's: this is the
+      // only place a pasted image is seen before it would be lost on reload.
+      if (files) {
+        for (const fileId of filesToUpload(files, uploadedFileIdsRef.current)) {
+          const file = files[fileId];
+          if (!file) continue;
+          uploadedFileIdsRef.current.add(fileId);
+          void uploadBoardFile(fileId, file.dataURL as unknown as string);
+        }
+      }
+
       /*
        * No remote-update flag here.
        *
@@ -650,7 +750,7 @@ export default function ExcalidrawWrapper({
         }, STROKE_COMMIT_INTERVAL_MS - since);
       }
     },
-    [commitElements],
+    [commitElements, uploadBoardFile],
   );
 
   useEffect(() => () => {
@@ -778,7 +878,7 @@ export default function ExcalidrawWrapper({
     >
       <Excalidraw
         excalidrawAPI={handleAPI}
-        onChange={(el, appState) => { handleElementsChange(el, appState); }}
+        onChange={(el, appState, files) => { handleElementsChange(el, appState, files); }}
         onPointerUpdate={handlePointerUpdate}
         onScrollChange={(scrollX, scrollY, zoom) => {
           const viewport = { x: scrollX, y: scrollY, zoom: zoom.value };
