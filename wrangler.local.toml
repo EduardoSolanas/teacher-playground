@@ -33,6 +33,13 @@ class_name = "RoomDO"
 name = "IDENTITY"
 class_name = "IdentityDO"
 
+# Board images. Miniflare creates this locally on first use, so a local run
+# needs no bucket in Cloudflare -- but without the binding declared here the
+# upload route would find env.BOARD_FILES undefined and fail only locally.
+[[r2_buckets]]
+bucket_name = "teacher-playground-board-files-local"
+binding = "BOARD_FILES"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RoomDO"]

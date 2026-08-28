@@ -16,6 +16,8 @@
     "test": "vitest run",
     "test:workers": "node scripts/run-worker-tests.mjs",
     "security:scan": "node scripts/security-scan.mjs",
+    "r2:check": "node scripts/cloudflare-r2.mjs check",
+    "r2:apply": "node scripts/cloudflare-r2.mjs apply",
     "access:check": "node scripts/cloudflare-access.mjs check",
     "access:apply": "node scripts/cloudflare-access.mjs apply-app",
     "access:branding": "node scripts/cloudflare-access.mjs apply-branding",
