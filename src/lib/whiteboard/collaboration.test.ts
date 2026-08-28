@@ -1,4 +1,5 @@
 import * as Y from 'yjs';
+import { Awareness } from 'y-protocols/awareness';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const statusListeners: Array<(event: { status?: string; connected?: boolean }) => void> = [];
@@ -9,6 +10,9 @@ vi.mock('./yWebsocketProvider', () => ({
     const provider = {
       wsconnected: false,
       shouldConnect: true,
+      // A real Awareness, not a stand-in: cursors live here now, so a fake
+      // would make every cursor assertion below pass without testing anything.
+      awareness: new Awareness(doc),
       connect: vi.fn(),
       destroy: vi.fn(),
       on: (eventName: string, callback: (...args: unknown[]) => void) => {
@@ -90,7 +94,7 @@ describe('createCollaboration omitted peerId (SEC-006)', () => {
 });
 
 describe('createCollaboration adoptLocalPeerId', () => {
-  it('moves the cursor map entry onto the server-issued peer id', () => {
+  it('moves the announced cursor onto the server-issued peer id', () => {
     const collab = createCollaboration('adopt-room', 'user-local-label');
     collab.setLocalUserName('CursorPeer');
     collab.setLocalCursor(12, 34);
@@ -101,7 +105,7 @@ describe('createCollaboration adoptLocalPeerId', () => {
     const cursors = collab.getUsers();
     expect(cursors.map((user) => user.peerId)).toEqual(['user-server-issued']);
     expect(cursors[0]?.userName).toBe('CursorPeer');
-    expect(collab.cursorsMap.has('user-local-label')).toBe(false);
+    expect(cursors.map((user) => user.peerId)).not.toContain('user-local-label');
 
     collab.destroy();
   });
@@ -112,12 +116,35 @@ describe('createCollaboration adoptLocalPeerId', () => {
 
     collab.adoptLocalPeerId('user-server-issued');
 
-    expect(collab.cursorsMap.has('user-local-label')).toBe(false);
-    expect(collab.cursorsMap.get('user-server-issued')).toMatchObject({
+    expect(collab.getUsers().map((user) => user.peerId)).not.toContain('user-local-label');
+    expect(collab.getLocalCursor()).toMatchObject({
       peerId: 'user-server-issued',
       userName: 'CursorPeer',
     });
 
+    collab.destroy();
+  });
+});
+
+describe('createCollaboration cursor storage', () => {
+  it('keeps cursor traffic out of the document that gets stored', () => {
+    /*
+     * The regression this exists for: cursors used to be written into the
+     * shared document, one Y.Map key per peer, twenty times a second. The
+     * overwritten values were collected but their tombstones were not, so a
+     * board grew about 11KB per minute per participant however little was
+     * drawn on it -- and a room that stayed open for an hour crossed the 2MB
+     * Durable Object storage ceiling on pointer positions alone.
+     */
+    const collab = createCollaboration('cursor-storage', 'user-a');
+    const before = Y.encodeStateAsUpdate(collab.doc).byteLength;
+
+    for (let i = 0; i < 2_000; i++) collab.setLocalCursor(i % 900, i % 600);
+    collab.setLocalUserName('Ada');
+    collab.setLocalUserColor('#e74c3c');
+    collab.adoptLocalPeerId('user-server-issued');
+
+    expect(Y.encodeStateAsUpdate(collab.doc).byteLength).toBe(before);
     collab.destroy();
   });
 });

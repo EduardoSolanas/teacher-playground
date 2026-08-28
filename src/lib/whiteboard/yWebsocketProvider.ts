@@ -1,5 +1,6 @@
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
+import { Awareness } from 'y-protocols/awareness';
 import { getSignalingUrls } from './ywebrtcProvider';
 import { PRESENCE_MESSAGE_TYPE, readPresenceBody } from './presenceMessage';
 
@@ -8,6 +9,8 @@ type ProviderLike = {
   shouldConnect?: boolean;
   synced?: boolean;
   doc?: Y.Doc;
+  /** Ephemeral peer state (cursors). Absent on the server stub. */
+  awareness?: Awareness;
   connect: () => void;
   destroy: () => void;
   on: (eventName: string, callback: (...args: any[]) => void) => void;
@@ -17,10 +20,18 @@ type ProviderEntry = { provider: ProviderLike; status: string; synced: boolean }
 
 let providerCache: Map<string, ProviderEntry> = new Map();
 
-function createServerProvider(): ProviderLike {
+/**
+ * Stands in where there is no socket: server rendering, and unit tests.
+ *
+ * It still carries a real Awareness. Cursors are published through awareness
+ * now, and a provider that omitted it would make the cursor API silently do
+ * nothing off the browser -- present in the type, absent in practice.
+ */
+function createServerProvider(doc: Y.Doc): ProviderLike {
   return {
     connected: false,
     shouldConnect: false,
+    awareness: new Awareness(doc),
     connect: () => {},
     destroy: () => {},
     on: () => {},
@@ -78,7 +89,7 @@ export function createYWebsocketProvider(
   }
 
   const provider: ProviderLike = typeof window === 'undefined'
-    ? createServerProvider()
+    ? createServerProvider(doc)
     : new SignalingWebsocketProvider(doc, roomId) as unknown as ProviderLike;
 
   provider.doc = doc;

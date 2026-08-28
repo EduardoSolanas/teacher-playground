@@ -28,7 +28,6 @@ type ExcalidrawWrapperProps = {
   localPeerId: string;
   yDoc: Y.Doc | null;
   yElementsArray: Y.Array<Y.Map<any>> | null;
-  yCursorsMap: Y.Map<any> | null;
   users: any[];
   activeTool: string;
   isLocalHost: boolean;
@@ -47,7 +46,6 @@ export default function ExcalidrawWrapper({
   localPeerId,
   yDoc,
   yElementsArray,
-  yCursorsMap,
   users,
   activeTool,
   isLocalHost,
@@ -267,7 +265,7 @@ export default function ExcalidrawWrapper({
   }, [activeTool]);
 
   useEffect(() => {
-    if (!yDoc || !yElementsArray || !yCursorsMap) return;
+    if (!yDoc || !yElementsArray) return;
 
     const elementsArray = yElementsArray;
 
@@ -299,7 +297,7 @@ export default function ExcalidrawWrapper({
     return () => {
       elementsArray.unobserveDeep(handler);
     };
-  }, [yDoc, yElementsArray, yCursorsMap, roomId, applyRemoteElements, adoptVersionBaseline]);
+  }, [yDoc, yElementsArray, roomId, applyRemoteElements, adoptVersionBaseline]);
 
   /** Snapshot of the shared document as plain Excalidraw elements. */
   const readSharedElements = useCallback((): Record<string, unknown>[] => {

@@ -7,6 +7,13 @@ import {
   getElementsFromArray,
 } from './yjsDoc';
 import { createYWebsocketProvider, destroyProvider, type PresenceCallback } from './yWebsocketProvider';
+import {
+  clearCursor,
+  publishCursor,
+  readCursorUsers,
+  readLocalCursor,
+  readRemoteCursors,
+} from './cursorAwareness';
 import { isYjsProviderConnected } from './providerStatus';
 import { randomHexId } from '@/lib/crypto/randomId';
 import type { CanvasElement, WhiteboardUser, RemoteCursor } from '@/types/whiteboard';
@@ -37,8 +44,11 @@ export function createCollaboration(
   peerId?: string,
   onPresence?: PresenceCallback,
 ) {
-  const { doc, elementsArray, viewportMap, cursorsMap } = createWhiteboardDoc(roomId);
+  const { doc, elementsArray, viewportMap } = createWhiteboardDoc(roomId);
   const { provider, status } = createYWebsocketProvider(doc, roomId, onPresence);
+  // Cursors ride awareness, which the provider owns. Absent on the server,
+  // where there is no socket and nothing to announce.
+  const awareness = provider.awareness ?? null;
 
   let localPeerId = peerId || `user-${randomHexId()}`;
   let localUserName = 'Anonymous';
@@ -56,76 +66,39 @@ export function createCollaboration(
   function setLocalCursor(x: number, y: number) {
     lastCursorX = x;
     lastCursorY = y;
-    const cursorData = {
+    publishCursor(awareness, {
       x,
       y,
       userName: localUserName,
       color: localUserColor,
       peerId: localPeerId,
-    };
-    cursorsMap.set(localPeerId, cursorData);
+    });
   }
 
   function setLocalUserName(name: string) {
     localUserName = name;
-    const cursorData = cursorsMap.get(localPeerId) as Record<string, unknown> | undefined;
-    if (cursorData) {
-      (cursorData as any).userName = name;
-      cursorsMap.set(localPeerId, cursorData);
-    }
+    if (readLocalCursor(awareness)) setLocalCursor(lastCursorX, lastCursorY);
   }
 
   function setLocalUserColor(color: string) {
     localUserColor = color;
-    const cursorData = cursorsMap.get(localPeerId) as Record<string, unknown> | undefined;
-    if (cursorData) {
-      (cursorData as any).color = color;
-      cursorsMap.set(localPeerId, cursorData);
-    }
+    if (readLocalCursor(awareness)) setLocalCursor(lastCursorX, lastCursorY);
   }
 
   function adoptLocalPeerId(nextPeerId: string) {
     if (!nextPeerId || nextPeerId === localPeerId) return;
-    const cursorData = cursorsMap.get(localPeerId) as Record<string, unknown> | undefined;
-    cursorsMap.delete(localPeerId);
     localPeerId = nextPeerId;
-    if (cursorData) {
-      cursorData.peerId = nextPeerId;
-      cursorsMap.set(nextPeerId, cursorData);
-      return;
-    }
+    // One announcement per peer, keyed by the connection rather than by the
+    // peer id, so renaming needs no delete of the old key.
     setLocalCursor(lastCursorX, lastCursorY);
   }
 
   function getUsers(): WhiteboardUser[] {
-    const users: WhiteboardUser[] = [];
-    cursorsMap.forEach((value, key) => {
-      users.push({
-        peerId: (value as RemoteCursor).peerId || key,
-        userName: (value as RemoteCursor).userName || 'Anonymous',
-        color: (value as RemoteCursor).color || '#3498db',
-        isHost: false,
-      });
-    });
-    return users;
+    return readCursorUsers(awareness);
   }
 
   function getRemoteCursors(): RemoteCursor[] {
-    const cursors: RemoteCursor[] = [];
-    cursorsMap.forEach((value, key) => {
-      const entry = value as RemoteCursor & {
-        cursor?: { pointer?: { x?: number; y?: number }; x?: number; y?: number };
-      };
-      const pointer = entry.cursor?.pointer ?? entry.cursor;
-      cursors.push({
-        peerId: entry.peerId || key,
-        userName: entry.userName || 'Anonymous',
-        color: entry.color || '#3498db',
-        x: typeof entry.x === 'number' ? entry.x : typeof pointer?.x === 'number' ? pointer.x : 0,
-        y: typeof entry.y === 'number' ? entry.y : typeof pointer?.y === 'number' ? pointer.y : 0,
-      });
-    });
-    return cursors;
+    return readRemoteCursors(awareness);
   }
 
   function getElements(): CanvasElement[] {
@@ -181,13 +154,15 @@ export function createCollaboration(
     changeCallbacks.forEach((cb) => cb('viewport', vp));
   });
 
-  cursorsMap.observeDeep(() => {
+  // Awareness changes are not document changes, so they arrive here rather
+  // than through an observer on the doc.
+  awareness?.on('change', () => {
     changeCallbacks.forEach((cb) => cb('cursors', getRemoteCursors()));
   });
 
   function destroy() {
     clearInterval(reconnectInterval);
-    cursorsMap.delete(localPeerId);
+    clearCursor(awareness);
     destroyProvider(roomId);
     doc.destroy();
     changeCallbacks.length = 0;
@@ -197,7 +172,6 @@ export function createCollaboration(
     doc,
     elementsArray,
     viewportMap,
-    cursorsMap,
     provider,
     status,
     localUserName,
@@ -205,6 +179,7 @@ export function createCollaboration(
     get localPeerId() {
       return localPeerId;
     },
+    getLocalCursor: () => readLocalCursor(awareness),
     setLocalCursor,
     setLocalUserName,
     setLocalUserColor,

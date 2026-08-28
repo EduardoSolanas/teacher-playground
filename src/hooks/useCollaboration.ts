@@ -495,11 +495,8 @@ export function useCollaboration(roomId: string) {
         const collab = collaborationRef.current;
         collab?.adoptLocalPeerId(data.peerId);
         if (collab) {
-          const entry = collab.cursorsMap.get(data.peerId) as { x?: number; y?: number } | undefined;
-          collab.setLocalCursor(
-            typeof entry?.x === 'number' ? entry.x : 0,
-            typeof entry?.y === 'number' ? entry.y : 0,
-          );
+          const entry = collab.getLocalCursor();
+          collab.setLocalCursor(entry?.x ?? 0, entry?.y ?? 0);
         }
       }
     }
@@ -846,7 +843,6 @@ export function useCollaboration(roomId: string) {
     elements,
     yDoc: collaborationEpoch >= 0 ? collaborationRef.current?.doc ?? null : null,
     yElementsArray: collaborationEpoch >= 0 ? collaborationRef.current?.elementsArray ?? null : null,
-    yCursorsMap: collaborationEpoch >= 0 ? collaborationRef.current?.cursorsMap ?? null : null,
     setElements: (newElements: CanvasElement[]) => {
       const unique = uniqueElementsById(newElements);
       elementsRef.current = unique;

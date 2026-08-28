@@ -112,7 +112,6 @@ function RoomContent({ roomId }: { roomId: string }) {
     setUserName: syncUserName,
     yDoc,
     yElementsArray,
-    yCursorsMap,
     setElements,
     viewport,
     storeViewport,
@@ -369,7 +368,6 @@ function RoomContent({ roomId }: { roomId: string }) {
           localPeerId={localPeerId}
           yDoc={yDoc}
           yElementsArray={yElementsArray}
-          yCursorsMap={yCursorsMap}
           users={users}
           activeTool={activeTool}
           isLocalHost={isLocalHost}
