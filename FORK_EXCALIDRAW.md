@@ -1,458 +1,308 @@
 # Teacher Playground Excalidraw fork
 
-## Current decision and status
+## Status
 
-Teacher Playground now owns a **minimal distribution fork**, not a rewritten
-drawing editor. The fork is kept in `excalidraw/` in the main checkout and at
-<https://github.com/EduardoSolanas/excalidraw>. It is pinned to upstream
-Excalidraw `v0.18.1`; our release branch is
-`teacher-playground/release-v0.18.1`, and our package identity is
-`@teacher-playground/excalidraw`.
+Teacher Playground owns a **minimal distribution fork** of Excalidraw, not a
+rewritten drawing editor.
 
-Release `teacher-playground-v0.18.1-tp.3` is the current version that uses the
-same Cloudflare CI contract as Teacher Playground:
+| | |
+|---|---|
+| Fork | <https://github.com/EduardoSolanas/excalidraw> |
+| Working copy | `excalidraw/` in this checkout (see [Open risks](#open-risks)) |
+| Release branch | `teacher-playground/release-v0.18.1` |
+| Package identity | `@teacher-playground/excalidraw` |
+| Current release | `teacher-playground-v0.18.1-tp.6` |
+| Upstream base | `v0.18.1` |
 
-- GitHub environment: `prod`
-- secret: `CLOUDFLARE_API_TOKEN`
-- variable: `CLOUDFLARE_ACCOUNT_ID`
-- R2 bucket: `teacher-playground-excalidraw`
-
-The package, browser bundle, manifest, and checksums are produced by the fork's
-own GitHub Actions workflow. The tagged `tp.3` run passed validation and created
-the [GitHub Release](https://github.com/EduardoSolanas/excalidraw/releases/tag/teacher-playground-v0.18.1-tp.3).
-Teacher Playground now pins that immutable asset in `package.json` and
-`package-lock.json`:
+The application consumes the immutable release tarball, pinned in
+`package.json` and `package-lock.json`:
 
 ```text
-https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.3/package.tgz
+https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.6/package.tgz
 ```
 
-The fork is the sole owner of the R2 bucket, CORS, custom domain, release
-objects, and release metadata. Its own tagged-release workflow uses the
-production `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable
-to publish the package's immutable release. The application consumes the
-immutable base
-`https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.3/dist/prod/`.
-Versioned objects receive one-year immutable cache headers. The old parent-side
-publisher was removed after production run `32680222826` showed that R2 was not
-enabled (HTTP 403/code 10042); that historical run does not claim a bucket,
-custom domain, upload, Worker deployment, or playground tag. Enable R2 for the
-fork's release workflow before publishing a new version.
+**The fork is on the current upstream release.** `@excalidraw/excalidraw@0.18.1`
+is still `latest` on npm, so being many commits behind upstream `master` is
+being behind *unreleased* work — the same position as every other consumer of
+0.18.1. This is worth stating because a naive `git rev-list HEAD..upstream/master`
+suggests neglect and means nothing of the kind. The gate for a rebase is upstream
+cutting 0.19, not a commit count.
 
-The application-side simplification is also complete: remote scenes use the
-exported reconciliation API and never enter local history; cursors use native
-Excalidraw collaborators and pointer events; view persistence uses
-`onScrollChange`; the custom cursor DOM overlay and viewport conversion code
-have been removed. Scoped Yjs undo remains intentionally because it provides
-local-origin grouping for our shared Yjs document.
+The fork owns its R2 bucket (`teacher-playground-excalidraw`), CORS, custom
+domain, release objects, and release metadata, published by its own GitHub
+Actions workflow using the `prod` environment's `CLOUDFLARE_API_TOKEN` secret
+and `CLOUDFLARE_ACCOUNT_ID` variable. The application consumes the immutable
+base `https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.6/dist/prod/`.
+Versioned objects carry one-year immutable cache headers.
 
-`@teacher-playground/excalidraw` is embedded as a black box and driven from
-`src/components/whiteboard/ExcalidrawWrapper.tsx`. It was 696 lines when this
-analysis began, much of it working around what we believed the component would
-not let us say.
+## What the fork actually contains
 
-Reading the installed type definitions changed the conclusion of the first
-version of this document. **Most of what we hand-rolled is already in the public
-API of the version we depend on.** The fork case is much smaller than it looked;
-what remains is a list of things to delete.
+Measured against its upstream merge base, the fork is **221 files changed and
+roughly 2,950 deletions against 13 insertions**. Almost all of it is removal:
 
-> **Correction.** The first version of this file claimed Excalidraw "renders
-> collaborator cursors internally but does not let us supply them". That is
-> wrong: `updateScene({ collaborators })` has been the supported path all along,
-> and the type is rich — pointer, button, username, colour, selection, laser
-> tool, idle state. The item below replaces that one.
+- **Slimming.** Chinese locales and the Xiaolai CJK font family are deleted, so
+  the shipped bundle is smaller than upstream's.
+- **Font loading.** `fonts/Fonts.ts`, `fonts/FontMetadata.ts` and `constants.ts`
+  are adjusted for self-hosting (see [Asset loading](#asset-loading)).
+- **Packaging.** Package identity, release assembly, CI/CD, Cloudflare IaC.
+- **One security backport.** `fix: backport mermaid xss fix to 0.18.1`, carried
+  rather than waiting for an upstream release.
 
-## How updates get in and out
+Beyond that there are **three single-line source edits** — in `App.tsx`,
+`TTDDialog/common.ts` and a `welcome-screen` stylesheet.
 
-Everything here is in the upstream base of
-`@teacher-playground/excalidraw@0.18.1-tp.3`, verified against
-`dist/types/excalidraw/types.d.ts` in `node_modules`.
+That is the fork's defining property and the thing to protect: it changes
+essentially no editor behaviour, so nothing custom can rot, and adopting a
+future upstream release is close to conflict-free. Every proposal below is
+weighed against the cost of giving that up.
 
-| Direction | API | Do we use it |
-| --- | --- | --- |
-| Scene changed | `onChange(elements, appState, files)` | yes — whole scene, per pointer sample |
-| Pointer moved | `onPointerUpdate({ pointer: {x, y, tool}, button, pointersMap })` | yes |
-| Pointer down / up | `excalidrawAPI.onPointerDown` / `onPointerUp` | yes |
-| Pan / zoom | `onScrollChange(scrollX, scrollY, zoom)`, also on the API | yes |
-| Someone followed you | `excalidrawAPI.onUserFollow(payload)` | yes — imperative subscription |
-| Push a scene in | `updateScene({ elements, appState, collaborators, captureUpdate })` | yes |
-| Merge remote with local | `reconcileElements(local, remote, appState)` (exported) | yes |
-| Keep an update out of undo | `CaptureUpdateAction.NEVER` (exported) | yes |
+## What the application already gets from the public API
 
-The completed rows are the answer to "how do we get updates from drawing,
-cursor, etc.": upstream already publishes them in scene coordinates, with
-button state. The follow callback is an imperative subscription on the
-`excalidrawAPI`; it is not a React prop and must be registered through the
-imperative API handle.
+An earlier version of this document argued for a fork on the grounds that
+several things "could not be said" through the component's API. Reading the
+installed type definitions refuted most of it. These are done, and the wrapper
+is smaller for each:
 
-## Completed application simplifications, by payoff
+1. **`reconcileElements`** replaced a hand-rolled merge.
+2. **`captureUpdate: CaptureUpdateAction.NEVER`** keeps remote scenes out of
+   local history.
+3. **`updateScene({ collaborators })`** renders peer cursors natively; the
+   custom cursor DOM overlay and its viewport maths are gone.
+4. **`onPointerUpdate`** supplies local cursor position.
+5. **`onScrollChange`** supplies the viewport for persistence.
+6. **Teacher guide** is built on native follow state; the transport stays in
+   the application (`ExcalidrawWrapper` and `RoomDO`), not in the fork.
+7. **The boundary is typed**, no longer `any`.
 
-### 1. Use `reconcileElements` instead of our own merge
+Scoped Yjs undo stays deliberately: it gives local-origin grouping for our
+shared document, which Excalidraw's history does not model.
 
-**What hurts.** Applying a peer's edit means deciding what to keep: we track
-`seenRemoteIds`, `lastPublishedIds`, a per-id `version` map, and a set of
-"unpublished local" ids to avoid clobbering a stroke in progress
-(`ExcalidrawWrapper.tsx:170-200`). This is a reimplementation of the merge
-Excalidraw's own collaborative app uses — and it is exported.
+> **Correction retained from the first draft.** That draft claimed Excalidraw
+> "renders collaborator cursors internally but does not let us supply them".
+> That was wrong — `updateScene({ collaborators })` had always been the
+> supported path, and the type is rich (pointer, button, username, colour,
+> selection, laser tool, idle state).
 
-**What to do.** `reconcileElements(localElements, remoteElements, appState)`
-returns the merged scene, version-aware, including the ordering rules we do not
-implement at all.
+## What is genuinely not exposed
 
-**Deletes.** Most of the bookkeeping above, and the class of bug where a local
-stroke in flight loses to a remote frame.
+Three items remain. The first has changed character since the last revision and
+is now the only one worth spending fork budget on.
 
-### 2. Apply remote scenes with `captureUpdate: CaptureUpdateAction.NEVER`
+### A. The change feed exists; it is not exposed
 
-**What hurts.** Undo is scene-wide, so in a shared room it reaches into other
-people's work. We answered that by not using it: `scopedUndo.ts` drives a
-`Y.UndoManager` filtered to our own origin, with a 300ms capture window.
+**This is not a missing feature. It is an unexported one.**
 
-**What to do.** `CaptureUpdateAction.NEVER` is documented for exactly this —
-"use for updates which should never be recorded, such as remote updates or scene
-initialization". Local edits stay `IMMEDIATELY` and remain undoable; remote ones
-never enter the local stack.
+`packages/excalidraw/store.ts` defines `class Store` with a public
+`onStoreIncrementEmitter`, which fires a `StoreIncrementEvent` carrying
+`elementsChange: ElementsChange` and `appStateChange: AppStateChange`.
+`ElementsChange` (`packages/excalidraw/change.ts`) holds exactly three maps —
+`added`, `removed`, `updated`, each `id → Delta<ElementPartial>`.
 
-**Decision.** Keep `scopedUndo.ts`. `CaptureUpdateAction.NEVER` prevents remote
-scene application from entering Excalidraw history, while the Yjs undo manager
-still scopes undo to this peer's transaction origin and groups the shared
-document updates that make up one stroke. A real two-browser test proves Alice
-cannot undo Bob's work.
+Excalidraw computes this on every commit for its own undo/history. The
+`IStore` interface is annotated `@experimental`. None of it reaches
+`ExcalidrawImperativeAPI`, which offers `onChange` — the **entire scene, on
+every pointer sample** — and nothing else.
 
-### 3. Hand cursors to `updateScene({ collaborators })`
+The application therefore rebuilds, twenty times a second, a delta the editor
+already has:
 
-**What hurts.** `RemoteCursorOverlay` positions DOM nodes above the canvas in
-viewport pixels, so Excalidraw's scroll and zoom must be published back out on
-every pan to place them (`ExcalidrawWrapper.tsx:560-575`) — React state churning
-on a gesture, which the comment there records once starved the receiving peer.
+| Application code | Exists because |
+|---|---|
+| `scenePublish.ts` — `diffScene`, `shouldPublish`, `elementsToPublish` | no delta is offered |
+| `publishedVersionsRef` in `ExcalidrawWrapper.tsx` | a per-sample version map |
+| `STROKE_COMMIT_INTERVAL_MS` throttle + trailing timer | the per-sample cost |
+| `deferredElementsRef` / deferred React hop | the same cost, mid-stroke — this **is** the reported drawing lag |
+| `excalidrawElementsEqual` | echo detection by double `JSON.stringify` |
+| `filesToUpload` + an uploaded-id set | the files map also arrives whole |
 
-**What to do.** Build a `Map<SocketId, Collaborator>` from our presence data and
-pass it to `updateScene`. The type carries `pointer`, `button`, `username`,
-`color`, `selectedElementIds`, `userState` (idle), and the laser tool.
+The last row is the strongest evidence: board images shipped much later than
+the sync layer and had to invent a **second, independent** de-duplication
+mechanism for the same missing signal. The cost is not one workaround; it is a
+pattern that recurs in every feature touching the scene.
 
-**Deletes.** The overlay component, the pan-driven React state, and the
-viewport-to-pixel maths in `cursorViewport.ts` that exists to serve it.
+**Worth raising upstream.** Every collaborative embedder pays this, the
+machinery is already there, the interface is already `@experimental`, and the
+change is additive.
 
-**Bonus.** Selection highlighting and idle state come free; today we have
-neither.
+### B. Origin tagging on notification
 
-### 4. Take cursors from `onPointerUpdate`
+A scene pushed in with `updateScene` comes back out through `onChange` as
+though the user drew it, so the echo must be filtered. `captureUpdate` controls
+*history*, not *notification*. `Store.commit()` already knows why it is
+committing; carrying that through to the emitted increment would delete
+`adoptVersionBaseline` and `lastSyncedElementsRef` outright.
 
-**What hurts.** We derive the local pointer ourselves and infer whether the
-pointer is down (`isPointerDownRef`) to decide when to defer the React hop.
+This is the same idea as Yjs transaction origins, which the application already
+depends on (`transaction.origin === 'local'`). It pairs naturally with A.
 
-**What to do.** `onPointerUpdate` gives `{ pointer: { x, y, tool }, button }` in
-scene coordinates — the units the shared document wants — and says whether the
-button is down. `excalidrawAPI.onPointerDown` / `onPointerUp` are there too.
+### C. Tool state is set but never reported
 
-**Deletes.** Our pointer plumbing and the inference, and it removes a coordinate
-conversion rather than adding one.
+`setActiveTool` exists; nothing reports a tool change back. That gap is why the
+repository carries `src/components/whiteboard/ToolEvents.ts` — a module-level
+mutable singleton with one handler slot per event. It is not an event system:
+it cannot have two listeners, and it has no unsubscribe.
 
-### 5. Take the viewport from `onScrollChange`
+An `onToolChange` subscription mirroring `onChange` would let the custom
+`ToolSidebar` and `PaletteBar` *follow* the editor's state instead of trying to
+own it.
 
-**What hurts.** `publishViewport` runs on every `onChange` and compares five
-fields against the last value to decide whether a pan actually happened
-(`ExcalidrawWrapper.tsx:540-560`).
+### Asset loading
 
-**What to do.** `onScrollChange(scrollX, scrollY, zoom)` fires when the viewport
-changes and only then. It is the natural feed for the stored host view
-(`viewportPersist.ts`).
+Not hypothetical: self-hosting Excalidraw's fonts does not work as documented,
+and the repository carries a build-time patch of upstream's shipped JavaScript.
 
-**Deletes.** The dedupe, and the coupling between drawing and viewport reporting.
+Fonts resolve to two candidates — one under `window.EXCALIDRAW_ASSET_PATH`, one
+under a hardcoded `ASSETS_FALLBACK_URL` pointing at esm.sh. What broke, in
+order:
 
-### 6. Teacher guide through native Excalidraw follow state
-
-Teacher Playground now implements the classroom follow outcome above the public
-API. The host's Guide control sends an ephemeral, server-mediated custom
-y-websocket message (`type 101`) containing the bounded viewport. The RoomDO
-accepts start, update, and stop frames only from the owner role, broadcasts them
-to granted peers, sends the active state to newcomers, and broadcasts an inactive
-frame when the last owner socket closes. Follow state is held in the DO instance
-only: it is never written to Yjs, SQL, local storage, or scene history.
-
-The student receives the viewport through `updateScene` with
-`CaptureUpdateAction.NEVER` and the native `userToFollow` app state. That keeps
-Excalidraw's own Following badge and unfollow action. A local student unfollow
-opts out of the current guide session; a later host session clears that opt-out.
-Host viewport updates are coalesced to a trailing 50 ms send so ordinary pan and
-zoom gestures remain fluid. The imperative `onUserFollow` subscription marks
-local native unfollows without treating server-applied follow updates as an
-opt-out.
-
-Verification is recorded against the implementation:
-
-- `npm test -- --run followMessage ToolSidebar presenceMessage RoomClient`: 4
-  files, 10 tests passed; full `npm test`: 90 files, 890 tests passed.
-- `npm run test:workers -- --run src/do/followGuide.workers.test.ts`: 1 test
-  passed; full `npm run test:workers`: 11 files, 324 tests passed.
-- `npm run typecheck`: both application and Worker TypeScript projects passed.
-- `npm run test:e2e -- --grep "the host can guide the class through the native
-  Excalidraw follow state"`: 1 test passed in 5.2 seconds after adding the
-  retrying debug-API readiness assertion required by the production-build E2E.
-- Mutation check: replacing the owner-only `!isOwnerRole(role)` guard with
-  `!isGrantedRole(role)` made the focused worker test fail because an editor's
-  forged stop frame reached the owner; the guard was restored and the focused
-  worker test passed again.
-
-### 7. Stop typing the boundary as `any`
-
-**What hurts.** `ExcalidrawWrapper.tsx` opts out of the type system 18 times:
-`useRef<any>`, `(el: readonly any[], appState: any)`, `Y.Map<any>`,
-`(window as any)`. Our `tsconfig.json` sets `strict: true`, and the file doing
-the most delicate work in the codebase waives it at exactly the boundary where
-mistakes are expensive.
-
-**What to do.** Use the types upstream already ships:
-`ExcalidrawImperativeAPI`, `OrderedExcalidrawElement`, `AppState`,
-`Collaborator`, `BinaryFiles`. Excalidraw compiles under `strict: true` itself,
-and its public surface is clean — one `any` in the whole of `types.d.ts`. The
-types are better than our use of them.
-
-**Why it comes first in practice.** Items 1, 2 and 3 mean adopting
-`reconcileElements`, `CaptureUpdateAction` and the `Collaborator` map. Adopting
-them through `any` is how you get a runtime shape error instead of a compile
-error, which is precisely the failure this repo already had once, when the canvas
-was handed encoded points it could not draw and peers' strokes silently
-disappeared.
-
-## Upgrades and dependencies
-
-**There is nothing to upgrade to.** `0.18.1` is the `latest` dist-tag on npm and
-it is what we depend on. The other tags — `next` (`0.18.0-abeeaeb`), `rc`,
-`preview` — are main-branch builds numbered *below* the stable release, so
-"upgrade for improvements" is not available on the stable channel. Improvements
-come from one of three places: their main branch (tracking it is a
-fork-adjacent commitment, not an upgrade), upstream contributions we make, or
-the deletions listed above.
-
-**We already override their dependency graph.** Excalidraw pins its
-dependencies exactly (`clsx` 1.1.1, `@braintree/sanitize-url` 6.0.2,
-`fractional-indexing` 3.2.0, and it ships `cross-env` as a runtime dependency).
-Our `package.json` carries `overrides` forcing `nanoid`, `dompurify`,
-`immutable`, `mermaid` and `lodash-es` versions through their tree, plus more
-under `@excalidraw/mermaid-to-excalidraw`. That is a second place where we are
-already patching around upstream — and the thing that gets strictly worse in a
-fork, because then the graph is ours to keep current, including the parts of it
-that exist to draw mermaid diagrams we may not even offer.
-
-**React is not a blocker.** Their peer range is
-`^17.0.2 || ^18.2.0 || ^19.0.0`, so Excalidraw does not stand in the way of
-moving this app off React 18.
-
-## What genuinely is not in the API
-
-These are the only real fork candidates left.
-
-### A. A change feed instead of whole-scene `onChange`
-
-`onChange` hands over the entire scene on every pointer sample, and no delta or
-store-increment API is exported. We rebuild the delta per sample — a serialize
-pass and a version map — and had to defer the React hop mid-stroke to undo the
-cost, which is where the reported drawing lag came from
-(`ExcalidrawWrapper.tsx:440-470`). `reconcileElements` (item 1) fixes the merge
-direction, not this one.
-
-Worth raising upstream: every collaborative embedder pays this.
-
-### B. Origin tagging on `onChange`
-
-A scene we push in comes back out through `onChange` as though the user drew it,
-so the echo has to be filtered. `captureUpdate` controls *history*, not
-*notification*. An origin carried through the callback — the same idea Yjs
-transaction origins use — would remove the filtering entirely.
-
-### C. A serialization hook for points
-
-Freehand points are the bulk of a board's bytes; `pointCodec.ts` packs them, and
-every reader must know `points` can arrive as a `Uint8Array`, a JSON string, or a
-plain array — a rule learned when the canvas was handed bytes it could not draw
-and peers' strokes silently stopped appearing. A per-element serialization hook
-would contain that; changing the element shape upstream would not be worth it.
-
-### D. Asset loading — already broken, already patched
-
-This one is not hypothetical. Self-hosting Excalidraw's fonts does not work as
-documented, and the repo already carries a build-time patch of upstream's
-shipped JavaScript to make it work. It is the strongest existing evidence for
-what a fork would feel like, so it is worth stating in full.
-
-**What upstream does.** Fonts and data are fetched at runtime, not bundled. Each
-font resolves to two candidates: one under `window.EXCALIDRAW_ASSET_PATH`, and
-one under a hardcoded `ASSETS_FALLBACK_URL` pointing at
-`https://esm.sh/@excalidraw/excalidraw@VERSION/dist/prod/`.
-
-**What broke, in order:**
-
-1. **Nothing set the asset path early enough.** Assigning
-   `EXCALIDRAW_ASSET_PATH` at the top of the component file ran *after*
-   Excalidraw had initialised and read it, because ES module imports evaluate
-   before the importing module's body. The fix is `excalidrawAssetPath.ts`, a
-   module whose only job is to be imported *before* `@excalidraw/excalidraw` —
-   import order is the mechanism, which is why that import must stay first.
+1. **Nothing set the asset path early enough.** ES module imports evaluate
+   before the importing module's body, so assigning `EXCALIDRAW_ASSET_PATH` at
+   the top of a component file ran *after* Excalidraw read it. `excalidrawAssetPath.ts`
+   exists solely to be imported first — import order is the mechanism, which is
+   why that import must stay at the top.
 2. **A vendored copy went stale.** Asset filenames are content-hashed per
    release, so `public/excalidraw-assets` still held the 0.17 layout after the
-   0.18 upgrade, which 0.18 no longer looks for. The fix is to copy at build
-   time from `node_modules` (`prebuild`), never to commit the copy.
-3. **Self-hosting still did not work.** With the variable set and the fonts
-   copied — the documented recipe — every font was still requested from esm.sh
-   and never once from our origin. That is
-   [excalidraw/excalidraw#8228](https://github.com/excalidraw/excalidraw/issues/8228),
-   open and unfixed. Against `font-src 'self' data: blob:` the result was ~220
-   blocked requests per room, typefaces that never rendered, and every pupil's
-   browser reaching a third-party CDN to draw on a whiteboard.
+   0.18 upgrade. Fixed by copying at build time (`prebuild`), never committing.
+3. **Self-hosting still did not work.** With the variable set and fonts copied —
+   the documented recipe — every font was still fetched from esm.sh
+   ([excalidraw#8228](https://github.com/excalidraw/excalidraw/issues/8228), open).
+   Against `font-src 'self' data: blob:` that meant ~220 blocked requests per
+   room, typefaces that never rendered, and every pupil's browser reaching a
+   third-party CDN to draw on a whiteboard.
 
-**How it is fixed.** `scripts/lib/excalidrawFontFallback.mjs` rewrites the
-hardcoded CDN base in upstream's `dist/prod` output to
-`${globalThis.location.origin}/` at build time, so both candidates resolve
-locally whether or not upstream ever honours the variable. It is idempotent
-(`isPatched`), and a zero-replacement result on an unpatched file fails the
-build — a silent no-op would put every font back on the CDN, and that is
-invisible until someone opens a console.
+`scripts/lib/excalidrawFontFallback.mjs` rewrites the hardcoded CDN base to
+`${globalThis.location.origin}/` at build time. It is idempotent (`isPatched`),
+and a zero-replacement result on an unpatched file **fails the build** — a
+silent no-op would put every font back on the CDN, invisibly until someone
+opened a console.
 
-**What this means for the fork question.** We already patch upstream's shipped
-bundle on every build, for a bug reported and unfixed. That is a fork with one
-patch in it, run by `prebuild`. Anyone arguing a fork is a big step should know
-the step is already taken; anyone arguing it is therefore cheap should note this
-patch is thirty lines and a regex, and an overhaul is not.
+Distribution now assembles production assets via
+`scripts/copy-excalidraw-assets.mjs`, published under the immutable versioned
+R2 prefix and selected through `excalidrawAssetPath.ts`; local and E2E builds
+deliberately retain the `/` fallback.
 
-**What a fork would do instead.** Resolve assets from one configurable base with
-no second candidate, no CDN constant, and no copy step — and drop the CJK
-handwriting font from the build rather than skipping it during a copy.
-
-### E. Test handle
+### Test handle
 
 E2E reaches the scene API through `window.__debugExcalidrawApi` behind a build
-flag. A supported way to obtain the API in a test build would be neater. Not
-worth a fork on its own.
+flag. This has a real cost: in a production-shaped build the handle is absent,
+so driving the board requires synthesising pointer events, which fight
+Excalidraw's rAF throttling and pointer capture and produce strokes with one or
+two points. A supported way to obtain the API in a test build would delete a
+fixture we maintain.
 
-### Where this landed
+## The change worth making
 
-The package's production assets are assembled by
-`scripts/copy-excalidraw-assets.mjs`, published under the immutable versioned
-R2 prefix by the deployment workflow, and selected through
-`excalidrawAssetPath.ts`; local/E2E builds deliberately retain the `/` fallback.
-E2E reaches the API through `window.__debugExcalidrawApi` behind a build flag.
-Both are distribution concerns already handled by the minimal fork and
-playground IaC, not reasons to fork editor internals.
+Items **A**, **B** and **C** are additive, non-breaking, and small — because the
+machinery already exists. The implementation brief is
+[`EXCALIDRAW_INCREMENTS_TASK.md`](EXCALIDRAW_INCREMENTS_TASK.md).
 
-## If the fork is an overhaul
+Sequence: raise A and B upstream first. The fork's value is that it changes
+almost nothing, and that is worth preserving; carry the patches meanwhile the
+same way the mermaid XSS backport is carried.
 
-Everything above optimises for the smallest possible delta, which is the right
-objective for carrying patches and the wrong one for an overhaul. If the reason
-to fork is that we want an editor shaped around a classroom, the question is not
-"what can we not reach through the API" — it is "what will we take ownership
-of, and what will we never take ownership of".
+**Gate before adopting.** `ElementsChange` is built for *history*, and a history
+delta is not automatically a collaboration delta — `IStore.filterUncomittedElements`
+exists precisely because in-progress ephemeral state is excluded from commits.
+Prototype against the existing sync E2E before deleting any current machinery.
+If increments prove to miss mid-stroke state, the design becomes "increments for
+committed changes, `onChange` for the live stroke" — still a large win, but a
+different one.
+
+## If the fork ever becomes an overhaul
+
+Everything above optimises for the smallest possible delta, which is right for
+carrying patches and wrong for an overhaul. If the reason to fork becomes "we
+want an editor shaped around a classroom", the question is not what the API
+cannot reach — it is what we will take ownership of, and what we never will.
 
 ### What an overhaul buys that the API cannot
 
-Checked against `dist/types/excalidraw/element/types.d.ts`:
-
-- **Per-role editability.** `locked: boolean` is a property of the *element*,
-  not of the *viewer*. A worksheet the teacher can edit and a child cannot is
-  not expressible: locking it locks it for everyone. This is the single most
-  classroom-shaped thing upstream does not have.
+- **Per-role editability.** `locked` is a property of the *element*, not the
+  *viewer*. A worksheet the teacher can edit and a child cannot is not
+  expressible — locking it locks it for everyone. The single most
+  classroom-shaped thing upstream lacks.
 - **Authorship as a rule, not a label.** `customData` can carry an author id
-  today, so we could mark who drew what without forking — but nothing enforces
-  it. "A child may move only their own work" lives in the editor's interaction
-  handlers, and there is no hook into them.
-- **Refusal.** Upstream assumes the local scene is truth: a mutation happens and
-  is then published. There is no "ask before you commit this" seam, so a client
-  that misbehaves has already drawn before the server sees it. Server-side
-  validation after the fact is possible without a fork, but it can only undo,
-  never prevent.
+  today, but nothing enforces it. "A child may move only their own work" lives
+  in interaction handlers with no hook into them.
+- **Refusal.** Upstream assumes the local scene is truth: a mutation happens,
+  then publishes. There is no "ask before you commit" seam, so a misbehaving
+  client has already drawn before the server sees it. Server-side validation can
+  undo, never prevent.
 - **A CRDT-native document.** `version` / `versionNonce` / `index` exist because
-  upstream reconciles by version. Our document is a Yjs document, so we convert
-  between the two models on every frame, and `pointCodec.ts`, the tombstone
-  rules and the publish/apply layer all descend from that seam. A fork whose
-  scene store *is* the Yjs document deletes the seam rather than smoothing it.
+  upstream reconciles by version. Ours is a Yjs document, so we convert between
+  models constantly; `pointCodec.ts`, the tombstone rules and the publish/apply
+  layer all descend from that seam. A fork whose scene store *is* the Yjs
+  document deletes the seam rather than smoothing it.
 - **Deleting attack surface.** Library sharing, external links, third-party
-  image handling, export paths, anything that phones out. `UIOptions` hides
-  them; a fork removes them. This repo has a shelf of `SECURITY_*` documents
-  that would be shorter if the surface were not there.
+  image handling, export paths — anything that phones out. `UIOptions` hides
+  them; a fork removes them. The `SECURITY_*` shelf would be shorter.
 
 ### What an overhaul forces us to own
 
-The parts nobody wants: the canvas renderer, text editing and wrapping, arrow
-binding and geometry, image and file handling, export, accessibility, and the
-long tail of shape-editing bugs. These are the hard, boring, well-tested parts of
-Excalidraw and they carry no classroom value — owning them is pure cost, paid
-forever, in exchange for the five bullets above.
-
-That is the trade to be explicit about. Not "can we fork" — we can — but
-"which half do we want to be responsible for".
+The canvas renderer, text editing and wrapping, arrow binding and geometry,
+image and file handling, export, accessibility, and the long tail of
+shape-editing bugs. These are the hard, well-tested parts of Excalidraw and they
+carry no classroom value. Owning them is pure cost, paid forever, in exchange
+for the five bullets above.
 
 ### The shape worth forking
 
 **Fork the document and permission layer. Do not fork the editor.**
 
-Take ownership of: the scene store (make it the Yjs document), the interaction
-gate (may this pointer move this element, given this role and this author), and
-the collaboration surface (cursors, selection, follow). Leave upstream owning:
-rendering, text editing, geometry, binding, images, export.
+Own: the scene store (make it the Yjs document), the interaction gate (may this
+pointer move this element, given this role and this author), and the
+collaboration surface. Leave upstream owning rendering, text editing, geometry,
+binding, images, export.
 
-That boundary is worth writing down before a single line is changed, because
-every future decision either respects it or turns this into a project that
-maintains a drawing editor.
+Write that boundary down before changing a line, because every later decision
+either respects it or turns this into a project that maintains a drawing editor.
 
 ### Sequencing, and the gate
 
-1. **Name the outcomes first**, as things a teacher can do: a worksheet children
-   cannot move, each child confined to their own area, "everyone look at my
-   screen", "only your own work is yours to erase", freeze the board.
-2. **Spike each one against the current API.** Frames exist (`frameId`), locking
-   exists, follow exists (`onUserFollow`) and the teacher-guide flow is now
-   implemented above it, while authorship can live in `customData`. Reachable
-   outcomes stay above the fork boundary; they are not fork arguments.
-3. **Fork only on what survives.** If the list is one item, build it above the
-   API and accept the awkwardness. If it is per-role editability plus refusal
-   plus the CRDT document, the fork is justified and the boundary above is the
-   plan.
+1. **Name the outcomes** as things a teacher can do: a worksheet children cannot
+   move, each child confined to their own area, "everyone look at my screen",
+   "only your own work is yours to erase", freeze the board.
+2. **Spike each against the current API.** Frames exist (`frameId`), locking
+   exists, follow exists (`onUserFollow`) and the guide flow is built on it,
+   authorship can live in `customData`. Reachable outcomes are not fork
+   arguments.
+3. **Fork only on what survives.** One survivor means build above the API and
+   accept the awkwardness. Per-role editability *plus* refusal *plus* the CRDT
+   document justifies the fork, and the boundary above is the plan.
 4. **Decide the maintenance policy on day one.** An overhaul creates a deep
-   delta, so plan to stop rebasing: fork at the pinned tag, keep a written log of
-   every divergence, and cherry-pick only security and geometry fixes. Pretending
-   the fork will track upstream is how forks die half-merged.
+   delta, so plan to stop rebasing: fork at the pinned tag, log every
+   divergence, cherry-pick only security and geometry fixes. Pretending the fork
+   will track upstream is how forks die half-merged.
 
-### Completed before adopting the package fork
+## Maintenance policy
 
-Items 1–5 above were completed before switching the package dependency. They
-shrank the wrapper and left the fork free of Teacher Playground collaboration
-logic; the teacher-guide transport remains application code in the wrapper and
-RoomDO. If a future CRDT-native editor fork is separately approved,
-`reconcileElements` would be deleted rather than replaced again.
-
-## Adopted maintenance policy
-
-The minimal fork is justified by ownership of packaging and distribution, not
-by duplicating editor internals. Teacher Playground keeps using public
-Excalidraw APIs in its wrapper. Fork changes should stay limited to package
-identity, release assembly, CI/CD, and a small written divergence log unless a
-separately tested classroom requirement cannot be expressed through the public
-API.
+The minimal fork is justified by ownership of packaging and distribution, not by
+duplicating editor internals. The wrapper keeps using public APIs. Fork changes
+stay limited to package identity, release assembly, CI/CD, security backports,
+and a written divergence log — unless a separately tested classroom requirement
+cannot be expressed through the public API.
 
 For every release:
 
-1. Start from the pinned upstream tag and record the upstream commit.
+1. Start from the pinned upstream tag; record the upstream commit.
 2. Bump `packages/excalidraw/package.json` to `x.y.z-tp.n`.
-3. Run the release assembly tests, typecheck, lint/format, and package build.
-4. Push the release branch and require its validation workflow to pass.
+3. Run release assembly tests, typecheck, lint/format, package build.
+4. Push the release branch; require its validation workflow to pass.
 5. Create the annotated `teacher-playground-v<version>` tag. The tag workflow
-   creates the bundle, checksums, GitHub Release, and R2 upload.
-6. Consume an immutable version URL in Teacher Playground. Never install from
-   `latest.json` and never build production from an untagged fork branch.
+   builds the bundle, checksums, GitHub Release, and R2 upload.
+6. Consume an immutable version URL. Never install from `latest.json`; never
+   build production from an untagged fork branch.
 
-## Prerequisites completed
+## Open risks
 
-The earlier gates are no longer open:
-
-1. `RoomDO` owns the durable Yjs document and SQL projection; cursor/presence
-   remains ephemeral.
-2. Browser latency probes now exercise publish-to-render behavior. After the
-   native cursor migration, the focused local two-browser check measured
-   host-to-peer cursor p95 at 365 ms and peer-to-host p95 at 16 ms, both below
-   the 1,000 ms test budget. These are local regression measurements, not WAN
-   capacity claims.
-
-Teacher guide/follow is now implemented and verified in Teacher Playground using
-the fork's public Excalidraw API. The fork itself remains a minimal distribution
-fork: its own package, release bundle, CI, and Cloudflare R2 IaC are maintained
-there, while the classroom follow transport stays in the application layer.
+- **The working copy is not pinned.** `excalidraw/` is excluded through
+  `.git/info/exclude`, which is **machine-local** — not `.gitignore`, not a
+  submodule. Nothing in this repository or its CI ties the checkout to the
+  published tarball; today they agree by convention alone. A submodule pin, or a
+  CI assertion that the installed package version equals the fork tag, would
+  make the relationship real.
+- **Subpath exports are types-only.** `exports["./*"]` in the published package
+  provides a `types` condition with no runtime entry. Type-only imports
+  (`/types`, `/element/types`) are correct and safe; a value import from a
+  subpath would fail to resolve at build time. A constraint to know, not a
+  latent runtime bug.
