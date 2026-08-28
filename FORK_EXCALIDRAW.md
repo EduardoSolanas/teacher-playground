@@ -90,7 +90,7 @@ Three gaps were identified in the pre-tp.7 public API. The tp.7 release closes
 all three additively; the application keeps the old publishing workarounds until
 the comparison gate in `EXCALIDRAW_INCREMENTS_TASK.md` proves they are redundant.
 
-### A. The change feed exists; tp.7 exposes it
+### A. The change feed exists; tp.7 exposes it — but it is commit-only
 
 **Before tp.7 this was not a missing feature; it was an unexported one.**
 
@@ -101,30 +101,63 @@ the comparison gate in `EXCALIDRAW_INCREMENTS_TASK.md` proves they are redundant
 `added`, `removed`, `updated`, each `id → Delta<ElementPartial>`.
 
 Excalidraw computes this on every commit for its own undo/history. The
-`IStore` interface is annotated `@experimental`. Release tp.7 exposes this
-feed as `ExcalidrawImperativeAPI.onIncrement` while retaining `onChange` — the
-**entire scene, on every pointer sample** — unchanged.
+`IStore` interface is annotated `@experimental`. Release tp.7 exposes it as
+`ExcalidrawImperativeAPI.onIncrement`, leaving `onChange` unchanged.
 
-The application therefore rebuilds, twenty times a second, a delta the editor
-already has:
+> **Correction (2026-08-29).** An earlier revision of this section, and the
+> first draft of `EXCALIDRAW_INCREMENTS_TASK.md`, claimed this feed would
+> replace the per-sample publishing machinery and remove the reported drawing
+> lag. **That was wrong, and the table below said so with more confidence than
+> the evidence ever supported.**
+>
+> A real-browser test held a multi-point pointer gesture and observed **zero
+> increment callbacks before `pointerup`**. Increments fire on *commit*. The
+> expensive path — whole scene, roughly twenty times a second, while the
+> pointer is down — is precisely where they do not fire.
+>
+> The `filterUncomittedElements` hint in `IStore` was the tell, and it was
+> recorded as a risk before the work began. It should have been resolved before
+> the payoff was written down as a premise rather than a hope.
 
-| Application code | Exists because |
+What the increment feed can and cannot do:
+
+| Workaround | Can increments replace it? |
 |---|---|
-| `scenePublish.ts` — `diffScene`, `shouldPublish`, `elementsToPublish` | no delta is offered |
-| `publishedVersionsRef` in `ExcalidrawWrapper.tsx` | a per-sample version map |
-| `STROKE_COMMIT_INTERVAL_MS` throttle + trailing timer | the per-sample cost |
-| `deferredElementsRef` / deferred React hop | the same cost, mid-stroke — this **is** the reported drawing lag |
-| `excalidrawElementsEqual` | echo detection by double `JSON.stringify` |
-| `filesToUpload` + an uploaded-id set | the files map also arrives whole |
+| `scenePublish.ts` — `diffScene`, `shouldPublish`, `elementsToPublish` | **Only for committed changes.** Still required for the live stroke |
+| `publishedVersionsRef` | **No.** Still the baseline for the stroke path |
+| `STROKE_COMMIT_INTERVAL_MS` throttle | **No.** It exists for the pointer-down path |
+| `deferredElementsRef` / deferred React hop | **No.** This is the drawing-lag fix and it lives entirely in the stroke path |
+| `excalidrawElementsEqual` | Partly — `source` tagging (item B) covers echo suppression |
+| `filesToUpload` + an uploaded-id set | Unresolved; increments do not currently carry file changes |
 
-The last row is the strongest evidence: board images shipped much later than
-the sync layer and had to invent a **second, independent** de-duplication
-mechanism for the same missing signal. The cost is not one workaround; it is a
-pattern that recurs in every feature touching the scene.
+So the shape the application actually adopted is a **hybrid**: increments
+publish committed changes, `onChange` keeps handling the live stroke. That is a
+smaller prize than this document originally promised, and it is worth stating
+plainly — the per-sample cost, which was the whole motivation, is untouched.
 
-**Worth raising upstream.** Every collaborative embedder pays this, the
-machinery is already there, the interface is already `@experimental`, and the
-change is additive.
+**Current performance effect: none.** Both flags
+(`NEXT_PUBLIC_WHITEBOARD_INCREMENTS`, `NEXT_PUBLIC_WHITEBOARD_INCREMENT_COMPARE`)
+default off and are set nowhere, so production behaviour is unchanged. With the
+flag on, `commitIncrement` still calls `diffScene` to maintain the baseline and
+serialises the scene twice, so committed changes do slightly **more** work than
+before — on a path that runs once per stroke rather than twenty times a second,
+so it is not a regression that matters, but it is not a saving either.
+
+**What would actually help the hot path**, now that increments are known to be
+commit-only:
+
+1. Stop calling `diffScene` inside `commitIncrement` by maintaining the version
+   baseline from the increment itself. Small, real, available today.
+2. Measure before claiming. `isWhiteboardLatencyProbeEnabled()` already exists
+   and has been used to measure cursor propagation; point it at drawing.
+3. A genuine fix for the stroke path needs a signal upstream does not expose at
+   all — mid-stroke deltas — which is a much larger ask than exporting an
+   existing emitter, and should not be attempted on the strength of this
+   document alone.
+
+**Still worth raising upstream**, on the narrower and honest grounds: the
+increment feed is useful for committed changes, the machinery already exists,
+`IStore` is already `@experimental`, and exposing it is additive.
 
 ### B. Origin tagging on notification — shipped in tp.7
 

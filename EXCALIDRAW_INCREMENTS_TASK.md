@@ -34,8 +34,21 @@ Excalidraw nevertheless computes a delta internally, for undo/history:
 None of it reaches `ExcalidrawImperativeAPI`
 (`excalidraw/packages/excalidraw/types.ts`).
 
-So the application rebuilds, per sample, what the editor already has. The
-machinery this exists to replace, in **this** repo:
+> **Status correction (2026-08-29). Read this before the table.**
+>
+> Phases 1–3 are done and released as `tp.7`. Phase 4 is **largely cancelled**,
+> and the premise this section was written on turned out to be wrong.
+>
+> §7 was answered with a real-browser test: **increments do not fire during a
+> stroke**, only on commit. The per-sample cost below — which was the entire
+> motivation — is therefore untouched by increments, and most of the table
+> cannot be deleted. The table is kept because it still describes accurately
+> why the machinery exists; it no longer describes what increments will remove.
+>
+> Anyone picking this up should read §6 for what is actually left.
+
+The application rebuilds, per sample, what the editor already has on commit. The
+machinery, in **this** repo:
 
 | File | Symbol | Purpose |
 |---|---|---|
@@ -203,23 +216,56 @@ npm run test:e2e -- board-images
 
 ---
 
-## 6. Phase 4 — remove the workarounds (gated)
+## 6. Phase 4 — mostly cancelled; what is actually left
 
-**Only once Phase 2's comparison mode has run over the full E2E suite with zero
-disagreements.** Then remove, each in its own commit with the E2E run as
-evidence:
+**The original Phase 4 assumed increments would replace the per-sample publish
+path. §7 disproved that.** Increments are commit-only, so the application runs a
+hybrid: increments publish committed changes, `onChange` still handles the live
+stroke. Everything below reflects that.
 
-1. `diffScene`, `shouldPublish`, `elementsToPublish` and `scenePublish.ts`
-2. `publishedVersionsRef`
-3. `excalidrawElementsEqual` echo detection
-4. `deferredElementsRef` and the deferred React hop
-5. `STROKE_COMMIT_INTERVAL_MS` — **evaluate, do not assume.** Throttling may
-   still be wanted for network reasons even when the CPU cost is gone. Measure
-   with the latency probe before removing.
+### Cannot be removed — they serve the stroke path
 
-Finally, re-check whether board-image upload de-duplication (`filesToUpload` and
-the uploaded-id set in `ExcalidrawWrapper.tsx`) can be driven from increments
-rather than the whole files map.
+Keep, and do not revisit without new evidence:
+
+- `publishedVersionsRef` — the baseline for the pointer-down path
+- `STROKE_COMMIT_INTERVAL_MS` and its trailing timer
+- `deferredElementsRef` and the deferred React hop — **this is the drawing-lag
+  fix**; removing it reintroduces the reported bug
+- `scenePublish.ts` — still the publish path while the pointer is down
+
+### Can still be retired, on evidence
+
+- `excalidrawElementsEqual` echo detection, once `source: 'remote'` tagging is
+  proven to cover every echo path. Requires the comparison mode to run clean
+  across the full E2E suite first.
+
+### Worth doing, and currently the only real performance work available
+
+1. **Stop calling `diffScene` inside `commitIncrement`.** It runs today only to
+   keep `publishedVersionsRef` in sync. Maintaining that baseline from the
+   increment itself removes a full scene diff and one of two serialisations per
+   commit. Small, real, available now.
+2. **Measure before claiming anything.** `isWhiteboardLatencyProbeEnabled()`
+   already exists and has measured cursor propagation. Point it at drawing and
+   publish numbers; this document has already been wrong once by reasoning
+   instead of measuring.
+3. **Turn the flags on somewhere.** `NEXT_PUBLIC_WHITEBOARD_INCREMENTS` and
+   `NEXT_PUBLIC_WHITEBOARD_INCREMENT_COMPARE` default off and are set nowhere,
+   so the increment path is dormant in every environment. Comparison mode in a
+   staging build is what would earn the retirement above.
+
+### Out of reach without a new upstream signal
+
+Fixing the per-sample cost needs **mid-stroke deltas**, which upstream does not
+expose in any form. That is a materially larger ask than exporting an existing
+emitter, and it should not be attempted on the strength of this document. If it
+is ever pursued, it is a fresh proposal with its own evidence.
+
+### Files
+
+Re-check separately whether board-image de-duplication (`filesToUpload` and the
+uploaded-id set) can be driven from increments; increments do not currently
+appear to carry file changes.
 
 ---
 
@@ -330,6 +376,18 @@ In the fork, use its own equivalents; do not invent commands.
 - [x] Workarounds retained with written reasons; Phase 4 removal remains gated
       on the comparison-and-measurement evidence described above.
 - [x] `FORK_EXCALIDRAW.md` updated to reflect what shipped.
+
+**Delivered, with the payoff not delivered.** Every box above is genuinely
+ticked, and the work is sound: the API is real and published, the gate was
+respected, nothing was deleted on optimism. What did not arrive is the reason
+the task existed. Increments turned out to be commit-only, so the per-sample
+cost and the drawing lag are untouched, and with the flags off — which is
+everywhere — production behaviour is unchanged.
+
+That is a fault in this brief, not in the implementation. It was written
+asserting a payoff while recording, in §7, the exact reason that payoff might
+not exist. The risk should have been resolved before the plan was built on top
+of it. Remaining work is in §6.
 
 ## 10. If you get stuck
 
