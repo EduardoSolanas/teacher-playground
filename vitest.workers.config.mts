@@ -24,6 +24,7 @@ export default defineConfig({
             // deadline; the self-scheduling test configures a short alarm.
             REVOCATION_CHECK_INTERVAL_MS: '3600000',
           },
+          r2Buckets: ['BOARD_FILES'],
         },
       };
     }),

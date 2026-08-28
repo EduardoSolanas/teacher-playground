@@ -530,6 +530,25 @@ export class RoomDO extends DurableObject {
       return forbidden();
     }
 
+    // Board file storage: streaming uploads and downloads for images pasted
+    // into whiteboards. Authorization checks come from the Worker as GET requests
+    // to /room/files/authorize-write (for PUT) or /room/files/authorize-read (for GET).
+    // Both authorization checks are GET requests because the Worker asks RoomDO
+    // to verify the ORIGINAL operation (PUT or GET) is authorized.
+    if (section === 'files') {
+      /*
+       * The action is the third segment, read the way every other section here
+       * reads its id. Slicing the raw split kept the leading empty string and
+       * produced "files/authorize-write", which matched neither branch and fell
+       * through to forbidden -- so every upload was refused, including the
+       * owner's, and the only test covering it accepted 201 or 403 and passed.
+       */
+      const action = url.pathname.split('/').filter(Boolean)[2] ?? '';
+      if (action === 'authorize-write') return canWriteBoard(role) ? null : forbidden();
+      if (action === 'authorize-read') return granted ? null : forbidden();
+      return forbidden();
+    }
+
     return forbidden();
   }
 
@@ -622,6 +641,13 @@ export class RoomDO extends DurableObject {
           accountId,
           name,
         });
+      }
+      case 'files': {
+        // Authorization check only; actual R2 operations happen in the Worker.
+        // Paths arrive as /room/files/authorize-write or /room/files/authorize-read.
+        // Both are GET requests; the authorize() matrix checks the path and verifies
+        // the caller can write (for PUT) or read (for GET) the board.
+        return Promise.resolve(Response.json({ ok: true }, { status: 200 }));
       }
       case 'requests': {
         const requestId = segments[2];

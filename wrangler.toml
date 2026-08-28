@@ -64,6 +64,12 @@ class_name = "RoomDO"
 name = "IDENTITY"
 class_name = "IdentityDO"
 
+# Board files (images pasted into whiteboards). Buckets are provisioned
+# manually in the Cloudflare dashboard; this binding names it.
+[[r2.bindings]]
+bucket_name = "teacher-playground-board-files"
+binding = "BOARD_FILES"
+
 # new_sqlite_classes (not new_classes) gives the Durable Object a
 # SQLite-backed storage backend, which is what DODatabase requires.
 [[migrations]]

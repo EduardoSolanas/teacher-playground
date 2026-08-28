@@ -41,11 +41,18 @@ import {
   withSecurityHeaders,
   withNonceHtmlSecurityHeaders,
 } from './lib/worker/requestGuard';
+import {
+  MAX_BOARD_FILE_BYTES,
+  isValidFileId,
+  isAllowedMimeType,
+  buildR2ObjectKey,
+} from './lib/whiteboard/boardFileRoutes';
 
 export interface Env {
   ROOMS: DurableObjectNamespace;
   IDENTITY: DurableObjectNamespace;
   ASSETS: Fetcher;
+  BOARD_FILES: R2Bucket;
   ACCESS_ISSUER?: string;
   ACCESS_AUDIENCE?: string;
   ACCESS_JWKS_URL?: string;
@@ -71,6 +78,7 @@ const ROOM_PAGE = /^\/whiteboard\/[^/]+\/?$/;
 const ROOM_PLACEHOLDER = '/whiteboard/_room';
 
 const ROOM_API = /^\/api\/whiteboard\/room\/([^/]+)(\/.*)?$/;
+const BOARD_FILE_API = /^\/api\/whiteboard\/room\/([^/]+)\/files\/([^/]+)$/;
 const AV_TOKEN = '/api/av/token';
 const SESSION_ISSUE = '/auth/session';
 const SESSION_CURRENT = '/auth/session/current';
@@ -680,6 +688,25 @@ async function purgeRoomGuests(
   }
 }
 
+async function purgeBoardFiles(env: Env, roomId: string): Promise<void> {
+  try {
+    const prefix = `rooms/${roomId}/files/`;
+    // List all objects with the room's file prefix, then delete them.
+    // R2 list is paginated; handle cursors for continuation.
+    let cursor: string | undefined;
+    for (;;) {
+      const list = await env.BOARD_FILES.list({ prefix, cursor });
+      for (const object of list.objects) {
+        await env.BOARD_FILES.delete(object.key);
+      }
+      if (!list.truncated) break;
+      cursor = list.cursor;
+    }
+  } catch {
+    console.error('board files purge failed');
+  }
+}
+
 async function syncOwnedRoomNameFromSettings(
   env: Env,
   cookie: string,
@@ -988,6 +1015,111 @@ const worker = {
       return forward(env, roomId, '/room/av', request, url, session, guestCaller);
     }
 
+    // Whiteboard board file upload and download. Handled before ROOM_API so
+    // binary payloads bypass the JSON body-reading logic and can exceed 4MB.
+    const fileMatch = url.pathname.match(BOARD_FILE_API);
+    if (fileMatch) {
+      const roomId = decodeURIComponent(fileMatch[1]);
+      const fileId = decodeURIComponent(fileMatch[2]);
+      if (!isValidRoomId(roomId) || !isValidFileId(fileId)) {
+        return withSecurityHeaders(new Response('Invalid request', { status: 400 }));
+      }
+
+      if (request.method === 'PUT') {
+        const contentLength = request.headers.get('content-length');
+        if (!contentLength || isNaN(Number(contentLength))) {
+          return withSecurityHeaders(new Response('Content-Length required', { status: 411 }));
+        }
+        const declaredSize = Number(contentLength);
+        if (declaredSize > MAX_BOARD_FILE_BYTES) {
+          return withSecurityHeaders(new Response('File too large', { status: 413 }));
+        }
+
+        const mimeType = request.headers.get('content-type');
+        if (!isAllowedMimeType(mimeType)) {
+          return withSecurityHeaders(new Response('Unsupported media type', { status: 415 }));
+        }
+
+        // Ask RoomDO for write authorization before streaming to R2.
+        const authCheck = await forward(
+          env,
+          roomId,
+          '/room/files/authorize-write',
+          new Request('https://room/room/files/authorize-write', { method: 'GET' }),
+          url,
+          session,
+          guestCaller,
+        );
+        if (!authCheck.ok) return authCheck;
+
+        // Streamed, not buffered: an image is megabytes and reading it into
+        // memory first would put the whole file in the isolate's heap.
+        const key = buildR2ObjectKey(roomId, fileId);
+        const stored = await env.BOARD_FILES.put(key, request.body, {
+          httpMetadata: {
+            contentType: mimeType!,
+          },
+        });
+
+        /*
+         * Checked again against what actually arrived.
+         *
+         * The cap above tests content-length, which is the client's word about
+         * its own request. A peer that declares a small body and then streams a
+         * large one would otherwise write it in full, and the bucket -- and the
+         * bill -- would grow to whatever anyone with a grant felt like sending.
+         * The bytes are already spent by the time this runs, so this bounds
+         * storage rather than bandwidth; it is the difference between one
+         * oversized request and an unbounded store.
+         */
+        if (stored && stored.size > MAX_BOARD_FILE_BYTES) {
+          await env.BOARD_FILES.delete(key);
+          return withSecurityHeaders(new Response('File too large', { status: 413 }));
+        }
+
+        return withSecurityHeaders(Response.json({ ok: true }, { status: 201 }));
+      }
+
+      if (request.method === 'GET' || request.method === 'HEAD') {
+        // Ask RoomDO for read authorization.
+        const authCheck = await forward(
+          env,
+          roomId,
+          '/room/files/authorize-read',
+          new Request('https://room/room/files/authorize-read', { method: 'GET' }),
+          url,
+          session,
+          guestCaller,
+        );
+        if (!authCheck.ok) return authCheck;
+
+        // Fetch from R2 and return with cache headers.
+        const key = buildR2ObjectKey(roomId, fileId);
+        const object = await env.BOARD_FILES.get(key);
+        if (!object) {
+          return withSecurityHeaders(new Response('Not found', { status: 404 }));
+        }
+
+        const headers = new Headers();
+        if (object.httpMetadata?.contentType) {
+          headers.set('Content-Type', object.httpMetadata.contentType);
+        }
+        // File IDs are content-addressed by Excalidraw, so the bytes never
+        // change. Cache indefinitely.
+        headers.set('Cache-Control', 'private, max-age=31536000, immutable');
+
+        if (request.method === 'HEAD') {
+          return withSecurityHeaders(new Response(null, { status: 200, headers }));
+        }
+        return withSecurityHeaders(new Response(object.body, { status: 200, headers }));
+      }
+
+      return withSecurityHeaders(Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'GET, HEAD, PUT' } },
+      ));
+    }
+
     const match = url.pathname.match(ROOM_API);
     if (match) {
       const roomId = decodeURIComponent(match[1]);
@@ -1084,6 +1216,7 @@ const worker = {
         } else if (request.method === 'DELETE' && response.status === 200) {
           await releaseOwnedRoomSlot(env, cookie, roomId);
           await purgeRoomGuests(env, cookie, roomId);
+          ctx.waitUntil(purgeBoardFiles(env, roomId));
         }
       }
       if (session && settingsClone && response.ok) {

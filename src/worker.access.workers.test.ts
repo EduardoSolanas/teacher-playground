@@ -1085,6 +1085,98 @@ describe('real local Access boundary through workerd', () => {
     const root = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner);
     expect(root.status).toBe(200);
   });
+
+  describe('board file upload and download', () => {
+    it('returns the exact bytes that were uploaded', async () => {
+      const owner = await bootstrapLocalSession('board-file-roundtrip');
+      const roomId = 'board-file-roundtrip-room';
+      expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ elements: [] }),
+      })).status).toBe(200);
+
+      // A byte pattern that would survive nothing that re-encodes it.
+      const bytes = new Uint8Array(2048);
+      for (let i = 0; i < bytes.length; i += 1) bytes[i] = (i * 7) % 256;
+
+      const upload = await authenticatedFetch(
+        `/api/whiteboard/room/${roomId}/files/roundtrip-file-1`,
+        owner,
+        {
+          method: 'PUT',
+          headers: { Origin: BASE, 'content-type': 'image/png', 'content-length': String(bytes.length) },
+          body: bytes,
+        },
+      );
+      expect(upload.status).toBe(201);
+
+      const download = await authenticatedFetch(
+        `/api/whiteboard/room/${roomId}/files/roundtrip-file-1`,
+        owner,
+      );
+      expect(download.status).toBe(200);
+      expect(download.headers.get('content-type')).toBe('image/png');
+      // SEC-012 forces no-store on every non-HTML response, so the route's own
+      // immutable caching header does not survive. Documented here because it
+      // means each image is refetched on every load; see the note in the review.
+      expect(download.headers.get('cache-control')).toBe('no-store');
+      expect(Array.from(new Uint8Array(await download.arrayBuffer()))).toEqual(Array.from(bytes));
+    });
+
+    it('refuses a file to an account with no grant in that room', async () => {
+      const owner = await bootstrapLocalSession('board-file-owner-iso');
+      const outsider = await bootstrapLocalSession('board-file-outsider');
+      const roomId = 'board-file-isolation-room';
+      expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ elements: [] }),
+      })).status).toBe(200);
+
+      const bytes = new Uint8Array([1, 2, 3, 4]);
+      expect((await authenticatedFetch(
+        `/api/whiteboard/room/${roomId}/files/private-file-1`,
+        owner,
+        {
+          method: 'PUT',
+          headers: { Origin: BASE, 'content-type': 'image/png', 'content-length': String(bytes.length) },
+          body: bytes,
+        },
+      )).status).toBe(201);
+
+      // A session alone must not be enough: the grant is what gates the bytes,
+      // or one room's pictures are readable by anyone who can guess a URL.
+      const stolen = await authenticatedFetch(
+        `/api/whiteboard/room/${roomId}/files/private-file-1`,
+        outsider,
+      );
+      expect(stolen.status).toBe(403);
+      expect(stolen.headers.get('content-type')).not.toContain('image/');
+    });
+
+    it('refuses SVG, which would be script running from our own origin', async () => {
+      const owner = await bootstrapLocalSession('board-file-svg');
+      const roomId = 'board-file-svg-room';
+      await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ elements: [] }),
+      });
+
+      const svg = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>');
+      const refused = await authenticatedFetch(
+        `/api/whiteboard/room/${roomId}/files/svg-attempt`,
+        owner,
+        {
+          method: 'PUT',
+          headers: { Origin: BASE, 'content-type': 'image/svg+xml', 'content-length': String(svg.length) },
+          body: svg,
+        },
+      );
+      expect(refused.status).toBe(415);
+    });
+  });
 });
 
 function teacherRoomIds(body: unknown): string[] {
