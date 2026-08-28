@@ -46,7 +46,7 @@ function apiStatus(page: Page, path: string, init?: RequestInit): Promise<number
     async ({ path, init }) => (await fetch(path, {
       ...init,
       headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
-    })).status,
+    } as RequestInit)).status,
     { path, init: init ?? null } as { path: string; init: RequestInit | null },
   );
 }
@@ -68,7 +68,7 @@ function apiCall(
       const response = await fetch(path, {
         ...init,
         headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
-      });
+      } as RequestInit);
       const text = await response.text();
       let json: unknown = null;
       try {

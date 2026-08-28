@@ -24,7 +24,7 @@ function pageFetch(
       const response = await fetch(path, {
         ...init,
         headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
-      });
+      } as RequestInit);
       const text = await response.text();
       let json: unknown = null;
       try {

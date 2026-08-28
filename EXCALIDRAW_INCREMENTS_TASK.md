@@ -239,6 +239,29 @@ because a freehand stroke must appear on the other board while it is being drawn
 > Does an increment fire during a stroke in progress, and does it carry enough
 > for a remote peer to render the partial stroke?
 
+### Evidence (2026-08-28)
+
+The real-browser test `tests/e2e/collaboration.spec.ts` selected the pen tool,
+held a multi-point pointer gesture down, and subscribed to the released
+`onIncrement` API. With `NEXT_PUBLIC_WHITEBOARD_INCREMENTS=1` and comparison
+mode enabled, it observed **zero increment callbacks before `pointerup`**. After
+the real pointer-up, an increment arrived and the committed freedraw element
+contained more than one point. The same collaboration suite passed with both
+flags unset.
+
+Therefore increments do not carry the in-progress stroke. The application uses
+the required hybrid design: increments publish committed changes, while the
+existing throttled `onChange` path remains active only during the live pointer
+stroke. The baseline, deferred React hop, and throttle remain intentionally
+retained until a later comparison-and-measurement pass justifies each removal.
+
+The independent verifier also exercised the stale-remote reconciliation case.
+Its first pass found that an unconditional deferred winner republish could race
+with a newer remote Yjs write. The final implementation limits that republish
+to increment mode, cancels older work with a remote-scene epoch, and debounces
+equal-version conflicts. A second independent verifier approved the restored
+tree after the full unit, worker, build, and flag-on/flag-off browser gates.
+
 - **If yes** — proceed as written.
 - **If no** — the design becomes: **increments for committed changes, `onChange`
   for the live stroke**. Still a large win (it removes the per-sample delta
@@ -297,16 +320,16 @@ In the fork, use its own equivalents; do not invent commands.
 
 ## 9. Definition of done
 
-- [ ] Fork exposes `onIncrement`, increment `source`, and `onToolChange`, all
+- [x] Fork exposes `onIncrement`, increment `source`, and `onToolChange`, all
       additive, with `onChange` behaviour unchanged and regression-tested.
-- [ ] Fork released as `tp.7`; application pins the immutable tarball.
-- [ ] Application consumes increments behind a flag, with comparison mode.
-- [ ] The §7 question answered **with evidence**, and this document updated with
+- [x] Fork released as `tp.7`; application pins the immutable tarball.
+- [x] Application consumes increments behind a flag, with comparison mode.
+- [x] The §7 question answered **with evidence**, and this document updated with
       the answer.
-- [ ] Full E2E green with the flag on and off.
-- [ ] Workarounds removed only where the comparison mode proved them redundant;
-      anything retained has a written reason.
-- [ ] `FORK_EXCALIDRAW.md` updated to reflect what shipped.
+- [x] Full E2E green with the flag on and off.
+- [x] Workarounds retained with written reasons; Phase 4 removal remains gated
+      on the comparison-and-measurement evidence described above.
+- [x] `FORK_EXCALIDRAW.md` updated to reflect what shipped.
 
 ## 10. If you get stuck
 

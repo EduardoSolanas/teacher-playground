@@ -11,14 +11,14 @@ rewritten drawing editor.
 | Working copy | `excalidraw/` in this checkout (see [Open risks](#open-risks)) |
 | Release branch | `teacher-playground/release-v0.18.1` |
 | Package identity | `@teacher-playground/excalidraw` |
-| Current release | `teacher-playground-v0.18.1-tp.6` |
+| Current release | `teacher-playground-v0.18.1-tp.7` |
 | Upstream base | `v0.18.1` |
 
 The application consumes the immutable release tarball, pinned in
 `package.json` and `package-lock.json`:
 
 ```text
-https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.6/package.tgz
+https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.7/package.tgz
 ```
 
 **The fork is on the current upstream release.** `@excalidraw/excalidraw@0.18.1`
@@ -32,7 +32,7 @@ The fork owns its R2 bucket (`teacher-playground-excalidraw`), CORS, custom
 domain, release objects, and release metadata, published by its own GitHub
 Actions workflow using the `prod` environment's `CLOUDFLARE_API_TOKEN` secret
 and `CLOUDFLARE_ACCOUNT_ID` variable. The application consumes the immutable
-base `https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.6/dist/prod/`.
+base `https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.7/dist/prod/`.
 Versioned objects carry one-year immutable cache headers.
 
 ## What the fork actually contains
@@ -49,7 +49,8 @@ roughly 2,950 deletions against 13 insertions**. Almost all of it is removal:
   rather than waiting for an upstream release.
 
 Beyond that there are **three single-line source edits** — in `App.tsx`,
-`TTDDialog/common.ts` and a `welcome-screen` stylesheet.
+`TTDDialog/common.ts` and a `welcome-screen` stylesheet — plus the additive
+increment and tool-change API described below.
 
 That is the fork's defining property and the thing to protect: it changes
 essentially no editor behaviour, so nothing custom can rot, and adopting a
@@ -83,14 +84,15 @@ shared document, which Excalidraw's history does not model.
 > supported path, and the type is rich (pointer, button, username, colour,
 > selection, laser tool, idle state).
 
-## What is genuinely not exposed
+## What was genuinely not exposed before tp.7
 
-Three items remain. The first has changed character since the last revision and
-is now the only one worth spending fork budget on.
+Three gaps were identified in the pre-tp.7 public API. The tp.7 release closes
+all three additively; the application keeps the old publishing workarounds until
+the comparison gate in `EXCALIDRAW_INCREMENTS_TASK.md` proves they are redundant.
 
-### A. The change feed exists; it is not exposed
+### A. The change feed exists; tp.7 exposes it
 
-**This is not a missing feature. It is an unexported one.**
+**Before tp.7 this was not a missing feature; it was an unexported one.**
 
 `packages/excalidraw/store.ts` defines `class Store` with a public
 `onStoreIncrementEmitter`, which fires a `StoreIncrementEvent` carrying
@@ -99,9 +101,9 @@ is now the only one worth spending fork budget on.
 `added`, `removed`, `updated`, each `id → Delta<ElementPartial>`.
 
 Excalidraw computes this on every commit for its own undo/history. The
-`IStore` interface is annotated `@experimental`. None of it reaches
-`ExcalidrawImperativeAPI`, which offers `onChange` — the **entire scene, on
-every pointer sample** — and nothing else.
+`IStore` interface is annotated `@experimental`. Release tp.7 exposes this
+feed as `ExcalidrawImperativeAPI.onIncrement` while retaining `onChange` — the
+**entire scene, on every pointer sample** — unchanged.
 
 The application therefore rebuilds, twenty times a second, a delta the editor
 already has:
@@ -124,27 +126,41 @@ pattern that recurs in every feature touching the scene.
 machinery is already there, the interface is already `@experimental`, and the
 change is additive.
 
-### B. Origin tagging on notification
+### B. Origin tagging on notification — shipped in tp.7
 
 A scene pushed in with `updateScene` comes back out through `onChange` as
-though the user drew it, so the echo must be filtered. `captureUpdate` controls
-*history*, not *notification*. `Store.commit()` already knows why it is
-committing; carrying that through to the emitted increment would delete
-`adoptVersionBaseline` and `lastSyncedElementsRef` outright.
+though the user drew it, so the echo must be filtered. Release tp.7 carries the
+commit source through the increment event and the application tags remote scene
+updates with `source: 'remote'`. The old `onChange` baseline remains until the
+full comparison gate proves it can be removed.
 
 This is the same idea as Yjs transaction origins, which the application already
 depends on (`transaction.origin === 'local'`). It pairs naturally with A.
 
-### C. Tool state is set but never reported
+### C. Tool state is set but never reported — shipped in tp.7
 
-`setActiveTool` exists; nothing reports a tool change back. That gap is why the
-repository carries `src/components/whiteboard/ToolEvents.ts` — a module-level
-mutable singleton with one handler slot per event. It is not an event system:
-it cannot have two listeners, and it has no unsubscribe.
+`setActiveTool` exists; release tp.7 adds `onToolChange` with unsubscribe support
+for imperative, UI, and keyboard changes. The old module-level singleton
+`src/components/whiteboard/ToolEvents.ts` was deleted.
 
-An `onToolChange` subscription mirroring `onChange` would let the custom
+An `onToolChange` subscription mirroring `onChange` lets the custom
 `ToolSidebar` and `PaletteBar` *follow* the editor's state instead of trying to
 own it.
+
+### Shipped increment API (tp.7)
+
+Release `teacher-playground-v0.18.1-tp.7` exposes the existing store change feed
+through the imperative API without changing the editor's `onChange` behavior:
+
+- `onIncrement` reports added, removed, and updated element maps, plus the
+  optional `source` tag threaded from `updateScene`.
+- `onToolChange` reports active-tool changes from UI actions, keyboard shortcuts,
+  and imperative `setActiveTool` calls, with unsubscribe support.
+- `StoreIncrementEvent` is exported as a public type.
+
+The release was validated by GitHub Actions run `33213074035`; its GitHub Release
+asset is `9,448,795` bytes with SHA-256
+`040ca864f1eb67ddfb4d4bf4ce95cdbe09ee9f7e6b545306ab233ab4111d33f66`.
 
 ### Asset loading
 

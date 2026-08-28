@@ -6,6 +6,7 @@ import {
   joinExistingRoom,
   approveFirstWaitingPeer,
   expectWaiting,
+  expectSessionCookie,
   newAuthenticatedContext,
   waitForExcalidrawApi,
 } from './helpers';
@@ -170,6 +171,7 @@ test.describe('board images', () => {
     const outsiderPage = await outsiderContext.newPage();
     try {
       await outsiderPage.goto('/whiteboard');
+      await expectSessionCookie(outsiderPage);
       const refused = await outsiderPage.request.get(
         appUrl(`/api/whiteboard/room/${roomId}/files/${fileId}`),
       );

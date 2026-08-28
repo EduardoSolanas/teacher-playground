@@ -28,6 +28,14 @@ export function isWhiteboardLatencyProbeEnabled(): boolean {
   return process.env.NODE_ENV !== 'production' || process.env.NEXT_PUBLIC_E2E === '1';
 }
 
+export function isWhiteboardIncrementSyncEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_WHITEBOARD_INCREMENTS === '1';
+}
+
+export function isWhiteboardIncrementComparisonEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_WHITEBOARD_INCREMENT_COMPARE === '1';
+}
+
 function browserWindow(): Window | undefined {
   return typeof window === 'undefined' ? undefined : window;
 }
