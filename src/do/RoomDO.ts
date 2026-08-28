@@ -35,6 +35,7 @@ import {
   presencePayloadForAccount,
 } from '../lib/whiteboard/handlers/presence';
 import { activePeerIds } from '../lib/whiteboard/presence';
+import { orphanKeys, referencedFileIds, type StoredFile } from '../lib/whiteboard/orphanFiles';
 import { presenceSignature } from '../lib/whiteboard/presence';
 import { encodePresenceMessage } from '../lib/whiteboard/presenceMessage';
 import { isRelayableFrame } from '../lib/whiteboard/relayPolicy';
@@ -168,6 +169,11 @@ interface SocketIdentity {
 
 export interface RoomEnv {
   IDENTITY: DurableObjectNamespace;
+  /**
+   * Board images. Optional because a deployment without the bucket bound must
+   * still serve boards; the sweeps below simply have nothing to reach.
+   */
+  BOARD_FILES?: R2Bucket;
   /** Test-only override; production uses REVOCATION_CHECK_INTERVAL_MS. */
   REVOCATION_CHECK_INTERVAL_MS?: string;
   /** LiveKit SFU — optional; A/V token route returns 503 when unset. */
@@ -223,6 +229,18 @@ export class RoomDO extends DurableObject {
 
   /** Last live-account check; earlier board alarms must not multiply identity traffic. */
   private lastRevocationCheckAt = 0;
+
+  /**
+   * When each room last had its orphaned files collected.
+   *
+   * The alarm beats every few seconds while a board is being drawn on, and
+   * listing a bucket prefix on each one would spend far more than the storage
+   * it reclaims. Orphans are not urgent -- nobody can reach them -- so this
+   * runs on its own slow cadence.
+   */
+  private readonly lastOrphanSweepAt = new Map<string, number>();
+
+  private static readonly ORPHAN_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
@@ -1113,6 +1131,81 @@ export class RoomDO extends DurableObject {
    * upgrade time, so without this a revoked participant would keep collaborating
    * for as long as the socket stayed open.
    */
+  /**
+   * Every stored file for a room, for a room that is going away.
+   *
+   * Deleting the room's rows leaves the bucket untouched, so this is the only
+   * thing that stops an expired board's pictures being kept and billed for
+   * after the board itself has been collected.
+   */
+  private async purgeRoomFiles(roomId: string): Promise<void> {
+    const bucket = this.roomEnv.BOARD_FILES;
+    if (!bucket) return;
+    const prefix = `rooms/${roomId}/files/`;
+    let cursor: string | undefined;
+    try {
+      do {
+        const listed = await bucket.list({ prefix, cursor });
+        for (const object of listed.objects) await bucket.delete(object.key);
+        cursor = listed.truncated ? listed.cursor : undefined;
+      } while (cursor);
+    } catch {
+      // A room is not worth failing an alarm over. The next expiry pass lists
+      // the same prefix and deletes whatever is still there.
+    }
+  }
+
+  /**
+   * Files the board no longer mentions, collected on a slow cadence.
+   *
+   * The reference list comes from the projected `elements` row rather than the
+   * document, so an idle room is not paged back into memory to be tidied. That
+   * row is also the reason for the guard below: a projection that is missing or
+   * unreadable looks exactly like a board with no images on it, and acting on
+   * that reading would delete every live file in the room. When the board's
+   * contents cannot be established, nothing is collected.
+   */
+  private async sweepOrphanFiles(roomId: string, now: number): Promise<void> {
+    const bucket = this.roomEnv.BOARD_FILES;
+    if (!bucket) return;
+    const lastSweep = this.lastOrphanSweepAt.get(roomId) ?? 0;
+    if (now - lastSweep < RoomDO.ORPHAN_SWEEP_INTERVAL_MS) return;
+
+    const row = this.db.prepare(
+      `SELECT elements FROM rooms WHERE room_id = ?`,
+    ).get(roomId) as { elements?: unknown } | undefined;
+    if (!row || typeof row.elements !== 'string') return;
+
+    let elements: unknown;
+    try {
+      elements = JSON.parse(row.elements);
+    } catch {
+      return;
+    }
+    if (!Array.isArray(elements)) return;
+
+    this.lastOrphanSweepAt.set(roomId, now);
+    const referenced = referencedFileIds(elements);
+
+    const prefix = `rooms/${roomId}/files/`;
+    let cursor: string | undefined;
+    try {
+      do {
+        const listed = await bucket.list({ prefix, cursor });
+        const files: StoredFile[] = listed.objects.map((object) => ({
+          key: object.key,
+          uploaded: object.uploaded,
+        }));
+        for (const key of orphanKeys({ files, referenced, now })) {
+          await bucket.delete(key);
+        }
+        cursor = listed.truncated ? listed.cursor : undefined;
+      } while (cursor);
+    } catch {
+      // Same reasoning as the purge: the next sweep sees the same orphans.
+    }
+  }
+
   async alarm(): Promise<void> {
     // Workerd may still expose the alarm currently being delivered through
     // getAlarm(). Clear that consumed value before retry scheduling, or a
@@ -1148,6 +1241,9 @@ export class RoomDO extends DurableObject {
     const purgedRoomIds = purgeExpiredRoomsAndTombstones(this.db, now);
     for (const roomId of purgedRoomIds) {
       await this.deleteBoardState(roomId);
+      // The board state is gone; without this its images would outlive it.
+      await this.purgeRoomFiles(roomId);
+      this.lastOrphanSweepAt.delete(roomId);
     }
     for (const roomId of roomIds) {
       purgeExpiredGrants(this.db, roomId, now);
@@ -1156,6 +1252,7 @@ export class RoomDO extends DurableObject {
       // dropped mid-lesson was still "present" when its close ran. This is
       // where that cursor finally goes.
       this.sweepDepartedCursors(roomId);
+      await this.sweepOrphanFiles(roomId, now);
     }
     if (this.dirtyRooms.size > 0 || this.projectionDirtyRooms.size > 0) {
       await this.scheduleAlarmNoLaterThan(now + RoomDO.FLUSH_INTERVAL_MS);

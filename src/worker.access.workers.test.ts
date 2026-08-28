@@ -7,6 +7,9 @@ import { DESTRUCTIVE_FRESH_MS } from './lib/identity/sessionStore';
 import { accessFetch, authenticatedFetch, bootstrapLocalSession, localAccessToken } from './test/workerAuth';
 import { resetAuthEventWriterForTests, setAuthEventWriterForTests } from './worker';
 
+import { ORPHAN_GRACE_MS } from './lib/whiteboard/orphanFiles';
+import { RoomDO } from './do/RoomDO';
+
 declare global {
   namespace Cloudflare {
     interface Env {
@@ -242,6 +245,99 @@ describe('real local Access boundary through workerd', () => {
     expect(await erased.json()).toEqual({ ok: true });
     expect((await authenticatedFetch('/auth/session/current', session)).status).toBe(401);
     expect((await authenticatedFetch('/auth/session/current', other)).status).toBe(200);
+  });
+
+  it('collects an image nothing references and keeps the one still on the board', async () => {
+    /*
+     * Clearing a board removes the element but not the bytes, so the picture
+     * stays in the bucket with nothing pointing at it -- unreachable, because
+     * the room grant still gates every read, but kept and billed for after the
+     * board that held it is gone.
+     */
+    const owner = await bootstrapLocalSession('orphan-sweep');
+    const roomId = `orphan-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const bytes = new Uint8Array([1, 2, 3]);
+    for (const fileId of ['live-file', 'orphan-file']) {
+      expect((await authenticatedFetch(
+        `/api/whiteboard/room/${roomId}/files/${fileId}`,
+        owner,
+        {
+          method: 'PUT',
+          headers: { Origin: BASE, 'content-type': 'image/png', 'content-length': String(bytes.length) },
+          body: bytes,
+        },
+      )).status).toBe(201);
+    }
+
+    // Age both uploads past the grace period that protects a file whose element
+    // has not been published yet, then run the room's own alarm.
+    const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+    // The sweep reads the projected row, which is the board as the room has it.
+    await runInDurableObject(stub, (instance: RoomDO) => {
+      instance.db.prepare(`UPDATE rooms SET elements = ? WHERE room_id = ?`).run(
+        JSON.stringify([{ id: 'img-1', type: 'image', fileId: 'live-file' }]),
+        roomId,
+      );
+    });
+    await runInDurableObject(stub, async (instance: RoomDO) => {
+      const internal = instance as unknown as {
+        lastOrphanSweepAt: Map<string, number>;
+        sweepOrphanFiles(roomId: string, now: number): Promise<void>;
+      };
+      internal.lastOrphanSweepAt.clear();
+      await internal.sweepOrphanFiles(roomId, Date.now() + ORPHAN_GRACE_MS + 60_000);
+    });
+
+    expect(await env.BOARD_FILES.get(`rooms/${roomId}/files/orphan-file`)).toBeNull();
+    expect(await env.BOARD_FILES.get(`rooms/${roomId}/files/live-file`)).not.toBeNull();
+  });
+
+  it('collects nothing when the board contents cannot be read', async () => {
+    /*
+     * The guard that matters. An unreadable projection looks exactly like a
+     * board with no images on it, and acting on that reading would delete every
+     * live file in the room rather than the orphans.
+     */
+    const owner = await bootstrapLocalSession('orphan-guard');
+    const roomId = `orphan-guard-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const bytes = new Uint8Array([4, 5, 6]);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/files/still-live`,
+      owner,
+      {
+        method: 'PUT',
+        headers: { Origin: BASE, 'content-type': 'image/png', 'content-length': String(bytes.length) },
+        body: bytes,
+      },
+    )).status).toBe(201);
+
+    const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+    await runInDurableObject(stub, (instance: RoomDO) => {
+      instance.db.prepare(`UPDATE rooms SET elements = ? WHERE room_id = ?`)
+        .run('{not json at all', roomId);
+    });
+    await runInDurableObject(stub, async (instance: RoomDO) => {
+      const internal = instance as unknown as {
+        lastOrphanSweepAt: Map<string, number>;
+        sweepOrphanFiles(roomId: string, now: number): Promise<void>;
+      };
+      internal.lastOrphanSweepAt.clear();
+      await internal.sweepOrphanFiles(roomId, Date.now() + ORPHAN_GRACE_MS + 60_000);
+    });
+
+    expect(await env.BOARD_FILES.get(`rooms/${roomId}/files/still-live`)).not.toBeNull();
   });
 
   it('erases uploaded board images along with the account', async () => {
