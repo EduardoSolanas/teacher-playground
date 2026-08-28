@@ -29,8 +29,8 @@ function connectedPair() {
   return { a, b };
 }
 
-const ADA = { peerId: 'peer-ada', userName: 'Ada', color: '#3498db', x: 10, y: 20 };
-const GRACE = { peerId: 'peer-grace', userName: 'Grace', color: '#e74c3c', x: 30, y: 40 };
+const ADA = { peerId: 'peer-ada', userName: 'Ada', color: '#3498db', x: 10, y: 20, button: 'up' as const };
+const GRACE = { peerId: 'peer-grace', userName: 'Grace', color: '#e74c3c', x: 30, y: 40, button: 'down' as const };
 
 describe('cursorAwareness', () => {
   it('carries a cursor to the other peer', () => {

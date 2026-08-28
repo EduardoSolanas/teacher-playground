@@ -11,7 +11,9 @@ test.describe('account profile menu', () => {
     await page.getByTestId('whiteboard-profile-name-input').fill('Ms Ada');
     await page.getByTestId('whiteboard-profile-name-save').click();
 
-    await expect(page.getByTestId('whiteboard-profile-btn')).toContainText('Ms Ada');
+    await expect(page.getByTestId('whiteboard-profile-btn'))
+      .toHaveAccessibleName('Open profile for Ms Ada');
+    await expect(page.getByTestId('whiteboard-profile-btn')).toHaveText(/^M$/);
     await expect.poll(async () => {
       const body = await page.evaluate(async () => (
         await (await fetch('/auth/session/current')).json()

@@ -34,19 +34,22 @@ describe('RoomTopNav', () => {
     expect(onNavigate).toHaveBeenCalledTimes(1);
   });
 
-  it('leaves room for the tool rail and roster rail at sm', () => {
+  it('spans the full viewport above the tool and roster rails', () => {
     const { rerender } = render(
       <RoomTopNav displayName="eduardo" onDisplayNameChange={() => undefined} rosterExpanded={false} />,
     );
     const collapsed = screen.getByTestId('whiteboard-room-top-nav').className;
-    expect(collapsed).toContain('sm:left-16');
-    expect(collapsed).toContain('sm:right-0');
+    expect(collapsed).toContain('inset-x-0');
+    expect(collapsed).not.toContain('sm:left-16');
+    expect(collapsed).not.toContain('sm:right-[13.75rem]');
 
     rerender(
       <RoomTopNav displayName="eduardo" onDisplayNameChange={() => undefined} rosterExpanded />,
     );
     const expanded = screen.getByTestId('whiteboard-room-top-nav').className;
-    expect(expanded).toContain('sm:right-[13.75rem]');
+    expect(expanded).toContain('inset-x-0');
+    expect(expanded).not.toContain('sm:left-16');
+    expect(expanded).not.toContain('sm:right-[13.75rem]');
   });
 
   it('is hidden on the guest hostname', () => {

@@ -8,6 +8,7 @@ import {
   newAuthenticatedContext,
   expectPersistedElement,
   appendElement,
+  waitForExcalidrawApi,
 } from './helpers';
 
 async function installWebRtcSentinel(page: Page) {
@@ -49,7 +50,14 @@ async function expectYWebsocketTransport(page: Page, websocketUrls: string[]) {
 // Excalidraw scene reached through window.__debugExcalidrawApi, and every
 // non-host peer is admitted only after the host approves it.
 
-function rectangle(id: string, x: number, y: number) {
+function rectangle(
+  id: string,
+  x: number,
+  y: number,
+  version = 1,
+  index = 'a0',
+  versionNonce = version,
+) {
   return {
     id,
     type: 'rectangle',
@@ -69,21 +77,65 @@ function rectangle(id: string, x: number, y: number) {
     frameId: null,
     roundness: null,
     seed: 12345,
-    version: 1,
-    versionNonce: 1,
+    version,
+    versionNonce,
     isDeleted: false,
     boundElements: null,
     updated: Date.now(),
     link: null,
     locked: false,
+    index,
   };
 }
 
 async function sceneElementIds(page: Page): Promise<string[]> {
   return page.evaluate(() => {
     const api = (window as any).__debugExcalidrawApi;
-    return (api?.getSceneElements?.() ?? []).map((e: { id: string }) => e.id);
+    return (api?.getSceneElements?.() ?? [])
+      .map((e: { id: string }) => e.id)
+      .sort();
   });
+}
+
+async function sharedElementIds(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const elements = (window as any).__whiteboardCollab?.provider?.doc?.getArray('elements');
+    return (elements?.toArray?.() ?? [])
+      .map((element: any) => element.get('id'))
+      .sort();
+  });
+}
+
+async function replaceElement(page: Page, element: Record<string, unknown>) {
+  await waitForExcalidrawApi(page);
+  await page.evaluate((nextElement) => {
+    const api = (window as any).__debugExcalidrawApi;
+    const elements = api.getSceneElements?.() ?? [];
+    api.updateScene({
+      elements: elements.map((current: any) => current.id === nextElement.id ? nextElement : current),
+      captureUpdate: 'IMMEDIATELY',
+    });
+  }, element);
+}
+
+async function replaceSharedElement(page: Page, element: Record<string, unknown>) {
+  await page.evaluate((nextElement) => {
+    const provider = (window as any).__whiteboardCollab?.provider;
+    const elements = provider?.doc?.getArray('elements');
+    const current = elements?.toArray?.().find((candidate: any) => candidate.get('id') === nextElement.id);
+    if (!provider?.doc || !current) throw new Error('shared element was not found');
+    provider.doc.transact(() => {
+      for (const [key, value] of Object.entries(nextElement)) current.set(key, value);
+    });
+  }, element);
+}
+
+async function sharedElement(page: Page, id: string) {
+  return page.evaluate((elementId) => {
+    const elements = (window as any).__whiteboardCollab?.provider?.doc?.getArray('elements');
+    const element = elements?.toArray?.().find((candidate: any) => candidate.get('id') === elementId);
+    return { x: element?.get('x'), version: element?.get('version'), versionNonce: element?.get('versionNonce') };
+  }, id);
 }
 
 test.describe('Excalidraw scene sync', () => {
@@ -135,6 +187,107 @@ test.describe('Excalidraw scene sync', () => {
         .toContain('sync-rect-1');
     } finally {
       await peerContext.close();
+    }
+  });
+
+  test('keeps a newer local element when a stale remote snapshot arrives', async ({ page, browser }) => {
+    const roomId = await createRoomWithMaxUsers(page, 'ReconcileHost', 2);
+    const peerContext = await newAuthenticatedContext(browser);
+    const peerPage = await peerContext.newPage();
+    try {
+      await joinExistingRoom(peerPage, roomId, 'ReconcilePeer');
+      await expectWaiting(peerPage);
+      await approveFirstWaitingPeer(page);
+      await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+
+      await appendElement(page, rectangle('reconcile-rect-1', 410, 150, 5, 'a0'));
+      await expect.poll(async () => sceneElementIds(peerPage), { timeout: 20000 })
+        .toContain('reconcile-rect-1');
+
+      // Publish a complete but stale peer object. The host must retain its
+      // newer local geometry when the remote update is reconciled.
+      await replaceElement(peerPage, rectangle('reconcile-rect-1', 40, 150, 2, 'a0'));
+      await expect.poll(async () => page.evaluate(() => {
+        const element = (window as any).__debugExcalidrawApi?.getSceneElements?.()
+          ?.find((candidate: any) => candidate.id === 'reconcile-rect-1');
+        return { x: element?.x, version: element?.version };
+      }), { timeout: 20000 }).toEqual({ x: 410, version: 5 });
+      await expect.poll(async () => peerPage.evaluate(() => {
+        const element = (window as any).__debugExcalidrawApi?.getSceneElements?.()
+          ?.find((candidate: any) => candidate.id === 'reconcile-rect-1');
+        return { x: element?.x, version: element?.version };
+      }), { timeout: 20000 }).toEqual({ x: 410, version: 5 });
+
+      // With equal versions, Excalidraw's public reconcileElements uses the
+      // versionNonce tie-breaker. A lower local nonce remains authoritative.
+      await replaceElement(peerPage, rectangle('reconcile-rect-1', 40, 150, 5, 'a0', 6));
+      await replaceSharedElement(peerPage, rectangle('reconcile-rect-1', 40, 150, 5, 'a0', 6));
+      expect(await sharedElement(peerPage, 'reconcile-rect-1')).toEqual({ x: 40, version: 5, versionNonce: 6 });
+      await expect.poll(async () => page.evaluate(() => {
+        const element = (window as any).__debugExcalidrawApi?.getSceneElements?.()
+          ?.find((candidate: any) => candidate.id === 'reconcile-rect-1');
+        return { x: element?.x, version: element?.version, versionNonce: element?.versionNonce };
+      }), { timeout: 20000 }).toEqual({ x: 410, version: 5, versionNonce: 5 });
+      await expect.poll(async () => sharedElement(peerPage, 'reconcile-rect-1'), { timeout: 20000 })
+        .toEqual({ x: 410, version: 5, versionNonce: 5 });
+      await expect.poll(async () => peerPage.evaluate(() => {
+        const element = (window as any).__debugExcalidrawApi?.getSceneElements?.()
+          ?.find((candidate: any) => candidate.id === 'reconcile-rect-1');
+        return { x: element?.x, version: element?.version, versionNonce: element?.versionNonce };
+      }), { timeout: 20000 }).toEqual({ x: 410, version: 5, versionNonce: 5 });
+    } finally {
+      await peerContext.close();
+    }
+  });
+
+  test('undoes only Alice local work and redoes it across both peers', async ({ page, browser }) => {
+    const roomId = await createRoomWithMaxUsers(page, 'UndoAlice', 2);
+    const bobContext = await newAuthenticatedContext(browser);
+    const bobPage = await bobContext.newPage();
+    try {
+      await joinExistingRoom(bobPage, roomId, 'UndoBob');
+      await expect(bobPage.getByRole('heading', { name: /Room is Full/ })).toBeVisible({ timeout: 15000 });
+      await approveFirstWaitingPeer(page);
+      await expect(bobPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+
+      await expect.poll(async () => page.evaluate(() => (window as any).__whiteboardCollab?.isSynced), { timeout: 20000 })
+        .toBe(true);
+      await expect.poll(async () => bobPage.evaluate(() => (window as any).__whiteboardCollab?.isSynced), { timeout: 20000 })
+        .toBe(true);
+
+      await waitForExcalidrawApi(bobPage);
+      await bobPage.evaluate((element) => {
+        const api = (window as any).__debugExcalidrawApi;
+        api.updateScene({ elements: [...api.getSceneElements(), element], captureUpdate: 'IMMEDIATELY' });
+      }, rectangle('undo-bob', 120, 120, 5, 'a0'));
+      await expect.poll(async () => sceneElementIds(page), { timeout: 20000 }).toContain('undo-bob');
+
+      await waitForExcalidrawApi(page);
+      await page.evaluate((element) => {
+        const api = (window as any).__debugExcalidrawApi;
+        api.updateScene({ elements: [...api.getSceneElements(), element], captureUpdate: 'IMMEDIATELY' });
+      }, rectangle('undo-alice', 420, 120, 6, 'b0'));
+      await expect.poll(async () => sceneElementIds(bobPage), { timeout: 20000 })
+        .toEqual(expect.arrayContaining(['undo-alice', 'undo-bob']));
+      await expect.poll(async () => sharedElementIds(page), { timeout: 20000 })
+        .toEqual(['undo-alice', 'undo-bob']);
+
+      await expect(page.getByTestId('whiteboard-undo-btn')).toBeEnabled();
+      await page.getByTestId('whiteboard-undo-btn').click();
+      await expect.poll(async () => sceneElementIds(page), { timeout: 20000 }).toEqual(['undo-bob']);
+      await expect.poll(async () => sceneElementIds(bobPage), { timeout: 20000 }).toEqual(['undo-bob']);
+      await expect.poll(async () => sharedElementIds(page), { timeout: 20000 }).toEqual(['undo-bob']);
+
+      await expect(page.getByTestId('whiteboard-redo-btn')).toBeEnabled();
+      await page.getByTestId('whiteboard-redo-btn').click();
+      await expect.poll(async () => sharedElementIds(page), { timeout: 20000 })
+        .toEqual(['undo-alice', 'undo-bob']);
+      await expect.poll(async () => sceneElementIds(page), { timeout: 20000 })
+        .toEqual(['undo-alice', 'undo-bob']);
+      await expect.poll(async () => sceneElementIds(bobPage), { timeout: 20000 })
+        .toEqual(['undo-alice', 'undo-bob']);
+    } finally {
+      await bobContext.close();
     }
   });
 

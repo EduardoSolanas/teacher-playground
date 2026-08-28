@@ -15,7 +15,7 @@ import { getStablePeerId, peerIdWhenJoined, rememberIssuedPeerId } from '@/lib/w
 import { randomHexId } from '@/lib/crypto/randomId';
 import * as store from '@/lib/whiteboard/store';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
-import { reconcileElements, uniqueElementsById } from '@/lib/whiteboard/excalidrawSync';
+import { mergeApiSnapshotElements, uniqueElementsById } from '@/lib/whiteboard/excalidrawSync';
 import { isLocalRoomHost } from '@/lib/whiteboard/localHost';
 import { admissionFromPresenceStatus } from '@/lib/whiteboard/presenceAdmission';
 import { mergeCursorPresence } from '@/lib/whiteboard/mergeCursorPresence';
@@ -24,6 +24,7 @@ import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 import { VIEWPORT_SAVE_DEBOUNCE_MS, shouldStoreViewport } from '@/lib/whiteboard/viewportPersist';
 import { shouldPollPresence } from '@/lib/whiteboard/presencePolling';
 import { cursorPublishDelay } from '@/lib/whiteboard/cursorPublishRate';
+import type { FollowMessage } from '@/lib/whiteboard/followMessage';
 import { moderationTargetBody } from '@/lib/whiteboard/moderationTarget';
 import { DEFAULT_MAX_USERS } from '@/lib/plan/limits';
 import {
@@ -57,6 +58,7 @@ export function useCollaboration(roomId: string) {
   const [status, setStatus] = useState<string>('connecting');
   const [elements, setElements] = useState<CanvasElement[]>([]);
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
+  const [guideMessage, setGuideMessage] = useState<FollowMessage | null>(null);
   const [maxUsers, setMaxUsers] = useState(DEFAULT_MAX_USERS);
   const [waitingPeers, setWaitingPeers] = useState<WhiteboardUser[]>([]);
   const [isWaiting, setIsWaiting] = useState(false);
@@ -118,8 +120,11 @@ export function useCollaboration(roomId: string) {
       const handlePresence = (payload: unknown) => {
         applyPresenceRef.current(payload);
       };
+      const handleFollow = (payload: FollowMessage) => {
+        setGuideMessage(payload);
+      };
 
-      collaborationRef.current = createCollaboration(roomId, peerId, handlePresence);
+      collaborationRef.current = createCollaboration(roomId, peerId, handlePresence, handleFollow);
       if (pendingUserNameRef.current) {
         collaborationRef.current.setLocalUserName(pendingUserNameRef.current);
       }
@@ -138,6 +143,7 @@ export function useCollaboration(roomId: string) {
     if (!collaborationRef.current) return;
     collaborationRef.current.destroy();
     collaborationRef.current = null;
+    setGuideMessage(null);
     setCollaborationEpoch((epoch) => epoch + 1);
   }, []);
 
@@ -339,7 +345,7 @@ export function useCollaboration(roomId: string) {
         // Reconcile rather than overwrite: the snapshot is written on a
         // debounce, so it can be older than what the user just drew. Merging
         // per element keeps unsaved local work while still catching up.
-        const merged = reconcileElements(
+        const merged = mergeApiSnapshotElements(
           elementsRef.current,
           remoteElements,
         ) as unknown as CanvasElement[];
@@ -358,7 +364,7 @@ export function useCollaboration(roomId: string) {
       if (!collaborationRef.current?.elementsArray) return;
       pendingPublishRef.current = null;
       publishToSharedDoc(
-        reconcileElements(pending, []) as unknown as CanvasElement[],
+        mergeApiSnapshotElements(pending, []) as unknown as CanvasElement[],
       );
     }
 
@@ -373,13 +379,13 @@ export function useCollaboration(roomId: string) {
 
   // Broadcast local cursor
   const cursorSentAtRef = useRef<number | null>(null);
-  const cursorPendingRef = useRef<{ x: number; y: number } | null>(null);
+  const cursorPendingRef = useRef<{ x: number; y: number; button: 'up' | 'down' } | null>(null);
   const cursorTimerRef = useRef<number | null>(null);
 
-  const publishCursor = useCallback((x: number, y: number) => {
+  const publishCursor = useCallback((x: number, y: number, button: 'up' | 'down' = 'up') => {
     const collaboration = collaborationRef.current;
     if (!collaboration) return;
-    collaboration.setLocalCursor(x, y);
+    collaboration.setLocalCursor(x, y, button);
     cursorSentAtRef.current = Date.now();
     if (isWhiteboardLatencyProbeEnabled()) {
       recordWhiteboardLatencyEvent({
@@ -399,24 +405,24 @@ export function useCollaboration(roomId: string) {
    * ends up where the pointer stopped.
    */
   const setCursor = useCallback(
-    (x: number, y: number) => {
+    (x: number, y: number, button: 'up' | 'down' = 'up') => {
       if (!hasJoinedRef.current) return;
 
       const delay = cursorPublishDelay(cursorSentAtRef.current, Date.now());
       if (delay === 0) {
         cursorPendingRef.current = null;
-        publishCursor(x, y);
+        publishCursor(x, y, button);
         return;
       }
 
-      cursorPendingRef.current = { x, y };
+      cursorPendingRef.current = { x, y, button };
       if (cursorTimerRef.current !== null) return;
       cursorTimerRef.current = window.setTimeout(() => {
         cursorTimerRef.current = null;
         const pending = cursorPendingRef.current;
         cursorPendingRef.current = null;
         if (!pending || !hasJoinedRef.current) return;
-        publishCursor(pending.x, pending.y);
+        publishCursor(pending.x, pending.y, pending.button);
       }, delay);
     },
     [publishCursor]
@@ -546,6 +552,10 @@ export function useCollaboration(roomId: string) {
     },
     [roomId],
   );
+
+  const sendFollowMessage = useCallback((message: FollowMessage) => (
+    collaborationRef.current?.sendFollowMessage(message) ?? false
+  ), []);
 
   useEffect(() => {
     if (!roomLoaded || !hasJoined) return;
@@ -835,6 +845,7 @@ export function useCollaboration(roomId: string) {
     setCursor,
     setUserName,
     localPeerId,
+    hostPeerId,
     isHost: isLocalRoomHost(grantRole, users, localPeerId),
     provider: collaborationEpoch >= 0 ? collaborationRef.current?.provider ?? null : null,
     elementsArray: elements,
@@ -856,6 +867,8 @@ export function useCollaboration(roomId: string) {
       store.setViewport(newViewport);
     },
     storeViewport,
+    guideMessage,
+    sendFollowMessage,
     collaboration: collaborationEpoch >= 0 ? collaborationRef.current : null,
     waitingPeers,
     isWaiting,

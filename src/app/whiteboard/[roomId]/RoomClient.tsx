@@ -17,8 +17,6 @@ import RaisedHandCue from '@/components/whiteboard/RaisedHandCue';
 import { shouldCollapsePresenceForViewport } from '@/lib/whiteboard/presenceViewport';
 import { shouldOverlayConnectingScreen } from '@/lib/whiteboard/connectingOverlay';
 import { shouldExpandForArrival } from '@/lib/whiteboard/waitingArrival';
-import RemoteCursorOverlay from '@/components/whiteboard/RemoteCursorOverlay';
-import { IDENTITY_VIEWPORT, type CanvasViewport } from '@/lib/whiteboard/cursorViewport';
 import ClearBoardModal from '@/components/whiteboard/ClearBoardModal';
 import ToolSidebar from '@/components/whiteboard/ToolSidebar';
 import RoomTopNav from '@/components/whiteboard/RoomTopNav';
@@ -27,6 +25,7 @@ import { ShortcutsHelp } from '@/components/whiteboard/ShortcutsHelp';
 import { UndoRedoBar } from '@/components/whiteboard/UndoRedoBar';
 import AvSessionPanel from '@/components/av/AvSessionPanel';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
+import { useScopedUndo } from '@/hooks/useScopedUndo';
 import * as store from '@/lib/whiteboard/store';
 import { cleanupStaleRooms } from '@/lib/whiteboard/persistence';
 import { isWhiteboardDebugEnabled } from '@/lib/whiteboard/ywebrtcProvider';
@@ -74,14 +73,8 @@ function RoomContent({ roomId }: { roomId: string }) {
   }, []);
   const [boardEverShown, setBoardEverShown] = useState(false);
   const [presenceCollapsed, setPresenceCollapsed] = useState(false);
-  /*
-   * This peer's canvas transform, so a cursor that arrived in scene
-   * coordinates can be drawn where it belongs on this screen.
-   */
-  const [canvasViewport, setCanvasViewport] = useState<CanvasViewport>(IDENTITY_VIEWPORT);
   const [libraryOpen, setLibraryOpen] = useState(false);
-  const { activeShortcuts, showShortcutsHelp, setShowShortcutsHelp } = useKeyboardShortcuts();
-
+  const [isGuiding, setIsGuiding] = useState(false);
   const {
     isConnected,
     isSynced,
@@ -115,20 +108,31 @@ function RoomContent({ roomId }: { roomId: string }) {
     setElements,
     viewport,
     storeViewport,
+    hostPeerId,
+    guideMessage,
+    sendFollowMessage,
   } = useCollaboration(roomId);
 
-  const { clearState, clearSession } = usePersistence(roomId, elements, { x: 0, y: 0, zoom: 1 } as any);
+  const handleGuideViewport = useCallback((nextViewport: { x: number; y: number; zoom: number }) => {
+    sendFollowMessage({ active: true, viewport: nextViewport });
+  }, [sendFollowMessage]);
 
-  /*
-   * A pan feeds the cursor overlay as it always did, and now also the stored
-   * room view. Only the overlay needs it in React state; the store call is
-   * debounced inside the hook, so panning does not turn into a request per
-   * frame.
-   */
-  const handleViewportChange = useCallback((next: CanvasViewport) => {
-    setCanvasViewport(next);
-    storeViewport({ x: next.scrollX, y: next.scrollY, zoom: next.zoom });
-  }, [storeViewport]);
+  const handleToggleGuide = useCallback(() => {
+    if (isGuiding) {
+      sendFollowMessage({ active: false });
+      setIsGuiding(false);
+      return;
+    }
+    setIsGuiding(true);
+  }, [isGuiding, sendFollowMessage]);
+
+  const scopedUndo = useScopedUndo(yElementsArray);
+  const { activeShortcuts, showShortcutsHelp, setShowShortcutsHelp } = useKeyboardShortcuts({
+    undo: scopedUndo.undo,
+    redo: scopedUndo.redo,
+  });
+
+  const { clearState, clearSession } = usePersistence(roomId, elements, { x: 0, y: 0, zoom: 1 } as any);
 
   useClearSessionOnEviction(clearSession, { wasKicked, wasRejected, wasSuspended });
 
@@ -360,6 +364,8 @@ function RoomContent({ roomId }: { roomId: string }) {
         onOpenLibrary={() => setLibraryOpen(true)}
         onOpenHelp={() => setShowShortcutsHelp(true)}
         showHostTools={isLocalHost}
+        isGuiding={isGuiding}
+        onToggleGuide={handleToggleGuide}
       />
       <div className={`absolute inset-x-0 bottom-0 ${roomCanvasTopClass(guestHost)} overflow-hidden bg-slate-50 sm:inset-auto sm:left-14 sm:h-[calc(100vh-3rem)] sm:rounded-tl-2xl ${presenceCollapsed ? 'sm:w-[calc(100vw-4.25rem)]' : 'sm:w-[calc(100vw-17.25rem)]'}`} data-testid="whiteboard-canvas-area">
         <ExcalidrawWrapper
@@ -369,16 +375,20 @@ function RoomContent({ roomId }: { roomId: string }) {
           yDoc={yDoc}
           yElementsArray={yElementsArray}
           users={users}
+          cursors={cursors}
           activeTool={activeTool}
           isLocalHost={isLocalHost}
           onToolChange={handleToolChange}
           initialViewport={viewport}
-          onViewportChange={handleViewportChange}
+          onViewportChange={storeViewport}
           onCursorMove={setCursor}
           onElementsChange={setElements}
+          hostPeerId={hostPeerId}
+          guideMessage={guideMessage}
+          isGuiding={isGuiding}
+          onGuideViewport={handleGuideViewport}
         />
       </div>
-      <RemoteCursorOverlay cursors={cursors} users={users} viewport={canvasViewport} />
       <RaisedHandCue users={users} localPeerId={localPeerId} isLocalHost={isLocalHost} />
       <PresencePanel
         users={users}
@@ -418,7 +428,12 @@ function RoomContent({ roomId }: { roomId: string }) {
       />
       {/* Stacked above the mobile tool bar; centred on its own row from sm: up. */}
       <div className="fixed bottom-[calc(max(0.5rem,env(safe-area-inset-bottom))+4rem)] left-1/2 -translate-x-1/2 flex items-center gap-2 z-[200] rounded-xl border border-slate-700/80 bg-slate-900 p-1 shadow-xl shadow-slate-900/20 sm:bottom-4" data-testid="whiteboard-bottom-controls">
-        <UndoRedoBar canUndo={store.canUndo()} canRedo={store.canRedo()} onUndo={() => store.undo()} onRedo={() => store.redo()} />
+        <UndoRedoBar
+          canUndo={scopedUndo.canUndo}
+          canRedo={scopedUndo.canRedo}
+          onUndo={scopedUndo.undo}
+          onRedo={scopedUndo.redo}
+        />
         <button
           data-testid="whiteboard-clear-btn"
           onClick={() => setClearModalOpen(true)}

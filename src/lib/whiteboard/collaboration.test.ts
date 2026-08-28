@@ -145,6 +145,36 @@ describe('createCollaboration cursor storage', () => {
     collab.adoptLocalPeerId('user-server-issued');
 
     expect(Y.encodeStateAsUpdate(collab.doc).byteLength).toBe(before);
+
+    collab.destroy();
+  });
+});
+
+describe('createCollaboration cursor payload', () => {
+  it('announces the latest pointer button', () => {
+    const collab = createCollaboration('cursor-button-room', 'peer-local');
+
+    collab.setLocalCursor(12, 34, 'down');
+
+    expect(collab.getLocalCursor()).toMatchObject({
+      peerId: 'peer-local',
+      x: 12,
+      y: 34,
+      button: 'down',
+    });
+
+    collab.destroy();
+  });
+
+  it('keeps the button through a peer id adoption mid-stroke', () => {
+    const collab = createCollaboration('cursor-button-adopt', 'peer-local');
+
+    collab.setLocalCursor(12, 34, 'down');
+    collab.adoptLocalPeerId('peer-issued');
+
+    // Re-announcing under the issued id must not report the pointer as lifted.
+    expect(collab.getLocalCursor()).toMatchObject({ peerId: 'peer-issued', button: 'down' });
+
     collab.destroy();
   });
 });

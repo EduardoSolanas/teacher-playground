@@ -20,10 +20,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22.23.2
           cache: npm
@@ -33,7 +33,7 @@ jobs:
       # by unit and worker tests). Rebuild that package explicitly after the
       # ignored install.
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        run: npm ci --ignore-scripts --loglevel=error
 
       - name: Rebuild allowlisted native addons
         run: npm rebuild better-sqlite3
@@ -56,6 +56,26 @@ jobs:
       - name: Worker tests (real workerd)
         run: npm run test:workers
 
+      - name: Verify required LiveKit secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          secret_names="$(npx wrangler secret list --config wrangler.toml --format json | jq -r '.[].name')"
+          for required in LIVEKIT_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
+            if ! grep -Fxq "$required" <<<"$secret_names"; then
+              echo "Missing required LiveKit secret: $required" >&2
+              exit 1
+            fi
+          done
+
+      - name: Deploy with Wrangler
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+
       # TEMP: e2e skipped until Phase 2 client changes are pushed
       # - name: Install Playwright browser
       #   run: npx playwright install --with-deps chromium
@@ -66,16 +86,10 @@ jobs:
 
       # - name: Upload e2e artifacts on failure
       #   if: failure()
-      #   uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      #   uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       #   with:
       #     name: e2e-results
       #     path: |
       #       test-results/
       #       playwright-report/
       #     retention-days: 7
-
-      - name: Deploy with Wrangler
-        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}

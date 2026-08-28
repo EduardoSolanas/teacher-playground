@@ -3,6 +3,12 @@ import { WebsocketProvider } from 'y-websocket';
 import { Awareness } from 'y-protocols/awareness';
 import { getSignalingUrls } from './ywebrtcProvider';
 import { PRESENCE_MESSAGE_TYPE, readPresenceBody } from './presenceMessage';
+import {
+  FOLLOW_MESSAGE_TYPE,
+  decodeFollowMessagePayload,
+  encodeFollowMessage,
+  type FollowMessage,
+} from './followMessage';
 
 type ProviderLike = {
   connected?: boolean;
@@ -13,10 +19,16 @@ type ProviderLike = {
   awareness?: Awareness;
   connect: () => void;
   destroy: () => void;
+  sendFollowMessage?: (message: FollowMessage) => boolean;
   on: (eventName: string, callback: (...args: any[]) => void) => void;
 };
 
-type ProviderEntry = { provider: ProviderLike; status: string; synced: boolean };
+type ProviderEntry = {
+  provider: ProviderLike;
+  status: string;
+  synced: boolean;
+  sendFollowMessage: (message: FollowMessage) => boolean;
+};
 
 let providerCache: Map<string, ProviderEntry> = new Map();
 
@@ -67,11 +79,13 @@ class SignalingWebsocketProvider extends WebsocketProvider {
 }
 
 export type PresenceCallback = (payload: unknown) => void;
+export type FollowCallback = (payload: FollowMessage) => void;
 
 export function createYWebsocketProvider(
   doc: Y.Doc,
   roomId: string,
   onPresence?: PresenceCallback,
+  onFollow?: FollowCallback,
 ): ProviderEntry {
   const cacheKey = `whiteboard-${roomId}`;
 
@@ -92,9 +106,22 @@ export function createYWebsocketProvider(
     ? createServerProvider(doc)
     : new SignalingWebsocketProvider(doc, roomId) as unknown as ProviderLike;
 
+  // Kept from the doc-identity fix: the server stub has no `doc` of its own,
+  // and cache validity is checked against it above.
   provider.doc = doc;
 
-  const entry = { provider, status: 'connecting', synced: false };
+  const entry: ProviderEntry = {
+    provider,
+    status: 'connecting',
+    synced: false,
+    sendFollowMessage: (message) => {
+      if (typeof window === 'undefined') return false;
+      const ws = (provider as any).ws as WebSocket | null | undefined;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      ws.send(encodeFollowMessage(message) as unknown as ArrayBuffer);
+      return true;
+    },
+  };
   providerCache.set(cacheKey, entry);
 
   provider.on('status', (event: { status?: string; connected?: boolean }) => {
@@ -114,11 +141,21 @@ export function createYWebsocketProvider(
     if (wsProvider.messageHandlers && Array.isArray(wsProvider.messageHandlers)) {
       // y-websocket invokes handlers as handler(encoder, decoder, provider, emitSynced, messageType),
       // having already consumed the message type varint. Read the body from the decoder, not a whole frame.
-      wsProvider.messageHandlers[PRESENCE_MESSAGE_TYPE] = (_encoder: any, decoder: any) => {
+      wsProvider.messageHandlers[PRESENCE_MESSAGE_TYPE] = (_encoder: unknown, decoder: any) => {
         const payload = readPresenceBody(decoder);
         if (payload !== null) {
           onPresence(payload);
         }
+      };
+    }
+  }
+
+  if (onFollow && typeof window !== 'undefined') {
+    const wsProvider = provider as any;
+    if (wsProvider.messageHandlers && Array.isArray(wsProvider.messageHandlers)) {
+      wsProvider.messageHandlers[FOLLOW_MESSAGE_TYPE] = (_encoder: unknown, decoder: any) => {
+        const payload = decodeFollowMessagePayload(decoder);
+        if (payload) onFollow(payload);
       };
     }
   }

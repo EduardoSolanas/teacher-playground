@@ -22,6 +22,8 @@ export interface CursorState {
   readonly color: string;
   readonly x: number;
   readonly y: number;
+  /** Whether the peer is mid-stroke, so the overlay can show it drawing. */
+  readonly button: 'up' | 'down';
 }
 
 /** The awareness field cursors live under. */
@@ -52,6 +54,7 @@ function asCursorState(value: unknown): CursorState | null {
     color: typeof entry.color === 'string' ? entry.color : '#3498db',
     x: typeof entry.x === 'number' ? entry.x : 0,
     y: typeof entry.y === 'number' ? entry.y : 0,
+    button: entry.button === 'down' ? 'down' : 'up',
   };
 }
 

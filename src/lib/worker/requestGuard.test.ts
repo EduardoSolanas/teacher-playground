@@ -410,6 +410,22 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(body).toContain(`<script nonce="${nonce}" src="/_next/static/chunks/app.js">`);
     });
 
+    it('lets nonce-trusted Excalidraw dynamic data modules inherit strict-dynamic trust', async () => {
+      // Excalidraw imports data/*.js with import() from its nonce-bearing
+      // application module; it is not a new parser-inserted script. CSP
+      // strict-dynamic therefore permits that descendant without adding the
+      // CDN to script-src or weakening the host policy.
+      const wrapped = await withNonceHtmlSecurityHeaders(
+        new Response('<html><script src="/_next/static/chunks/app.js"></script></html>', {
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        }),
+      );
+      const csp = wrapped.headers.get('Content-Security-Policy') ?? '';
+      const scriptSrc = csp.split('; ').find((directive) => directive.startsWith('script-src')) ?? '';
+      expect(scriptSrc).toContain("'strict-dynamic'");
+      expect(scriptSrc).not.toContain('excalidraw-assets.sen-tutor.co.uk');
+    });
+
     it('drops validators so a 304 cannot pair a stale body with a fresh nonce', async () => {
       // The nonce is minted per response and written into the body, so a
       // conditional request that returns 304 would reuse the cached body (old
@@ -456,9 +472,21 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
     it('sends a minimal Permissions Policy that denies unused capabilities', () => {
       const wrapped = withSecurityHeaders(new Response('ok'));
       const policy = wrapped.headers.get('Permissions-Policy') ?? '';
-      for (const feature of ['camera', 'microphone', 'geolocation', 'payment', 'usb']) {
+      for (const feature of ['geolocation', 'payment', 'usb', 'midi', 'serial']) {
         expect(policy).toContain(`${feature}=()`);
       }
+    });
+
+    // An empty allowlist is a document-level disable, not a prompt: getUserMedia
+    // rejects before the browser ever asks the user. The A/V panel needs these
+    // two, so they are granted to this origin only — never to an embedder,
+    // which `X-Frame-Options: DENY` already forbids anyway.
+    it('allows camera and microphone for this origin so A/V can start', () => {
+      const policy = withSecurityHeaders(new Response('ok')).headers.get('Permissions-Policy') ?? '';
+      expect(policy).toContain('camera=(self)');
+      expect(policy).toContain('microphone=(self)');
+      expect(policy).not.toContain('camera=()');
+      expect(policy).not.toContain('microphone=()');
     });
 
     it('varies cached non-HTML responses on the credentials that select them', () => {
@@ -505,6 +533,20 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       );
       expect(wrapped.headers.get('X-Robots-Tag')).toBe('noindex');
     });
+  });
+
+  it('allows the immutable Excalidraw CDN as a font source', () => {
+    const response = withSecurityHeaders(
+      new Response('<html></html>', {
+        headers: { 'content-type': 'text/html' },
+      }),
+      {
+        fontSrc: "font-src 'self' data: blob: https://excalidraw-assets.sen-tutor.co.uk",
+      },
+    );
+    expect(response.headers.get('Content-Security-Policy')).toContain(
+      "font-src 'self' data: blob: https://excalidraw-assets.sen-tutor.co.uk",
+    );
   });
 
   describe('stripForwardedIdentityHeaders (SEC-004)', () => {

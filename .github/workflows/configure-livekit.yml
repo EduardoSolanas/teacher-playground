@@ -1,0 +1,80 @@
+name: Configure LiveKit secrets
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  configure:
+    name: Sync LiveKit secrets to the production Worker
+    runs-on: ubuntu-24.04
+    environment: prod
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.2
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --loglevel=error
+
+      - name: Validate required LiveKit secrets
+        env:
+          LIVEKIT_URL: ${{ secrets.LIVEKIT_URL }}
+          LIVEKIT_API_KEY: ${{ secrets.LIVEKIT_API_KEY }}
+          LIVEKIT_API_SECRET: ${{ secrets.LIVEKIT_API_SECRET }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const names = ['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET'];
+          const missing = names.filter((name) => !process.env[name]);
+          if (missing.length > 0) {
+            console.error(`Missing required LiveKit secret(s): ${missing.join(', ')}`);
+            process.exit(1);
+          }
+          NODE
+
+      - name: Sync required LiveKit secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          LIVEKIT_URL: ${{ secrets.LIVEKIT_URL }}
+          LIVEKIT_API_KEY: ${{ secrets.LIVEKIT_API_KEY }}
+          LIVEKIT_API_SECRET: ${{ secrets.LIVEKIT_API_SECRET }}
+        run: |
+          set -euo pipefail
+          node <<'NODE' | npx wrangler secret bulk --config wrangler.toml
+          const names = ['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET'];
+          process.stdout.write(JSON.stringify(Object.fromEntries(
+            names.map((name) => [name, process.env[name]]),
+          )));
+          NODE
+
+      - name: Verify required LiveKit secret names
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npx wrangler secret list --config wrangler.toml --format json | node -e '
+            const required = new Set(["LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"]);
+            let input = "";
+            process.stdin.on("data", (chunk) => { input += chunk; });
+            process.stdin.on("end", () => {
+              const names = new Set(JSON.parse(input).map(({ name }) => name));
+              const missing = [...required].filter((name) => !names.has(name));
+              if (missing.length > 0) {
+                console.error(`Missing required LiveKit secret name(s): ${missing.join(", ")}`);
+                process.exitCode = 1;
+                return;
+              }
+              console.log("Verified required LiveKit secret names");
+            });
+          '

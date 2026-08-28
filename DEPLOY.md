@@ -103,8 +103,14 @@ that evidence exists, production custom-hostname closure remains incomplete.
 
 ### LiveKit voice secrets (optional)
 
-When enabling voice calling, set LiveKit credentials as Wrangler secrets (never
-commit them). See README “Voice calling” for local smoke steps.
+When enabling voice calling, add `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and
+`LIVEKIT_API_SECRET` as GitHub `prod` environment secrets, then manually run
+the **Configure LiveKit secrets** workflow. It validates all three values before
+changing Cloudflare, syncs them to the Worker in one request, and verifies only
+their names. Never commit or paste their values into a workflow log. See README
+“Voice calling” for local smoke steps.
+
+For an operator working directly with Wrangler, the equivalent commands are:
 
 ```bash
 npx wrangler secret put LIVEKIT_URL
@@ -123,7 +129,75 @@ which uploads the Worker together with the contents of `out/`.
 
 Pushes to `main` deploy automatically via
 `.github/workflows/deploy-cloudflare.yml`, which typechecks, runs both test
-suites, and builds before deploying.
+suites, builds, and deploys the Worker. The workflow uses the existing
+production `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable;
+the Excalidraw distribution is published separately by its fork repository.
+
+### Excalidraw release CDN
+
+The production build points Excalidraw at the immutable release base:
+
+`https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.6/dist/prod/`
+
+The fork repository is the sole owner of the R2 bucket, custom domain, release
+objects, and release metadata. This repository only consumes the pinned
+immutable base URL above; it does not provision the bucket or publish release
+objects. Release `0.18.1-tp.6` is published by fork workflow run
+`32781207895`; public `latest.json` points to it and the package is 9,445,242
+bytes. The CDN custom domain is live and serves immutable release objects. The
+local fallback remains `/` when running outside a production build
+or when `NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH=/` is supplied.
+
+#### Historical CDN publisher evidence
+
+Earlier parent revisions contained a duplicate Terraform stack and an
+imperative publisher. Those were deliberately removed after the fork became
+the sole owner. Historical deployment runs `32680222826` and `32688811548`
+recorded the old publisher failing before R2 was enabled; they are retained as
+history only and are not current workflow behavior. The current parent
+production deployment is green: run `32783092806` completed clean install,
+security scan, typecheck, unit tests, static export, real Worker tests, and
+Wrangler deployment while consuming `0.18.1-tp.6`.
+
+#### The production asset host must exist before the first production deploy
+
+`resolveExcalidrawAssetPath` returns the CDN base whenever
+`NODE_ENV === 'production'`, so the hostname is a hard production dependency
+rather than an enhancement. The hostname is now provisioned and reachable.
+
+`NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH` overrides the default and is the rollback
+lever. Setting it to `/` restores same-origin assets from `public/`, which the
+`prebuild` copy still populates, and requires no code change:
+
+```sh
+NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH=/ npm run build
+```
+
+Keep that escape hatch working. It is the only way to ship the application
+while the CDN is unavailable.
+
+#### Changing the CDN hostname touches the CSP
+
+The hostname is written in three places that must move together:
+
+- `EXCALIDRAW_CDN_BASE_PATH` in `src/lib/whiteboard/excalidrawAssetPath.ts`
+- the `font-src` default in `src/lib/worker/requestGuard.ts`
+- the assertion covering that default in `src/lib/worker/requestGuard.test.ts`
+
+A hostname change that misses the CSP produces a green test suite and a board
+with no fonts, because the failure appears only as a browser console violation.
+
+No automated check covers the cross-origin load itself. Parent unit tests assert
+the CSP header string, and fork tests cover uploader MIME and cache contracts,
+but no live public-origin verification exists yet. Reachability is not
+acceptance: a served font and a font the page's CSP permits are different
+claims, and only the second one puts glyphs on a board.
+Before trusting a CDN deploy, open a room against the deployed hostname and
+confirm the console
+reports no CSP violation for either `font-src` or `connect-src`. `font-src`
+carries the CDN origin; `connect-src` does not, so any asset Excalidraw
+retrieves with `fetch` rather than the font loader would still be refused.
+That distinction is unverified and a browser is the only thing that settles it.
 
 ## Running locally
 

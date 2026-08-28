@@ -105,6 +105,8 @@ interface ToolSidebarProps {
   onOpenLibrary: () => void;
   onOpenHelp: () => void;
   showHostTools?: boolean;
+  isGuiding?: boolean;
+  onToggleGuide?: () => void;
 }
 
 export default function ToolSidebar({
@@ -113,6 +115,8 @@ export default function ToolSidebar({
   onOpenLibrary,
   onOpenHelp,
   showHostTools = false,
+  isGuiding = false,
+  onToggleGuide,
 }: ToolSidebarProps) {
   return (
     <div
@@ -149,6 +153,23 @@ export default function ToolSidebar({
         {showHostTools && (
           <>
             <div className="mx-1 shrink-0 self-stretch border-l border-slate-700/80 sm:mx-0 sm:my-1 sm:self-auto sm:border-l-0 sm:border-t" />
+            <button
+              type="button"
+              data-testid="whiteboard-tool-guide"
+              aria-label={isGuiding ? 'Stop guiding' : 'Guide class'}
+              onClick={onToggleGuide}
+              className={`group relative flex h-11 w-11 shrink-0 sm:h-10 sm:w-10 cursor-pointer items-center justify-center rounded-xl transition-all duration-200 ${isGuiding ? 'bg-blue-500 text-white' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}
+              title={isGuiding ? 'Stop guiding' : 'Guide class'}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 12h18" />
+                <path d="M12 3v18" />
+                <circle cx="12" cy="12" r="8" />
+              </svg>
+              <span className="absolute left-full z-50 ml-3 hidden sm:flex scale-95 items-center whitespace-nowrap rounded-lg border border-slate-800/80 bg-slate-950/95 px-2.5 py-1.5 text-xs font-medium text-slate-100 opacity-0 shadow-2xl transition-all duration-150 pointer-events-none group-hover:scale-100 group-hover:opacity-100">
+                {isGuiding ? 'Stop guiding' : 'Guide class'}
+              </span>
+            </button>
             <button
               type="button"
               data-testid="whiteboard-tool-library"

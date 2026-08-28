@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { isPatched, patchAssetsFallback } from './lib/excalidrawFontFallback.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const source = join(root, 'node_modules/@excalidraw/excalidraw/dist/prod');
+const source = join(root, 'node_modules/@teacher-playground/excalidraw/dist/prod');
 const publicDir = join(root, 'public');
 
 if (!existsSync(source)) {

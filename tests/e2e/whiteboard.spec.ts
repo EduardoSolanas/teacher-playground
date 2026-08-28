@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures';
 import { Page, Browser } from '@playwright/test';
-import { createRoomWithMaxUsers, newAuthenticatedContext, expandPresenceIfCollapsed, roomIdFromPageUrl, clickCreateRoom, expectSessionCookie, unusedHexRoomId } from './helpers';
+import { appendElement, createRoomWithMaxUsers, excalidrawRectangle, newAuthenticatedContext, expandPresenceIfCollapsed, roomIdFromPageUrl, clickCreateRoom, expectSessionCookie, unusedHexRoomId } from './helpers';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -67,6 +67,20 @@ async function getCollabState(page: Page) {
     // @ts-ignore
     return window.__whiteboardCollab || {};
   });
+}
+
+async function getExcalidrawSceneIds(page: Page) {
+  return page.evaluate(() => ((window as any).__debugExcalidrawApi?.getSceneElements?.() ?? [])
+    .map((element: { id: string }) => element.id)
+    .sort());
+}
+
+async function getSharedYjsElementIds(page: Page) {
+  return page.evaluate(() => ((window as any).__whiteboardCollab?.provider?.doc?.getArray('elements')
+    ?.toArray?.() ?? [])
+    .map((element: { get: (key: string) => unknown }) => element.get('id'))
+    .filter((id: unknown): id is string => typeof id === 'string')
+    .sort());
 }
 
 async function addElement(page: Page, element: any) {
@@ -502,6 +516,110 @@ test.describe('Multi-Peer Sync', () => {
       // Verify presence: Alice sees Bob, Bob sees Alice
       await waitForPresence(page, 'Bob');
       await waitForPresence(bobPage, 'Alice');
+    } finally {
+      await bobContext.close();
+    }
+  });
+
+  test('the host can guide the class through the native Excalidraw follow state', async ({ page, browser }) => {
+    await cleanContextAndJoin(page, 'GuideTeacher');
+    const roomUrl = page.url();
+    const bobContext = await newAuthenticatedContext(browser);
+    const bobPage = await bobContext.newPage();
+    try {
+      await bobContext.addInitScript(() => {
+        localStorage.removeItem('whiteboard_username');
+        localStorage.removeItem('whiteboard_user_color');
+      });
+      await bobPage.goto(roomUrl);
+      await bobPage.getByTestId('whiteboard-username-input').fill('GuideStudent');
+      await bobPage.getByTestId('whiteboard-join-room-btn').click();
+      await approveWaitingPeerIfPresent(page);
+      await expect(bobPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+      await waitForProviderConnected(page);
+      await waitForProviderConnected(bobPage);
+
+      const guideButton = page.getByTestId('whiteboard-tool-guide');
+      await expect(guideButton).toHaveAttribute('aria-label', 'Guide class');
+      await guideButton.click();
+      await expect(guideButton).toHaveAttribute('aria-label', 'Stop guiding');
+
+      await expect
+        .poll(
+          () => page.evaluate(() => {
+            const api = (window as any).__debugExcalidrawApi;
+            return Boolean(api?.updateScene && api?.getAppState);
+          }),
+          { timeout: 15000, message: 'Excalidraw API did not become ready' },
+        )
+        .toBe(true);
+
+      await page.evaluate(() => {
+        (window as any).__debugExcalidrawApi.updateScene({
+          appState: { scrollX: -410, scrollY: 275, zoom: { value: 1.35 } },
+        });
+      });
+
+      await expect
+        .poll(
+          async () => bobPage.evaluate(() => {
+            const state = (window as any).__debugExcalidrawApi?.getAppState?.();
+            return state ? { x: state.scrollX, y: state.scrollY, zoom: state.zoom.value } : null;
+          }),
+          { timeout: 15000, message: 'student never followed the teacher viewport' },
+        )
+        .toMatchObject({ x: -410, y: 275, zoom: 1.35 });
+      await expect
+        .poll(() => bobPage.evaluate(() => (window as any).__debugExcalidrawApi.getAppState().userToFollow), {
+          timeout: 5000,
+          message: 'student did not retain native follow state',
+        })
+        .toMatchObject({ socketId: expect.any(String) });
+      await expect(bobPage.getByText('Following')).toBeVisible({ timeout: 5000 });
+
+      await page.evaluate(() => {
+        (window as any).__debugExcalidrawApi.updateScene({
+          appState: { scrollX: -260, scrollY: 140, zoom: { value: 1.2 } },
+        });
+      });
+      await expect
+        .poll(() => bobPage.evaluate(() => {
+          const api = (window as any).__debugExcalidrawApi;
+          const state = api?.getAppState?.();
+          return state ? { viewport: { x: state.scrollX, y: state.scrollY, zoom: state.zoom.value }, following: state.userToFollow } : null;
+        }))
+        .toMatchObject({ viewport: { x: -260, y: 140, zoom: 1.2 }, following: { socketId: expect.any(String) } });
+
+      // The native badge close/unfollow is local-only until the next guide session.
+      await bobPage.evaluate(() => {
+        (window as any).__debugExcalidrawApi.updateScene({ appState: { userToFollow: null } });
+      });
+      await expect
+        .poll(() => bobPage.evaluate(() => (window as any).__debugExcalidrawApi.getAppState().userToFollow))
+        .toBeNull();
+
+      await guideButton.click();
+      await expect(guideButton).toHaveAttribute('aria-label', 'Guide class');
+      await expect
+        .poll(() => bobPage.evaluate(() => (window as any).__debugExcalidrawApi.getAppState().userToFollow))
+        .toBeNull();
+
+      // A new guide session clears the student's local opt-out.
+      await guideButton.click();
+      await expect(guideButton).toHaveAttribute('aria-label', 'Stop guiding');
+      await page.evaluate(() => {
+        (window as any).__debugExcalidrawApi.updateScene({
+          appState: { scrollX: -120, scrollY: 80, zoom: { value: 1.1 } },
+        });
+      });
+      await expect
+        .poll(() => bobPage.evaluate(() => (window as any).__debugExcalidrawApi.getAppState().userToFollow))
+        .toMatchObject({ socketId: expect.any(String), username: 'GuideTeacher' });
+
+      await guideButton.click();
+      await expect
+        .poll(() => bobPage.evaluate(() => (window as any).__debugExcalidrawApi.getAppState().userToFollow))
+        .toBeNull();
     } finally {
       await bobContext.close();
     }
@@ -1070,36 +1188,29 @@ test.describe('Edge Cases', () => {
       await waitForProviderConnected(bobPage);
       await page.waitForTimeout(2000);
 
-      // Alice adds 3 elements
-      for (let i = 0; i < 3; i++) {
-        await addElement(page, {
-          id: generateId(),
-          type: 'pen',
-          points: [{ x: i * 50, y: 0 }, { x: i * 50 + 30, y: 50 }],
-          color: '#000000',
-          strokeWidth: 2,
-        });
-        await page.waitForTimeout(200);
+      // Alice adds 3 elements through the Excalidraw scene, which creates the
+      // local-origin Yjs transactions tracked by the scoped UndoManager.
+      const elementIds = ['undo-yjs-1', 'undo-yjs-2', 'undo-yjs-3'];
+      for (let i = 0; i < elementIds.length; i += 1) {
+        await appendElement(page, excalidrawRectangle(elementIds[i], i * 50, 0, i + 1));
       }
 
-      const stateBefore = await getStoreState(page);
-      expect(stateBefore.elements?.length).toBe(3);
+      await expect.poll(() => getExcalidrawSceneIds(page)).toEqual(elementIds);
+      await expect.poll(() => getSharedYjsElementIds(page)).toEqual(elementIds);
 
       // Undo once
       const undoBtn = page.getByTestId('whiteboard-undo-btn');
+      await expect(undoBtn).toBeEnabled();
       await undoBtn.click();
-      await page.waitForTimeout(300);
-
-      const stateAfterUndo = await getStoreState(page);
-      expect(stateAfterUndo.elements?.length).toBe(2);
+      await expect.poll(() => getExcalidrawSceneIds(page)).toEqual(elementIds.slice(0, 2));
+      await expect.poll(() => getSharedYjsElementIds(page)).toEqual(elementIds.slice(0, 2));
 
       // Redo once
       const redoBtn = page.getByTestId('whiteboard-redo-btn');
+      await expect(redoBtn).toBeEnabled();
       await redoBtn.click();
-      await page.waitForTimeout(300);
-
-      const stateAfterRedo = await getStoreState(page);
-      expect(stateAfterRedo.elements?.length).toBe(3);
+      await expect.poll(() => getExcalidrawSceneIds(page)).toEqual(elementIds);
+      await expect.poll(() => getSharedYjsElementIds(page)).toEqual(elementIds);
     } finally {
       await bobContext.close();
     }

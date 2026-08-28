@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import { EXCALIDRAW_ASSET_PATH } from "@/lib/whiteboard/excalidrawAssetPath";
 
 export const metadata: Metadata = {
   title: "Teacher Playground",
@@ -29,12 +30,12 @@ export default function RootLayout({
 
           Inline in <head> is the only placement that is reliably first. The
           Worker rewrites script tags to carry the CSP nonce, so this needs no
-          'unsafe-inline'. Excalidraw appends "excalidraw-assets/", so "/"
-          resolves to the vendored copy in public/.
+          'unsafe-inline'. Production resolves the immutable fork release on
+          the R2 CDN; local and preview builds use the same-origin fallback.
         */}
         <script
           dangerouslySetInnerHTML={{
-            __html: "window.EXCALIDRAW_ASSET_PATH='/'",
+            __html: `window.EXCALIDRAW_ASSET_PATH=${JSON.stringify(EXCALIDRAW_ASSET_PATH)}`,
           }}
         />
       </head>

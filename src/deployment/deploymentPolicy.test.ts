@@ -129,7 +129,18 @@ describe('production deployment policy', () => {
   });
 
   it('pins GitHub Actions to full commit SHAs on a maintained Node LTS', () => {
-    const workflowPaths = ['.github/workflows/ci.yml', '.github/workflows/deploy-cloudflare.yml'];
+    const workflowPaths = [
+      '.github/workflows/ci.yml',
+      '.github/workflows/deploy-cloudflare.yml',
+      '.github/workflows/configure-livekit.yml',
+    ];
+    const requiredActionPins = {
+      'actions/checkout': '3d3c42e5aac5ba805825da76410c181273ba90b1',
+      'actions/setup-node': '820762786026740c76f36085b0efc47a31fe5020',
+      'actions/upload-artifact': '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
+      'actions/dependency-review-action': 'a1d282b36b6f3519aa1f3fc636f609c47dddb294',
+      'cloudflare/wrangler-action': 'ebbaa1584979971c8614a24965b4405ff95890e0',
+    };
 
     for (const workflowPath of workflowPaths) {
       const workflow = readRepositoryFile(workflowPath);
@@ -144,6 +155,12 @@ describe('production deployment policy', () => {
 
       expect(workflow, workflowPath).not.toMatch(/^\s+node-version:\s*['"]?20(?:\.\d+)*['"]?\s*$/m);
       expect(workflow, workflowPath).toMatch(/^\s+node-version:\s*['"]?22(?:\.\d+){2}['"]?\s*$/m);
+
+      for (const [action, sha] of Object.entries(requiredActionPins)) {
+        const refs = [...workflow.matchAll(new RegExp(`^\\s+uses:\\s+${action.replace('/', '\\/')}@([0-9a-f]{40})`, 'gm'))]
+          .map((match) => match[1]);
+        if (refs.length > 0) expect(refs, `${workflowPath} ${action}`).toEqual([sha, ...refs.slice(1).map(() => sha)]);
+      }
     }
   });
 
@@ -178,6 +195,108 @@ describe('production deployment policy', () => {
     expect(ciWorkflow).not.toContain('npm run security:scan || true');
   });
 
+  it('consumes the fork-owned immutable Excalidraw release without publishing CDN state', () => {
+    const workflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
+    expect(workflow).not.toMatch(/scripts\/excalidraw-cdn\.mjs/);
+    expect(workflow).not.toMatch(/\bcdn\b/);
+    expect(existsSync(resolve(repositoryRoot, 'scripts/excalidraw-cdn.mjs'))).toBe(false);
+    expect(existsSync(resolve(repositoryRoot, 'scripts/excalidraw-cdn.test.ts'))).toBe(false);
+    expect(existsSync(resolve(repositoryRoot, 'infra/cloudflare/excalidraw-cdn'))).toBe(false);
+
+    const deploymentGuide = readRepositoryFile('DEPLOY.md');
+    expect(deploymentGuide).toContain('fork repository is the sole owner');
+    expect(deploymentGuide).toContain('latest.json');
+    expect(deploymentGuide).not.toMatch(/scripts\/excalidraw-cdn\.mjs/);
+
+    const e2eRunner = readRepositoryFile('scripts/run-e2e.mjs');
+    expect(e2eRunner).toContain("NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH: '/',");
+  });
+
+  it('keeps the package, CDN asset path, and CSP on the same fork release', () => {
+    const packageJson = readRepositoryFile('package.json');
+    const lockfile = readRepositoryFile('package-lock.json');
+    const assetPath = readRepositoryFile('src/lib/whiteboard/excalidrawAssetPath.ts');
+    const requestGuard = readRepositoryFile('src/lib/worker/requestGuard.ts');
+    const release = '0.18.1-tp.6';
+    const origin = 'https://excalidraw-assets.sen-tutor.co.uk';
+
+    expect(packageJson).toContain(`teacher-playground-v${release}/package.tgz`);
+    expect(lockfile).toContain(`teacher-playground-v${release}/package.tgz`);
+    expect(assetPath).toContain(`${origin}/releases/${release}/dist/prod/`);
+    expect(requestGuard).toContain(`font-src 'self' data: blob: ${origin}`);
+    const deploymentGuide = readRepositoryFile('DEPLOY.md');
+    expect(deploymentGuide).toContain('32781207895');
+    expect(deploymentGuide).toContain('32783092806');
+    expect(deploymentGuide).toContain('9,445,242');
+    expect(deploymentGuide).toContain('bytes');
+    expect(deploymentGuide).not.toContain('Non-existent domain');
+  });
+
+  it('uses LiveKit as the only A/V provider and tracks no Cloudflare Calls provisioning', () => {
+    const workflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
+    const deploymentGuide = readRepositoryFile('DEPLOY.md');
+    const readme = readRepositoryFile('README.md');
+
+    expect(workflow).not.toContain('provision-realtime:');
+    expect(workflow).not.toContain('cloudflare-realtime.mjs');
+    expect(workflow).not.toContain('CLOUDFLARE_REALTIME_APP_ID');
+    expect(workflow).not.toContain('inputs.target');
+    expect(workflow).toContain('- name: Deploy with Wrangler');
+    for (const callsPath of [
+      '.github/workflows/provision-cloudflare-realtime.yml',
+      'scripts/cloudflare-realtime.mjs',
+      'scripts/cloudflare-realtime.test.ts',
+      'infra/cloudflare/realtime-sfu',
+    ]) {
+      expect(existsSync(resolve(repositoryRoot, callsPath)), callsPath).toBe(false);
+    }
+    expect(deploymentGuide).not.toContain('Cloudflare Realtime voice control plane');
+    expect(deploymentGuide).toContain('LIVEKIT_API_SECRET');
+    expect(readme).toContain('LiveKit SFU for A/V');
+  });
+
+  it('preflights required LiveKit secrets before deploying with Wrangler', () => {
+    const workflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
+    const preflight = workflow.indexOf('npx wrangler secret list --config wrangler.toml --format json');
+    const deploy = workflow.indexOf('- name: Deploy with Wrangler');
+
+    expect(preflight).toBeGreaterThanOrEqual(0);
+    expect(deploy).toBeGreaterThan(preflight);
+    expect(workflow).toContain('CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}');
+    expect(workflow).toContain('CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}');
+    expect(workflow).toContain("jq -r '.[].name'");
+    expect(workflow).toContain('LIVEKIT_URL');
+    expect(workflow).toContain('LIVEKIT_API_KEY');
+    expect(workflow).toContain('LIVEKIT_API_SECRET');
+    expect(workflow).toContain('Missing required LiveKit secret');
+    expect(workflow).not.toMatch(/(?:echo|printf).*(?:LIVEKIT_URL|LIVEKIT_API_KEY|LIVEKIT_API_SECRET)=?/);
+  });
+
+  it('keeps LiveKit secret synchronization manual, production-scoped, and non-logging', () => {
+    const workflow = readRepositoryFile('.github/workflows/configure-livekit.yml');
+
+    expect(workflow).toMatch(/^on:\s*$/m);
+    expect(workflow).toMatch(/^\s+workflow_dispatch:\s*$/m);
+    expect(workflow).not.toMatch(/^\s+(?:push|pull_request|schedule):/m);
+    expect(workflow).toMatch(/^permissions:\s*\n\s+contents:\s+read\s*$/m);
+    expect(workflow).toMatch(/^\s+environment:\s+prod\s*$/m);
+    expect(workflow).toContain('secrets.CLOUDFLARE_API_TOKEN');
+    expect(workflow).toContain('vars.CLOUDFLARE_ACCOUNT_ID');
+    expect(workflow).toContain('secrets.LIVEKIT_URL');
+    expect(workflow).toContain('secrets.LIVEKIT_API_KEY');
+    expect(workflow).toContain('secrets.LIVEKIT_API_SECRET');
+    expect(workflow).toContain('npm ci --ignore-scripts --loglevel=error');
+    expect(workflow).toContain('wrangler secret bulk --config wrangler.toml');
+    expect(workflow).toContain('wrangler secret list --config wrangler.toml --format json');
+    expect(workflow).not.toContain('wrangler secret put');
+    expect(workflow).not.toMatch(/(?:echo|printf).*\$(?:LIVEKIT_URL|LIVEKIT_API_KEY|LIVEKIT_API_SECRET)/);
+
+    const preflight = workflow.indexOf('Missing required LiveKit secret');
+    const bulk = workflow.indexOf('wrangler secret bulk --config wrangler.toml');
+    expect(preflight).toBeGreaterThanOrEqual(0);
+    expect(bulk).toBeGreaterThan(preflight);
+  });
+
   it('caps CI Playwright workers so the singleton IdentityDO is not queued past session bootstrap', () => {
     const playwrightConfig = readRepositoryFile('playwright.config.ts');
     expect(playwrightConfig).toMatch(/workers:\s*process\.env\.CI\s*\?\s*1\s*:/);
@@ -208,6 +327,7 @@ describe('production deployment policy', () => {
     const workflowPaths = [
       '.github/workflows/ci.yml',
       '.github/workflows/deploy-cloudflare.yml',
+      '.github/workflows/configure-livekit.yml',
     ];
 
     for (const workflowPath of workflowPaths) {
@@ -220,8 +340,8 @@ describe('production deployment policy', () => {
       expect(npmCiCommands.length, workflowPath).toBeGreaterThan(0);
       for (const command of npmCiCommands) {
         expect(
-          command === 'run: npm ci --ignore-scripts'
-            || command === 'run: npm ci --omit=dev --ignore-scripts',
+          command === 'run: npm ci --ignore-scripts --loglevel=error'
+            || command === 'run: npm ci --omit=dev --ignore-scripts --loglevel=error',
           `${workflowPath}: ${command}`,
         ).toBe(true);
       }

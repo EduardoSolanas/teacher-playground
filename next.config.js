@@ -44,8 +44,8 @@ const nextConfig = {
       ...config.resolve,
       alias: {
         ...config.resolve?.alias,
-        '@excalidraw/excalidraw$': path.resolve(__dirname, 'node_modules/@excalidraw/excalidraw/dist/prod/index.js'),
-        '@excalidraw/excalidraw/index.css$': path.resolve(__dirname, 'node_modules/@excalidraw/excalidraw/dist/prod/index.css'),
+        '@teacher-playground/excalidraw$': path.resolve(__dirname, 'node_modules/@teacher-playground/excalidraw/dist/prod/index.js'),
+        '@teacher-playground/excalidraw/index.css$': path.resolve(__dirname, 'node_modules/@teacher-playground/excalidraw/dist/prod/index.css'),
       },
       aliasFields: ['browser'],
     };

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as encoding from 'lib0/encoding';
 import { isRelayableFrame } from './relayPolicy';
 import { PRESENCE_MESSAGE_TYPE } from './presenceMessage';
+import { FOLLOW_MESSAGE_TYPE } from './followMessage';
 import { MESSAGE_SYNC } from './serverSync';
 
 describe('isRelayableFrame', () => {
@@ -30,6 +31,18 @@ describe('isRelayableFrame', () => {
     const bytes = encoding.toUint8Array(encoder);
 
     expect(isRelayableFrame(bytes)).toBe(false);
+  });
+
+  it('relays follow messages, which peers author by design', () => {
+    // Unlike presence, a follow message legitimately originates from a peer:
+    // it is one participant telling the others where to look. Leaving it out
+    // of the allowlist would drop it at the room and the feature would be dead
+    // on the wire with nothing to show why.
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, FOLLOW_MESSAGE_TYPE);
+    encoding.writeVarString(encoder, JSON.stringify({ type: 'guide' }));
+
+    expect(isRelayableFrame(encoding.toUint8Array(encoder))).toBe(true);
   });
 
   it('returns false for arbitrary unknown message type', () => {

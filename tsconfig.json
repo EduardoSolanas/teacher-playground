@@ -42,6 +42,7 @@
     "src/do/**/*.ts",
     "src/test/**/*.ts",
     "src/lib/whiteboard/doDatabase.ts",
-    "src/**/*.workers.test.ts"
+    "src/**/*.workers.test.ts",
+    "excalidraw"
   ]
 }

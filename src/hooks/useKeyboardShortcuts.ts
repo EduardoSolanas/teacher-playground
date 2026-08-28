@@ -130,9 +130,16 @@ const SHORTCUTS: Array<{ key: string; label: string; action: () => void; ctrl?: 
   },
 ];
 
-export function useKeyboardShortcuts() {
+export type KeyboardShortcutOverrides = {
+  undo?: () => void;
+  redo?: () => void;
+};
+
+export function useKeyboardShortcuts(overrides: KeyboardShortcutOverrides = {}) {
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
-  const { undo, redo } = useUndoRedo();
+  const { undo: storeUndo, redo: storeRedo } = useUndoRedo();
+  const undo = overrides.undo ?? storeUndo;
+  const redo = overrides.redo ?? storeRedo;
   const shown = useRef(false);
 
   useEffect(() => {

@@ -1,6 +1,11 @@
 import { test, expect } from './fixtures';
 import { Page } from '@playwright/test';
-import { newAuthenticatedContext, clickCreateRoom } from './helpers';
+import {
+  appendElement,
+  clickCreateRoom,
+  excalidrawRectangle,
+  waitForExcalidrawApi,
+} from './helpers';
 
 function appUrl(path: string) {
   return new URL(path, process.env.PLAYWRIGHT_BASE_URL).toString();
@@ -104,13 +109,12 @@ test.describe('Undo/Redo Bar', () => {
 
   test('undo is enabled after adding an element', async ({ page }) => {
     await joinRoom(page, 'AddUndo');
-    await page.waitForTimeout(2000);
+    await waitForExcalidrawApi(page);
+    await appendElement(page, excalidrawRectangle('undo-test', 0, 0));
 
-    await page.evaluate(() => {
-      const store = (window as any).__whiteboardStore;
-      if (store) store.addElement({ id: 'undo-test', type: 'rectangle', x: 0, y: 0, width: 100, height: 50, fill: '#000', stroke: '#000', strokeWidth: 2 });
-    });
-    await page.waitForTimeout(300);
+    await expect.poll(() => page.evaluate(() => (
+      (window as any).__debugExcalidrawApi?.getSceneElements?.() ?? []
+    ).some((element: { id: string }) => element.id === 'undo-test'))).toBe(true);
 
     await expect(page.getByTestId('whiteboard-undo-btn')).toBeEnabled();
   });

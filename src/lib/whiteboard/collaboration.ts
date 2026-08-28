@@ -6,7 +6,13 @@ import {
   updateElementInArray,
   getElementsFromArray,
 } from './yjsDoc';
-import { createYWebsocketProvider, destroyProvider, type PresenceCallback } from './yWebsocketProvider';
+import {
+  createYWebsocketProvider,
+  destroyProvider,
+  type FollowCallback,
+  type PresenceCallback,
+} from './yWebsocketProvider';
+import type { FollowMessage } from './followMessage';
 import {
   clearCursor,
   publishCursor,
@@ -43,9 +49,11 @@ export function createCollaboration(
   roomId: string,
   peerId?: string,
   onPresence?: PresenceCallback,
+  onFollow?: FollowCallback,
 ) {
   const { doc, elementsArray, viewportMap } = createWhiteboardDoc(roomId);
-  const { provider, status } = createYWebsocketProvider(doc, roomId, onPresence);
+  const providerEntry = createYWebsocketProvider(doc, roomId, onPresence, onFollow);
+  const { provider, status } = providerEntry;
   // Cursors ride awareness, which the provider owns. Absent on the server,
   // where there is no socket and nothing to announce.
   const awareness = provider.awareness ?? null;
@@ -55,6 +63,8 @@ export function createCollaboration(
   let localUserColor = '#3498db';
   let lastCursorX = 0;
   let lastCursorY = 0;
+  // Re-announcing on a rename must not report the pointer as lifted mid-stroke.
+  let lastCursorButton: 'up' | 'down' = 'up';
   const changeCallbacks: ChangeCallback[] = [];
   const reconnectInterval = setInterval(() => {
     if ((provider as any).shouldConnect !== false && !isProviderConnected(provider)) {
@@ -63,26 +73,28 @@ export function createCollaboration(
     }
   }, 5_000);
 
-  function setLocalCursor(x: number, y: number) {
+  function setLocalCursor(x: number, y: number, button: 'up' | 'down' = 'up') {
     lastCursorX = x;
     lastCursorY = y;
+    lastCursorButton = button;
     publishCursor(awareness, {
       x,
       y,
       userName: localUserName,
       color: localUserColor,
       peerId: localPeerId,
+      button,
     });
   }
 
   function setLocalUserName(name: string) {
     localUserName = name;
-    if (readLocalCursor(awareness)) setLocalCursor(lastCursorX, lastCursorY);
+    if (readLocalCursor(awareness)) setLocalCursor(lastCursorX, lastCursorY, lastCursorButton);
   }
 
   function setLocalUserColor(color: string) {
     localUserColor = color;
-    if (readLocalCursor(awareness)) setLocalCursor(lastCursorX, lastCursorY);
+    if (readLocalCursor(awareness)) setLocalCursor(lastCursorX, lastCursorY, lastCursorButton);
   }
 
   function adoptLocalPeerId(nextPeerId: string) {
@@ -90,7 +102,7 @@ export function createCollaboration(
     localPeerId = nextPeerId;
     // One announcement per peer, keyed by the connection rather than by the
     // peer id, so renaming needs no delete of the old key.
-    setLocalCursor(lastCursorX, lastCursorY);
+    setLocalCursor(lastCursorX, lastCursorY, lastCursorButton);
   }
 
   function getUsers(): WhiteboardUser[] {
@@ -189,6 +201,7 @@ export function createCollaboration(
     addElement,
     removeElement,
     updateElement,
+    sendFollowMessage: (message: FollowMessage) => providerEntry.sendFollowMessage?.(message) ?? false,
     onChange,
     destroy,
   };

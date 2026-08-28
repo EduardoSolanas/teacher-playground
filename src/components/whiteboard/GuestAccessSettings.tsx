@@ -36,6 +36,10 @@ export default function GuestAccessSettings({
     return () => window.clearInterval(id);
   }, []);
   const lockedOut = now !== null && isGuestJoinLockedOut(lockoutUntil, now);
+  const pinExpired = guestAccess && (
+    guestPinExpiresAt === null || (now !== null && guestPinExpiresAt <= now)
+  );
+  const showPin = guestAccess && now !== null && !pinExpired;
   const expiryLabel = guestPinExpiresAt
     ? new Date(guestPinExpiresAt).toLocaleString(undefined, {
       month: 'short',
@@ -83,23 +87,45 @@ export default function GuestAccessSettings({
         </div>
       )}
 
+      {pinExpired && !lockedOut && (
+        <div
+          data-testid="guest-pin-expired"
+          className="callout"
+          role="status"
+        >
+          This class PIN has expired. Students cannot join with it. Generate a new PIN to let students join.
+          <button
+            type="button"
+            data-testid="guest-generate-pin"
+            onClick={onRotate}
+            className="btn btn-block"
+          >
+            Generate new PIN
+          </button>
+        </div>
+      )}
+
       {guestAccess ? (
         <div className="guest-fields">
-          <p className="app-label">Class PIN</p>
-          <div className="copy-field">
-            <p
-              data-testid="guest-pin"
-              className="guest-pin"
-            >
-              {guestPin}
-            </p>
-            <CopyButton value={guestPin ?? ''} label="class PIN" />
-          </div>
-          {expiryLabel && (
-            <p className="app-small">Expires {expiryLabel}</p>
+          {showPin && (
+            <>
+              <p className="app-label">Class PIN</p>
+              <div className="copy-field">
+                <p
+                  data-testid="guest-pin"
+                  className="guest-pin"
+                >
+                  {guestPin}
+                </p>
+                <CopyButton value={guestPin ?? ''} label="class PIN" />
+              </div>
+              {expiryLabel && (
+                <p className="app-small">Expires {expiryLabel}</p>
+              )}
+            </>
           )}
           <div className="btn-gap">
-            {!lockedOut && (
+            {!lockedOut && !pinExpired && (
               <button
                 type="button"
                 data-testid="guest-rotate-pin"
