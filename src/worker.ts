@@ -585,9 +585,9 @@ async function accountErase(
   }
   const stamp = outcome.session;
   await Promise.all(
-    roomIds.map((roomId) => {
-      if (!isValidRoomId(roomId)) return Promise.resolve();
-      return forward(
+    roomIds.map(async (roomId) => {
+      if (!isValidRoomId(roomId)) return;
+      await forward(
         env,
         roomId,
         '/room/erasure',
@@ -595,6 +595,14 @@ async function accountErase(
         new URL(request.url),
         stamp,
       );
+      /*
+       * Awaited here rather than left to the room object, which has no R2
+       * binding and so cannot erase what it does not hold. An erasure that
+       * cleared the board rows and left the uploaded pictures in the bucket
+       * would answer "ok" while the images of children's work it was asked to
+       * destroy stayed exactly where they were.
+       */
+      await purgeBoardFiles(env, roomId);
     }),
   );
   const headers = new Headers();

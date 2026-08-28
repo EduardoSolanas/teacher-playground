@@ -6,6 +6,14 @@ import { MAX_BODY_BYTES } from './lib/worker/requestGuard';
 import { DESTRUCTIVE_FRESH_MS } from './lib/identity/sessionStore';
 import { accessFetch, authenticatedFetch, bootstrapLocalSession, localAccessToken } from './test/workerAuth';
 import { resetAuthEventWriterForTests, setAuthEventWriterForTests } from './worker';
+
+declare global {
+  namespace Cloudflare {
+    interface Env {
+      BOARD_FILES: R2Bucket;
+    }
+  }
+}
 import {
   ACCESS_REQUEST_RATE_MAX,
   PRESENCE_POST_RATE_MAX,
@@ -234,6 +242,41 @@ describe('real local Access boundary through workerd', () => {
     expect(await erased.json()).toEqual({ ok: true });
     expect((await authenticatedFetch('/auth/session/current', session)).status).toBe(401);
     expect((await authenticatedFetch('/auth/session/current', other)).status).toBe(200);
+  });
+
+  it('erases uploaded board images along with the account', async () => {
+    /*
+     * The board rows are erased through the room object, which cannot reach R2
+     * -- the bucket is bound to the Worker. So an erasure that only forwarded
+     * to the room left every uploaded picture in the bucket for good, which for
+     * images of children's work is the one kind of leftover that matters.
+     */
+    const owner = await bootstrapLocalSession('erase-board-files');
+    const roomId = `erase-files-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const bytes = new Uint8Array([9, 8, 7, 6]);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/files/erase-me-1`,
+      owner,
+      {
+        method: 'PUT',
+        headers: { Origin: BASE, 'content-type': 'image/png', 'content-length': String(bytes.length) },
+        body: bytes,
+      },
+    )).status).toBe(201);
+
+    const key = `rooms/${roomId}/files/erase-me-1`;
+    expect(await env.BOARD_FILES.get(key)).not.toBeNull();
+
+    expect((await authenticatedFetch('/auth/session/confirm', owner, { method: 'POST' })).status).toBe(200);
+    expect((await authenticatedFetch('/auth/account', owner, { method: 'DELETE' })).status).toBe(200);
+
+    expect(await env.BOARD_FILES.get(key)).toBeNull();
   });
 
   it('purges rooms the caller owned and leaves another account room intact', async () => {
