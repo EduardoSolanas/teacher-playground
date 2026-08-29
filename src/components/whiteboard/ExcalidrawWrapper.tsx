@@ -23,6 +23,7 @@ import {
 } from '@/lib/whiteboard/excalidrawSync';
 import { reconcileRemoteElements } from '@/lib/whiteboard/excalidrawReconcile';
 import { getElementsFromArray, replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
+import { snapshotElements } from '@/lib/whiteboard/sceneSnapshot';
 import { collaboratorsFromPresence } from '@/lib/whiteboard/collaborators';
 import type { CanvasElement, RemoteCursor, WhiteboardUser } from '@/types/whiteboard';
 import type { FollowMessage } from '@/lib/whiteboard/followMessage';
@@ -568,7 +569,23 @@ export default function ExcalidrawWrapper({
       if (apiRef.current !== api) return;
       // Excalidraw has settled, so the stored view can be applied now.
       setApiReady(true);
-      const shared = readSharedElements();
+      /*
+       * The first scene arrives without its tombstones.
+       *
+       * An erased element stays in the document as a deleted element, and on
+       * every later update that is exactly what it is for: it tells a peer
+       * holding the stroke to stop drawing it. At first load there is nothing
+       * to tell -- the scene is empty -- so each one is an element the editor
+       * carries, indexes and walks for the rest of the session in order to
+       * draw nothing. On a board used for a term that is most of the scene:
+       * measured at six hundred elements of which four hundred and eighty were
+       * invisible.
+       *
+       * The document is untouched, so nothing is resurrected: this client
+       * simply never learns about strokes that were erased before it arrived,
+       * which is the same thing it would see if it had never been away.
+       */
+      const shared = snapshotElements(readSharedElements());
       if (shared.length === 0) return;
       if (excalidrawElementsEqual(shared, lastSyncedElementsRef.current)) return;
       lastSyncedElementsRef.current = shared;
