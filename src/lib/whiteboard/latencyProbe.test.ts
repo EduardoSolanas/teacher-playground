@@ -2,8 +2,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   clearWhiteboardLatencyEvents,
-  isWhiteboardIncrementComparisonEnabled,
-  isWhiteboardIncrementSyncEnabled,
   isWhiteboardLatencyProbeEnabled,
   readWhiteboardLatencyEvents,
   recordWhiteboardLatencyEvent,
@@ -13,8 +11,6 @@ describe('whiteboard latency probe', () => {
   const testEnv = process.env as Record<string, string | undefined>;
   const originalNodeEnv = testEnv.NODE_ENV;
   const originalE2eFlag = testEnv.NEXT_PUBLIC_E2E;
-  const originalIncrementFlag = testEnv.NEXT_PUBLIC_WHITEBOARD_INCREMENTS;
-  const originalIncrementCompareFlag = testEnv.NEXT_PUBLIC_WHITEBOARD_INCREMENT_COMPARE;
   const originalEvents = (globalThis.window as Window & { __whiteboardLatencyEvents?: unknown })
     .__whiteboardLatencyEvents;
 
@@ -23,10 +19,6 @@ describe('whiteboard latency probe', () => {
     else testEnv.NODE_ENV = originalNodeEnv;
     if (originalE2eFlag === undefined) delete testEnv.NEXT_PUBLIC_E2E;
     else testEnv.NEXT_PUBLIC_E2E = originalE2eFlag;
-    if (originalIncrementFlag === undefined) delete testEnv.NEXT_PUBLIC_WHITEBOARD_INCREMENTS;
-    else testEnv.NEXT_PUBLIC_WHITEBOARD_INCREMENTS = originalIncrementFlag;
-    if (originalIncrementCompareFlag === undefined) delete testEnv.NEXT_PUBLIC_WHITEBOARD_INCREMENT_COMPARE;
-    else testEnv.NEXT_PUBLIC_WHITEBOARD_INCREMENT_COMPARE = originalIncrementCompareFlag;
     if (originalEvents === undefined) {
       delete (globalThis.window as Window & { __whiteboardLatencyEvents?: unknown })
         .__whiteboardLatencyEvents;
@@ -104,21 +96,6 @@ describe('whiteboard latency probe', () => {
     expect(isWhiteboardLatencyProbeEnabled()).toBe(true);
   });
 
-  it('keeps increment publishing and comparison independently opt-in', () => {
-    delete testEnv.NEXT_PUBLIC_WHITEBOARD_INCREMENTS;
-    delete testEnv.NEXT_PUBLIC_WHITEBOARD_INCREMENT_COMPARE;
-    expect(isWhiteboardIncrementSyncEnabled()).toBe(false);
-    expect(isWhiteboardIncrementComparisonEnabled()).toBe(false);
-
-    testEnv.NEXT_PUBLIC_WHITEBOARD_INCREMENTS = '1';
-    expect(isWhiteboardIncrementSyncEnabled()).toBe(true);
-    expect(isWhiteboardIncrementComparisonEnabled()).toBe(false);
-
-    testEnv.NEXT_PUBLIC_WHITEBOARD_INCREMENT_COMPARE = '1';
-    expect(isWhiteboardIncrementComparisonEnabled()).toBe(true);
-    testEnv.NEXT_PUBLIC_WHITEBOARD_INCREMENTS = '0';
-    expect(isWhiteboardIncrementSyncEnabled()).toBe(false);
-  });
 
   it('allows the E2E flag in production', () => {
     testEnv.NODE_ENV = 'production';

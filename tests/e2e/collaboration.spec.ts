@@ -283,16 +283,6 @@ async function selectExcalidrawTool(page: Page, testId: keyof typeof EXCALIDRAW_
     .toBe(EXCALIDRAW_TOOL_BY_TEST_ID[testId]);
 }
 
-async function getIncrementStrokeState(page: Page) {
-  return page.evaluate(() => {
-    const state = (window as any).__e2eIncrementState;
-    return {
-      events: state?.events ?? [],
-      partialPoints: state?.partialPoints ?? [],
-    };
-  });
-}
-
 test.describe('Excalidraw', () => {
   test('whiteboard page loads with Excalidraw canvas', async ({ page }) => {
     await joinRoom(page, 'TestUser');
@@ -588,52 +578,6 @@ test.describe('Excalidraw Collaboration', () => {
       { x: 680, y: 290 },
     ]);
     await expectCommittedElement(page, 'freedraw', 1, { minPoints: 3 });
-  });
-
-  test('records whether store increments contain an in-progress pen stroke', async ({ page }) => {
-    await joinRoom(page, 'IncrementStroke');
-    await selectExcalidrawTool(page, 'whiteboard-tool-pen');
-
-    await page.evaluate(() => {
-      const api = (window as any).__debugExcalidrawApi;
-      (window as any).__e2eIncrementState = { events: [], partialPoints: [] };
-      api.onIncrement((event: any) => {
-        const freedraw = api.getSceneElements().find((element: any) => element.type === 'freedraw');
-        const state = (window as any).__e2eIncrementState;
-        state.events.push({
-          added: event.elementsChange.added.size,
-          updated: event.elementsChange.updated.size,
-          removed: event.elementsChange.removed.size,
-        });
-        state.partialPoints.push(Array.isArray(freedraw?.points) ? freedraw.points.length : 0);
-      });
-    });
-
-    await dragInCanvas(page, [
-      { x: 420, y: 320 },
-      { x: 480, y: 280 },
-      { x: 560, y: 340 },
-      { x: 680, y: 290 },
-    ], { finish: false });
-
-    const duringStroke = await getIncrementStrokeState(page);
-    expect(duringStroke.events).toEqual([]);
-
-    await page.evaluate(() => {
-      window.dispatchEvent(new PointerEvent('pointerup', {
-        bubbles: true,
-        cancelable: true,
-        pointerId: 1,
-        pointerType: 'mouse',
-        isPrimary: true,
-        button: 0,
-        buttons: 0,
-      }));
-    });
-
-    await expect.poll(async () => (await getIncrementStrokeState(page)).events.length).toBeGreaterThan(0);
-    const afterStroke = await getIncrementStrokeState(page);
-    expect(afterStroke.partialPoints.some((points: number) => points > 1)).toBe(true);
   });
 
   // Was 'pen draws through the first-run empty state hints'. The hint overlay

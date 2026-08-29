@@ -1,5 +1,33 @@
 # Task: expose Excalidraw's store increments and adopt them
 
+> ## CLOSED — 2026-08-29
+>
+> **Do not implement this. It was implemented, and then reverted.**
+>
+> Phases 1–3 shipped: the fork exposes `onIncrement`, a commit `source`, and
+> `onToolChange` in `teacher-playground-v0.18.1-tp.7`, and the application
+> consumed increments behind flags with a comparison mode.
+>
+> §7 — the one risk this brief recorded and then built on top of anyway — was
+> answered by a real-browser test: **increments do not fire during a stroke,
+> only on commit.** The per-sample cost that motivated the whole task is
+> therefore untouchable by increments, and the achievable prize shrank to one
+> avoided scene diff per commit.
+>
+> That was not worth two publish paths, a comparison mode and two flags in the
+> code that makes drawing work, so the adoption was removed. `onToolChange`
+> was kept — it replaced a module-level singleton and stands on its own — and
+> `onIncrement` remains available in the fork, unused.
+>
+> The reasoning is preserved in
+> [`FORK_EXCALIDRAW.md`](FORK_EXCALIDRAW.md) §A. **The lesson is the part worth
+> carrying forward:** this document asserted a payoff in §1 while recording, in
+> §7, the exact reason that payoff might not exist. A risk that decides whether
+> the work is worth doing is not a footnote to check later — it is the first
+> experiment.
+>
+> Everything below is the original brief, kept for the record.
+
 **Audience:** an implementing agent or engineer with no prior context on this
 repository. Read this whole file before writing code. Background:
 [`FORK_EXCALIDRAW.md`](FORK_EXCALIDRAW.md) §"What is genuinely not exposed".

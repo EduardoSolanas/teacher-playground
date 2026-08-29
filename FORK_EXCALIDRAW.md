@@ -90,84 +90,63 @@ Three gaps were identified in the pre-tp.7 public API. The tp.7 release closes
 all three additively; the application keeps the old publishing workarounds until
 the comparison gate in `EXCALIDRAW_INCREMENTS_TASK.md` proves they are redundant.
 
-### A. The change feed exists; tp.7 exposes it — but it is commit-only
-
-**Before tp.7 this was not a missing feature; it was an unexported one.**
+### A. The change feed exists, tp.7 exposes it, and we do not use it
 
 `packages/excalidraw/store.ts` defines `class Store` with a public
-`onStoreIncrementEmitter`, which fires a `StoreIncrementEvent` carrying
+`onStoreIncrementEmitter`, firing a `StoreIncrementEvent` that carries
 `elementsChange: ElementsChange` and `appStateChange: AppStateChange`.
-`ElementsChange` (`packages/excalidraw/change.ts`) holds exactly three maps —
-`added`, `removed`, `updated`, each `id → Delta<ElementPartial>`.
+`ElementsChange` (`packages/excalidraw/change.ts`) holds three maps — `added`,
+`removed`, `updated`, each `id → Delta<ElementPartial>`. Excalidraw computes it
+for undo/history. Release tp.7 exposes it as
+`ExcalidrawImperativeAPI.onIncrement`, additively, leaving `onChange` unchanged.
 
-Excalidraw computes this on every commit for its own undo/history. The
-`IStore` interface is annotated `@experimental`. Release tp.7 exposes it as
-`ExcalidrawImperativeAPI.onIncrement`, leaving `onChange` unchanged.
+**The application adopted it and then removed it again. That was the right
+outcome, and the reasoning is worth keeping.**
 
-> **Correction (2026-08-29).** An earlier revision of this section, and the
-> first draft of `EXCALIDRAW_INCREMENTS_TASK.md`, claimed this feed would
-> replace the per-sample publishing machinery and remove the reported drawing
-> lag. **That was wrong, and the table below said so with more confidence than
-> the evidence ever supported.**
+The case for adopting it was that `onChange` hands over the whole scene on every
+pointer sample, so the application rebuilds a delta the editor already has —
+`diffScene`, a per-sample version map, a 50ms throttle, a deferred React hop
+(which *is* the drawing-lag fix), and, later, a second de-duplication mechanism
+for board images. Removing that cost was the entire point.
+
+> **Correction (2026-08-29).** That premise was wrong, and this document
+> asserted it before it was tested.
 >
 > A real-browser test held a multi-point pointer gesture and observed **zero
 > increment callbacks before `pointerup`**. Increments fire on *commit*. The
-> expensive path — whole scene, roughly twenty times a second, while the
-> pointer is down — is precisely where they do not fire.
+> expensive path — whole scene, roughly twenty times a second, pointer down — is
+> precisely where they do not fire.
 >
-> The `filterUncomittedElements` hint in `IStore` was the tell, and it was
-> recorded as a risk before the work began. It should have been resolved before
-> the payoff was written down as a premise rather than a hope.
+> `IStore.filterUncomittedElements` was the tell, and it was written down as the
+> one risk to resolve first. The plan was then built on top of the risk instead
+> of resolving it.
 
-What the increment feed can and cannot do:
+That left a hybrid: increments publishing committed changes, `onChange` still
+carrying the live stroke. It worked, it was tested, and it bought one avoided
+scene diff per commit — on a path that runs once per stroke, not twenty times a
+second. Against that: two publish paths through the code that makes drawing
+work, plus a comparison mode and two feature flags to keep them honest.
 
-| Workaround | Can increments replace it? |
-|---|---|
-| `scenePublish.ts` — `diffScene`, `shouldPublish`, `elementsToPublish` | **Only for the live stroke and comparison mode.** The normal increment path bypasses it |
-| `publishedVersionsRef` | **No.** The increment path updates it from changed ids; it remains the baseline for the stroke path and comparison mode |
-| `STROKE_COMMIT_INTERVAL_MS` throttle | **No.** It exists for the pointer-down path |
-| `deferredElementsRef` / deferred React hop | **No.** This is the drawing-lag fix and it lives entirely in the stroke path |
-| `excalidrawElementsEqual` | Partly — `source` tagging (item B) covers echo suppression |
-| `filesToUpload` + an uploaded-id set | Unresolved; increments do not currently carry file changes |
+**Decision: the increment adoption was removed** (`incrementSync.ts`, the flags,
+the comparison mode, and the remote-republish scaffolding that existed only to
+compensate for remote updates emitting no increment). The complexity was not
+proportionate to a benefit nobody had measured.
 
-So the shape the application actually adopted is a **hybrid**: increments
-publish committed changes, `onChange` keeps handling the live stroke. That is a
-smaller prize than this document originally promised, and it is worth stating
-plainly — the per-sample cost, which was the whole motivation, is untouched.
+What survives, and why:
 
-**Current performance effect: bounded, not a claimed stroke fix.** The normal
-increment path now updates `publishedVersionsRef` from the ids in the increment
-and no longer calls `diffScene`. Comparison mode intentionally retains the
-legacy `diffScene` candidate so the two payloads can still be checked. This
-removes one full-scene baseline rebuild from committed changes, but the active
-stroke path remains unchanged; it does not claim to fix the reported drawing
-lag. Production remains default-off. The CI E2E job sets both flags to `1` for a
-controlled comparison build.
+- **`onToolChange` stays**, unconditionally. It replaced `ToolEvents.ts`, a
+  module-level singleton with one handler slot and no unsubscribe. That was a
+  real improvement independent of increments.
+- **`source` on `updateScene` stays**, because labelling a remote scene update
+  as remote is correct regardless of who listens.
+- **`onIncrement` stays in the fork.** It is additive, costs nothing unused, and
+  is still worth offering upstream on the narrower grounds: useful for committed
+  changes, machinery already present, interface already `@experimental`.
 
-The local continuous-stroke latency probe passed with both flags unset at p95
-25 ms host-to-peer / 27 ms peer-to-host. A successful flags-on attempt reported
-12 ms / 15 ms. Those are publish-to-render observations on one local worker
-setup; intermittent probe convergence failures mean they are not a causal CPU
-benchmark or a production-network claim.
-
-**What would actually help the hot path**, now that increments are known to be
-commit-only:
-
-1. **Done:** `commitIncrement` maintains the version baseline from the
-   increment itself, so normal committed changes no longer rebuild a full-scene
-   diff.
-2. **Measured, without overclaiming:** local off/on stroke evidence is recorded,
-   but it does not establish a production CPU saving.
-3. **Done for controlled comparison:** CI's E2E job enables both flags. The
-   production deploy remains default-off until that evidence is reviewed.
-4. A genuine fix for the stroke path needs a signal upstream does not expose at
-   all — mid-stroke deltas — which is a much larger ask than exporting an
-   existing emitter, and should not be attempted on the strength of this
-   document alone.
-
-**Still worth raising upstream**, on the narrower and honest grounds: the
-increment feed is useful for committed changes, the machinery already exists,
-`IStore` is already `@experimental`, and exposing it is additive.
+Fixing the per-sample cost needs **mid-stroke deltas**, which upstream does not
+expose in any form. That is a materially larger ask than exporting an existing
+emitter and should be a fresh proposal with its own evidence, not a resumption
+of this one.
 
 ### B. Origin tagging on notification — shipped in tp.7
 

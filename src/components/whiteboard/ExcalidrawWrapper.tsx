@@ -27,25 +27,14 @@ import type { CanvasElement, RemoteCursor, WhiteboardUser } from '@/types/whiteb
 import type { FollowMessage } from '@/lib/whiteboard/followMessage';
 import {
   isWhiteboardLatencyProbeEnabled,
-  isWhiteboardIncrementComparisonEnabled,
-  isWhiteboardIncrementSyncEnabled,
   recordWhiteboardLatencyEvent,
 } from '@/lib/whiteboard/latencyProbe';
-import {
-  formatIncrementComparisonWarning,
-  incrementSceneChange,
-  isRemoteIncrement,
-  publishCandidatesEqual,
-  updateVersionBaselineFromIncrement,
-} from '@/lib/whiteboard/incrementSync';
-import type {
-  PublishCandidate,
-  StoreIncrementEventLike,
-} from '@/lib/whiteboard/incrementSync';
 import { bytesToDataURL, dataURLToBytes, filesToUpload, isAllowedMimeType } from '@/lib/whiteboard/boardFiles';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 
 type SharedSceneElement = Record<string, unknown>;
+/** What `elementsToPublish` hands back: the delta, or the whole scene. */
+type PublishCandidate = { elements: readonly unknown[]; wholeScene: boolean };
 type ExcalidrawOnChange = NonNullable<ExcalidrawProps['onChange']>;
 type ExcalidrawPointerUpdate = NonNullable<ExcalidrawProps['onPointerUpdate']>;
 type ExcalidrawChangeElements = Parameters<ExcalidrawOnChange>[0];
@@ -55,7 +44,6 @@ type ExcalidrawPointerPayload = Parameters<ExcalidrawPointerUpdate>[0];
 type ExcalidrawTool = Parameters<ExcalidrawImperativeAPI['setActiveTool']>[0]['type'];
 type ExcalidrawStandardTool = Exclude<ExcalidrawTool, 'custom'>;
 type ExcalidrawSubscriptionsAPI = ExcalidrawImperativeAPI & {
-  onIncrement?: (callback: (event: StoreIncrementEventLike) => void) => () => void;
   onToolChange?: (callback: (tool: { type: string }) => void) => () => void;
 };
 
@@ -164,7 +152,6 @@ export default function ExcalidrawWrapper({
   const applyingGuideRef = useRef(false);
   const previousIsGuidingRef = useRef(false);
   const followUnsubscribeRef = useRef<(() => void) | null>(null);
-  const incrementUnsubscribeRef = useRef<(() => void) | null>(null);
   const toolUnsubscribeRef = useRef<(() => void) | null>(null);
   const commitElementsRef = useRef<
     ((elements: readonly ExcalidrawElement[], force?: boolean) => void) | null
@@ -244,11 +231,8 @@ export default function ExcalidrawWrapper({
 
   /** Remote scenes coalesce into one React update rather than ~20 a second. */
   const REMOTE_STATE_FLUSH_MS = 200;
-  const REMOTE_REPUBLISH_DEBOUNCE_MS = 50;
   const pendingRemoteStateRef = useRef<SharedSceneElement[] | null>(null);
   const remoteStateTimerRef = useRef<number | null>(null);
-  const remoteRepublishEpochRef = useRef(0);
-  const remoteRepublishTimerRef = useRef<number | null>(null);
   /** Every element id the room has ever shown this peer. */
   const seenRemoteIdsRef = useRef<Set<string>>(new Set());
   const pendingElementsRef = useRef<SharedSceneElement[] | null>(null);
@@ -366,13 +350,6 @@ export default function ExcalidrawWrapper({
   }, [fetchBoardFile]);
 
   const applyRemoteElements = useCallback((remoteElements: SharedSceneElement[]) => {
-    remoteRepublishEpochRef.current += 1;
-    const republishEpoch = remoteRepublishEpochRef.current;
-    if (remoteRepublishTimerRef.current !== null) {
-      window.clearTimeout(remoteRepublishTimerRef.current);
-      remoteRepublishTimerRef.current = null;
-    }
-
     // The elements arrive over the document; the bytes never do.
     fetchMissingBoardFiles(remoteElements);
     const shouldRecordRemoteRender =
@@ -403,35 +380,6 @@ export default function ExcalidrawWrapper({
         lastPublishedIds: lastPublishedIdsRef.current,
       },
     );
-    const remoteById = new Map<string, SharedSceneElement>();
-    for (const element of remoteElements) {
-      const id = (element as { id?: unknown })?.id;
-      if (typeof id !== 'string' || id.length === 0) continue;
-      remoteById.set(id, element);
-    }
-    let republishDelayMs: number | null = null;
-    if (isWhiteboardIncrementSyncEnabled()) {
-      for (const element of sceneToApply) {
-        const id = (element as { id?: unknown })?.id;
-        if (typeof id !== 'string' || id.length === 0) continue;
-        const remoteElement = remoteById.get(id);
-        if (!remoteElement) continue;
-        const sceneVersion = (element as { version?: unknown }).version;
-        const remoteVersion = (remoteElement as { version?: unknown }).version;
-        const payloadChanged =
-          JSON.stringify(serializeExcalidrawElements([element]))
-          !== JSON.stringify(serializeExcalidrawElements([remoteElement]));
-        if (!payloadChanged) continue;
-        republishDelayMs =
-          typeof sceneVersion === 'number'
-          && typeof remoteVersion === 'number'
-          && remoteVersion < sceneVersion
-            ? 0
-            : REMOTE_REPUBLISH_DEBOUNCE_MS;
-        break;
-      }
-    }
-
     /*
      * The canvas is updated below immediately — that is what the user watches.
      * What is deferred is the React hop.
@@ -470,19 +418,6 @@ export default function ExcalidrawWrapper({
           captureUpdate: CaptureUpdateAction.NEVER,
           source: 'remote',
         });
-        // Reconciliation can retain a newer local element over a stale remote
-        // frame. With increment sync enabled, that remote update emits no
-        // increment, so publish the reconciled winner through the legacy diff
-        // only after the current remote turn settles, and cancel it if a newer
-        // remote scene arrives first.
-        if (republishDelayMs !== null) {
-          remoteRepublishTimerRef.current = window.setTimeout(() => {
-            remoteRepublishTimerRef.current = null;
-            if (republishEpoch !== remoteRepublishEpochRef.current) return;
-            commitElementsRef.current?.(toExcalidrawElements(sceneToApply));
-          }, republishDelayMs);
-        }
-
         if (shouldRecordRemoteRender) {
           window.requestAnimationFrame(() => {
             for (const element of remoteElements) {
@@ -515,10 +450,6 @@ export default function ExcalidrawWrapper({
       if (remoteStateTimerRef.current !== null) {
         window.clearTimeout(remoteStateTimerRef.current);
         remoteStateTimerRef.current = null;
-      }
-      if (remoteRepublishTimerRef.current !== null) {
-        window.clearTimeout(remoteRepublishTimerRef.current);
-        remoteRepublishTimerRef.current = null;
       }
       const pendingRemote = pendingRemoteStateRef.current;
       pendingRemoteStateRef.current = null;
@@ -790,51 +721,6 @@ export default function ExcalidrawWrapper({
   );
   commitElementsRef.current = commitElements;
 
-  const commitIncrement = useCallback(
-    (event: StoreIncrementEventLike) => {
-      if (isRemoteIncrement(event)) return;
-
-      // Store emits while updateScene is still committing. Waiting one
-      // microtask lets the editor replace its scene before we read it, so an
-      // added element is not mistaken for an empty increment.
-      queueMicrotask(() => {
-        const api = apiRef.current;
-        if (!api) return;
-
-        const scene = api.getSceneElements();
-        const incrementCandidate = incrementSceneChange(event, scene);
-        let legacyCandidate: PublishCandidate | null = null;
-
-        if (isWhiteboardIncrementComparisonEnabled()) {
-          const legacyDiff = diffScene(publishedVersionsRef.current, scene);
-          legacyCandidate = elementsToPublish(scene, legacyDiff);
-          if (!publishCandidatesEqual(legacyCandidate, incrementCandidate)) {
-            console.warn(formatIncrementComparisonWarning(legacyCandidate, incrementCandidate));
-          }
-        }
-
-        if (!isWhiteboardIncrementSyncEnabled()) return;
-        if (!incrementCandidate.wholeScene && incrementCandidate.elements.length === 0) return;
-
-        const serializedScene = serializeExcalidrawElements(scene);
-        publishedVersionsRef.current = updateVersionBaselineFromIncrement(
-          publishedVersionsRef.current,
-          event,
-          serializedScene,
-        );
-        publishScene(
-          serializedScene,
-          incrementCandidate.wholeScene
-            ? { elements: serializedScene, wholeScene: true }
-            : {
-                elements: serializeExcalidrawElements(incrementCandidate.elements),
-                wholeScene: false,
-              },
-        );
-      });
-    },
-    [publishScene],
-  );
 
   const handleElementsChange = useCallback(
     (el: ExcalidrawChangeElements, _appState: ExcalidrawChangeAppState, files?: ExcalidrawChangeFiles) => {
@@ -848,11 +734,6 @@ export default function ExcalidrawWrapper({
           void uploadBoardFile(fileId, file.dataURL as unknown as string);
         }
       }
-
-      // Store increments cover committed changes. Keep the existing onChange
-      // path only while a pointer is down, because the fork's history store
-      // may deliberately omit the ephemeral partial stroke from its snapshot.
-      if (isWhiteboardIncrementSyncEnabled() && !isPointerDownRef.current) return;
 
       /*
        * No remote-update flag here.
@@ -911,23 +792,18 @@ export default function ExcalidrawWrapper({
     if (!apiReady || !apiRef.current) return;
 
     const api = apiRef.current as ExcalidrawSubscriptionsAPI;
-    incrementUnsubscribeRef.current?.();
     toolUnsubscribeRef.current?.();
-    incrementUnsubscribeRef.current = api.onIncrement?.(commitIncrement) ?? null;
     toolUnsubscribeRef.current = api.onToolChange?.((tool) => {
       onToolChange(toAppToolType(tool.type));
     }) ?? null;
 
     return () => {
-      incrementUnsubscribeRef.current?.();
-      incrementUnsubscribeRef.current = null;
       toolUnsubscribeRef.current?.();
       toolUnsubscribeRef.current = null;
     };
-  }, [apiReady, commitIncrement, onToolChange]);
+  }, [apiReady, onToolChange]);
 
   useEffect(() => () => {
-    incrementUnsubscribeRef.current?.();
     toolUnsubscribeRef.current?.();
     if (strokeTrailingTimerRef.current !== null) window.clearTimeout(strokeTrailingTimerRef.current);
   }, []);
