@@ -86,9 +86,11 @@ shared document, which Excalidraw's history does not model.
 
 ## What was genuinely not exposed before tp.7
 
-Three gaps were identified in the pre-tp.7 public API. The tp.7 release closes
-all three additively; the application keeps the old publishing workarounds until
-the comparison gate in `EXCALIDRAW_INCREMENTS_TASK.md` proves they are redundant.
+Three gaps were identified in the pre-tp.7 public API, and tp.7 closes all three
+additively. Only two of them earned their keep in the application: the tool
+events replaced a singleton that could hold one listener, and the origin tag is
+correct labelling. The increment feed was adopted and then removed -- §A records
+why, and `EXCALIDRAW_INCREMENTS_TASK.md` is closed rather than pending.
 
 ### A. The change feed exists, tp.7 exposes it, and we do not use it
 
