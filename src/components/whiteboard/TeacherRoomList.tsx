@@ -67,6 +67,47 @@ function parseGuestSettings(payload: unknown): {
 
 const ICON_BUTTON = 'icon-btn';
 
+/** Guest settings for one room, or the closed state if they cannot be read. */
+async function readGuestSettings(roomId: string) {
+  const closed = { guestAccess: false, guestPin: null, guestPinExpiresAt: null, lockoutUntil: null };
+  try {
+    const response = await ajaxFetch(`/api/whiteboard/room/${roomId}/settings`);
+    if (!response.ok) return closed;
+    return parseGuestSettings(await response.json());
+  } catch {
+    return closed;
+  }
+}
+
+/**
+ * What the PIN line should say about one room.
+ *
+ * `unknown` is not the same as `off`: until the settings are read, saying a
+ * room has no PIN would be a guess, and a teacher acting on it would switch
+ * guest access on for a room that already had it.
+ */
+export type PinState = 'unknown' | 'off' | 'expired' | 'live';
+
+export function guestPinState(
+  settings: { guestAccess: boolean; guestPin: string | null; guestPinExpiresAt: number | null } | undefined,
+  now: number | null,
+): PinState {
+  if (!settings || now === null) return 'unknown';
+  if (!settings.guestAccess) return 'off';
+  if (!settings.guestPin) return 'expired';
+  if (settings.guestPinExpiresAt === null || settings.guestPinExpiresAt <= now) return 'expired';
+  return 'live';
+}
+
+/**
+ * Grouped for reading aloud, which is the only way a PIN reaches a student.
+ * Only ever for display: what gets copied is the six digits with no space, so
+ * it can be typed straight into the join form.
+ */
+export function formatGuestPin(pin: string): string {
+  return pin.length === 6 ? `${pin.slice(0, 3)} ${pin.slice(3)}` : pin;
+}
+
 export default function TeacherRoomList({
   rooms,
   loading = false,
@@ -87,7 +128,52 @@ export default function TeacherRoomList({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [copyError, setCopyError] = useState(false);
   const [guestPanelId, setGuestPanelId] = useState<string | null>(null);
-  const [guestSettings, setGuestSettings] = useState<ReturnType<typeof parseGuestSettings> | null>(null);
+  /*
+   * Guest settings for every room on the list, not only the open panel.
+   *
+   * The PIN is printed on the row, so it has to be known before anything is
+   * clicked. Keyed by room so that rotating one room's PIN cannot repaint
+   * another's, which a single shared object did the moment a teacher had more
+   * than one room.
+   */
+  const [settingsByRoom, setSettingsByRoom] = useState<
+    Record<string, ReturnType<typeof parseGuestSettings>>
+  >({});
+  const [pinBusyId, setPinBusyId] = useState<string | null>(null);
+  /*
+   * Null until the browser has run, so the server and the first client render
+   * agree: an expiry compared against Date.now() during hydration renders a
+   * different string on each side.
+   */
+  const [now, setNow] = useState<number | null>(null);
+
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  /*
+   * A PIN expires on its own, so the row has to know the state of every room
+   * up front rather than when a panel is opened. Rooms already held are not
+   * refetched: a rotate writes the fresh value back through patchGuestSettings,
+   * and refetching on every render would undo it with a stale read.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    for (const room of rooms) {
+      if (settingsByRoom[room.roomId]) continue;
+      void (async () => {
+        const loaded = await readGuestSettings(room.roomId);
+        if (cancelled) return;
+        setSettingsByRoom((current) => (
+          current[room.roomId] ? current : { ...current, [room.roomId]: loaded }
+        ));
+      })();
+    }
+    return () => { cancelled = true; };
+  }, [rooms, settingsByRoom]);
 
   useEffect(() => {
     if (!menuOpenId) return;
@@ -138,26 +224,24 @@ export default function TeacherRoomList({
   const openGuestPanel = async (roomId: string) => {
     setGuestPanelId(roomId);
     setMenuOpenId(null);
-    try {
-      const response = await ajaxFetch(`/api/whiteboard/room/${roomId}/settings`);
-      if (!response.ok) {
-        setGuestSettings({ guestAccess: false, guestPin: null, guestPinExpiresAt: null, lockoutUntil: null });
-        return;
-      }
-      setGuestSettings(parseGuestSettings(await response.json()));
-    } catch {
-      setGuestSettings({ guestAccess: false, guestPin: null, guestPinExpiresAt: null, lockoutUntil: null });
-    }
+    const loaded = await readGuestSettings(roomId);
+    setSettingsByRoom((current) => ({ ...current, [roomId]: loaded }));
   };
 
   const patchGuestSettings = async (roomId: string, body: Record<string, boolean>) => {
-    const response = await ajaxFetch(`/api/whiteboard/room/${roomId}/settings`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) return;
-    setGuestSettings(parseGuestSettings(await response.json()));
+    setPinBusyId(roomId);
+    try {
+      const response = await ajaxFetch(`/api/whiteboard/room/${roomId}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) return;
+      const next = parseGuestSettings(await response.json());
+      setSettingsByRoom((current) => ({ ...current, [roomId]: next }));
+    } finally {
+      setPinBusyId((current) => (current === roomId ? null : current));
+    }
   };
 
   return (
@@ -168,7 +252,7 @@ export default function TeacherRoomList({
           data-testid="whiteboard-room-list-loading"
           className="app-small"
         >
-          Loading roomsâ€¦
+          Loading rooms…
         </p>
       ) : rooms.length === 0 ? (
         <p
@@ -187,6 +271,9 @@ export default function TeacherRoomList({
             const confirmingDelete = confirmDeleteId === room.roomId;
             const guestPanel = guestPanelId === room.roomId;
             const joinUrl = guestHostJoinUrl(room.roomId);
+            const roomSettings = settingsByRoom[room.roomId];
+            const pinState = guestPinState(roomSettings, now);
+            const pinBusy = pinBusyId === room.roomId;
 
             return (
               <li
@@ -231,28 +318,42 @@ export default function TeacherRoomList({
                 ) : guestPanel ? (
                   <div className="row-stack">
                     <div className="row-flex">
-                      <p className="room-name">
-                        {label}
-                      </p>
+                      {/*
+                        * Still a link into the room while the panel is open.
+                        * It was a plain heading, so opening guest access took
+                        * the room away: a teacher who had just set a PIN and
+                        * then wanted to go in had to close the panel first and
+                        * click again, for no reason they could see.
+                        */}
+                      <a
+                        href={`/whiteboard/${room.roomId}`}
+                        data-testid={`whiteboard-room-list-item-${room.roomId}`}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          onOpen(room.roomId);
+                        }}
+                        className="room-link"
+                      >
+                        <span className="room-name">
+                          {label}
+                        </span>
+                      </a>
                       <button
                         type="button"
-                        onClick={() => {
-                          setGuestPanelId(null);
-                          setGuestSettings(null);
-                        }}
+                        onClick={() => setGuestPanelId(null)}
                         className="btn-outline"
                       >
                         Close
                       </button>
                     </div>
-                    {guestSettings && (
+                    {roomSettings && (
                       <GuestAccessSettings
                         roomId={room.roomId}
                         guestJoinUrl={joinUrl}
-                        guestAccess={guestSettings.guestAccess}
-                        guestPin={guestSettings.guestPin}
-                        guestPinExpiresAt={guestSettings.guestPinExpiresAt}
-                        lockoutUntil={guestSettings.lockoutUntil}
+                        guestAccess={roomSettings.guestAccess}
+                        guestPin={roomSettings.guestPin}
+                        guestPinExpiresAt={roomSettings.guestPinExpiresAt}
+                        lockoutUntil={roomSettings.lockoutUntil}
                         onEnable={() => { void patchGuestSettings(room.roomId, { guestAccess: true }); }}
                         onDisable={() => { void patchGuestSettings(room.roomId, { guestAccess: false }); }}
                         onRotate={() => { void patchGuestSettings(room.roomId, { rotateGuestPin: true }); }}
@@ -449,15 +550,50 @@ export default function TeacherRoomList({
                       </div>
 
                       <div className="room-share-row">
-                        <dt className="room-share-label">Room code</dt>
+                        <dt className="room-share-label">Class PIN</dt>
                         <dd className="room-share-value">
-                          <span
-                            data-testid={`whiteboard-room-code-${room.roomId}`}
-                            className="room-code"
-                          >
-                            {room.roomId}
-                          </span>
-                          <CopyButton value={room.roomId} label="room code" />
+                          {pinState === 'live' && roomSettings?.guestPin ? (
+                            <>
+                              <span
+                                data-testid={`whiteboard-room-pin-${room.roomId}`}
+                                className="room-pin"
+                              >
+                                {formatGuestPin(roomSettings.guestPin)}
+                              </span>
+                              <CopyButton value={roomSettings.guestPin} label="class PIN" />
+                            </>
+                          ) : pinState === 'unknown' ? (
+                            <span className="room-pin-note">Checking…</span>
+                          ) : (
+                            <>
+                              <span className="room-pin-note">
+                                {pinState === 'expired' ? 'Expired' : 'Not switched on'}
+                              </span>
+                              {/*
+                                * One button for both, because from the teacher's
+                                * side they are the same act: the room needs a
+                                * PIN it does not currently have. Which request
+                                * that takes -- switch guest access on, or rotate
+                                * a PIN that has run out -- is not their problem.
+                                */}
+                              <button
+                                type="button"
+                                data-testid={`whiteboard-room-pin-new-${room.roomId}`}
+                                disabled={pinBusy}
+                                onClick={() => {
+                                  void patchGuestSettings(
+                                    room.roomId,
+                                    pinState === 'expired'
+                                      ? { guestAccess: true, rotateGuestPin: true }
+                                      : { guestAccess: true },
+                                  );
+                                }}
+                                className="btn-outline btn-small"
+                              >
+                                {pinBusy ? 'Working…' : pinState === 'expired' ? 'New PIN' : 'Create PIN'}
+                              </button>
+                            </>
+                          )}
                         </dd>
                       </div>
                     </dl>

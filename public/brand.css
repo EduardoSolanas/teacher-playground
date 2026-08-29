@@ -399,3 +399,9 @@ text-transform:uppercase;color:var(--mut)}
    an ellipsis in the middle of an identifier is worse than a second line. */
 .room-code{flex:1;min-width:0;overflow-wrap:anywhere;
 font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.8rem;color:var(--ink2)}
+/* Grouped three-and-three and set large: this is read out loud across a room
+   or down a phone, so it is the one value on the screen sized to be spoken
+   from rather than skimmed. */
+.room-pin{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:1.05rem;
+font-weight:600;letter-spacing:.12em;color:var(--ink)}
+.room-pin-note{font-size:.8rem;color:var(--mut)}

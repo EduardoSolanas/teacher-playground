@@ -179,8 +179,15 @@ describe('WhiteboardRoute room list', () => {
       );
     });
 
+    /*
+     * Matched on the method as well as the path: the row reads this same
+     * endpoint on mount to know whether the room has a live PIN, so the first
+     * call to it is a GET and matching by path alone finds the read rather
+     * than the rename this test is about.
+     */
     const settingsCall = ajaxFetch.mock.calls.find(
-      (call) => call[0] === '/api/whiteboard/room/room-beta/settings',
+      (call) => call[0] === '/api/whiteboard/room/room-beta/settings'
+        && (call[1] as RequestInit | undefined)?.method === 'POST',
     );
     expect(settingsCall?.[1]).toMatchObject({
       method: 'POST',

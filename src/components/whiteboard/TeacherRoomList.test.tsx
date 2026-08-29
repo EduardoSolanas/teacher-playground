@@ -1,7 +1,12 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
-import TeacherRoomList, { teacherRoomTitle, UNNAMED_ROOM_TITLE } from './TeacherRoomList';
+import TeacherRoomList, {
+  teacherRoomTitle,
+  UNNAMED_ROOM_TITLE,
+  guestPinState,
+  formatGuestPin,
+} from './TeacherRoomList';
 
 const UNNAMED_CREATED_AT = 1_700_000_000_000;
 const UNNAMED_UTC_STAMP = new Date(UNNAMED_CREATED_AT).toISOString().replace('T', ' ').slice(0, 16);
@@ -10,7 +15,7 @@ describe('TeacherRoomList', () => {
   // A room falls back to its own code, not its creation time. The code is what
   // a teacher reads out or recognises; a UTC stamp names every room the same
   // shape and tells you nothing about which room it is.
-  it('shows a named room by name and an unnamed room by its code', () => {
+  it('shows a named room by name and an unnamed one as untitled', () => {
     const onOpen = vi.fn();
     const { container } = render(
       <TeacherRoomList
@@ -25,7 +30,7 @@ describe('TeacherRoomList', () => {
     expect(screen.getByRole('heading', { level: 2, name: 'Your rooms' })).toBeTruthy();
     expect(screen.getAllByRole('listitem')).toHaveLength(2);
     expect(screen.getByText('Algebra')).toBeTruthy();
-    expect(screen.getByText('room-beta')).toBeTruthy();
+    expect(screen.getByText(UNNAMED_ROOM_TITLE)).toBeTruthy();
     expect(screen.queryByRole('combobox')).toBeNull();
     expect(screen.queryByRole('listbox')).toBeNull();
     expect(container.querySelector('select')).toBeNull();
@@ -37,13 +42,14 @@ describe('TeacherRoomList', () => {
     expect(teacherRoomTitle({ roomId: 'room-alpha', name: 'Algebra' })).toBe('Algebra');
 
     /*
-     * An unnamed room used to be titled by its code, because the code appeared
-     * nowhere else. It now has its own labelled line, so the heading says what
-     * it is and the row still carries the identifier a student needs.
+     * An unnamed room was titled by its room id, a thirty-two character
+     * hexadecimal string, because nothing else identified it. Nothing in the
+     * product ever asks anyone to type that id -- a student follows the link
+     * and enters the PIN -- so the row does not print it and the heading says
+     * what it is.
      */
     const unnamedItem = screen.getByTestId('whiteboard-room-list-item-room-beta');
     expect(unnamedItem.textContent).toContain(UNNAMED_ROOM_TITLE);
-    expect(screen.getByTestId('whiteboard-room-code-room-beta').textContent).toBe('room-beta');
     expect(unnamedItem.textContent).not.toContain(UNNAMED_UTC_STAMP);
     // createdAt present and still ignored: it never identified anything.
     expect(
@@ -51,10 +57,6 @@ describe('TeacherRoomList', () => {
     ).toBe(UNNAMED_ROOM_TITLE);
     expect(teacherRoomTitle({ roomId: 'room-beta', name: '   ' })).toBe(UNNAMED_ROOM_TITLE);
     expect(teacherRoomTitle({ roomId: 'room-beta', name: null })).toBe(UNNAMED_ROOM_TITLE);
-
-    // The code of a named room is reachable too: it was invisible before,
-    // because only an unnamed room ever put its code on the screen.
-    expect(screen.getByTestId('whiteboard-room-code-room-alpha').textContent).toBe('room-alpha');
 
     const algebraLink = screen.getByRole('link', { name: /Algebra/ });
     expect(algebraLink.getAttribute('href')).toBe('/whiteboard/room-alpha');
@@ -187,6 +189,48 @@ describe('TeacherRoomList', () => {
 
     fireEvent.pointerDown(document.body);
     expect(screen.queryByTestId('whiteboard-room-rename-room-alpha')).toBeNull();
+  });
+
+  describe('the class PIN line', () => {
+    const live = {
+      guestAccess: true,
+      guestPin: '004321',
+      guestPinExpiresAt: 2_000,
+    };
+
+    it('waits rather than guessing before the settings have been read', () => {
+      // 'off' would be a guess, and a teacher acting on it would switch guest
+      // access on for a room that already had it.
+      expect(guestPinState(undefined, 1_000)).toBe('unknown');
+      expect(guestPinState(live, null)).toBe('unknown');
+    });
+
+    it('reads a PIN that is still in date as live', () => {
+      expect(guestPinState(live, 1_999)).toBe('live');
+    });
+
+    it('treats an elapsed expiry as expired, including the exact moment', () => {
+      expect(guestPinState(live, 2_001)).toBe('expired');
+      // A PIN is dead the instant it expires, not a millisecond afterwards.
+      expect(guestPinState(live, 2_000)).toBe('expired');
+    });
+
+    it('treats guest access on with no PIN as expired, not as live', () => {
+      expect(guestPinState({ ...live, guestPin: null }, 1_000)).toBe('expired');
+      expect(guestPinState({ ...live, guestPinExpiresAt: null }, 1_000)).toBe('expired');
+    });
+
+    it('separates a room that was never opened to guests', () => {
+      expect(guestPinState({ ...live, guestAccess: false }, 1_000)).toBe('off');
+    });
+
+    it('groups the digits for reading aloud and leaves anything else alone', () => {
+      expect(formatGuestPin('004321')).toBe('004 321');
+      // Zero-padded and unusual lengths both survive: the value copied is the
+      // raw string, so this only ever changes what is on the screen.
+      expect(formatGuestPin('12345')).toBe('12345');
+      expect(formatGuestPin('')).toBe('');
+    });
   });
 
   describe('guest-host join URL', () => {

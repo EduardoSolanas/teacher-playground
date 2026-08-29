@@ -265,7 +265,7 @@ export default function WhiteboardRoute() {
                 type="text"
                 value={newRoomName}
                 maxLength={100}
-                placeholder="Leave blank to use the room code"
+                placeholder="Leave blank and name it later"
                 onChange={(event) => setNewRoomName(event.target.value)}
                 className="field-input nudge-top"
               />
