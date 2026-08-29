@@ -233,6 +233,31 @@ test.describe('board images', () => {
      * the board rehydrated at all after the reload, not whether it was given
      * long enough.
      */
+    /*
+     * Before reloading, establish that the board was saved at all.
+     *
+     * The reloaded page reads its scene from the room row, and that row is
+     * written by the durable object's flush -- so "the picture did not come
+     * back" has two entirely different causes behind it, and the failure this
+     * localises could not tell them apart. If this poll is what fails, the
+     * board was never persisted and no reload was involved; if it passes and
+     * the board still comes back empty, the loss is in restoring it.
+     *
+     * A failure here is a product bug, not a slow test: a lesson that has been
+     * drawn on and not saved is the thing the flush exists to prevent.
+     */
+    await expect
+      .poll(
+        async () => {
+          const response = await page.request.get(appUrl(`/api/whiteboard/room/${roomId}`));
+          if (!response.ok()) return `http ${response.status()}`;
+          const body = await response.json() as { elements?: unknown[] };
+          return `saved=${body.elements?.length ?? -1}`;
+        },
+        { timeout: 30000, message: 'the board was never saved, so a reload cannot bring it back' },
+      )
+      .not.toBe('saved=0');
+
     await page.reload();
     await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 20000 });
     await waitForExcalidrawApi(page);
@@ -257,7 +282,11 @@ test.describe('board images', () => {
               files: Object.keys(api?.getFiles?.() ?? {}),
             };
           });
-          return `elements=${elements} files=[${files.join(',')}]`;
+          const response = await page.request.get(appUrl(`/api/whiteboard/room/${roomId}`));
+          const saved = response.ok()
+            ? ((await response.json() as { elements?: unknown[] }).elements?.length ?? -1)
+            : -1;
+          return `saved=${saved} elements=${elements} files=[${files.join(',')}]`;
         },
         {
           timeout: 30000,
