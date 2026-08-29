@@ -185,6 +185,19 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
      * covers a connection that merely dropped.
      */
     void start().catch((error: unknown) => {
+      /*
+       * Stop the poll before anything else.
+       *
+       * It is started before the join, so a join that never succeeds leaves it
+       * running: four setState calls a second, for as long as the tab is open,
+       * re-rendering the room around a call that is not going to happen. That
+       * is work competing with drawing, on the same thread, in the one place a
+       * teacher notices delay.
+       */
+      if (pollTimer !== undefined) {
+        window.clearInterval(pollTimer);
+        pollTimer = undefined;
+      }
       if (cancelled) return;
       setState((prev) => ({
         ...prev,

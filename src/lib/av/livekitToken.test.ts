@@ -104,6 +104,36 @@ describe('parseLiveKitConfig', () => {
     expect(parseLiveKitConfig({ LIVEKIT_URL: 'wss://x' })).toBeNull();
   });
 
+  /*
+   * Whitespace is the failure this guards against, and it is invisible.
+   *
+   * A secret stored from a file or a copied line keeps its trailing newline,
+   * and what comes out is a perfectly well-formed JWT signed with the wrong
+   * key. LiveKit answers 401 to everything carrying it -- region settings,
+   * validate, the signal socket -- and neither the token nor the logs point
+   * at a stray character on the end of a secret.
+   */
+  it('trims surrounding whitespace off every value', () => {
+    const config = parseLiveKitConfig({
+      LIVEKIT_URL: '  wss://example.livekit.cloud\n',
+      LIVEKIT_API_KEY: 'key\n',
+      LIVEKIT_API_SECRET: '\tsecret  ',
+    });
+    expect(config).toEqual({
+      url: 'wss://example.livekit.cloud',
+      apiKey: 'key',
+      apiSecret: 'secret',
+    });
+  });
+
+  it('treats a value that is only whitespace as missing', () => {
+    expect(parseLiveKitConfig({
+      LIVEKIT_URL: 'wss://example.livekit.cloud',
+      LIVEKIT_API_KEY: '   ',
+      LIVEKIT_API_SECRET: 'secret',
+    })).toBeNull();
+  });
+
   it('returns a config when all values are present', () => {
     const config = parseLiveKitConfig({
       LIVEKIT_URL: 'wss://example.livekit.cloud',

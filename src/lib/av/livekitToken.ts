@@ -155,18 +155,29 @@ export interface LiveKitConfig {
   readonly apiSecret: string;
 }
 
+/**
+ * Trimmed, because the whitespace is invisible and the failure is total.
+ *
+ * A secret put in from a file or a copied line keeps its trailing newline, and
+ * an HMAC over a secret with a newline on the end is simply a different HMAC.
+ * What comes out is a well-formed JWT signed with the wrong key, so the media server answers 401
+ * to everything carrying it -- region settings, validate, the signal socket --
+ * and nothing in the token, the logs or the config reads as wrong. Trimming
+ * costs nothing: no LiveKit credential has meaningful leading or trailing
+ * space, and a value that is only space was never a credential at all.
+ */
+function trimmedString(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
+
 export function parseLiveKitConfig(value: unknown): LiveKitConfig | null {
   const record = (value ?? {}) as Record<string, unknown>;
-  const url = record.LIVEKIT_URL;
-  const apiKey = record.LIVEKIT_API_KEY;
-  const apiSecret = record.LIVEKIT_API_SECRET;
-  if (
-    typeof url !== 'string' || url.length === 0 ||
-    typeof apiKey !== 'string' || apiKey.length === 0 ||
-    typeof apiSecret !== 'string' || apiSecret.length === 0
-  ) {
-    return null;
-  }
+  const url = trimmedString(record.LIVEKIT_URL);
+  const apiKey = trimmedString(record.LIVEKIT_API_KEY);
+  const apiSecret = trimmedString(record.LIVEKIT_API_SECRET);
+  if (url === null || apiKey === null || apiSecret === null) return null;
   return { url, apiKey, apiSecret };
 }
 
