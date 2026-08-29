@@ -11,14 +11,14 @@ rewritten drawing editor.
 | Working copy | `excalidraw/` in this checkout (see [Open risks](#open-risks)) |
 | Release branch | `teacher-playground/release-v0.18.1` |
 | Package identity | `@teacher-playground/excalidraw` |
-| Current release | `teacher-playground-v0.18.1-tp.8` |
+| Current release | `teacher-playground-v0.18.1-tp.9` |
 | Upstream base | `v0.18.1` |
 
 The application consumes the immutable release tarball, pinned in
 `package.json` and `package-lock.json`:
 
 ```text
-https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.8/package.tgz
+https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.9/package.tgz
 ```
 
 **The fork is on the current upstream release.** `@excalidraw/excalidraw@0.18.1`
@@ -32,7 +32,7 @@ The fork owns its R2 bucket (`teacher-playground-excalidraw`), CORS, custom
 domain, release objects, and release metadata, published by its own GitHub
 Actions workflow using the `prod` environment's `CLOUDFLARE_API_TOKEN` secret
 and `CLOUDFLARE_ACCOUNT_ID` variable. The application consumes the immutable
-base `https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.8/dist/prod/`.
+base `https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.9/dist/prod/`.
 Versioned objects carry one-year immutable cache headers.
 
 ## What the fork actually contains
@@ -51,10 +51,11 @@ roughly 2,950 deletions against 13 insertions**. Almost all of it is removal:
 Beyond that there are **three single-line source edits** — in `App.tsx`,
 `TTDDialog/common.ts` and a `welcome-screen` stylesheet — the additive
 increment and tool-change API described below, and one deliberate behavioural
-divergence: **`MAX_ALLOWED_FILE_BYTES` is 12MB rather than upstream's 4MB**
-(tp.8). That last one is the fork's first change to what the editor *does*
-rather than how it is packaged, and it is justified in
-[Image size](#image-size).
+divergences: **`MAX_ALLOWED_FILE_BYTES` is 12MB rather than upstream's 4MB**
+(tp.8), and **an inserted image is re-encoded to WebP at ingest** (tp.9).
+Those two are the fork's changes to what the editor *does* rather than how
+it is packaged, and they are justified in [Image size](#image-size) and
+[Image format conversion to WebP at ingest](#image-format-conversion-to-webp-at-ingest).
 
 That is the fork's defining property and the thing to protect: it changes
 essentially no editor behaviour, so nothing custom can rot, and adopting a
@@ -208,6 +209,54 @@ This is the one place the fork changes behaviour rather than packaging, so it is
 worth being explicit that the alternative was worse: the limit is unreachable
 through the API, and every other lever — the upload route, R2, the bucket — sits
 downstream of a refusal that has already happened.
+
+### Image format conversion to WebP at ingest
+
+The editor now converts pasted, dropped, and opened photographs to WebP format at
+ingest, so it never holds the full-size original in memory. This keeps the
+editor's memory budget proportional to the user's display (the resized canvas),
+not to their phone's camera resolution. Measured: the editor kept a 3.9MB original
+while uploading a converted 169KB copy, storing both under the same file id with
+no mechanism to drop the original.
+
+The alternative — converting downstream in the application's upload route and
+calling `addFiles` with a replacement — is unreachable through the public API.
+`addFiles` routes through `addMissingFiles`, which skips any id already held
+(`if (!files[id])`), so a second copy under the same id is never stored. The
+call is a silent no-op: the upload shrinks, the picture the editor is holding
+does not, and nothing reports the difference. The application's own conversion
+was removed when it pinned tp.9 -- re-encoding a WebP into a WebP only spends
+quality -- so the editor is now the single place it happens.
+
+Measured through a real paste in Chromium, for one 7.6MB photograph: 156KB
+stored, and 208KB held by the browser that pasted it against 10.2MB before any
+of this. The application's e2e asserts the property rather than the number --
+that what the editor holds is the same picture it uploaded -- because a resized
+intermediate passes any generous "smaller than the original" bound, which is
+exactly how the previous version of that test went on passing after it had
+stopped meaning anything.
+
+The fix lives in `blob.ts`: `resizeImageFile` gains an `outputType` option (the
+type was widened from `typeof MIME_TYPES["jpg"]` to include `typeof MIME_TYPES["webp"]`),
+and the caller in `initializeImage` now passes `imageOutputTypeFor(imageFile.type)`,
+a pure helper returning the WebP mime type for every format in
+`IMAGE_MIME_TYPES` except the two that must keep their own encoding: SVG, which
+is not raster and which `resizeImageFile` refuses anyway, and GIF, because the
+canvas the conversion runs through sees only the first frame and an animation
+reduced to a still is worse than one left large. It is derived from
+`IMAGE_MIME_TYPES` rather than listing the formats again, so a format added
+upstream is converted rather than quietly left behind.
+
+The type recorded on the `BinaryFileData` is the conversion target, adopted only
+once `resizeImageFile` has returned. That call's failure is caught and logged
+rather than thrown, so a picture can still reach the scene in the encoding it
+arrived in, and deciding the type up front keeps the record and the bytes in
+agreement either way. Reading it back off the file instead also loses the
+narrowing `isSupportedImageFile` established, since reassigning `imageFile`
+widens its type to a bare string.
+
+The fileId derivation is unchanged — it is generated from the original file before
+resizing, which keeps it stable across browsers whose WebP encoders may differ.
 
 ### Asset loading
 

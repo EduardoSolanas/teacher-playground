@@ -147,49 +147,59 @@ test.describe('board images', () => {
     expect(fileIds).toContain(fileId);
   });
 
-  test('uploads the small picture but keeps the big one in the editor', async ({ page }) => {
+  test('holds the converted picture, not the photograph that was pasted', async ({ page }) => {
+    const roomId = await createRoomWithMaxUsers(page, 'ImageMemory', 2);
     const original = makePhotoPng(3000, 2250);
     const originalBase64Length = original.toString('base64').length;
-    await createRoomWithMaxUsers(page, 'ImageMemory', 2);
     const fileId = await pasteImage(page, original);
 
     /*
-     * What this pins down is a combination of a fix and a remaining limitation.
+     * The memory half of the feature, which took three attempts to actually
+     * get and twice looked finished when it was not.
      *
-     * The CSP fix now allows `blob:` in img-src, so Excalidraw's own 1440px
-     * resize runs silently on every paste and the in-memory dataURL is now much
-     * smaller than the original — roughly 30–50% on real photographs — because
-     * the resize compresses pixel data from 3000+ down to 1440px.
+     * The application converted the picture on its way to the bucket and then
+     * handed the converted copy back to the editor under the same id, which
+     * does nothing: addFiles runs through addMissingFiles and takes a file only
+     * `if (!files[id])`. So the bucket got 156KB while the person who pasted it
+     * held megabytes, and nothing said so. Before that, our own CSP was denying
+     * `blob:` to img-src, which made Excalidraw's built-in 1440px resize throw
+     * into a catch that only logged -- so the editor kept the untouched 10.2MB
+     * original and still looked like it was working.
      *
-     * However, `uploadBoardFile` re-adds the converted WebP under the same
-     * fileId, intending the editor to drop the resized original. It does not.
-     * Excalidraw's `addFiles` runs through `addMissingFiles`, which takes a
-     * file only `if (!files[id])` — an id it already holds is skipped, so the
-     * call is a no-op and the resized data URL stays in memory for as long as
-     * the tab is open. The bucket and every other peer still get the smaller
-     * WebP; the person who pasted it keeps the resized version.
-     *
-     * Fixing it properly means the fork ingesting the converted bytes before
-     * the editor ever sees the original, since no application code can replace
-     * a file through the public API. When that lands this test fails, which is
-     * the point: it is here to notice.
+     * The fork now converts at ingest, which is the only place it can be done,
+     * and this asserts the property that follows from it rather than a size:
+     * what the editor is holding is the same picture it uploaded. A resized
+     * intermediate would still pass a generous "smaller than the original"
+     * bound -- the assertion this replaces did exactly that, and went on
+     * passing after it had stopped meaning anything.
      */
+    await expect
+      .poll(
+        async () => (await page.request.get(
+          appUrl(`/api/whiteboard/room/${roomId}/files/${fileId}`),
+        )).status(),
+        { timeout: 30000, message: 'the picture never reached the room store' },
+      )
+      .toBe(200);
+    const stored = Buffer.from(await (await page.request.get(
+      appUrl(`/api/whiteboard/room/${roomId}/files/${fileId}`),
+    )).body());
+
     const inMemoryLength = await page.evaluate((id: string) => {
       const api = (window as any).__debugExcalidrawApi;
       return api?.getFiles?.()[id]?.dataURL?.length ?? 0;
     }, fileId);
 
-    console.log(`Original base64: ${originalBase64Length} bytes, In-memory dataURL: ${inMemoryLength} bytes, Ratio: ${(inMemoryLength / originalBase64Length * 100).toFixed(1)}%`);
+    console.log(
+      `Pasted base64: ${originalBase64Length} bytes, stored: ${stored.length} bytes, `
+      + `in editor: ${inMemoryLength} bytes (${(inMemoryLength / originalBase64Length * 100).toFixed(1)}% of pasted)`,
+    );
 
-    await expect
-      .poll(
-        () => page.evaluate((id: string) => {
-          const api = (window as any).__debugExcalidrawApi;
-          return api?.getFiles?.()[id]?.dataURL?.length ?? 0;
-        }, fileId),
-        { timeout: 15000, message: 'the editor lost the picture it was holding' },
-      )
-      .toBeLessThan(originalBase64Length * 0.6);
+    // A data URL is base64, so about four bytes for every three it carries,
+    // plus its prefix. Anything near that is the stored picture and nothing
+    // else; a resized PNG intermediate would be several times larger.
+    expect(inMemoryLength).toBeGreaterThan(0);
+    expect(inMemoryLength).toBeLessThan(stored.length * 1.5);
   });
 
   test('keeps the photograph across a reload', async ({ page }) => {
