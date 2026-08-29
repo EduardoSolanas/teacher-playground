@@ -798,6 +798,24 @@ export default function ExcalidrawWrapper({
     const api = apiRef.current as ExcalidrawSubscriptionsAPI;
     toolUnsubscribeRef.current?.();
     toolUnsubscribeRef.current = api.onToolChange?.((tool) => {
+      /*
+       * Ignore the editor telling us what we just told it.
+       *
+       * Several app tools share one Excalidraw tool -- a sticky note is drawn
+       * with the rectangle tool -- so the mapping only survives in one
+       * direction. Choosing Sticky Note set the store to stickyNote, pushed
+       * `rectangle` into the editor, and took the echo back as a tool change
+       * to rectangle, which overwrote the store a moment later: the sidebar
+       * fell back to Rectangle on its own and the next shape drawn was a plain
+       * rectangle. It looked intermittent because it is a race with whatever
+       * reads the store next, not because it sometimes worked.
+       *
+       * An echo is a report of the tool we already hold, so there is nothing
+       * to apply. A change made inside the editor's own UI names a tool that
+       * does not map back to what we hold, and still comes through.
+       */
+      const current = activeToolRef.current;
+      if (current && toExcalidrawToolType(current) === tool.type) return;
       onToolChange(toAppToolType(tool.type));
     }) ?? null;
 

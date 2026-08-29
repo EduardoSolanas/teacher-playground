@@ -236,11 +236,34 @@ test.describe('board images', () => {
     await page.reload();
     await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 20000 });
     await waitForExcalidrawApi(page);
+
+    /*
+     * Reported as one string so that a failure says which half went wrong.
+     *
+     * A picture comes back in two independent steps: the element arrives with
+     * the rest of the scene, and only then does this peer notice a fileId it
+     * does not hold and fetch the bytes. An empty file list alone cannot tell
+     * those apart, and that ambiguity is why this test failed twice in CI and
+     * told us nothing -- the element count is the first thing worth knowing
+     * and it was not in the output.
+     */
     await expect
-      .poll(() => fileIdsInScene(page), {
-        timeout: 30000,
-        message: 'the board came back without its picture',
-      })
+      .poll(
+        async () => {
+          const { elements, files } = await page.evaluate(() => {
+            const api = (window as any).__debugExcalidrawApi;
+            return {
+              elements: api?.getSceneElements?.()?.length ?? -1,
+              files: Object.keys(api?.getFiles?.() ?? {}),
+            };
+          });
+          return `elements=${elements} files=[${files.join(',')}]`;
+        },
+        {
+          timeout: 30000,
+          message: 'the board came back without its picture',
+        },
+      )
       .toContain(fileId);
   });
 
