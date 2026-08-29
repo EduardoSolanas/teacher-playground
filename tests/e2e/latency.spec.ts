@@ -244,6 +244,40 @@ async function moveCursorAndAwaitRender(source: Page, target: Page, point: { x: 
     .toMatchObject({ pointer: { x, y, tool: 'pointer' }, button: 'up' });
 }
 
+/**
+ * Move the pointer until the other side actually reports drawing a cursor.
+ *
+ * Every measurement here matches a published event to a rendered one by exact
+ * value, so an event that goes out before the far side is listening is not
+ * late -- it is gone, and the poll waiting for that particular x and y waits
+ * for something that will never be sent again. `waitForCollaborationReady`
+ * answers a different question: both peers are admitted and connected, which
+ * is necessary and happens before the awareness link carries anything.
+ *
+ * The nudge lives inside the poll on purpose. One move can be lost; what
+ * proves the link is live is a move that arrives, so this keeps making them
+ * until one does. It is the first cursor being dropped that this exists to
+ * absorb, which is why a wait of a fixed length would not do -- there is
+ * nothing to wait for, only something to repeat.
+ */
+async function warmCursorLink(source: Page, target: Page) {
+  const canvas = source.locator('canvas.excalidraw__canvas.interactive').first();
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+
+  let nudge = 0;
+  await expect
+    .poll(
+      async () => {
+        nudge = (nudge + 11) % 60;
+        await source.mouse.move(box!.x + 80 + nudge, box!.y + 80 + nudge);
+        return (await readLatencyEvents(target)).some((event) => event.kind === 'cursor-render');
+      },
+      { timeout: 30_000, message: 'the cursor link never carried anything between these peers' },
+    )
+    .toBe(true);
+}
+
 async function setupPair(page: Page, browser: import('@playwright/test').Browser) {
   const roomId = await createRoomWithMaxUsers(page, 'LatencyHost', 2);
   const peerContext = await newAuthenticatedContext(browser);
@@ -254,6 +288,10 @@ async function setupPair(page: Page, browser: import('@playwright/test').Browser
   await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15_000 });
   await waitForCollaborationReady(page);
   await waitForCollaborationReady(peerPage);
+  // Both directions: each test measures both, and each direction warms
+  // separately. The callers clear the events this produces before measuring.
+  await warmCursorLink(page, peerPage);
+  await warmCursorLink(peerPage, page);
   return { peerContext, peerPage };
 }
 
