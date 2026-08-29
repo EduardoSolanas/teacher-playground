@@ -126,14 +126,18 @@ async function enableGuestAndReadPin(teacherPage: Page, roomId: string): Promise
   try {
     await list.goto(appUrl('/whiteboard'));
     await expect(list.getByTestId(`whiteboard-room-list-item-${roomId}`)).toBeVisible({ timeout: 15000 });
-    // Guest access is a control on the row now, not an item inside the
-    // overflow menu: it is what a teacher does before a lesson, so the menu
-    // click this used to need has gone rather than moved.
-    await list.getByTestId(`whiteboard-room-guest-${roomId}`).click();
-    await expect(list.getByTestId('guest-enable')).toBeVisible({ timeout: 15000 });
-    await list.getByTestId('guest-enable').click();
-    await expect(list.getByTestId('guest-pin')).toHaveText(/^\d{6}$/, { timeout: 15000 });
-    return (await list.getByTestId('guest-pin').innerText()).trim();
+    /*
+     * Straight off the row. There is no guest panel to open any more: the
+     * link, the PIN and the switch that mints one are all on the row itself,
+     * so what this used to reach through two clicks and a separate surface is
+     * now one button. The PIN is shown grouped for reading aloud, so the
+     * spacing comes back out to get the digits a student would type.
+     */
+    await list.getByTestId(`whiteboard-room-pin-new-${roomId}`).click();
+    await expect(list.getByTestId(`whiteboard-room-pin-${roomId}`))
+      .toHaveText(/^\d{3} \d{3}$/, { timeout: 15000 });
+    const shown = (await list.getByTestId(`whiteboard-room-pin-${roomId}`).innerText()).trim();
+    return shown.replace(/\s/g, '');
   } finally {
     await list.close();
   }

@@ -3,8 +3,8 @@
 import { useEffect, useState } from 'react';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import { guestHostJoinUrl } from '@/lib/whiteboard/guestJoinUrl';
+import { isGuestJoinLockedOut } from '@/lib/whiteboard/guestPin';
 import CopyButton from './CopyButton';
-import GuestAccessSettings from './GuestAccessSettings';
 
 export type TeacherRoomSummary = {
   roomId: string;
@@ -144,7 +144,6 @@ export default function TeacherRoomList({
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [copyError, setCopyError] = useState(false);
-  const [guestPanelId, setGuestPanelId] = useState<string | null>(null);
   /*
    * Guest settings for every room on the list, not only the open panel.
    *
@@ -245,13 +244,6 @@ export default function TeacherRoomList({
     }
   };
 
-  const openGuestPanel = async (roomId: string) => {
-    setGuestPanelId(roomId);
-    setMenuOpenId(null);
-    const loaded = await readGuestSettings(roomId);
-    setSettingsByRoom((current) => ({ ...current, [roomId]: loaded }));
-  };
-
   const patchGuestSettings = async (roomId: string, body: Record<string, boolean>) => {
     setPinBusyId(roomId);
     try {
@@ -302,12 +294,18 @@ export default function TeacherRoomList({
             const menuOpen = menuOpenId === room.roomId;
             const copied = copiedId === room.roomId;
             const confirmingDelete = confirmDeleteId === room.roomId;
-            const guestPanel = guestPanelId === room.roomId;
             const joinUrl = guestHostJoinUrl(room.roomId);
             const roomSettings = settingsByRoom[room.roomId];
             const pinState = guestPinState(roomSettings, now);
             const pinBusy = pinBusyId === room.roomId;
             const previousPin = replacedPinByRoom[room.roomId];
+            const lockedOut = roomSettings !== undefined && now !== null
+              && isGuestJoinLockedOut(roomSettings.lockoutUntil, now);
+            const expiryLabel = pinState === 'live' && roomSettings?.guestPinExpiresAt
+              ? new Date(roomSettings.guestPinExpiresAt).toLocaleString(undefined, {
+                month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+              })
+              : null;
             const deadPin = pinState === 'expired'
               ? roomSettings?.guestPin ?? previousPin
               : previousPin;
@@ -351,51 +349,6 @@ export default function TeacherRoomList({
                         Cancel
                       </button>
                     </div>
-                  </div>
-                ) : guestPanel ? (
-                  <div className="row-stack">
-                    <div className="row-flex">
-                      {/*
-                        * Still a link into the room while the panel is open.
-                        * It was a plain heading, so opening guest access took
-                        * the room away: a teacher who had just set a PIN and
-                        * then wanted to go in had to close the panel first and
-                        * click again, for no reason they could see.
-                        */}
-                      <a
-                        href={`/whiteboard/${room.roomId}`}
-                        data-testid={`whiteboard-room-list-item-${room.roomId}`}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          onOpen(room.roomId);
-                        }}
-                        className="room-link"
-                      >
-                        <span className="room-name">
-                          {label}
-                        </span>
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() => setGuestPanelId(null)}
-                        className="btn-outline"
-                      >
-                        Close
-                      </button>
-                    </div>
-                    {roomSettings && (
-                      <GuestAccessSettings
-                        roomId={room.roomId}
-                        guestJoinUrl={joinUrl}
-                        guestAccess={roomSettings.guestAccess}
-                        guestPin={roomSettings.guestPin}
-                        guestPinExpiresAt={roomSettings.guestPinExpiresAt}
-                        lockoutUntil={roomSettings.lockoutUntil}
-                        onEnable={() => { void patchGuestSettings(room.roomId, { guestAccess: true }); }}
-                        onDisable={() => { void patchGuestSettings(room.roomId, { guestAccess: false }); }}
-                        onRotate={() => { void patchGuestSettings(room.roomId, { rotateGuestPin: true }); }}
-                      />
-                    )}
                   </div>
                 ) : confirmingDelete ? (
                   <div className="row-flex">
@@ -446,25 +399,6 @@ export default function TeacherRoomList({
                       </a>
 
                       <div className="btn-gap">
-                        {/*
-                          * Out of the menu: letting a student in is the thing a
-                          * teacher does before every lesson, and it was sitting
-                          * two clicks deep beside Delete -- which for a free
-                          * account is the only way to make another room, so the
-                          * most routine action and the most destructive one
-                          * shared a hidden surface.
-                          */}
-                        <button
-                          type="button"
-                          data-testid={`whiteboard-room-guest-${room.roomId}`}
-                          onClick={() => {
-                            void openGuestPanel(room.roomId);
-                          }}
-                          className="btn-outline btn-small"
-                        >
-                          Guest access
-                        </button>
-
                         <div className="relative shrink-0" data-room-menu>
                           <button
                             type="button"
@@ -665,11 +599,52 @@ export default function TeacherRoomList({
                                   Anyone holding the old PIN is locked out — send this one.
                                 </span>
                               )}
+                              {expiryLabel && !previousPin && (
+                                <span className="room-pin-note">
+                                  Stops working {expiryLabel}
+                                </span>
+                              )}
+                              {/*
+                                * Carried over from the panel this replaced. It
+                                * is the only explanation a teacher gets for a
+                                * student who is typing the right digits and
+                                * still cannot get in.
+                                */}
+                              {lockedOut && (
+                                <span
+                                  data-testid={`whiteboard-room-lockout-${room.roomId}`}
+                                  className="room-pin-note room-pin-warn"
+                                >
+                                  Too many wrong PIN attempts — join is locked. A new PIN unlocks it.
+                                </span>
+                              )}
                             </>
                           )}
                         </dd>
                       </div>
                     </dl>
+
+                    {/*
+                      * The off switch sits at the foot of the card, away from
+                      * the values above it: it is the one control here that
+                      * takes something away, and it should not sit in the run
+                      * of controls a teacher uses to let somebody in.
+                      */}
+                    {roomSettings?.guestAccess && (
+                      <div className="room-card-foot">
+                        <button
+                          type="button"
+                          data-testid={`whiteboard-room-guest-off-${room.roomId}`}
+                          disabled={pinBusy}
+                          onClick={() => {
+                            void patchGuestSettings(room.roomId, { guestAccess: false });
+                          }}
+                          className="btn-outline btn-small"
+                        >
+                          Turn off guest join
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </li>
