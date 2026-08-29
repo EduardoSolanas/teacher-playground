@@ -36,6 +36,7 @@ import {
   incrementSceneChange,
   isRemoteIncrement,
   publishCandidatesEqual,
+  updateVersionBaselineFromIncrement,
 } from '@/lib/whiteboard/incrementSync';
 import type {
   PublishCandidate,
@@ -802,21 +803,25 @@ export default function ExcalidrawWrapper({
 
         const scene = api.getSceneElements();
         const incrementCandidate = incrementSceneChange(event, scene);
-        const legacyDiff = diffScene(publishedVersionsRef.current, scene);
-        const legacyCandidate = elementsToPublish(scene, legacyDiff);
+        let legacyCandidate: PublishCandidate | null = null;
 
-        if (
-          isWhiteboardIncrementComparisonEnabled()
-          && !publishCandidatesEqual(legacyCandidate, incrementCandidate)
-        ) {
-          console.warn(formatIncrementComparisonWarning(legacyCandidate, incrementCandidate));
+        if (isWhiteboardIncrementComparisonEnabled()) {
+          const legacyDiff = diffScene(publishedVersionsRef.current, scene);
+          legacyCandidate = elementsToPublish(scene, legacyDiff);
+          if (!publishCandidatesEqual(legacyCandidate, incrementCandidate)) {
+            console.warn(formatIncrementComparisonWarning(legacyCandidate, incrementCandidate));
+          }
         }
 
         if (!isWhiteboardIncrementSyncEnabled()) return;
         if (!incrementCandidate.wholeScene && incrementCandidate.elements.length === 0) return;
 
         const serializedScene = serializeExcalidrawElements(scene);
-        publishedVersionsRef.current = legacyDiff.nextVersions;
+        publishedVersionsRef.current = updateVersionBaselineFromIncrement(
+          publishedVersionsRef.current,
+          event,
+          serializedScene,
+        );
         publishScene(
           serializedScene,
           incrementCandidate.wholeScene

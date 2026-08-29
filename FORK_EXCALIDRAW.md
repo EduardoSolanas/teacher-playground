@@ -123,8 +123,8 @@ What the increment feed can and cannot do:
 
 | Workaround | Can increments replace it? |
 |---|---|
-| `scenePublish.ts` — `diffScene`, `shouldPublish`, `elementsToPublish` | **Only for committed changes.** Still required for the live stroke |
-| `publishedVersionsRef` | **No.** Still the baseline for the stroke path |
+| `scenePublish.ts` — `diffScene`, `shouldPublish`, `elementsToPublish` | **Only for the live stroke and comparison mode.** The normal increment path bypasses it |
+| `publishedVersionsRef` | **No.** The increment path updates it from changed ids; it remains the baseline for the stroke path and comparison mode |
 | `STROKE_COMMIT_INTERVAL_MS` throttle | **No.** It exists for the pointer-down path |
 | `deferredElementsRef` / deferred React hop | **No.** This is the drawing-lag fix and it lives entirely in the stroke path |
 | `excalidrawElementsEqual` | Partly — `source` tagging (item B) covers echo suppression |
@@ -135,22 +135,32 @@ publish committed changes, `onChange` keeps handling the live stroke. That is a
 smaller prize than this document originally promised, and it is worth stating
 plainly — the per-sample cost, which was the whole motivation, is untouched.
 
-**Current performance effect: none.** Both flags
-(`NEXT_PUBLIC_WHITEBOARD_INCREMENTS`, `NEXT_PUBLIC_WHITEBOARD_INCREMENT_COMPARE`)
-default off and are set nowhere, so production behaviour is unchanged. With the
-flag on, `commitIncrement` still calls `diffScene` to maintain the baseline and
-serialises the scene twice, so committed changes do slightly **more** work than
-before — on a path that runs once per stroke rather than twenty times a second,
-so it is not a regression that matters, but it is not a saving either.
+**Current performance effect: bounded, not a claimed stroke fix.** The normal
+increment path now updates `publishedVersionsRef` from the ids in the increment
+and no longer calls `diffScene`. Comparison mode intentionally retains the
+legacy `diffScene` candidate so the two payloads can still be checked. This
+removes one full-scene baseline rebuild from committed changes, but the active
+stroke path remains unchanged; it does not claim to fix the reported drawing
+lag. Production remains default-off. The CI E2E job sets both flags to `1` for a
+controlled comparison build.
+
+The local continuous-stroke latency probe passed with both flags unset at p95
+25 ms host-to-peer / 27 ms peer-to-host. A successful flags-on attempt reported
+12 ms / 15 ms. Those are publish-to-render observations on one local worker
+setup; intermittent probe convergence failures mean they are not a causal CPU
+benchmark or a production-network claim.
 
 **What would actually help the hot path**, now that increments are known to be
 commit-only:
 
-1. Stop calling `diffScene` inside `commitIncrement` by maintaining the version
-   baseline from the increment itself. Small, real, available today.
-2. Measure before claiming. `isWhiteboardLatencyProbeEnabled()` already exists
-   and has been used to measure cursor propagation; point it at drawing.
-3. A genuine fix for the stroke path needs a signal upstream does not expose at
+1. **Done:** `commitIncrement` maintains the version baseline from the
+   increment itself, so normal committed changes no longer rebuild a full-scene
+   diff.
+2. **Measured, without overclaiming:** local off/on stroke evidence is recorded,
+   but it does not establish a production CPU saving.
+3. **Done for controlled comparison:** CI's E2E job enables both flags. The
+   production deploy remains default-off until that evidence is reviewed.
+4. A genuine fix for the stroke path needs a signal upstream does not expose at
    all — mid-stroke deltas — which is a much larger ask than exporting an
    existing emitter, and should not be attempted on the strength of this
    document alone.

@@ -241,18 +241,17 @@ Keep, and do not revisit without new evidence:
 
 ### Worth doing, and currently the only real performance work available
 
-1. **Stop calling `diffScene` inside `commitIncrement`.** It runs today only to
-   keep `publishedVersionsRef` in sync. Maintaining that baseline from the
-   increment itself removes a full scene diff and one of two serialisations per
-   commit. Small, real, available now.
-2. **Measure before claiming anything.** `isWhiteboardLatencyProbeEnabled()`
-   already exists and has measured cursor propagation. Point it at drawing and
-   publish numbers; this document has already been wrong once by reasoning
-   instead of measuring.
-3. **Turn the flags on somewhere.** `NEXT_PUBLIC_WHITEBOARD_INCREMENTS` and
-   `NEXT_PUBLIC_WHITEBOARD_INCREMENT_COMPARE` default off and are set nowhere,
-   so the increment path is dormant in every environment. Comparison mode in a
-   staging build is what would earn the retirement above.
+1. **Done:** `commitIncrement` maintains the version baseline from the
+   increment itself, so the normal committed-change path no longer rebuilds a
+   full-scene `diffScene` result. Comparison mode intentionally retains the
+   legacy candidate for equivalence checks.
+2. **Measured, without overclaiming:** the real-browser latency probe produced
+   local off/on stroke observations, recorded below. They are not a causal CPU
+   benchmark or a production-network claim.
+3. **Done for controlled comparison:** the CI E2E job sets both
+   `NEXT_PUBLIC_WHITEBOARD_INCREMENTS` and
+   `NEXT_PUBLIC_WHITEBOARD_INCREMENT_COMPARE` to `1`. Production remains
+   default-off until that evidence is reviewed.
 
 ### Out of reach without a new upstream signal
 
@@ -260,6 +259,16 @@ Fixing the per-sample cost needs **mid-stroke deltas**, which upstream does not
 expose in any form. That is a materially larger ask than exporting an existing
 emitter, and it should not be attempted on the strength of this document. If it
 is ever pursued, it is a fresh proposal with its own evidence.
+
+### Measurement evidence (2026-08-29)
+
+The real-browser `latency` continuous-stroke probe passed locally with both
+flags unset at p95 **25 ms host-to-peer / 27 ms peer-to-host**. A successful
+flags-on attempt (increment sync plus comparison mode) reported p95 **12 ms /
+15 ms**. Other local attempts hit the probe's pre-assertion sample or
+cursor-convergence checks, so these are publish-to-render observations on one
+local worker setup. They show the path remains within its budget; they do not
+establish a causal CPU saving or a production-network improvement.
 
 ### Files
 
@@ -375,19 +384,22 @@ In the fork, use its own equivalents; do not invent commands.
 - [x] Full E2E green with the flag on and off.
 - [x] Workarounds retained with written reasons; Phase 4 removal remains gated
       on the comparison-and-measurement evidence described above.
+- [x] The normal increment path updates its version baseline without rebuilding
+      a full-scene `diffScene` result.
+- [x] CI runs a controlled increment/comparison browser build, and local
+      stroke latency evidence is recorded without claiming a production gain.
 - [x] `FORK_EXCALIDRAW.md` updated to reflect what shipped.
 
-**Delivered, with the payoff not delivered.** Every box above is genuinely
-ticked, and the work is sound: the API is real and published, the gate was
-respected, nothing was deleted on optimism. What did not arrive is the reason
-the task existed. Increments turned out to be commit-only, so the per-sample
-cost and the drawing lag are untouched, and with the flags off — which is
-everywhere — production behaviour is unchanged.
+**Delivered, with the main payoff still bounded.** The API is real and
+published, committed changes now avoid a redundant full-scene baseline diff,
+and CI has a controlled comparison build. Increments are still commit-only, so
+the per-sample active-stroke cost and the reported drawing lag are untouched;
+production remains default-off.
 
 That is a fault in this brief, not in the implementation. It was written
-asserting a payoff while recording, in §7, the exact reason that payoff might
-not exist. The risk should have been resolved before the plan was built on top
-of it. Remaining work is in §6.
+asserting a stroke-path payoff while recording, in §7, the exact reason that
+payoff might not exist. The remaining performance work is either measurement
+on representative deployments or an upstream mid-stroke signal.
 
 ## 10. If you get stuck
 

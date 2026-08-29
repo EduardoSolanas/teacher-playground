@@ -212,6 +212,14 @@ describe('production deployment policy', () => {
     expect(e2eRunner).toContain("NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH: '/',");
   });
 
+  it('runs increment comparison in the CI browser build', () => {
+    const workflow = readRepositoryFile('.github/workflows/ci.yml');
+    const e2eJob = workflow.slice(workflow.indexOf('\n  e2e:'));
+
+    expect(e2eJob).toContain("NEXT_PUBLIC_WHITEBOARD_INCREMENTS: '1'");
+    expect(e2eJob).toContain("NEXT_PUBLIC_WHITEBOARD_INCREMENT_COMPARE: '1'");
+  });
+
   it('keeps the package, CDN asset path, and CSP on the same fork release', () => {
     const packageJson = readRepositoryFile('package.json');
     const lockfile = readRepositoryFile('package-lock.json');
