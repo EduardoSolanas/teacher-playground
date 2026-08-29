@@ -453,6 +453,23 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(csp).toContain("font-src 'self' data: blob:");
     });
 
+    it('allows Excalidraw blob: images so clipboard resize succeeds silently', () => {
+      // Excalidraw resizes every inserted image to 1440px via `resizeImageFile`
+      // (image-blob-reduce + pica) inside `initializeImage`. Image-blob-reduce
+      // loads the image through `new Image()` with a `blob:` URL, so CSP must
+      // allow blob: in img-src or the resize throws. Excalidraw catches that
+      // and only console.errors it, so the paste still succeeds and the editor
+      // silently keeps the full-size original in memory instead -- measured at
+      // 10.2MB rather than 3.9MB for one pasted photograph.
+      // A similar blocker was already fixed for `font-src` where Excalidraw
+      // registers bundled fonts through blob: URLs built at runtime.
+      const wrapped = withSecurityHeaders(
+        new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
+      );
+      const csp = wrapped.headers.get('Content-Security-Policy') ?? '';
+      expect(csp).toContain("img-src 'self' data: blob:");
+    });
+
     it('marks non-HTML responses no-store', () => {
       const wrapped = withSecurityHeaders(
         new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } }),

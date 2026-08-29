@@ -403,7 +403,7 @@ export function withSecurityHeaders(
         "object-src 'none'",
         "base-uri 'self'",
         options?.connectSrc ?? "connect-src 'self'",
-        "img-src 'self' data:",
+        "img-src 'self' data: blob:",
         // Excalidraw registers its bundled fonts through blob: URLs built at
         // runtime, so 'self' and data: alone are not enough — the browser
         // reported the block hundreds of times on a single board.

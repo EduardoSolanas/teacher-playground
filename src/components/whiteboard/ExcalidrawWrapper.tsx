@@ -30,6 +30,7 @@ import {
   recordWhiteboardLatencyEvent,
 } from '@/lib/whiteboard/latencyProbe';
 import { bytesToDataURL, dataURLToBytes, filesToUpload, isAllowedMimeType } from '@/lib/whiteboard/boardFiles';
+import { downscaleImage } from '@/lib/whiteboard/imageDownscale';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 
 type SharedSceneElement = Record<string, unknown>;
@@ -282,21 +283,47 @@ export default function ExcalidrawWrapper({
    * picture once, and un-marked on failure -- leaving the mark in place would
    * strand the image for good and every peer would show a broken picture for
    * the rest of the lesson.
+   *
+   * Images are downscaled to WebP and re-encoded before upload, reducing
+   * bandwidth and storage. The local editor is updated with the downscaled
+   * version so the browser also drops the original bytes from memory.
    */
   const uploadBoardFile = useCallback(
     async (fileId: string, dataUrl: string) => {
       try {
         const converted = dataURLToBytes(dataUrl);
         if (!converted || !isAllowedMimeType(converted.mimeType)) return;
+
+        // Downscale and re-encode to WebP. Returns original bytes unchanged
+        // on failure (unsupported codec, network error, etc.), so the image
+        // still uploads — just not optimized.
+        const downscaled = await downscaleImage(converted.bytes, converted.mimeType);
+
+        // Upload the (possibly downscaled) bytes to the room's store.
         const response = await ajaxFetch(
           `/api/whiteboard/room/${roomId}/files/${fileId}`,
           {
             method: 'PUT',
-            body: converted.bytes as unknown as BodyInit,
-            headers: { 'content-type': converted.mimeType },
+            body: downscaled.bytes as unknown as BodyInit,
+            headers: { 'content-type': downscaled.mimeType },
           },
         );
-        if (!response.ok) uploadedFileIdsRef.current.delete(fileId);
+        if (!response.ok) {
+          uploadedFileIdsRef.current.delete(fileId);
+          return;
+        }
+
+        // Tell the local Excalidraw editor about the downscaled version so
+        // it drops the multi-megabyte original from memory instead of holding
+        // a base64-encoded copy forever. Use the same fileId so the element
+        // that already references it is not duplicated.
+        const downscaledDataUrl = bytesToDataURL(downscaled.bytes, downscaled.mimeType);
+        apiRef.current?.addFiles([{
+          id: fileId,
+          dataURL: downscaledDataUrl,
+          mimeType: downscaled.mimeType,
+          created: Date.now(),
+        }] as never);
       } catch {
         uploadedFileIdsRef.current.delete(fileId);
       }
