@@ -18,11 +18,11 @@ const packageImportFiles = [
 describe('Teacher Playground Excalidraw package', () => {
   it('uses the immutable Teacher Playground release and its package asset path', () => {
     expect(packageJson.dependencies?.['@teacher-playground/excalidraw']).toBe(
-      'https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.7/package.tgz',
+      'https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.8/package.tgz',
     );
     expect(packageJson.dependencies?.['@excalidraw/excalidraw']).toBeUndefined();
     expect(lockfile).toContain(
-      'https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.7/package.tgz',
+      'https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.8/package.tgz',
     );
     expect(assetCopyScript).toContain('node_modules/@teacher-playground/excalidraw/dist/prod');
     expect(assetCopyScript).not.toContain('node_modules/@excalidraw/excalidraw/dist/prod');

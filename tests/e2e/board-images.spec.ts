@@ -25,14 +25,15 @@ import {
 /**
  * A photograph the size a real one is, built rather than committed.
  *
- * Sized just under Excalidraw's own `MAX_ALLOWED_FILE_BYTES`, which is 4MB and
- * is the real ceiling on what a board can hold: the editor refuses anything
- * larger before our upload route ever sees it. A megapixel of noise lands
- * around 2.4MB, which is an ordinary phone photograph and is large enough that
- * the upload is genuinely streamed rather than held in memory.
+ * Deliberately past 4MB. That was upstream Excalidraw's `MAX_ALLOWED_FILE_BYTES`
+ * and it refused anything larger in the editor, before the upload route was
+ * ever reached -- which is most of what a phone camera produces. The fork
+ * raises it to 12MB, and this file is the evidence: at 4.8MB it also clears
+ * `MAX_BODY_BYTES`, so it only reaches the bucket if the upload really is
+ * streamed by the route that sits ahead of the JSON body path.
  */
 function photograph(): Buffer {
-  return makeNoisePng(900, 900);
+  return makeNoisePng(1300, 1300);
 }
 
 /**

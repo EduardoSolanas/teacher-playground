@@ -11,14 +11,14 @@ rewritten drawing editor.
 | Working copy | `excalidraw/` in this checkout (see [Open risks](#open-risks)) |
 | Release branch | `teacher-playground/release-v0.18.1` |
 | Package identity | `@teacher-playground/excalidraw` |
-| Current release | `teacher-playground-v0.18.1-tp.7` |
+| Current release | `teacher-playground-v0.18.1-tp.8` |
 | Upstream base | `v0.18.1` |
 
 The application consumes the immutable release tarball, pinned in
 `package.json` and `package-lock.json`:
 
 ```text
-https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.7/package.tgz
+https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.8/package.tgz
 ```
 
 **The fork is on the current upstream release.** `@excalidraw/excalidraw@0.18.1`
@@ -32,7 +32,7 @@ The fork owns its R2 bucket (`teacher-playground-excalidraw`), CORS, custom
 domain, release objects, and release metadata, published by its own GitHub
 Actions workflow using the `prod` environment's `CLOUDFLARE_API_TOKEN` secret
 and `CLOUDFLARE_ACCOUNT_ID` variable. The application consumes the immutable
-base `https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.7/dist/prod/`.
+base `https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.8/dist/prod/`.
 Versioned objects carry one-year immutable cache headers.
 
 ## What the fork actually contains
@@ -49,8 +49,12 @@ roughly 2,950 deletions against 13 insertions**. Almost all of it is removal:
   rather than waiting for an upstream release.
 
 Beyond that there are **three single-line source edits** — in `App.tsx`,
-`TTDDialog/common.ts` and a `welcome-screen` stylesheet — plus the additive
-increment and tool-change API described below.
+`TTDDialog/common.ts` and a `welcome-screen` stylesheet — the additive
+increment and tool-change API described below, and one deliberate behavioural
+divergence: **`MAX_ALLOWED_FILE_BYTES` is 12MB rather than upstream's 4MB**
+(tp.8). That last one is the fork's first change to what the editor *does*
+rather than how it is packaged, and it is justified in
+[Image size](#image-size).
 
 That is the fork's defining property and the thing to protect: it changes
 essentially no editor behaviour, so nothing custom can rot, and adopting a
@@ -173,7 +177,7 @@ own it.
 
 ### Shipped increment API (tp.7)
 
-Release `teacher-playground-v0.18.1-tp.7` exposes the existing store change feed
+Release `teacher-playground-v0.18.1-tp.8` exposes the existing store change feed
 through the imperative API without changing the editor's `onChange` behavior:
 
 - `onIncrement` reports added, removed, and updated element maps, plus the
@@ -185,6 +189,25 @@ through the imperative API without changing the editor's `onChange` behavior:
 The release was validated by GitHub Actions run `33213074035`; its GitHub Release
 asset is `9,448,795` bytes with SHA-256
 `040ca864f1eb67ddfb4d4bf4ce95cdbe09ee9f7e6b545306ab233ab4111d33f66`.
+
+### Image size
+
+Upstream refuses any image over `MAX_ALLOWED_FILE_BYTES`, which is 4MB, and it
+refuses it **in the editor** — before an embedder's upload path is reached, so
+nothing downstream can compensate. A tutoring board is mostly photographs, and a
+phone camera produces 3-8MB of JPEG without trying, so a large share of what a
+teacher pasted was rejected outright with a "file too big" toast.
+
+tp.8 raises it to 12MB. That covers an ordinary photograph with room to spare
+while staying under the application's own 25MB per-file limit, so the editor
+never accepts a file the room will then refuse. It is deliberately not larger:
+the editor holds image bytes in memory as data URLs, inflating them by roughly a
+third, so the cap doubles as a per-image memory budget on a pupil's laptop.
+
+This is the one place the fork changes behaviour rather than packaging, so it is
+worth being explicit that the alternative was worse: the limit is unreachable
+through the API, and every other lever — the upload route, R2, the bucket — sits
+downstream of a refusal that has already happened.
 
 ### Asset loading
 

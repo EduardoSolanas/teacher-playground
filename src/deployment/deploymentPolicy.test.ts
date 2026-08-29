@@ -217,7 +217,7 @@ describe('production deployment policy', () => {
     const lockfile = readRepositoryFile('package-lock.json');
     const assetPath = readRepositoryFile('src/lib/whiteboard/excalidrawAssetPath.ts');
     const requestGuard = readRepositoryFile('src/lib/worker/requestGuard.ts');
-    const release = '0.18.1-tp.7';
+    const release = '0.18.1-tp.8';
     const origin = 'https://excalidraw-assets.sen-tutor.co.uk';
 
     expect(packageJson).toContain(`teacher-playground-v${release}/package.tgz`);
