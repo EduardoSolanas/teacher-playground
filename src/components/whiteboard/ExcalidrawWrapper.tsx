@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useEffect, useMemo, useState } from 'react';
 import { diffScene, shouldPublish, elementsToPublish } from '@/lib/whiteboard/scenePublish';
+import { livePointCount, strokeCommitIntervalMs } from '@/lib/whiteboard/strokeCadence';
 // MUST stay above the Excalidraw import: it sets EXCALIDRAW_ASSET_PATH, and ES
 // module imports are evaluated in order, before this module's own body runs.
 import '@/lib/whiteboard/excalidrawAssetPath';
@@ -635,12 +636,18 @@ export default function ExcalidrawWrapper({
    * point array. Doing all of that per sample is O(board size) tens of times a
    * second, so the lag grew with how much had been drawn.
    *
-   * While the pointer is down the work is throttled to this interval, with a
-   * trailing call so the last sample is never dropped, and pointer up flushes.
-   * 50ms is ~20 publishes a second: remote strokes still look continuous, and
-   * cursors travel on their own faster channel.
+   * While the pointer is down the work is throttled, with a trailing call so
+   * the last sample is never dropped, and pointer up flushes. 50ms is ~20
+   * publishes a second: remote strokes still look continuous, and cursors
+   * travel on their own faster channel.
+   *
+   * The interval is not fixed. Each publish resends the whole point array, so
+   * a stroke drawn without lifting the pen costs its length times the number
+   * of publishes -- 238KB measured for ten seconds of one continuous stroke,
+   * on the teacher's uplink, shared with the traffic that makes the board feel
+   * live. `strokeCadence` widens the interval once a stroke is long and leaves
+   * every ordinary one alone.
    */
-  const STROKE_COMMIT_INTERVAL_MS = 50;
   const strokeCommitAtRef = useRef(0);
   const strokeTrailingTimerRef = useRef<number | null>(null);
 
@@ -772,7 +779,8 @@ export default function ExcalidrawWrapper({
 
       const now = Date.now();
       const since = now - strokeCommitAtRef.current;
-      if (since >= STROKE_COMMIT_INTERVAL_MS) {
+      const interval = strokeCommitIntervalMs(livePointCount(el));
+      if (since >= interval) {
         strokeCommitAtRef.current = now;
         commitElements(el);
         return;
@@ -786,7 +794,7 @@ export default function ExcalidrawWrapper({
           strokeCommitAtRef.current = Date.now();
           const api = apiRef.current;
           if (api) commitElements(api.getSceneElements());
-        }, STROKE_COMMIT_INTERVAL_MS - since);
+        }, interval - since);
       }
     },
     [commitElements, uploadBoardFile],
