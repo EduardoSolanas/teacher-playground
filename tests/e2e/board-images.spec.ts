@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures';
 import { Page } from '@playwright/test';
+import { makeNoisePng } from './pngFixture';
 import {
   appUrl,
   createRoomWithMaxUsers,
@@ -21,64 +22,72 @@ import {
  * the bug this feature was built to fix -- so it has to be proved end to end.
  */
 
-/** A one-pixel PNG, small enough to inline and a real decodable image. */
-const PNG_DATA_URL =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
-
-function imageElement(id: string, fileId: string) {
-  return {
-    id,
-    type: 'image',
-    fileId,
-    x: 120,
-    y: 140,
-    width: 200,
-    height: 200,
-    angle: 0,
-    strokeColor: 'transparent',
-    backgroundColor: 'transparent',
-    fillStyle: 'solid',
-    strokeWidth: 2,
-    strokeStyle: 'solid',
-    roughness: 1,
-    opacity: 100,
-    groupIds: [],
-    frameId: null,
-    roundness: null,
-    seed: 4242,
-    version: 1,
-    versionNonce: 1,
-    isDeleted: false,
-    boundElements: null,
-    updated: Date.now(),
-    link: null,
-    locked: false,
-    status: 'saved',
-    scale: [1, 1],
-    crop: null,
-  };
+/**
+ * A photograph the size a real one is, built rather than committed.
+ *
+ * Sized just under Excalidraw's own `MAX_ALLOWED_FILE_BYTES`, which is 4MB and
+ * is the real ceiling on what a board can hold: the editor refuses anything
+ * larger before our upload route ever sees it. A megapixel of noise lands
+ * around 2.4MB, which is an ordinary phone photograph and is large enough that
+ * the upload is genuinely streamed rather than held in memory.
+ */
+function photograph(): Buffer {
+  return makeNoisePng(900, 900);
 }
 
 /**
- * Adds an image the way a paste does: the bytes go into Excalidraw's files map
- * first, then an element referencing them lands in the scene.
+ * Pastes a picture onto the board, which is how one usually arrives.
+ *
+ * The bytes go in through Excalidraw's own clipboard handler, so everything it
+ * does with a real file runs: reading it, deriving the element, sizing it,
+ * putting it in the files map. Driving `addFiles` and `updateScene` through the
+ * debug API instead would skip all of that and prove only that our sync layer
+ * works on input we invented.
  */
-async function addImage(page: Page, fileId: string, elementId: string) {
+async function pasteImage(page: Page, bytes: Buffer): Promise<string> {
   await waitForExcalidrawApi(page);
-  // The API applies a remote snapshot shortly after mount and ignores onChange
-  // while it does; the same wait appendElement uses, for the same reason.
+  // The editor applies a remote snapshot shortly after mount and ignores
+  // changes while it does; the same wait appendElement uses, for the reason.
   await page.waitForTimeout(400);
-  await page.evaluate(
-    ({ dataUrl, fileId: id, element }) => {
-      const api = (window as any).__debugExcalidrawApi;
-      api.addFiles([{ id, dataURL: dataUrl, mimeType: 'image/png', created: Date.now() }]);
-      api.updateScene({
-        elements: [...api.getSceneElements(), element],
-        captureUpdate: 'IMMEDIATELY',
-      });
-    },
-    { dataUrl: PNG_DATA_URL, fileId, element: imageElement(elementId, fileId) },
-  );
+
+  /*
+   * The editor refuses a paste unless focus is inside its container and the
+   * pointer is over the canvas -- it reads `elementFromPoint` at the last
+   * viewport position to decide where the picture lands. Both hold for a person
+   * who is looking at the board, and neither holds for a bare dispatch.
+   */
+  const canvas = page.locator('canvas.excalidraw__canvas.interactive').first();
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error('the board canvas has no box to point at');
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await canvas.click({ position: { x: box.width / 2, y: box.height / 2 } });
+
+  await page.evaluate(async (base64: string) => {
+    const binary = atob(base64);
+    const buffer = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) buffer[i] = binary.charCodeAt(i);
+    const file = new File([buffer], 'photo.png', { type: 'image/png' });
+
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    const target = document.querySelector('canvas.excalidraw__canvas.interactive')
+      ?? document.body;
+    target.dispatchEvent(new ClipboardEvent('paste', {
+      clipboardData: transfer,
+      bubbles: true,
+      cancelable: true,
+    }));
+  }, bytes.toString('base64'));
+
+  await expect
+    .poll(() => fileIdsInScene(page), {
+      timeout: 30000,
+      message: 'the editor never took the pasted picture',
+    })
+    .not.toHaveLength(0);
+
+  const [fileId] = await fileIdsInScene(page);
+  return fileId;
 }
 
 async function fileIdsInScene(page: Page): Promise<string[]> {
@@ -89,38 +98,61 @@ async function fileIdsInScene(page: Page): Promise<string[]> {
 }
 
 test.describe('board images', () => {
-  test('uploads an image to the room store and serves it back', async ({ page }) => {
+  test('stores a real photograph and serves back the same bytes', async ({ page }) => {
     const roomId = await createRoomWithMaxUsers(page, 'ImageHost', 2);
-    const fileId = `e2e-file-${Date.now()}`;
+    const photo = photograph();
 
-    await addImage(page, fileId, `img-${fileId}`);
+    const fileId = await pasteImage(page, photo);
 
-    // The bytes must reach the room's store, not just the local scene.
     await expect
       .poll(
-        async () => {
-          const response = await page.request.get(
-            appUrl(`/api/whiteboard/room/${roomId}/files/${fileId}`),
-          );
-          return response.status();
-        },
-        { timeout: 20000, message: 'the image never reached the room store' },
+        async () => (await page.request.get(
+          appUrl(`/api/whiteboard/room/${roomId}/files/${fileId}`),
+        )).status(),
+        { timeout: 30000, message: 'the photograph never reached the room store' },
       )
       .toBe(200);
 
-    const stored = await page.request.get(
-      appUrl(`/api/whiteboard/room/${roomId}/files/${fileId}`),
-    );
+    const stored = await page.request.get(appUrl(`/api/whiteboard/room/${roomId}/files/${fileId}`));
     expect(stored.headers()['content-type']).toContain('image/png');
-    expect((await stored.body()).byteLength).toBeGreaterThan(0);
+    // Byte-for-byte: a picture that arrives truncated or re-encoded is a
+    // picture that renders wrong, and the size alone would not catch it.
+    expect(Buffer.from(await stored.body()).equals(photo)).toBe(true);
   });
 
-  test('delivers an image to a peer that never had the bytes', async ({ page, browser }) => {
-    const roomId = await createRoomWithMaxUsers(page, 'ImageOwner', 2);
-    const fileId = `e2e-shared-${Date.now()}`;
-    const elementId = `img-${fileId}`;
+  test('keeps the photograph across a reload', async ({ page }) => {
+    const roomId = await createRoomWithMaxUsers(page, 'ImageReload', 2);
+    const photo = photograph();
+    const fileId = await pasteImage(page, photo);
 
-    await addImage(page, fileId, elementId);
+    await expect
+      .poll(
+        async () => (await page.request.get(
+          appUrl(`/api/whiteboard/room/${roomId}/files/${fileId}`),
+        )).status(),
+        { timeout: 30000 },
+      )
+      .toBe(200);
+
+    /*
+     * Before board files existed this is where a pasted image was lost: it
+     * lived only in the editor's memory, so reopening the room showed a broken
+     * picture on a board that had looked fine a moment earlier.
+     */
+    await page.reload();
+    await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 20000 });
+    await expect
+      .poll(() => fileIdsInScene(page), {
+        timeout: 30000,
+        message: 'the board came back without its picture',
+      })
+      .toContain(fileId);
+  });
+
+  test('delivers the photograph to a peer that never had the bytes', async ({ page, browser }) => {
+    const roomId = await createRoomWithMaxUsers(page, 'ImageOwner', 2);
+    const photo = photograph();
+    const fileId = await pasteImage(page, photo);
 
     const peerContext = await newAuthenticatedContext(browser);
     const peerPage = await peerContext.newPage();
@@ -131,15 +163,14 @@ test.describe('board images', () => {
       await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
 
       /*
-       * The peer receives the element over Yjs but never the bytes -- they were
-       * uploaded before it joined and are not in the document. It has to notice
-       * the fileId it does not hold and fetch it. Before board files existed
-       * this is precisely where the image showed as broken.
+       * The peer receives the element over the document but never the bytes --
+       * they were uploaded before it joined and are not in the document. It has
+       * to notice the fileId it does not hold and fetch it.
        */
       await expect
         .poll(() => fileIdsInScene(peerPage), {
-          timeout: 25000,
-          message: 'the peer never fetched the image it was not sent',
+          timeout: 30000,
+          message: 'the peer never fetched the picture it was not sent',
         })
         .toContain(fileId);
     } finally {
@@ -148,24 +179,24 @@ test.describe('board images', () => {
     }
   });
 
-  test('refuses the image to an account with no grant in the room', async ({ page, browser }) => {
+  test('refuses the photograph to an account with no grant in the room', async ({ page, browser }) => {
     const roomId = await createRoomWithMaxUsers(page, 'ImagePrivate', 2);
-    const fileId = `e2e-private-${Date.now()}`;
+    const photo = photograph();
+    const fileId = await pasteImage(page, photo);
 
-    await addImage(page, fileId, `img-${fileId}`);
     await expect
       .poll(
         async () => (await page.request.get(
           appUrl(`/api/whiteboard/room/${roomId}/files/${fileId}`),
         )).status(),
-        { timeout: 20000 },
+        { timeout: 30000 },
       )
       .toBe(200);
 
     /*
-     * A session is not a grant. An account that was never admitted to this room
-     * must not be able to read its pictures by asking for the URL, which is the
-     * whole reason the bucket is private and the Worker is the only reader.
+     * A session is not a grant. An account never admitted to this room must not
+     * read its pictures by asking for the URL, which is the whole reason the
+     * bucket is private and the Worker is its only reader.
      */
     const outsiderContext = await newAuthenticatedContext(browser);
     const outsiderPage = await outsiderContext.newPage();
