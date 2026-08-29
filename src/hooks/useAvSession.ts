@@ -168,7 +168,35 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
       refresh();
     }
 
-    void start();
+    /*
+     * The join is awaited nowhere else, so its rejection has to be caught
+     * here.
+     *
+     * A token the media server refuses -- an API key that does not belong to
+     * the configured project, a secret that has been rotated on one side only
+     * -- rejects out of `connect`, and with `void start()` alone that became
+     * an unhandled rejection and nothing more. The console filled with failed
+     * sockets while the panel sat there saying nothing was wrong, which is the
+     * worst way for a call to be broken: the teacher has no idea whether to
+     * wait, retry, or carry on without it.
+     *
+     * Nothing is retried. The failures worth reporting here are refusals, and
+     * a refusal repeated is a refusal; the reconnect the SDK already performs
+     * covers a connection that merely dropped.
+     */
+    void start().catch((error: unknown) => {
+      if (cancelled) return;
+      setState((prev) => ({
+        ...prev,
+        status: 'error',
+        error: {
+          kind: 'unknown',
+          message: error instanceof Error && error.message
+            ? `Could not join the call: ${error.message}`
+            : 'Could not join the call.',
+        },
+      }));
+    });
 
     return () => {
       cancelled = true;

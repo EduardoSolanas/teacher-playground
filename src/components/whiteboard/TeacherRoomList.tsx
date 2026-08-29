@@ -594,6 +594,29 @@ export default function TeacherRoomList({
                                   : pinState === 'off' ? 'Create PIN' : 'New PIN'}
                               </button>
 
+                              {/*
+                                * On the PIN line and pushed to its far end.
+                                * Everything here is about one thing -- the six
+                                * digits that let a student in -- so the switch
+                                * that stops them working belongs beside them
+                                * rather than adrift at the foot of the card.
+                                * The distance across the line is what keeps it
+                                * away from the controls that hand access out.
+                                */}
+                              {roomSettings?.guestAccess && (
+                                <button
+                                  type="button"
+                                  data-testid={`whiteboard-room-guest-off-${room.roomId}`}
+                                  disabled={pinBusy}
+                                  onClick={() => {
+                                    void patchGuestSettings(room.roomId, { guestAccess: false });
+                                  }}
+                                  className="btn-outline btn-small room-pin-off"
+                                >
+                                  Turn off guest join
+                                </button>
+                              )}
+
                               {previousPin && pinState === 'live' && (
                                 <span className="room-pin-note">
                                   Anyone holding the old PIN is locked out — send this one.
@@ -623,28 +646,6 @@ export default function TeacherRoomList({
                         </dd>
                       </div>
                     </dl>
-
-                    {/*
-                      * The off switch sits at the foot of the card, away from
-                      * the values above it: it is the one control here that
-                      * takes something away, and it should not sit in the run
-                      * of controls a teacher uses to let somebody in.
-                      */}
-                    {roomSettings?.guestAccess && (
-                      <div className="room-card-foot">
-                        <button
-                          type="button"
-                          data-testid={`whiteboard-room-guest-off-${room.roomId}`}
-                          disabled={pinBusy}
-                          onClick={() => {
-                            void patchGuestSettings(room.roomId, { guestAccess: false });
-                          }}
-                          className="btn-outline btn-small"
-                        >
-                          Turn off guest join
-                        </button>
-                      </div>
-                    )}
                   </div>
                 )}
               </li>

@@ -418,8 +418,8 @@ font-size:1.05rem;font-weight:600;letter-spacing:.12em;color:var(--ink)}
    to be recognised, not read out. */
 .room-pin-old{flex-shrink:0;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
 font-size:.9rem;letter-spacing:.08em;color:var(--red);text-decoration:line-through}
-/* The off switch, set apart at the foot of the card: it is the one control on
-   the row that takes access away, so it does not sit in the run of controls
-   used to hand access out. */
-.room-card-foot{display:flex;justify-content:flex-end;padding:0 .625rem .25rem}
+/* The off switch rides the PIN line but at its far end: near the digits it
+   governs, and a whole line away from the controls that hand access out, so
+   it cannot be hit while reaching for New PIN. */
+.room-pin-off{margin-left:auto}
 .room-pin-warn{color:var(--red)}
