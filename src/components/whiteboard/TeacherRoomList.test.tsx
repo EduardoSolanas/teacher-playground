@@ -6,6 +6,7 @@ import TeacherRoomList, {
   UNNAMED_ROOM_TITLE,
   guestPinState,
   formatGuestPin,
+  replacedPin,
 } from './TeacherRoomList';
 
 const UNNAMED_CREATED_AT = 1_700_000_000_000;
@@ -222,6 +223,20 @@ describe('TeacherRoomList', () => {
 
     it('separates a room that was never opened to guests', () => {
       expect(guestPinState({ ...live, guestAccess: false }, 1_000)).toBe('off');
+    });
+
+    it('remembers the PIN a rotation replaced, so it can be struck through', () => {
+      expect(replacedPin('111111', '222222')).toBe('111111');
+    });
+
+    it('leaves no corpse when nothing was actually replaced', () => {
+      // A first PIN replaces nothing, and a response carrying the same digits
+      // has not rotated anything: striking either through would tell a teacher
+      // that somebody has been locked out when nobody has.
+      expect(replacedPin(null, '222222')).toBeNull();
+      expect(replacedPin(undefined, '222222')).toBeNull();
+      expect(replacedPin('111111', '111111')).toBeNull();
+      expect(replacedPin('111111', null)).toBeNull();
     });
 
     it('groups the digits for reading aloud and leaves anything else alone', () => {

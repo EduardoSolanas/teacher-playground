@@ -100,6 +100,23 @@ export function guestPinState(
 }
 
 /**
+ * The PIN a rotation just replaced, or null if nothing was replaced.
+ *
+ * Worth showing for one reason: by the time a teacher rotates, the old PIN has
+ * usually already been given to somebody. Striking it through says the thing
+ * the new PIN on its own does not -- that whoever holds the old one is now
+ * locked out and has to be told again.
+ *
+ * Only a real swap counts. A first PIN replaces nothing, and a response that
+ * returns the same digits has not rotated anything, so neither leaves a corpse
+ * on the screen.
+ */
+export function replacedPin(previous: string | null | undefined, next: string | null): string | null {
+  if (!previous || !next) return null;
+  return previous === next ? null : previous;
+}
+
+/**
  * Grouped for reading aloud, which is the only way a PIN reaches a student.
  * Only ever for display: what gets copied is the six digits with no space, so
  * it can be typed straight into the join form.
@@ -140,6 +157,13 @@ export default function TeacherRoomList({
     Record<string, ReturnType<typeof parseGuestSettings>>
   >({});
   const [pinBusyId, setPinBusyId] = useState<string | null>(null);
+  /*
+   * Session-only, and deliberately not persisted: a struck-through PIN is
+   * a message about something that just happened in front of the teacher.
+   * After a reload there is no longer a moment to explain, and a dead PIN
+   * sitting on the screen would be nothing but stale noise.
+   */
+  const [replacedPinByRoom, setReplacedPinByRoom] = useState<Record<string, string>>({});
   /*
    * Null until the browser has run, so the server and the first client render
    * agree: an expiry compared against Date.now() during hydration renders a
@@ -238,7 +262,16 @@ export default function TeacherRoomList({
       });
       if (!response.ok) return;
       const next = parseGuestSettings(await response.json());
+      const replaced = replacedPin(settingsByRoom[roomId]?.guestPin, next.guestPin);
       setSettingsByRoom((current) => ({ ...current, [roomId]: next }));
+      setReplacedPinByRoom((current) => {
+        if (!replaced) {
+          if (!current[roomId]) return current;
+          const { [roomId]: _dropped, ...rest } = current;
+          return rest;
+        }
+        return { ...current, [roomId]: replaced };
+      });
     } finally {
       setPinBusyId((current) => (current === roomId ? null : current));
     }
@@ -274,6 +307,10 @@ export default function TeacherRoomList({
             const roomSettings = settingsByRoom[room.roomId];
             const pinState = guestPinState(roomSettings, now);
             const pinBusy = pinBusyId === room.roomId;
+            const previousPin = replacedPinByRoom[room.roomId];
+            const deadPin = pinState === 'expired'
+              ? roomSettings?.guestPin ?? previousPin
+              : previousPin;
 
             return (
               <li
@@ -552,29 +589,57 @@ export default function TeacherRoomList({
                       <div className="room-share-row">
                         <dt className="room-share-label">Class PIN</dt>
                         <dd className="room-share-value">
-                          {pinState === 'live' && roomSettings?.guestPin ? (
-                            <>
-                              <span
-                                data-testid={`whiteboard-room-pin-${room.roomId}`}
-                                className="room-pin"
-                              >
-                                {formatGuestPin(roomSettings.guestPin)}
-                              </span>
-                              <CopyButton value={roomSettings.guestPin} label="class PIN" />
-                            </>
-                          ) : pinState === 'unknown' ? (
+                          {pinState === 'unknown' ? (
                             <span className="room-pin-note">Checking…</span>
                           ) : (
                             <>
-                              <span className="room-pin-note">
-                                {pinState === 'expired' ? 'Expired' : 'Not switched on'}
-                              </span>
                               {/*
-                                * One button for both, because from the teacher's
-                                * side they are the same act: the room needs a
-                                * PIN it does not currently have. Which request
-                                * that takes -- switch guest access on, or rotate
-                                * a PIN that has run out -- is not their problem.
+                                * A dead PIN is struck through rather than merely
+                                * recoloured. If the difference between the dead
+                                * one and the live one were carried by red against
+                                * green it would not be carried at all for a reader
+                                * who cannot separate those hues; the line through
+                                * the digits says it without relying on colour, and
+                                * the red only agrees with it.
+                                *
+                                * Two different PINs can be dead here. The one a
+                                * rotation just replaced, which the teacher has
+                                * probably already given out, and one that ran out
+                                * of time on its own. Both matter for the same
+                                * reason: somebody is holding digits that no longer
+                                * work and has to be told again.
+                                */}
+                              {deadPin && (
+                                <span
+                                  data-testid={`whiteboard-room-pin-old-${room.roomId}`}
+                                  className="room-pin-old"
+                                >
+                                  {formatGuestPin(deadPin)}
+                                </span>
+                              )}
+
+                              {pinState === 'live' && roomSettings?.guestPin ? (
+                                <>
+                                  <span
+                                    data-testid={`whiteboard-room-pin-${room.roomId}`}
+                                    className="room-pin"
+                                  >
+                                    {formatGuestPin(roomSettings.guestPin)}
+                                  </span>
+                                  <CopyButton value={roomSettings.guestPin} label="class PIN" />
+                                </>
+                              ) : (
+                                <span className="room-pin-note">
+                                  {pinState === 'expired' ? 'Expired' : 'Not switched on'}
+                                </span>
+                              )}
+
+                              {/*
+                                * Offered in every state, including while a PIN is
+                                * live: a teacher who has finished with a student,
+                                * or who has watched the digits travel further than
+                                * they meant, needs to cut off whoever holds the
+                                * old one without first going and finding a panel.
                                 */}
                               <button
                                 type="button"
@@ -583,15 +648,23 @@ export default function TeacherRoomList({
                                 onClick={() => {
                                   void patchGuestSettings(
                                     room.roomId,
-                                    pinState === 'expired'
-                                      ? { guestAccess: true, rotateGuestPin: true }
-                                      : { guestAccess: true },
+                                    pinState === 'off'
+                                      ? { guestAccess: true }
+                                      : { guestAccess: true, rotateGuestPin: true },
                                   );
                                 }}
                                 className="btn-outline btn-small"
                               >
-                                {pinBusy ? 'Working…' : pinState === 'expired' ? 'New PIN' : 'Create PIN'}
+                                {pinBusy
+                                  ? 'Working…'
+                                  : pinState === 'off' ? 'Create PIN' : 'New PIN'}
                               </button>
+
+                              {previousPin && pinState === 'live' && (
+                                <span className="room-pin-note">
+                                  Anyone holding the old PIN is locked out — send this one.
+                                </span>
+                              )}
                             </>
                           )}
                         </dd>

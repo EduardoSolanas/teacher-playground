@@ -390,7 +390,14 @@ transition:background .15s}
 }
 .room-share-label{margin:0;font-size:.7rem;font-weight:600;letter-spacing:.06em;
 text-transform:uppercase;color:var(--mut)}
-.room-share-value{display:flex;align-items:center;gap:.5rem;margin:0;min-width:0;flex:1}
+/* Wraps as a row of whole things, never inside one. The PIN line carries the
+   most children -- a dead PIN, the live one, its copy control and the rotate
+   button -- and without nowrap on the values themselves the flexbox broke six
+   digits across two lines, which read as two separate numbers and is the one
+   mistake this line must not invite. The note is pushed onto its own line by
+   taking the full basis. */
+.room-share-value{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin:0;min-width:0;flex:1}
+.room-share-value .room-pin-note{flex:1 0 100%}
 /* The copy control is a hairline square that sits with the value rather than
    under it; at 2.75rem it keeps the touch target the rest of the app uses. */
 .room-share-value .copy-icon-btn{height:2.25rem;width:2.25rem}
@@ -402,6 +409,12 @@ font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.8rem;color:va
 /* Grouped three-and-three and set large: this is read out loud across a room
    or down a phone, so it is the one value on the screen sized to be spoken
    from rather than skimmed. */
-.room-pin{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:1.05rem;
-font-weight:600;letter-spacing:.12em;color:var(--ink)}
+.room-pin{flex-shrink:0;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+font-size:1.05rem;font-weight:600;letter-spacing:.12em;color:var(--ink)}
 .room-pin-note{font-size:.8rem;color:var(--mut)}
+/* A PIN that has stopped working: struck through so the state survives being
+   read without colour, with red only agreeing with the line rather than
+   carrying the meaning on its own. Set smaller than the live one — it is there
+   to be recognised, not read out. */
+.room-pin-old{flex-shrink:0;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+font-size:.9rem;letter-spacing:.08em;color:var(--red);text-decoration:line-through}
