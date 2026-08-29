@@ -70,7 +70,7 @@ import { logSocketClose } from '../lib/security/authEvents';
 import * as Y from 'yjs';
 import * as decoding from 'lib0/decoding';
 import { encodeUpdateFrame, handleSyncFrame } from '../lib/whiteboard/serverSync';
-import { replaceSharedElements, getElementsFromArray } from '../lib/whiteboard/yjsDoc';
+import { replaceSharedElements, getElementsFromArray, pruneTombstonedElements } from '../lib/whiteboard/yjsDoc';
 import { snapshotElements } from '../lib/whiteboard/sceneSnapshot';
 import { snapshotBudgetState } from '../lib/whiteboard/snapshotBudget';
 import {
@@ -913,6 +913,24 @@ export class RoomDO extends DurableObject {
       if (!doc) {
         this.dirtyRooms.delete(roomId);
         continue;
+      }
+
+      /*
+       * Prune tombstoned elements if the room has no open connections. With no
+       * peers holding an old scene, there is no risk a reconnecting peer will
+       * republish erased elements as new items. The prune is a normal CRDT delete
+       * that propagates correctly to any future peers.
+       *
+       * The guard is critical: if any peer has a socket open with an old scene,
+       * the peer would apply the prune and then republish its own old elements
+       * as new items, duplicating every shape on the board.
+       */
+      const hasOpenSocket = this.ctx.getWebSockets().some((socket) => {
+        const attachment = socket.deserializeAttachment() as SocketIdentity | null;
+        return attachment?.roomId === roomId && socket.readyState === WebSocket.OPEN;
+      });
+      if (!hasOpenSocket) {
+        pruneTombstonedElements(doc);
       }
 
       const snapshot = Y.encodeStateAsUpdate(doc);

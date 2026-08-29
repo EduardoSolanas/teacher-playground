@@ -204,3 +204,52 @@ export function getElementsFromArray(
     return element as CanvasElement;
   });
 }
+
+/**
+ * Prunes tombstoned (deleted) elements from a Y.Doc's elements array.
+ *
+ * Excalidraw marks erased elements with isDeleted: true rather than removing
+ * them, and every freedraw stroke carries a full point array (~10KB each). A
+ * snapshot that keeps them grows every draw-and-erase cycle and never shrinks,
+ * eventually exceeding the request body cap and stopping saves silently.
+ *
+ * This function deletes the Y.Map entries for tombstoned elements from the
+ * array. It is a normal CRDT delete: each full element map collapses to a
+ * small delete-set range, it propagates to peers correctly, and it does NOT
+ * reset document identity. This must only run when the room has NO open
+ * WebSockets, because a peer holding a pre-erase scene would republish its
+ * erased elements as new items. Without that guard, the delete propagates to
+ * the peer as a separate operation, and the peer's old scene creates a second
+ * copy of every shape.
+ *
+ * Returns the number of tombstoned elements deleted.
+ */
+export function pruneTombstonedElements(doc: Y.Doc): number {
+  const elementsArray = doc.getArray<Y.Map<any>>('elements');
+  const current = elementsArray.toArray();
+
+  const tombstoneIndexes: number[] = [];
+  current.forEach((yMap, index) => {
+    const isDeleted = yMap.get('isDeleted');
+    if (isDeleted === true) {
+      tombstoneIndexes.push(index);
+    }
+  });
+
+  if (tombstoneIndexes.length === 0) {
+    return 0;
+  }
+
+  /*
+   * Delete from highest index downward. Deleting the highest first ensures
+   * subsequent indexes remain valid. This matches the pattern used in
+   * replaceSharedElements for its stale sweep.
+   */
+  doc.transact(() => {
+    for (let i = tombstoneIndexes.length - 1; i >= 0; i--) {
+      elementsArray.delete(tombstoneIndexes[i], 1);
+    }
+  }, 'prune');
+
+  return tombstoneIndexes.length;
+}
