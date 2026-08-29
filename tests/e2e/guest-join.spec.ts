@@ -126,7 +126,9 @@ async function enableGuestAndReadPin(teacherPage: Page, roomId: string): Promise
   try {
     await list.goto(appUrl('/whiteboard'));
     await expect(list.getByTestId(`whiteboard-room-list-item-${roomId}`)).toBeVisible({ timeout: 15000 });
-    await list.getByTestId(`whiteboard-room-menu-${roomId}`).click();
+    // Guest access is a control on the row now, not an item inside the
+    // overflow menu: it is what a teacher does before a lesson, so the menu
+    // click this used to need has gone rather than moved.
     await list.getByTestId(`whiteboard-room-guest-${roomId}`).click();
     await expect(list.getByTestId('guest-enable')).toBeVisible({ timeout: 15000 });
     await list.getByTestId('guest-enable').click();

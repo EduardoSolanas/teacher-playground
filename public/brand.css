@@ -372,3 +372,30 @@ transition:background .15s}
 .btn-danger{background:var(--red)}
 .btn-danger:hover{background:#a43225}
 }
+
+/* ---- app: the room row -------------------------------------------------
+ * A room row is a share card, not a file-manager row. What a teacher needs
+ * to start a lesson -- the link and the code -- is printed rather than kept
+ * behind a control, so it can be read down a phone, checked before it is
+ * sent, and copied by hand when the clipboard refuses. The label column is
+ * fixed so the two values line up and the eye can tell them apart at a
+ * glance; below the breakpoint the labels sit above their values instead,
+ * because a fixed column would leave a monospace URL nothing to sit in. */
+.room-card{display:flex;flex-direction:column;gap:.5rem;padding:.25rem}
+.room-share{display:flex;flex-direction:column;gap:.375rem;margin:.125rem 0 0;padding:0 .625rem .25rem}
+.room-share-row{display:flex;flex-direction:column;gap:.125rem;min-width:0}
+@media(min-width:640px){
+  .room-share-row{flex-direction:row;align-items:center;gap:.75rem}
+  .room-share-label{width:5.5rem;flex-shrink:0}
+}
+.room-share-label{margin:0;font-size:.7rem;font-weight:600;letter-spacing:.06em;
+text-transform:uppercase;color:var(--mut)}
+.room-share-value{display:flex;align-items:center;gap:.5rem;margin:0;min-width:0;flex:1}
+/* The copy control is a hairline square that sits with the value rather than
+   under it; at 2.75rem it keeps the touch target the rest of the app uses. */
+.room-share-value .copy-icon-btn{height:2.25rem;width:2.25rem}
+.room-share-value .room-url{flex:1;min-width:0;padding:0;font-size:.8rem;color:var(--ink2)}
+/* The code is read aloud and typed in by hand, so it is never truncated:
+   an ellipsis in the middle of an identifier is worse than a second line. */
+.room-code{flex:1;min-width:0;overflow-wrap:anywhere;
+font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.8rem;color:var(--ink2)}

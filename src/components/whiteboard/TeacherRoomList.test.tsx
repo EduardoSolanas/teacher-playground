@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
-import TeacherRoomList, { teacherRoomTitle } from './TeacherRoomList';
+import TeacherRoomList, { teacherRoomTitle, UNNAMED_ROOM_TITLE } from './TeacherRoomList';
 
 const UNNAMED_CREATED_AT = 1_700_000_000_000;
 const UNNAMED_UTC_STAMP = new Date(UNNAMED_CREATED_AT).toISOString().replace('T', ' ').slice(0, 16);
@@ -35,15 +35,26 @@ describe('TeacherRoomList', () => {
       'Algebra',
     );
     expect(teacherRoomTitle({ roomId: 'room-alpha', name: 'Algebra' })).toBe('Algebra');
+
+    /*
+     * An unnamed room used to be titled by its code, because the code appeared
+     * nowhere else. It now has its own labelled line, so the heading says what
+     * it is and the row still carries the identifier a student needs.
+     */
     const unnamedItem = screen.getByTestId('whiteboard-room-list-item-room-beta');
-    expect(unnamedItem.textContent).toContain('room-beta');
+    expect(unnamedItem.textContent).toContain(UNNAMED_ROOM_TITLE);
+    expect(screen.getByTestId('whiteboard-room-code-room-beta').textContent).toBe('room-beta');
     expect(unnamedItem.textContent).not.toContain(UNNAMED_UTC_STAMP);
-    // createdAt present and still ignored: only a name beats the code.
+    // createdAt present and still ignored: it never identified anything.
     expect(
       teacherRoomTitle({ roomId: 'room-beta', createdAt: UNNAMED_CREATED_AT }),
-    ).toBe('room-beta');
-    expect(teacherRoomTitle({ roomId: 'room-beta', name: '   ' })).toBe('room-beta');
-    expect(teacherRoomTitle({ roomId: 'room-beta', name: null })).toBe('room-beta');
+    ).toBe(UNNAMED_ROOM_TITLE);
+    expect(teacherRoomTitle({ roomId: 'room-beta', name: '   ' })).toBe(UNNAMED_ROOM_TITLE);
+    expect(teacherRoomTitle({ roomId: 'room-beta', name: null })).toBe(UNNAMED_ROOM_TITLE);
+
+    // The code of a named room is reachable too: it was invisible before,
+    // because only an unnamed room ever put its code on the screen.
+    expect(screen.getByTestId('whiteboard-room-code-room-alpha').textContent).toBe('room-alpha');
 
     const algebraLink = screen.getByRole('link', { name: /Algebra/ });
     expect(algebraLink.getAttribute('href')).toBe('/whiteboard/room-alpha');
@@ -227,15 +238,27 @@ describe('TeacherRoomList', () => {
       expect(new URL(url).hostname).not.toBe(window.location.hostname);
     });
 
-    it('does not print the raw URL in the row', () => {
+    /*
+     * The row prints the link, and the guest-host guard applies to what is
+     * printed as much as to what is copied.
+     *
+     * It was removed from the row once as redundant -- the copy button already
+     * carried it -- which left a teacher no way to see which room they were
+     * about to share, to read the address to someone, or to notice a copy that
+     * had silently failed. Printing a teacher-origin URL would be worse than
+     * printing none: a student following it meets Cloudflare Access and cannot
+     * get in, and the link looks perfectly valid to the person who sent it.
+     */
+    it('prints the guest-host join URL in the row, never the teacher origin', () => {
       vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', 'join.example.com');
       render(
         <TeacherRoomList rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]} onOpen={vi.fn()} />,
       );
 
-      expect(screen.queryByTestId('guest-join-url')).toBeNull();
-      expect(screen.getByTestId('whiteboard-room-list').textContent)
-        .not.toContain('https://');
+      const printed = screen.getByTestId('whiteboard-room-url-room-alpha').textContent ?? '';
+      expect(printed).toBe('https://join.example.com/whiteboard/room-alpha');
+      expect(printed).not.toContain(window.location.origin);
+      expect(printed).not.toContain(`${window.location.host}/whiteboard/room-alpha`);
     });
   });
 });

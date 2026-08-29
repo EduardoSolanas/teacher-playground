@@ -1,8 +1,9 @@
-﻿'use client';
+'use client';
 
 import { useEffect, useState } from 'react';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import { guestHostJoinUrl } from '@/lib/whiteboard/guestJoinUrl';
+import CopyButton from './CopyButton';
 import GuestAccessSettings from './GuestAccessSettings';
 
 export type TeacherRoomSummary = {
@@ -11,19 +12,25 @@ export type TeacherRoomSummary = {
   createdAt?: number;
 };
 
+/** Shown for a room nobody has named yet. */
+export const UNNAMED_ROOM_TITLE = 'Untitled room';
+
 /**
- * What a room is called in the list: its name, or failing that its code.
+ * What a room is called in the list.
  *
- * Naming is optional at creation, so most rooms start with no name and the
- * code is what the teacher has to go on — it is also what they read out to a
- * student. An earlier version fell back to the creation timestamp, which gave
- * every unnamed room the same shape and told you nothing about which room you
- * were looking at.
+ * This used to fall back to the room code, because the code was the only thing
+ * identifying an unnamed room and it appeared nowhere else in the row. That
+ * made the heading a thirty-two character hexadecimal string: unreadable at a
+ * glance, impossible to read down a phone, and the same shape as every other
+ * unnamed room, so a list of them identified nothing.
+ *
+ * The row now prints the code on its own labelled line, which is what the
+ * fallback was really for, so the heading is free to say what it means.
  */
 export function teacherRoomTitle(room: TeacherRoomSummary): string {
   const trimmed = room.name?.trim();
   if (trimmed) return trimmed;
-  return room.roomId;
+  return UNNAMED_ROOM_TITLE;
 }
 
 function formatDate(timestamp: number): string {
@@ -255,7 +262,7 @@ export default function TeacherRoomList({
                 ) : confirmingDelete ? (
                   <div className="row-flex">
                     <p className="room-name confirming">
-                      Delete â€œ{label}â€?
+                      Delete “{label}”?
                     </p>
                     <div className="btn-gap">
                       <button
@@ -279,139 +286,181 @@ export default function TeacherRoomList({
                     </div>
                   </div>
                 ) : (
-                  <div className="row-stack">
-                  <div className="row-flex">
-                    <a
-                      href={`/whiteboard/${room.roomId}`}
-                      data-testid={`whiteboard-room-list-item-${room.roomId}`}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        onOpen(room.roomId);
-                      }}
-                      className="room-link"
-                    >
-                      <span className="room-name">
-                        {label}
-                      </span>
-                      {room.createdAt && (
-                        <span className="room-date">
-                          {formatDate(room.createdAt)}
-                        </span>
-                      )}
-                    </a>
-
-                    <button
-                      type="button"
-                      data-testid={`whiteboard-room-share-${room.roomId}`}
-                      onClick={() => copyShareLink(room.roomId)}
-                      title="Copy share link"
-                      aria-label={copied ? 'Share link copied' : 'Copy share link'}
-                      className={
-                        copied
-                          ? 'btn-outline btn-small copied'
-                          : 'btn-outline btn-small'
-                      }
-                    >
-                      {copied ? (
-                        <svg
-                          aria-hidden="true"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          className="h-4 w-4"
-                        >
-                          <path d="m20 6-11 11-5-5" />
-                        </svg>
-                      ) : (
-                        <svg
-                          aria-hidden="true"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          className="h-4 w-4"
-                        >
-                          <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
-                          <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
-                        </svg>
-                      )}
-                      <span>{copied ? 'Copied!' : 'Share link'}</span>
-                    </button>
-
-                    <div className="relative shrink-0" data-room-menu>
-                      <button
-                        type="button"
-                        data-testid={`whiteboard-room-menu-${room.roomId}`}
-                        aria-label={`More actions for ${label}`}
-                        aria-haspopup="menu"
-                        aria-expanded={menuOpen}
-                        onClick={() => setMenuOpenId(menuOpen ? null : room.roomId)}
-                        className={ICON_BUTTON}
+                  <div className="room-card">
+                    <div className="row-flex">
+                      <a
+                        href={`/whiteboard/${room.roomId}`}
+                        data-testid={`whiteboard-room-list-item-${room.roomId}`}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          onOpen(room.roomId);
+                        }}
+                        className="room-link"
                       >
-                        <svg
-                          aria-hidden="true"
-                          viewBox="0 0 24 24"
-                          fill="currentColor"
-                          className="h-5 w-5"
-                        >
-                          <circle cx="5" cy="12" r="1.75" />
-                          <circle cx="12" cy="12" r="1.75" />
-                          <circle cx="19" cy="12" r="1.75" />
-                        </svg>
-                      </button>
+                        <span className="room-name">
+                          {label}
+                        </span>
+                        {room.createdAt && (
+                          <span className="room-date">
+                            {formatDate(room.createdAt)}
+                          </span>
+                        )}
+                      </a>
 
-                      {menuOpen && (
-                        <div
-                          role="menu"
-                          className="room-menu"
-                        >
-                          <button
-                            type="button"
-                            role="menuitem"
-                            data-testid={`whiteboard-room-rename-${room.roomId}`}
+                      <div className="btn-gap">
+                        {/*
+                          * Out of the menu: letting a student in is the thing a
+                          * teacher does before every lesson, and it was sitting
+                          * two clicks deep beside Delete -- which for a free
+                          * account is the only way to make another room, so the
+                          * most routine action and the most destructive one
+                          * shared a hidden surface.
+                          */}
+                        <button
+                          type="button"
+                          data-testid={`whiteboard-room-guest-${room.roomId}`}
                           onClick={() => {
-                            setEditingId(room.roomId);
-                            setDraftName(room.name?.trim() ?? '');
-                            setMenuOpenId(null);
+                            void openGuestPanel(room.roomId);
                           }}
-                          className="menu-item"
-                        >
-                          Rename
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            data-testid={`whiteboard-room-guest-${room.roomId}`}
-                            onClick={() => {
-                              void openGuestPanel(room.roomId);
-                            }}
-                          className="menu-item"
+                          className="btn-outline btn-small"
                         >
                           Guest access
-                          </button>
-                          {onDelete && (
-                            <button
-                              type="button"
-                              role="menuitem"
-                              data-testid={`whiteboard-room-delete-${room.roomId}`}
-                              onClick={() => {
-                                setMenuOpenId(null);
-                                setConfirmDeleteId(room.roomId);
-                              }}
-                              className="menu-item danger"
+                        </button>
+
+                        <div className="relative shrink-0" data-room-menu>
+                          <button
+                            type="button"
+                            data-testid={`whiteboard-room-menu-${room.roomId}`}
+                            aria-label={`More actions for ${label}`}
+                            aria-haspopup="menu"
+                            aria-expanded={menuOpen}
+                            onClick={() => setMenuOpenId(menuOpen ? null : room.roomId)}
+                            className={ICON_BUTTON}
+                          >
+                            <svg
+                              aria-hidden="true"
+                              viewBox="0 0 24 24"
+                              fill="currentColor"
+                              className="h-5 w-5"
                             >
-                              Delete
-                            </button>
+                              <circle cx="5" cy="12" r="1.75" />
+                              <circle cx="12" cy="12" r="1.75" />
+                              <circle cx="19" cy="12" r="1.75" />
+                            </svg>
+                          </button>
+
+                          {menuOpen && (
+                            <div
+                              role="menu"
+                              className="room-menu"
+                            >
+                              <button
+                                type="button"
+                                role="menuitem"
+                                data-testid={`whiteboard-room-rename-${room.roomId}`}
+                                onClick={() => {
+                                  setEditingId(room.roomId);
+                                  setDraftName(room.name?.trim() ?? '');
+                                  setMenuOpenId(null);
+                                }}
+                                className="menu-item"
+                              >
+                                Rename
+                              </button>
+                              {onDelete && (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  data-testid={`whiteboard-room-delete-${room.roomId}`}
+                                  onClick={() => {
+                                    setMenuOpenId(null);
+                                    setConfirmDeleteId(room.roomId);
+                                  }}
+                                  className="menu-item danger"
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </div>
                           )}
                         </div>
-                      )}
+                      </div>
                     </div>
-                  </div>
+
+                    {/*
+                      * Both identifiers, written out.
+                      *
+                      * A teacher gets a student in by sending the link or by
+                      * reading the code down a phone, and neither was on the
+                      * screen: the link existed only inside a button that said
+                      * "Copied!" and the code only as the heading of a room
+                      * nobody had named. So there was no way to check which room
+                      * was about to be shared, to read it out, to send it over a
+                      * channel the clipboard does not reach, or to notice a copy
+                      * that silently failed.
+                      */}
+                    <dl className="room-share">
+                      <div className="room-share-row">
+                        <dt className="room-share-label">Join link</dt>
+                        <dd className="room-share-value">
+                          <span
+                            data-testid={`whiteboard-room-url-${room.roomId}`}
+                            className="room-url"
+                            title={joinUrl}
+                          >
+                            {joinUrl}
+                          </span>
+                          <button
+                            type="button"
+                            data-testid={`whiteboard-room-share-${room.roomId}`}
+                            onClick={() => copyShareLink(room.roomId)}
+                            title={copied ? 'Copied' : 'Copy join link'}
+                            aria-label={copied ? 'Join link copied' : 'Copy join link'}
+                            className={copied ? 'copy-icon-btn copied' : 'copy-icon-btn'}
+                          >
+                            {copied ? (
+                              <svg
+                                aria-hidden="true"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2.5"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <path d="m20 6-11 11-5-5" />
+                              </svg>
+                            ) : (
+                              <svg
+                                aria-hidden="true"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                                <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+                              </svg>
+                            )}
+                          </button>
+                        </dd>
+                      </div>
+
+                      <div className="room-share-row">
+                        <dt className="room-share-label">Room code</dt>
+                        <dd className="room-share-value">
+                          <span
+                            data-testid={`whiteboard-room-code-${room.roomId}`}
+                            className="room-code"
+                          >
+                            {room.roomId}
+                          </span>
+                          <CopyButton value={room.roomId} label="room code" />
+                        </dd>
+                      </div>
+                    </dl>
                   </div>
                 )}
               </li>
@@ -422,7 +471,7 @@ export default function TeacherRoomList({
 
       {copyError && (
         <p role="alert" className="app-error nudge-top">
-          Could not copy the link. Long-press the room name to copy it manually.
+          Could not copy. The join link is written out above — select it and copy it by hand.
         </p>
       )}
     </section>
