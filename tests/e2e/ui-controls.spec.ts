@@ -40,6 +40,36 @@ async function getStoreState(page: Page) {
   });
 }
 
+test.describe('Room chrome', () => {
+  test('the profile control is clickable while the participants panel is open', async ({ page }) => {
+    /*
+     * Asked by hit test rather than by visibility, because visibility was
+     * never the problem.
+     *
+     * The panel is fixed at z-index 1200 and the top bar at 1100, and the
+     * panel used to start at the top of the viewport -- so it ran the full
+     * height of the screen across the bar and took the corner the profile
+     * control sits in. The control was in the document, and `toBeVisible`
+     * would have said so; it was simply underneath something. What a person
+     * cares about is whether a click lands on it, which is what
+     * elementFromPoint answers.
+     */
+    await joinRoom(page, 'ChromeHost');
+    await waitForExcalidrawApi(page);
+    await expect(page.locator('#whiteboard-presence-panel')).toBeVisible({ timeout: 15000 });
+
+    const profile = page.getByTestId('whiteboard-profile-btn');
+    const box = await profile.boundingBox();
+    expect(box).not.toBeNull();
+
+    const hit = await page.evaluate(({ x, y }) => {
+      const element = document.elementFromPoint(x, y);
+      return element?.closest('[data-testid="whiteboard-room-top-nav"]') !== null;
+    }, { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 });
+    expect(hit).toBe(true);
+  });
+});
+
 test.describe('Clear Board Modal', () => {
   test('clear board button is visible in bottom controls', async ({ page }) => {
     await joinRoom(page, 'ClearVisible');

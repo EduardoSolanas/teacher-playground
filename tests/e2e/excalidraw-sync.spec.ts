@@ -149,6 +149,57 @@ test.describe('Excalidraw scene sync', () => {
     expect(await sceneElementIds(page)).toEqual([]);
   });
 
+  /**
+   * Opens Excalidraw's own menu and reads what it offers.
+   *
+   * The menu is the editor's, not ours, so this asks it by its labels rather
+   * than by a test id we control -- which is the point: what is being checked
+   * is what a person actually sees when they open it.
+   */
+  async function mainMenuItems(target: Page): Promise<string[]> {
+    await waitForExcalidrawApi(target);
+    await target.waitForTimeout(400);
+    await target.locator('.dropdown-menu-button').first().click();
+    await expect(target.locator('.dropdown-menu-item').first()).toBeVisible({ timeout: 10000 });
+    return target.locator('.dropdown-menu-item').allInnerTexts();
+  }
+
+  test('the host can take the board away and a peer cannot', async ({ page, browser }) => {
+    /*
+     * The only way a lesson leaves this application. Platform point-in-time
+     * recovery is the whole of the backup story, so a room that is deleted
+     * takes the work on it with it unless somebody saved a copy first.
+     *
+     * Host only, and that is the half worth guarding: a board is usually a
+     * child's work, and a guest admitted for one lesson should not be able to
+     * walk off with a copy of everything anyone has drawn on it. The three
+     * actions beside it stay off for a different reason -- loading a scene and
+     * clearing the canvas replace everything at once, behind the shared
+     * document rather than through it.
+     */
+    const roomId = await createRoomWithMaxUsers(page, 'ExportHost', 2);
+    const hostMenu = await mainMenuItems(page);
+    expect(hostMenu.join(' ')).toContain('Save to');
+    expect(hostMenu.join(' ')).toContain('Export image');
+    expect(hostMenu.join(' ')).not.toContain('Reset the canvas');
+
+    const peerContext = await newAuthenticatedContext(browser);
+    const peerPage = await peerContext.newPage();
+    try {
+      await joinExistingRoom(peerPage, roomId, 'ExportPeer');
+      await expectWaiting(peerPage);
+      await approveFirstWaitingPeer(page);
+      await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+
+      const peerMenu = await mainMenuItems(peerPage);
+      expect(peerMenu.join(' ')).not.toContain('Save to');
+      expect(peerMenu.join(' ')).not.toContain('Export image');
+    } finally {
+      await peerPage.close();
+      await peerContext.close();
+    }
+  });
+
   test('an element added by the host reaches an approved peer', async ({ page, browser }) => {
     await installWebRtcSentinel(page);
     const hostSockets = trackWebsocketUrls(page);

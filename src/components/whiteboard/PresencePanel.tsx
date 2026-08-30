@@ -414,7 +414,7 @@ export default function PresencePanel({
     <>
       <div
         id="whiteboard-presence-panel"
-        className="presence-panel fixed z-[1200] flex w-full flex-col overflow-hidden rounded-t-2xl border-t border-slate-200 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur bottom-0 inset-x-0 max-h-[62dvh] sm:inset-x-auto sm:bottom-0 sm:right-0 sm:top-0 sm:max-h-none sm:w-[min(13.75rem,85vw)] sm:rounded-none sm:border-l sm:border-t-0"
+        className="presence-panel fixed z-[1200] flex w-full flex-col overflow-hidden rounded-t-2xl border-t border-slate-200 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur bottom-0 inset-x-0 max-h-[62dvh] sm:inset-x-auto sm:bottom-0 sm:right-0 sm:top-[calc(3rem+env(safe-area-inset-top))] sm:max-h-none sm:w-[min(13.75rem,85vw)] sm:rounded-none sm:border-l sm:border-t-0"
         data-testid="whiteboard-presence-panel"
         aria-label="Participants"
       >

@@ -6,7 +6,7 @@ import { livePointCount, strokeCommitIntervalMs } from '@/lib/whiteboard/strokeC
 // MUST stay above the Excalidraw import: it sets EXCALIDRAW_ASSET_PATH, and ES
 // module imports are evaluated in order, before this module's own body runs.
 import '@/lib/whiteboard/excalidrawAssetPath';
-import { CaptureUpdateAction, Excalidraw } from '@teacher-playground/excalidraw';
+import { CaptureUpdateAction, Excalidraw, MainMenu } from '@teacher-playground/excalidraw';
 import type {
   ExcalidrawImperativeAPI,
   ExcalidrawProps,
@@ -994,7 +994,27 @@ export default function ExcalidrawWrapper({
         onPointerUp={handlePointerUp}
         UIOptions={{
           canvasActions: {
-            export: false,
+            /*
+             * The host may take the board away with them; nobody else may.
+             *
+             * These four were switched off together when Excalidraw replaced
+             * the old canvas, and three of them have to stay off: loading a
+             * scene and clearing the canvas both replace everything at once,
+             * which fights the shared document rather than travelling through
+             * it, and saving to an active file wants a handle to a file the
+             * board was never opened from.
+             *
+             * Export is not like them. It reads the scene and writes a file,
+             * touches nothing shared, and is the only way a lesson leaves this
+             * application at all -- the platform's own point-in-time recovery
+             * is the whole of the backup story, and a room that is deleted
+             * takes the work with it.
+             *
+             * Host only, because a board is usually a child's work. A guest
+             * admitted for one lesson should not be able to walk off with a
+             * copy of everything anybody has drawn on it.
+             */
+            export: isLocalHost ? { saveFileToDisk: true } : false,
             saveToActiveFile: false,
             loadScene: false,
             clearCanvas: false,
@@ -1004,7 +1024,33 @@ export default function ExcalidrawWrapper({
         zenModeEnabled={false}
         gridModeEnabled={false}
         isCollaborating={true}
-      />
+      >
+        {/*
+          * The menu is listed rather than inherited.
+          *
+          * Excalidraw's default menu ends with links to its GitHub, its
+          * Discord and its social accounts. They are reasonable defaults for
+          * a drawing tool that people arrive at on its own site, and wrong
+          * here: this board is used by children in a lesson, and a menu on it
+          * should not be a way out to a chat server. Naming the items keeps
+          * that decision in one visible place -- an item added upstream shows
+          * up when it is asked for, rather than appearing on a pupil's screen
+          * the next time the fork is bumped.
+          *
+          * Save and image export are the host's alone, for the reason the
+          * UIOptions above give. They are gated in both places on purpose:
+          * this decides what the menu offers, and the UIOptions decide what
+          * the actions themselves permit, so neither one being wrong on its
+          * own hands a guest a copy of a child's work.
+          */}
+        <MainMenu>
+          {isLocalHost && <MainMenu.DefaultItems.Export />}
+          {isLocalHost && <MainMenu.DefaultItems.SaveAsImage />}
+          <MainMenu.DefaultItems.SearchMenu />
+          <MainMenu.DefaultItems.Help />
+          <MainMenu.DefaultItems.ToggleTheme />
+        </MainMenu>
+      </Excalidraw>
     </div>
   );
 }
