@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import { guestHostJoinUrl } from '@/lib/whiteboard/guestJoinUrl';
+import { boardFileName, buildExcalidrawContainer, exportableElements, referencedFileIds } from '@/lib/whiteboard/boardExport';
+import { collectBoardFiles, elementsFromSceneResponse } from '@/lib/whiteboard/boardDownload';
 import { isGuestJoinLockedOut } from '@/lib/whiteboard/guestPin';
 import CopyButton from './CopyButton';
 
@@ -145,6 +147,8 @@ export default function TeacherRoomList({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [copyError, setCopyError] = useState(false);
   const [statsError, setStatsError] = useState(false);
+  const [exportError, setExportError] = useState(false);
+  const [busyExportId, setBusyExportId] = useState<string | null>(null);
   /*
    * Guest settings for every room on the list, not only the open panel.
    *
@@ -267,6 +271,89 @@ export default function TeacherRoomList({
       });
     } finally {
       setPinBusyId((current) => (current === roomId ? null : current));
+    }
+  };
+
+  /** Hands one built file to the browser as a download. */
+  const saveBlob = (blob: Blob, fileName: string) => {
+    const url = URL.createObjectURL(blob);
+    const anchorElement = document.createElement('a');
+    anchorElement.href = url;
+    anchorElement.download = fileName;
+    document.body.appendChild(anchorElement);
+    anchorElement.click();
+    document.body.removeChild(anchorElement);
+    URL.revokeObjectURL(url);
+  };
+
+  /**
+   * The scene and its pictures, fetched without opening the room.
+   *
+   * The point of taking a copy from the list is that a teacher archiving a
+   * term does not have to enter thirty rooms to do it. The pictures are
+   * fetched one at a time and packed into the file, because whoever opens it
+   * later will not have a session for the bucket they came from.
+   */
+  const loadBoard = async (roomId: string) => {
+    const response = await ajaxFetch(`/api/whiteboard/room/${roomId}`);
+    if (!response.ok) return null;
+    const elements = exportableElements(elementsFromSceneResponse(await response.json()));
+    const files = await collectBoardFiles(roomId, referencedFileIds(elements), ajaxFetch);
+    return { elements, files };
+  };
+
+  const downloadBoard = async (room: TeacherRoomSummary) => {
+    setExportError(false);
+    setBusyExportId(room.roomId);
+    try {
+      const board = await loadBoard(room.roomId);
+      if (!board) {
+        setExportError(true);
+        return;
+      }
+      const container = buildExcalidrawContainer(board.elements, board.files, 'teacher-playground');
+      saveBlob(
+        new Blob([JSON.stringify(container)], { type: 'application/json' }),
+        boardFileName(room.roomId, room.name, 'excalidraw', Date.now()),
+      );
+    } catch {
+      setExportError(true);
+    } finally {
+      setBusyExportId((current) => (current === room.roomId ? null : current));
+    }
+  };
+
+  /**
+   * A picture of the board, rendered without mounting the editor.
+   *
+   * `exportToBlob` draws a scene on its own, so a board can be turned into a
+   * PNG from a list that has no canvas on it. It is imported at the moment it
+   * is asked for: it pulls in the editor's rendering code, and this page is
+   * the one a teacher opens every lesson and should not be paying for an
+   * export nobody has clicked.
+   */
+  const downloadBoardImage = async (room: TeacherRoomSummary) => {
+    setExportError(false);
+    setBusyExportId(room.roomId);
+    try {
+      const board = await loadBoard(room.roomId);
+      if (!board || board.elements.length === 0) {
+        setExportError(true);
+        return;
+      }
+      const { exportToBlob } = await import('@teacher-playground/excalidraw');
+      const files = Object.fromEntries(board.files.map((file) => [file.id, file]));
+      const blob = await exportToBlob({
+        elements: board.elements as never,
+        files: files as never,
+        appState: { exportBackground: true, viewBackgroundColor: '#ffffff' } as never,
+        mimeType: 'image/png',
+      });
+      saveBlob(blob, boardFileName(room.roomId, room.name, 'png', Date.now()));
+    } catch {
+      setExportError(true);
+    } finally {
+      setBusyExportId((current) => (current === room.roomId ? null : current));
     }
   };
 
@@ -471,6 +558,32 @@ export default function TeacherRoomList({
                                 className="menu-item"
                               >
                                 Rename
+                              </button>
+                              <button
+                                type="button"
+                                role="menuitem"
+                                data-testid={`whiteboard-room-download-${room.roomId}`}
+                                disabled={busyExportId === room.roomId}
+                                onClick={() => {
+                                  void downloadBoard(room);
+                                  setMenuOpenId(null);
+                                }}
+                                className="menu-item"
+                              >
+                                Download board
+                              </button>
+                              <button
+                                type="button"
+                                role="menuitem"
+                                data-testid={`whiteboard-room-image-${room.roomId}`}
+                                disabled={busyExportId === room.roomId}
+                                onClick={() => {
+                                  void downloadBoardImage(room);
+                                  setMenuOpenId(null);
+                                }}
+                                className="menu-item"
+                              >
+                                Download image
                               </button>
                               <button
                                 type="button"
@@ -697,6 +810,13 @@ export default function TeacherRoomList({
             );
           })}
         </ul>
+      )}
+
+      {exportError && (
+        <p role="alert" className="app-error nudge-top">
+          Could not build that download. The room may have been deleted, or the session may
+          have expired — reload and try again.
+        </p>
       )}
 
       {statsError && (
