@@ -945,9 +945,19 @@ export class RoomDO extends DurableObject {
     this.docs.delete(roomId);
     this.dirtyRooms.delete(roomId);
     this.projectionDirtyRooms.delete(roomId);
+    /*
+     * The library goes with the room.
+     *
+     * It is the one piece of room state that is neither document nor row, so
+     * it is the one that a delete written for those two would leave behind --
+     * and what it holds is elements a teacher drew, which may be a worked
+     * example off a child's page. An orphan here would outlive the room it
+     * belonged to with nothing left pointing at it.
+     */
     await this.ctx.storage.delete([
       `ydoc:${roomId}`,
       `ydoc-projection:${roomId}`,
+      libraryStorageKey(roomId),
     ]);
   }
 

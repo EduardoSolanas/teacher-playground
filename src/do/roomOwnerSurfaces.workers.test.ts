@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { env } from 'cloudflare:workers';
+import { runInDurableObject } from 'cloudflare:test';
+
+import { libraryStorageKey } from '../lib/whiteboard/roomLibrary';
 
 import { bootstrapLocalSession, authenticatedFetch, type LocalAuthSession } from '../test/workerAuth';
 
@@ -75,6 +79,39 @@ describe('owner-only room surfaces', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ items: [] }),
     })).status).toBe(403);
+  });
+
+  it('takes the library away with the room', async () => {
+    /*
+     * Asserted against storage rather than through the API, because after the
+     * room is gone the API can only answer 404 either way -- which is exactly
+     * how an orphan would hide. The library is the one piece of room state
+     * that is neither the document nor the row, so a delete written for those
+     * two leaves it behind, and what it holds is elements a teacher drew.
+     */
+    const roomId = 'surfaces-library-delete';
+    await createRoom(roomId);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/library`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ items: [{ id: 'lib-1', elements: [] }] }),
+    })).status).toBe(200);
+
+    const id = env.ROOMS.idFromName(roomId);
+    const stub = env.ROOMS.get(id);
+    const before = await runInDurableObject(stub, async (_instance, state) => (
+      state.storage.get(libraryStorageKey(roomId))
+    ));
+    expect(before).toBeTruthy();
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'DELETE',
+    })).status).toBe(200);
+
+    const after = await runInDurableObject(stub, async (_instance, state) => (
+      state.storage.get(libraryStorageKey(roomId))
+    ));
+    expect(after).toBeUndefined();
   });
 
   it('refuses a library that is not a library, and one that is too big', async () => {
