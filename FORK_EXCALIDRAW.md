@@ -11,14 +11,14 @@ rewritten drawing editor.
 | Working copy | `excalidraw/` in this checkout (see [Open risks](#open-risks)) |
 | Release branch | `teacher-playground/release-v0.18.1` |
 | Package identity | `@teacher-playground/excalidraw` |
-| Current release | `teacher-playground-v0.18.1-tp.9` |
+| Current release | `teacher-playground-v0.18.1-tp.10` |
 | Upstream base | `v0.18.1` |
 
 The application consumes the immutable release tarball, pinned in
 `package.json` and `package-lock.json`:
 
 ```text
-https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.9/package.tgz
+https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.10/package.tgz
 ```
 
 **The fork is on the current upstream release.** `@excalidraw/excalidraw@0.18.1`
@@ -32,7 +32,7 @@ The fork owns its R2 bucket (`teacher-playground-excalidraw`), CORS, custom
 domain, release objects, and release metadata, published by its own GitHub
 Actions workflow using the `prod` environment's `CLOUDFLARE_API_TOKEN` secret
 and `CLOUDFLARE_ACCOUNT_ID` variable. The application consumes the immutable
-base `https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.9/dist/prod/`.
+base `https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.10/dist/prod/`.
 Versioned objects carry one-year immutable cache headers.
 
 ## What the fork actually contains
@@ -52,10 +52,12 @@ Beyond that there are **three single-line source edits** — in `App.tsx`,
 `TTDDialog/common.ts` and a `welcome-screen` stylesheet — the additive
 increment and tool-change API described below, and one deliberate behavioural
 divergences: **`MAX_ALLOWED_FILE_BYTES` is 12MB rather than upstream's 4MB**
-(tp.8), and **an inserted image is re-encoded to WebP at ingest** (tp.9).
-Those two are the fork's changes to what the editor *does* rather than how
-it is packaged, and they are justified in [Image size](#image-size) and
-[Image format conversion to WebP at ingest](#image-format-conversion-to-webp-at-ingest).
+(tp.8), **an inserted image is re-encoded to WebP at ingest** (tp.9), and
+**an image may be saved into the library** (tp.10). Those three are the
+fork's changes to what the editor *does* rather than how it is packaged,
+and they are justified in [Image size](#image-size),
+[Image format conversion to WebP at ingest](#image-format-conversion-to-webp-at-ingest)
+and [Images in the library](#images-in-the-library).
 
 That is the fork's defining property and the thing to protect: it changes
 essentially no editor behaviour, so nothing custom can rot, and adopting a
@@ -418,3 +420,23 @@ For every release:
   (`/types`, `/element/types`) are correct and safe; a value import from a
   subpath would fail to resolve at build time. A constraint to know, not a
   latent runtime bug.
+
+### Images in the library
+
+Upstream refuses any selection containing an image with "Support for adding
+images to the library coming soon!" -- `LIBRARY_DISABLED_TYPES` in
+`packages/excalidraw/constants.ts`. The reason is sound for upstream: a library
+item carries elements and no files, so an image item names a `fileId` whose
+bytes live in the scene it was copied from. With a library held in the browser
+or shared as a `.excalidrawlib`, that is a picture guaranteed to be broken
+somewhere else.
+
+It does not apply here. The application keeps a room's library on the server
+under the room, and the bytes are already in that room's bucket under the same
+id, so an image item resolves for the same teacher on whatever machine they
+teach from. The application also stops those bytes being collected: its orphan
+sweep counts the room's library as a reference, so saving a shape pins its own
+picture rather than leaving it to be swept once the image leaves the board.
+
+A worked example photographed off a child's page is exactly what a tutor wants
+to keep and reuse, which is what makes this worth a divergence.

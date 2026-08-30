@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { libraryFileIds } from './roomLibrary';
 import {
   ORPHAN_GRACE_MS,
   fileIdFromKey,
@@ -144,5 +145,38 @@ describe('fileIdFromKey', () => {
     expect(fileIdFromKey('rooms/abc/files/nested/file-9')).toBeNull();
     expect(fileIdFromKey('rooms/abc/file-9')).toBeNull();
     expect(fileIdFromKey('')).toBeNull();
+  });
+});
+
+describe('a library keeps its pictures alive', () => {
+  /*
+   * The sweep asks what the board mentions, and a library item is not on the
+   * board. Without the room's library in the keep-set, a picture saved as a
+   * shape and then erased from the canvas is collected once the grace period
+   * passes -- and the saved shape goes blank weeks later, as "my library
+   * stopped working", with nothing left to trace it to.
+   *
+   * This is the guard the fork's divergence rests on: allowing an image into
+   * the library is only safe because its bytes are kept.
+   */
+  it('spares a file that only the library refers to', () => {
+    const referenced = referencedFileIds([{ type: 'freedraw' }]);
+    for (const fileId of libraryFileIds([
+      { elements: [{ type: 'image', fileId: 'saved-shape' }] },
+    ])) {
+      referenced.add(fileId);
+    }
+
+    const long_ago = new Date(0);
+    const keys = orphanKeys({
+      files: [
+        { key: 'rooms/r1/files/saved-shape', uploaded: long_ago },
+        { key: 'rooms/r1/files/nothing-points-here', uploaded: long_ago },
+      ],
+      referenced,
+      now: ORPHAN_GRACE_MS * 10,
+    });
+
+    expect(keys).toEqual(['rooms/r1/files/nothing-points-here']);
   });
 });

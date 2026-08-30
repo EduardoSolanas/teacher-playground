@@ -24,6 +24,7 @@ import {
 import { reconcileRemoteElements } from '@/lib/whiteboard/excalidrawReconcile';
 import { getElementsFromArray, replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 import { snapshotElements } from '@/lib/whiteboard/sceneSnapshot';
+import { libraryFileIds } from '@/lib/whiteboard/roomLibrary';
 import { collaboratorsFromPresence } from '@/lib/whiteboard/collaborators';
 import type { CanvasElement, RemoteCursor, WhiteboardUser } from '@/types/whiteboard';
 import type { FollowMessage } from '@/lib/whiteboard/followMessage';
@@ -1014,6 +1015,23 @@ export default function ExcalidrawWrapper({
         if (cancelled || items.length === 0) return;
         libraryLoadedRef.current = true;
         apiRef.current?.updateLibrary({ libraryItems: items as never, merge: false });
+
+        /*
+         * The pictures a saved shape draws with.
+         *
+         * The library panel renders its previews from the editor's file map,
+         * and a shape saved from a picture that has since left the board has
+         * nothing in it -- the bytes are in the room's bucket, not in this
+         * editor. Without this the shape is in the library and draws as an
+         * empty box, which looks exactly like the feature not working.
+         *
+         * fetchBoardFile is the same path a peer uses for an image it was
+         * never sent, including its memory of a 404, so a library referring to
+         * something long gone asks once rather than on every change.
+         */
+        for (const fileId of libraryFileIds(items)) {
+          void fetchBoardFile(fileId);
+        }
       } catch {
         // A library that will not load must not stop the board opening.
       } finally {
@@ -1021,7 +1039,7 @@ export default function ExcalidrawWrapper({
       }
     })();
     return () => { cancelled = true; };
-  }, [apiReady, isLocalHost, roomId]);
+  }, [apiReady, isLocalHost, roomId, fetchBoardFile]);
 
   /*
    * Saved on change, and not before the load has answered.

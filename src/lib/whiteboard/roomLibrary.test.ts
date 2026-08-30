@@ -4,6 +4,7 @@ import {
   MAX_LIBRARY_BYTES,
   checkLibraryItems,
   libraryBytes,
+  libraryFileIds,
   libraryStorageKey,
   parseLibraryItems,
   storedLibraryItems,
@@ -72,5 +73,39 @@ describe('storage', () => {
     expect(storedLibraryItems(undefined)).toEqual([]);
     expect(storedLibraryItems('corrupt')).toEqual([]);
     expect(storedLibraryItems({ items: [] })).toEqual([]);
+  });
+});
+
+describe('libraryFileIds', () => {
+  const shape = (fileId: string) => ({
+    id: `item-${fileId}`,
+    status: 'unpublished',
+    created: 1,
+    elements: [{ id: 'el', type: 'image', fileId }],
+  });
+
+  it('finds the pictures a library refers to', () => {
+    expect([...libraryFileIds([shape('photo-1'), shape('photo-2')])])
+      .toEqual(['photo-1', 'photo-2']);
+  });
+
+  it('finds one nested deeper than a library item usually is', () => {
+    // Read structurally rather than by the shape of a library item, because
+    // this decides whether bytes survive: a reference missed here is a picture
+    // deleted out from under a shape somebody saved.
+    expect([...libraryFileIds([{ elements: [{ group: [{ fileId: 'deep' }] }] }])])
+      .toEqual(['deep']);
+  });
+
+  it('answers empty rather than throwing on anything unexpected', () => {
+    expect([...libraryFileIds([])]).toEqual([]);
+    expect([...libraryFileIds([null, undefined, 'text', 7] as unknown[])]).toEqual([]);
+    expect([...libraryFileIds([{ elements: [{ type: 'image', fileId: '' }] }])]).toEqual([]);
+  });
+
+  it('does not run away on a library that refers to itself', () => {
+    const looping: Record<string, unknown> = { fileId: 'photo-1' };
+    looping.self = looping;
+    expect([...libraryFileIds([looping])]).toEqual(['photo-1']);
   });
 });

@@ -77,3 +77,33 @@ export function libraryStorageKey(roomId: string): string {
 export function storedLibraryItems(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
+
+/**
+ * Every file a stored library refers to.
+ *
+ * The orphan sweep decides what to delete by asking what the board still
+ * mentions, and a library item is not on the board -- so a picture saved as a
+ * shape and then erased from the canvas would be swept ten minutes later and
+ * the saved shape would go blank. That failure surfaces weeks after the cause,
+ * as "my library stopped working", which is close to untraceable.
+ *
+ * Read leniently on purpose. This decides whether bytes are kept, so anything
+ * it cannot make sense of should leave the file alone rather than collect it:
+ * an unreadable library is a reason to keep pictures, not to delete them.
+ */
+export function libraryFileIds(items: readonly unknown[]): Set<string> {
+  const ids = new Set<string>();
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 8 || value === null || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry, depth + 1);
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    const fileId = record.fileId;
+    if (typeof fileId === 'string' && fileId.length > 0) ids.add(fileId);
+    for (const entry of Object.values(record)) visit(entry, depth + 1);
+  };
+  visit(items, 0);
+  return ids;
+}

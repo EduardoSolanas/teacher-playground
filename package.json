@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.18",
-    "@teacher-playground/excalidraw": "https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.9/package.tgz",
+    "@teacher-playground/excalidraw": "https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.10/package.tgz",
     "better-sqlite3": "^12.10.0",
     "livekit-client": "^2.22.0",
     "next": "^16.3.1",

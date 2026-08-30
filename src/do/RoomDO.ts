@@ -76,7 +76,7 @@ import { encodeUpdateFrame, handleSyncFrame } from '../lib/whiteboard/serverSync
 import { replaceSharedElements, getElementsFromArray, pruneTombstonedElements } from '../lib/whiteboard/yjsDoc';
 import { snapshotElements } from '../lib/whiteboard/sceneSnapshot';
 import { snapshotBudgetState } from '../lib/whiteboard/snapshotBudget';
-import { libraryStorageKey } from '../lib/whiteboard/roomLibrary';
+import { libraryFileIds, libraryStorageKey, storedLibraryItems } from '../lib/whiteboard/roomLibrary';
 import {
   FOLLOW_MESSAGE_TYPE,
   decodeFollowMessagePayload,
@@ -1270,7 +1270,21 @@ export class RoomDO extends DurableObject {
     if (!Array.isArray(elements)) return;
 
     this.lastOrphanSweepAt.set(roomId, now);
+    /*
+     * The room's library counts as a reference.
+     *
+     * A picture saved as a library shape and then erased from the board is
+     * mentioned by no element, so a sweep that asked only the board would
+     * collect its bytes ten minutes later and leave the saved shape blank.
+     * That surfaces weeks after the cause as "my library stopped working",
+     * which is close to untraceable -- and it is the whole reason the fork can
+     * allow an image into the library at all.
+     */
+    const stored = await this.ctx.storage.get(libraryStorageKey(roomId));
     const referenced = referencedFileIds(elements);
+    for (const fileId of libraryFileIds(storedLibraryItems(stored))) {
+      referenced.add(fileId);
+    }
 
     const prefix = `rooms/${roomId}/files/`;
     let cursor: string | undefined;
