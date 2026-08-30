@@ -32,6 +32,43 @@ describe('referencedFileIds', () => {
     expect(referenced.has('file-1')).toBe(true);
   });
 
+  it('does not count an image that never got a size', () => {
+    /*
+     * The nought-by-nought placeholder an image is inserted as, left behind
+     * because the bitmap never resolved. It draws nothing and cannot be
+     * selected, so nobody can erase it and the file it names would be pinned
+     * in the bucket for as long as the room lived. The grace period is what
+     * makes this safe: an image that has only just been pasted is legitimately
+     * this shape, and its bytes are younger than the grace.
+     */
+    const referenced = referencedFileIds([
+      { id: 'a', type: 'image', fileId: 'file-1', width: 0, height: 0 },
+      { id: 'b', type: 'image', fileId: 'file-2', width: 400, height: 300 },
+    ]);
+    expect([...referenced]).toEqual(['file-2']);
+  });
+
+  it('still counts a flat shape and an image that does not say its size', () => {
+    // A line drawn straight across is nought high and is on the board; and a
+    // size that cannot be read is not guessed at, because the answer here is
+    // fed straight into a delete.
+    const referenced = referencedFileIds([
+      { id: 'a', type: 'line', fileId: 'file-1', width: 200, height: 0 },
+      { id: 'b', type: 'image', fileId: 'file-2' },
+    ]);
+    expect([...referenced].sort()).toEqual(['file-1', 'file-2']);
+  });
+
+  it('counts a file some other element still shows', () => {
+    // The same photograph pasted twice, one of them a placeholder that never
+    // resolved: the live copy is still on the board and still needs its bytes.
+    const referenced = referencedFileIds([
+      { id: 'a', type: 'image', fileId: 'file-1', width: 0, height: 0 },
+      { id: 'b', type: 'image', fileId: 'file-1', width: 400, height: 300 },
+    ]);
+    expect(referenced.has('file-1')).toBe(true);
+  });
+
   it('ignores anything that is not an element with a file', () => {
     expect(referencedFileIds([null, undefined, 42, 'x', {}, { fileId: '' }]).size).toBe(0);
   });

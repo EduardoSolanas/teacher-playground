@@ -19,12 +19,22 @@ export const ORPHAN_GRACE_MS = 10 * 60 * 1000;
  * back expecting its image to still be there. Collecting on the flag would make
  * undo produce a broken picture -- so a file is orphaned only once no element
  * mentions it at all, which is what clearing a board or a stale sweep does.
+ *
+ * The one element that does not count is an image with no area. An image is
+ * inserted as a nought-by-nought placeholder and takes its size when the
+ * bitmap resolves; one that never resolved draws nothing and cannot be
+ * selected, so nobody can erase it and it would pin its bytes for as long as
+ * the room lived. The grace period in `orphanKeys` is what makes reading it
+ * this way safe: an image that has only just been pasted is legitimately this
+ * shape, and its bytes are younger than the grace.
  */
 export function referencedFileIds(elements: readonly unknown[]): Set<string> {
   const referenced = new Set<string>();
   for (const element of elements) {
     if (typeof element !== 'object' || element === null) continue;
-    const fileId = (element as { fileId?: unknown }).fileId;
+    const record = element as { fileId?: unknown; type?: unknown; width?: unknown; height?: unknown };
+    if (record.type === 'image' && (record.width === 0 || record.height === 0)) continue;
+    const fileId = record.fileId;
     if (typeof fileId === 'string' && fileId.length > 0) referenced.add(fileId);
   }
   return referenced;
