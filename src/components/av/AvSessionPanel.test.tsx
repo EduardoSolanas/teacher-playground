@@ -165,6 +165,22 @@ describe('AvSessionPanel', () => {
     expect(screen.queryByTestId('av-tile-me')).toBeNull();
   });
 
+  it('floats above the rest of the room', () => {
+    /*
+     * A panel that can be dragged anywhere has to outrank everything it can be
+     * dragged over, or moving it toward an edge slides it under the furniture:
+     * the top nav is 1100, the presence panel 1200 and its outside layer 1250,
+     * the raised-hand cue 1300. The library and the shortcuts sheet (10001)
+     * stay above it deliberately -- those take the screen over on purpose.
+     */
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    expect(screen.getByTestId('av-session-panel').className).toContain('z-[1400]');
+
+    fireEvent.click(screen.getByTestId('av-panel-collapse'));
+    expect(screen.getByTestId('av-panel-open').className).toContain('z-[1400]');
+  });
+
   it('moves when its handle is dragged', () => {
     /*
      * The panel sits over the board. Wherever it is put by default, it is

@@ -286,7 +286,7 @@ export default function AvSessionPanel({
         type="button"
         data-testid="av-panel-open"
         onClick={() => setOpen(true)}
-        className={`fixed z-[180] rounded-full border border-slate-700/80 bg-slate-900/95 px-3 py-1.5 text-[0.6875rem] font-medium text-slate-200 shadow-lg shadow-slate-900/30 ${
+        className={`fixed z-[1400] rounded-full border border-slate-700/80 bg-slate-900/95 px-3 py-1.5 text-[0.6875rem] font-medium text-slate-200 shadow-lg shadow-slate-900/30 ${
           position
             ? ''
             : 'left-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+3.5rem)] sm:bottom-16 sm:left-14 sm:top-auto'
@@ -302,7 +302,13 @@ export default function AvSessionPanel({
     <div
       ref={panelRef}
       data-testid="av-session-panel"
-      className={`fixed z-[180] rounded-xl border border-slate-700/80 bg-slate-900/95 p-2 shadow-xl shadow-slate-900/30 ${placement}`}
+      /*
+       * Above the room's furniture, because it can be dragged over all of it:
+       * the top nav (1100), the presence panel (1200, 1250 for its outside
+       * layer) and the raised-hand cue (1300). The library and the shortcuts
+       * sheet (10001) stay above -- those take the screen over on purpose.
+       */
+      className={`fixed z-[1400] rounded-xl border border-slate-700/80 bg-slate-900/95 p-2 shadow-xl shadow-slate-900/30 ${placement}`}
       style={position ? { left: position.x, top: position.y } : undefined}
     >
       <div className="mb-2 flex items-center justify-between gap-2 px-1">
