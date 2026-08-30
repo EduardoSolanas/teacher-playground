@@ -22,6 +22,7 @@ import {
   maxUsersAllowedOnFreePlan,
   planLimitJsonResponse,
 } from '../../plan/limits';
+import { computeRoomStats } from '../roomStats';
 
 const MAX_NAME_LENGTH = 100;
 
@@ -360,6 +361,47 @@ export async function handleRoomSettingsGet(
     });
   } catch (e) {
     return internalErrorResponse(e, 'handleRoomSettingsGet');
+  }
+}
+
+// GET /api/whiteboard/room/[roomId]/stats - owner-only diagnostic statistics
+export async function handleRoomStatsGet(
+  db: RoomDatabase,
+  roomId: string,
+  request: Request,
+  getDoc: () => Promise<any>,
+): Promise<Response> {
+  try {
+    // Check room exists
+    const settings = readRoomSettings(db, roomId);
+    if (!settings) {
+      return Response.json({ error: 'Room not found' }, { status: 404 });
+    }
+
+    // Authorization: owner-only, same as settings
+    const accountId = verifiedAccountId(request);
+    if (accountId && !isOwnerRole(getGrantRole(db, roomId, accountId))) {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    /*
+     * The document and the row it projects to, together. Either number alone
+     * says little: it is a document much larger than its row that identifies a
+     * room carrying history rather than board.
+     */
+    const row = db.prepare(
+      `SELECT elements FROM rooms WHERE room_id = ?`,
+    ).get(roomId) as { elements: string } | undefined;
+    const rowBytes = typeof row?.elements === 'string'
+      ? new TextEncoder().encode(row.elements).byteLength
+      : 0;
+
+    const doc = await getDoc();
+    const stats = computeRoomStats(doc, rowBytes);
+
+    return Response.json(stats);
+  } catch (e) {
+    return internalErrorResponse(e, 'handleRoomStatsGet');
   }
 }
 

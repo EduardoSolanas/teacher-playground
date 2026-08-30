@@ -144,6 +144,7 @@ export default function TeacherRoomList({
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [copyError, setCopyError] = useState(false);
+  const [statsError, setStatsError] = useState(false);
   /*
    * Guest settings for every room on the list, not only the open panel.
    *
@@ -266,6 +267,38 @@ export default function TeacherRoomList({
       });
     } finally {
       setPinBusyId((current) => (current === roomId ? null : current));
+    }
+  };
+
+  /*
+   * Says so when it fails.
+   *
+   * The download is a click that produces a file, so a click that produces
+   * nothing is indistinguishable from one that has not happened yet -- and the
+   * request behind it can fail for ordinary reasons: a room deleted in another
+   * tab, a session that has expired since the page was opened.
+   */
+  const downloadDiagnostics = async (roomId: string) => {
+    setStatsError(false);
+    try {
+      const response = await ajaxFetch(`/api/whiteboard/room/${roomId}/stats`);
+      if (!response.ok) {
+        setStatsError(true);
+        return;
+      }
+      const stats = await response.json();
+      const json = JSON.stringify(stats, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `room-${roomId}-diagnostics.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      setStatsError(true);
     }
   };
 
@@ -438,6 +471,18 @@ export default function TeacherRoomList({
                                 className="menu-item"
                               >
                                 Rename
+                              </button>
+                              <button
+                                type="button"
+                                role="menuitem"
+                                data-testid={`whiteboard-room-stats-${room.roomId}`}
+                                onClick={() => {
+                                  void downloadDiagnostics(room.roomId);
+                                  setMenuOpenId(null);
+                                }}
+                                className="menu-item"
+                              >
+                                Download diagnostics
                               </button>
                               {onDelete && (
                                 <button
@@ -652,6 +697,13 @@ export default function TeacherRoomList({
             );
           })}
         </ul>
+      )}
+
+      {statsError && (
+        <p role="alert" className="app-error nudge-top">
+          Could not build the diagnostics for that room. It may have been deleted, or the
+          session may have expired — reload and try again.
+        </p>
       )}
 
       {copyError && (

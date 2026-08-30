@@ -25,6 +25,7 @@ import {
   handleRoomPost,
   handleRoomSettings,
   handleRoomSettingsGet,
+  handleRoomStatsGet,
   handleRoomDelete,
   handleRoomAccountErasure,
 } from '../lib/whiteboard/handlers/room';
@@ -626,6 +627,16 @@ export class RoomDO extends DurableObject {
         }
         if (method === 'POST' || method === 'PATCH') {
           return handleRoomSettings(this.db, roomId, request);
+        }
+        break;
+      case 'stats':
+        if (method === 'GET') {
+          return handleRoomStatsGet(
+            this.db,
+            roomId,
+            request,
+            async () => this.getRoomDoc(roomId),
+          );
         }
         break;
       case 'presence':
