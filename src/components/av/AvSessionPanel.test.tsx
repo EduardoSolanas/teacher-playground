@@ -165,6 +165,70 @@ describe('AvSessionPanel', () => {
     expect(screen.queryByTestId('av-tile-me')).toBeNull();
   });
 
+  it('moves when its handle is dragged', () => {
+    /*
+     * The panel sits over the board. Wherever it is put by default, it is
+     * covering the part of the board somebody wants at some point in a lesson,
+     * so it has to be movable out of the way rather than only hideable.
+     */
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    const panel = screen.getByTestId('av-session-panel');
+    const handle = screen.getByTestId('av-panel-drag');
+
+    fireEvent.pointerDown(handle, { clientX: 100, clientY: 100, button: 0 });
+    fireEvent.pointerMove(window, { clientX: 160, clientY: 190 });
+    fireEvent.pointerUp(window, { clientX: 160, clientY: 190 });
+
+    // Once moved by hand, the panel stops taking its place from the stylesheet.
+    expect(panel.style.left).not.toBe('');
+    expect(panel.style.top).not.toBe('');
+    expect(panel.className).not.toContain('sm:bottom-16');
+  });
+
+  it('stays put when the drag never starts', () => {
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    const panel = screen.getByTestId('av-session-panel');
+    fireEvent.pointerMove(window, { clientX: 400, clientY: 400 });
+    expect(panel.style.left).toBe('');
+    expect(panel.className).toContain('sm:bottom-16');
+  });
+
+  it('leaves the pill where the panel was put', () => {
+    // Moving the panel and then hiding it should not send it back to a corner
+    // it was deliberately dragged out of.
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    fireEvent.pointerDown(screen.getByTestId('av-panel-drag'), { clientX: 100, clientY: 100, button: 0 });
+    fireEvent.pointerMove(window, { clientX: 220, clientY: 260 });
+    fireEvent.pointerUp(window, { clientX: 220, clientY: 260 });
+    const moved = screen.getByTestId('av-session-panel').style.left;
+
+    fireEvent.click(screen.getByTestId('av-panel-collapse'));
+    expect(screen.getByTestId('av-panel-open').style.left).toBe(moved);
+  });
+
+  it('offers a fullscreen control on every face', () => {
+    const av = makeAv({
+      participants: [
+        { identity: 'me', micMuted: false, camOn: true },
+        { identity: 'peer-1', micMuted: false, camOn: true },
+      ],
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    expect(screen.getByTestId('av-fullscreen-me')).toBeTruthy();
+    expect(screen.getByTestId('av-fullscreen-peer-1')).toBeTruthy();
+  });
+
+  it('survives a browser with no fullscreen to give', () => {
+    // jsdom has no Fullscreen API, and neither does an iframe denied the
+    // permission. Pressing the button there must do nothing, not throw.
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    expect(() => fireEvent.click(screen.getByTestId('av-fullscreen-me'))).not.toThrow();
+  });
+
   it('shows "Camera off" placeholder when camOn is false', () => {
     const av = makeAv({
       participants: [{ identity: 'me', micMuted: false, camOn: false }],

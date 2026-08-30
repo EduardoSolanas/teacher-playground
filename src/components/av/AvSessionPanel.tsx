@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import CallControls from './CallControls';
 import type { UseAvSessionResult } from '@/hooks/useAvSession';
 import type { AvDevice, ParticipantState } from '@/lib/av/avSession';
+import { clampPanelPosition, type PanelPoint } from '@/lib/av/panelPosition';
 
 interface AvSessionPanelProps {
   readonly av: UseAvSessionResult;
@@ -81,6 +82,31 @@ function ParticipantTile({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const tileRef = useRef<HTMLDivElement>(null);
+
+  /*
+   * Fullscreen the tile rather than the video inside it.
+   *
+   * The name and the mute state are drawn over the video as siblings, so
+   * fullscreening the `<video>` alone would drop them -- and a full screen of
+   * face with no name on it is the one moment you most want the name.
+   *
+   * Both halves of the API are optional. jsdom has neither, and nor does a
+   * frame that was denied the permission; a control that throws there is worse
+   * than one that quietly does nothing.
+   */
+  const toggleFullscreen = () => {
+    const tile = tileRef.current;
+    if (!tile) return;
+    if (document.fullscreenElement === tile) {
+      const exit = document.exitFullscreen?.bind(document);
+      if (exit) void exit().catch(() => undefined);
+      return;
+    }
+    const request = tile.requestFullscreen?.bind(tile);
+    if (!request) return;
+    void request().catch(() => undefined);
+  };
 
   useEffect(() => {
     const video = videoRef.current;
@@ -100,8 +126,9 @@ function ParticipantTile({
 
   return (
     <div
+      ref={tileRef}
       data-testid={`av-tile-${participant.identity}`}
-      className="relative aspect-video overflow-hidden rounded-lg bg-slate-800"
+      className="group relative aspect-video overflow-hidden rounded-lg bg-slate-800 [&:fullscreen]:aspect-auto [&:fullscreen]:h-screen [&:fullscreen]:w-screen [&:fullscreen]:rounded-none [&:fullscreen_video]:object-contain"
     >
       <video
         ref={videoRef}
@@ -116,6 +143,18 @@ function ParticipantTile({
         </div>
       )}
       {!isLocal && <audio ref={audioRef} autoPlay playsInline />}
+      <button
+        type="button"
+        data-testid={`av-fullscreen-${participant.identity}`}
+        onClick={toggleFullscreen}
+        title="Fullscreen"
+        aria-label={`Fullscreen ${isLocal ? 'your camera' : participant.identity}`}
+        className="absolute right-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[0.6875rem] text-white transition-colors hover:bg-black/80"
+      >
+        {/* A glyph rather than a word: the tile is small and the corner is all
+            the room there is. */}
+        ⛶
+      </button>
       <div className="absolute bottom-1 left-1 right-1 flex items-center justify-between gap-1">
         <span className="truncate rounded bg-black/60 px-1.5 py-0.5 text-[0.6875rem] text-white">
           {isLocal ? 'You' : participant.identity}
@@ -154,6 +193,84 @@ export default function AvSessionPanel({
     ? av.participants
     : [{ identity: localIdentity, micMuted: av.local.micMuted, camOn: av.local.camOn }];
   const [open, setOpen] = useState(!collapsed);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<PanelPoint | null>(null);
+  /** Where in the panel it was grabbed, so it does not jump under the pointer. */
+  const grabRef = useRef<{ dx: number; dy: number } | null>(null);
+
+  const startDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const rect = panelRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    grabRef.current = { dx: event.clientX - rect.left, dy: event.clientY - rect.top };
+    event.preventDefault();
+  }, []);
+
+  /*
+   * The move and the release are listened for on the window, not the handle.
+   *
+   * A pointer moving faster than React re-renders leaves the handle behind,
+   * and a release that lands anywhere else would never be heard -- the panel
+   * would then follow the pointer around with no button held down.
+   */
+  useEffect(() => {
+    const onMove = (event: PointerEvent) => {
+      const grab = grabRef.current;
+      if (!grab) return;
+      const rect = panelRef.current?.getBoundingClientRect();
+      setPosition(
+        clampPanelPosition({
+          x: event.clientX - grab.dx,
+          y: event.clientY - grab.dy,
+          width: rect?.width ?? 0,
+          height: rect?.height ?? 0,
+          viewportWidth: window.innerWidth,
+          viewportHeight: window.innerHeight,
+        }),
+      );
+    };
+    const onRelease = () => {
+      grabRef.current = null;
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onRelease);
+    window.addEventListener('pointercancel', onRelease);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onRelease);
+      window.removeEventListener('pointercancel', onRelease);
+    };
+  }, []);
+
+  /*
+   * A window that shrinks under a panel parked at the far edge would leave it
+   * off screen, and the handle with it.
+   */
+  useEffect(() => {
+    if (!position) return;
+    const onResize = () => {
+      const rect = panelRef.current?.getBoundingClientRect();
+      setPosition((current) =>
+        current === null
+          ? null
+          : clampPanelPosition({
+              ...current,
+              width: rect?.width ?? 0,
+              height: rect?.height ?? 0,
+              viewportWidth: window.innerWidth,
+              viewportHeight: window.innerHeight,
+            }),
+      );
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [position]);
+
+  // Placed by hand, the panel stops taking its position from the stylesheet --
+  // but it still needs a width, which the parked classes were supplying.
+  const placement = position
+    ? 'w-[min(26.25rem,calc(100vw-1rem))]'
+    : 'left-2 right-14 top-[calc(max(0.5rem,env(safe-area-inset-top))+3.5rem)] w-auto sm:bottom-16 sm:left-14 sm:right-auto sm:top-auto sm:w-[min(26.25rem,calc(100vw-18.75rem))]';
 
   /*
    * Put away, this is a pill in the same corner rather than nothing at all.
@@ -162,12 +279,19 @@ export default function AvSessionPanel({
    * the top bar still says so -- so there has to be a way back to the faces.
    */
   if (!open) {
+    // The pill stands in for the panel, so it stands where the panel was put:
+    // returning to the default corner would undo a deliberate move.
     return (
       <button
         type="button"
         data-testid="av-panel-open"
         onClick={() => setOpen(true)}
-        className="fixed left-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+3.5rem)] z-[180] rounded-full border border-slate-700/80 bg-slate-900/95 px-3 py-1.5 text-[0.6875rem] font-medium text-slate-200 shadow-lg shadow-slate-900/30 sm:bottom-16 sm:left-14 sm:top-auto"
+        className={`fixed z-[180] rounded-full border border-slate-700/80 bg-slate-900/95 px-3 py-1.5 text-[0.6875rem] font-medium text-slate-200 shadow-lg shadow-slate-900/30 ${
+          position
+            ? ''
+            : 'left-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+3.5rem)] sm:bottom-16 sm:left-14 sm:top-auto'
+        }`}
+        style={position ? { left: position.x, top: position.y } : undefined}
       >
         Show call ({tiles.length})
       </button>
@@ -176,8 +300,10 @@ export default function AvSessionPanel({
 
   return (
     <div
+      ref={panelRef}
       data-testid="av-session-panel"
-      className="fixed left-2 right-14 top-[calc(max(0.5rem,env(safe-area-inset-top))+3.5rem)] z-[180] w-auto rounded-xl border border-slate-700/80 bg-slate-900/95 p-2 shadow-xl shadow-slate-900/30 sm:bottom-16 sm:left-14 sm:right-auto sm:top-auto sm:w-[min(26.25rem,calc(100vw-18.75rem))]"
+      className={`fixed z-[180] rounded-xl border border-slate-700/80 bg-slate-900/95 p-2 shadow-xl shadow-slate-900/30 ${placement}`}
+      style={position ? { left: position.x, top: position.y } : undefined}
     >
       <div className="mb-2 flex items-center justify-between gap-2 px-1">
         <button
@@ -189,6 +315,20 @@ export default function AvSessionPanel({
         >
           Hide
         </button>
+        {/*
+          * The grip is the empty middle of the header, which is space the
+          * panel already had. `touch-action: none` is what stops a drag on a
+          * phone being read as a scroll of the board underneath.
+          */}
+        <div
+          data-testid="av-panel-drag"
+          onPointerDown={startDrag}
+          role="presentation"
+          title="Drag to move"
+          className="flex flex-1 cursor-move touch-none items-center justify-center self-stretch text-slate-500"
+        >
+          <span aria-hidden className="text-[0.75rem] leading-none tracking-[0.2em]">⠿</span>
+        </div>
         {showControls && <CallControls av={av} />}
       </div>
 
