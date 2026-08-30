@@ -8,7 +8,12 @@ import {
 } from './boardExport';
 
 const image = (id: string, fileId: string, isDeleted = false) => ({
-  id, type: 'image', fileId, isDeleted, x: 0, y: 0,
+  id, type: 'image', fileId, isDeleted, x: 0, y: 0, width: 100, height: 80,
+});
+
+/** An image element left as the placeholder it is inserted as. */
+const placeholder = (id: string, fileId: string) => ({
+  id, type: 'image', fileId, isDeleted: false, x: 0, y: 0, width: 0, height: 0,
 });
 
 const file = (id: string) => ({
@@ -32,6 +37,21 @@ describe('referencedFileIds', () => {
     expect(referencedFileIds([image('a', 'photo-1', true)])).toEqual([]);
   });
 
+  it('ignores an image that never got a size', () => {
+    /*
+     * Excalidraw inserts an image as a nought-by-nought placeholder and fills
+     * the size in when the bitmap resolves. One that never resolved is on the
+     * board only in the sense that it is in the array: it draws nothing, and
+     * cannot be selected or erased, so it would sit in every export a teacher
+     * ever took of that room, carrying its bytes with it.
+     */
+    expect(referencedFileIds([placeholder('a', 'photo-1')])).toEqual([]);
+    expect(referencedFileIds([
+      image('a', 'photo-1'),
+      placeholder('b', 'photo-2'),
+    ])).toEqual(['photo-1']);
+  });
+
   it('survives elements that carry no file at all', () => {
     expect(referencedFileIds([
       { id: 'x', type: 'freedraw' },
@@ -51,6 +71,28 @@ describe('exportableElements', () => {
     ]);
     expect(kept.map((element) => element.id)).toEqual(['a', 'c']);
   });
+
+  it('drops an image that never got a size', () => {
+    const kept = exportableElements([image('a', 'photo-1'), placeholder('b', 'photo-2')]);
+    expect(kept.map((element) => element.id)).toEqual(['a']);
+  });
+
+  it('keeps a shape that is flat in one direction', () => {
+    // A line drawn straight across is nought high and is on the board; only an
+    // image with no area is the placeholder case.
+    const kept = exportableElements([
+      { id: 'a', type: 'line', width: 200, height: 0 },
+      { id: 'b', type: 'freedraw', width: 0, height: 140 },
+    ]);
+    expect(kept.map((element) => element.id)).toEqual(['a', 'b']);
+  });
+
+  it('keeps an image whose size it cannot read', () => {
+    // Nothing is guessed at here: an element that does not say how big it is
+    // is left in the export rather than silently dropped from a backup.
+    const kept = exportableElements([{ id: 'a', type: 'image', fileId: 'photo-1' }]);
+    expect(kept.map((element) => element.id)).toEqual(['a']);
+  });
 });
 
 describe('buildExcalidrawContainer', () => {
@@ -69,11 +111,12 @@ describe('buildExcalidrawContainer', () => {
      * that carries a term of erased photographs with it.
      */
     const container = buildExcalidrawContainer(
-      [image('a', 'photo-1'), image('b', 'photo-2', true)],
-      [file('photo-1'), file('photo-2'), file('photo-3')],
+      [image('a', 'photo-1'), image('b', 'photo-2', true), placeholder('c', 'photo-4')],
+      [file('photo-1'), file('photo-2'), file('photo-3'), file('photo-4')],
       'teacher-playground',
     );
     expect(Object.keys(container.files)).toEqual(['photo-1']);
+    expect(container.elements.map((element) => element.id)).toEqual(['a']);
   });
 });
 

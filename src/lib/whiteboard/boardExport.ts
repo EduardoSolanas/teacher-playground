@@ -34,6 +34,31 @@ export interface ExcalidrawContainer {
 }
 
 /**
+ * Whether an element is on the board rather than merely in the array.
+ *
+ * Two ways it can fail to be. An erased element is flagged rather than removed,
+ * which is how Excalidraw keeps undo working. And an image is inserted as a
+ * nought-by-nought placeholder that takes its size when the bitmap resolves --
+ * one that never resolved draws nothing and cannot be selected, so it can be
+ * neither seen nor erased, and would otherwise sit in every export ever taken
+ * of that room, carrying the whole of its bytes with it.
+ *
+ * Only images are judged on size. A line drawn straight across is nought high
+ * and is plainly on the board. And a size that cannot be read is not guessed
+ * at: an element that does not say how big it is stays in the export, because
+ * the cost of being wrong here is silently dropping work from a backup.
+ */
+function isOnBoard(element: unknown): boolean {
+  const record = element as
+    | { isDeleted?: unknown; type?: unknown; width?: unknown; height?: unknown }
+    | null;
+  if (record == null || typeof record !== 'object') return false;
+  if (record.isDeleted === true) return false;
+  if (record.type !== 'image') return true;
+  return !(record.width === 0 || record.height === 0);
+}
+
+/**
  * The images a scene actually refers to.
  *
  * Only what is referenced, and only once each: a board where the same
@@ -45,9 +70,8 @@ export function referencedFileIds(elements: readonly unknown[]): string[] {
   const ids: string[] = [];
   const seen = new Set<string>();
   for (const element of elements) {
-    const record = element as { fileId?: unknown; isDeleted?: unknown } | null;
-    if (!record || record.isDeleted === true) continue;
-    const fileId = record.fileId;
+    if (!isOnBoard(element)) continue;
+    const fileId = (element as { fileId?: unknown }).fileId;
     if (typeof fileId !== 'string' || fileId.length === 0 || seen.has(fileId)) continue;
     seen.add(fileId);
     ids.push(fileId);
@@ -55,12 +79,9 @@ export function referencedFileIds(elements: readonly unknown[]): string[] {
   return ids;
 }
 
-/** The elements worth writing into a file: everything still on the board. */
+/** The elements worth writing into a file: everything actually on the board. */
 export function exportableElements(elements: readonly unknown[]): StoredElement[] {
-  return elements.filter((element) => {
-    const record = element as { isDeleted?: unknown } | null;
-    return record != null && typeof record === 'object' && record.isDeleted !== true;
-  }) as StoredElement[];
+  return elements.filter(isOnBoard) as StoredElement[];
 }
 
 /** Assembles the scene and its images into the container Excalidraw reads. */
