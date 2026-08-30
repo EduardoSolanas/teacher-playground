@@ -965,6 +965,74 @@ export default function ExcalidrawWrapper({
     setTimeout(() => { applyingGuideRef.current = false; }, 0);
   }, [apiReady, guideMessage, hostPeerId, localPeerId, users]);
 
+  /** Whether the stored library has answered; nothing is saved before it has. */
+  const libraryLoadedRef = useRef(false);
+  const librarySaveTimerRef = useRef<number | null>(null);
+
+  /*
+   * The room's shape library.
+   *
+   * Loaded after mount rather than through `initialData`, which is read once
+   * while the editor is starting and would need this fetch to have finished
+   * first -- holding the board closed on a request that has nothing to do with
+   * drawing. `updateLibrary` can arrive whenever it arrives.
+   *
+   * Host only. The library is the teacher's own working set, students never
+   * saw it, and asking for it as a peer would be a request the room refuses.
+   */
+  useEffect(() => {
+    if (!apiReady || !isLocalHost) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await ajaxFetch(`/api/whiteboard/room/${roomId}/library`);
+        if (!response.ok || cancelled) return;
+        const body = await response.json() as { items?: unknown };
+        const items = Array.isArray(body.items) ? body.items : [];
+        if (cancelled || items.length === 0) return;
+        libraryLoadedRef.current = true;
+        apiRef.current?.updateLibrary({ libraryItems: items as never, merge: false });
+      } catch {
+        // A library that will not load must not stop the board opening.
+      } finally {
+        if (!cancelled) libraryLoadedRef.current = true;
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [apiReady, isLocalHost, roomId]);
+
+  /*
+   * Saved on change, and not before the load has answered.
+   *
+   * Excalidraw announces its library on mount as well as on edit, so without
+   * that guard the first thing a fresh editor would do is write its empty
+   * library over the one being fetched -- and a teacher's shapes would vanish
+   * the moment they opened the room on a second machine.
+   *
+   * Debounced because dragging a shape in fires this more than once, and each
+   * one replaces the whole library.
+   */
+  const handleLibraryChange = useCallback((items: readonly unknown[]) => {
+    if (!isLocalHost || !libraryLoadedRef.current) return;
+    const snapshot = [...items];
+    if (librarySaveTimerRef.current !== null) window.clearTimeout(librarySaveTimerRef.current);
+    librarySaveTimerRef.current = window.setTimeout(() => {
+      librarySaveTimerRef.current = null;
+      void ajaxFetch(`/api/whiteboard/room/${roomId}/library`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: snapshot }),
+      }).catch(() => {
+        // Nothing to retry against: the next change writes the whole library
+        // again, so a lost save costs nothing a later one does not repair.
+      });
+    }, 1000);
+  }, [isLocalHost, roomId]);
+
+  useEffect(() => () => {
+    if (librarySaveTimerRef.current !== null) window.clearTimeout(librarySaveTimerRef.current);
+  }, []);
+
   if (!isClient) {
     return <div className="w-full h-full min-h-[25rem]" />;
   }
@@ -990,6 +1058,7 @@ export default function ExcalidrawWrapper({
             }, 50);
           }
         }}
+        onLibraryChange={handleLibraryChange}
         onPointerDown={handlePointerDown}
         onPointerUp={handlePointerUp}
         UIOptions={{

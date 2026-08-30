@@ -113,8 +113,19 @@ export function isRouteAllowedOnHost(
     return hostKind === 'teacher';
   }
 
-  // /api/whiteboard/room/:id/settings is guest-host-denied
-  if (pathname.startsWith('/api/whiteboard/room/') && pathname.includes('/settings')) {
+  /*
+   * The owner-only room surfaces never belong on the guest host.
+   *
+   * Settings, the diagnostic report and the shape library are all things only
+   * the teacher who owns the room may touch, and the guest hostname exists for
+   * people who are not that. The durable object refuses them again on its own
+   * -- this is the outer of the two, so a mistake in either alone still leaves
+   * the surface closed.
+   */
+  if (pathname.startsWith('/api/whiteboard/room/')
+    && (pathname.includes('/settings')
+      || pathname.includes('/stats')
+      || pathname.includes('/library'))) {
     return hostKind === 'teacher';
   }
 

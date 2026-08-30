@@ -23,6 +23,11 @@ import {
   planLimitJsonResponse,
 } from '../../plan/limits';
 import { computeRoomStats } from '../roomStats';
+import {
+  MAX_LIBRARY_BYTES,
+  checkLibraryItems,
+  storedLibraryItems,
+} from '../roomLibrary';
 
 const MAX_NAME_LENGTH = 100;
 
@@ -402,6 +407,76 @@ export async function handleRoomStatsGet(
     return Response.json(stats);
   } catch (e) {
     return internalErrorResponse(e, 'handleRoomStatsGet');
+  }
+}
+
+/**
+ * A room's shape library, read and written by its owner.
+ *
+ * Storage rather than the database: the library is not board, not membership
+ * and not settings, and it is a single opaque list that is replaced whole
+ * every time it changes. Giving it its own key keeps it out of the shared
+ * document -- whose weight is what makes an old room slow -- and out of the
+ * room row, which is projected and read on every open.
+ */
+export async function handleRoomLibraryGet(
+  db: RoomDatabase,
+  roomId: string,
+  request: Request,
+  readLibrary: () => Promise<unknown>,
+): Promise<Response> {
+  try {
+    const settings = readRoomSettings(db, roomId);
+    if (!settings) return Response.json({ error: 'Room not found' }, { status: 404 });
+
+    const accountId = verifiedAccountId(request);
+    if (accountId && !isOwnerRole(getGrantRole(db, roomId, accountId))) {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    return Response.json({ items: storedLibraryItems(await readLibrary()) });
+  } catch (e) {
+    return internalErrorResponse(e, 'handleRoomLibraryGet');
+  }
+}
+
+export async function handleRoomLibraryPost(
+  db: RoomDatabase,
+  roomId: string,
+  request: Request,
+  writeLibrary: (items: unknown[]) => Promise<void>,
+): Promise<Response> {
+  try {
+    const settings = readRoomSettings(db, roomId);
+    if (!settings) return Response.json({ error: 'Room not found' }, { status: 404 });
+
+    const accountId = verifiedAccountId(request);
+    if (accountId && !isOwnerRole(getGrantRole(db, roomId, accountId))) {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    const body = await request.json().catch(() => null);
+    const checked = checkLibraryItems(body);
+    if (!checked.ok) {
+      /*
+       * Told apart on purpose. A library that has outgrown the room is the
+       * teacher's own doing and they can act on it by removing a shape; a
+       * malformed body is nothing they can act on at all. Answering both with
+       * the same status would leave the first looking like a bug.
+       */
+      if (checked.reason === 'too-large') {
+        return Response.json(
+          { error: 'Library too large', maxBytes: MAX_LIBRARY_BYTES },
+          { status: 413 },
+        );
+      }
+      return Response.json({ error: 'Invalid library' }, { status: 400 });
+    }
+
+    await writeLibrary(checked.items);
+    return Response.json({ items: checked.items });
+  } catch (e) {
+    return internalErrorResponse(e, 'handleRoomLibraryPost');
   }
 }
 

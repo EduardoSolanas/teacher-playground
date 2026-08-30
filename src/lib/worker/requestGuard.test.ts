@@ -207,6 +207,17 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
     });
 
     it('/api/whiteboard/room/:id/settings is false on guest host, true on teacher host', () => {
+      /*
+       * The owner-only room surfaces, kept off the guest host with settings.
+       * The diagnostic report describes a room and the library is a teacher's
+       * own working set; a guest hostname exists for people who are neither
+       * the owner nor signed in as one.
+       */
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456/stats', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456/stats', 'GET', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456/library', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456/library', 'GET', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456/library', 'POST', 'guest')).toBe(false);
       expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456/settings', 'GET', 'teacher')).toBe(true);
       expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456/settings', 'GET', 'guest')).toBe(false);
       expect(isRouteAllowedOnHost('/api/whiteboard/room/abc123def456/settings', 'POST', 'teacher')).toBe(true);

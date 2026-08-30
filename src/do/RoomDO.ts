@@ -26,6 +26,8 @@ import {
   handleRoomSettings,
   handleRoomSettingsGet,
   handleRoomStatsGet,
+  handleRoomLibraryGet,
+  handleRoomLibraryPost,
   handleRoomDelete,
   handleRoomAccountErasure,
 } from '../lib/whiteboard/handlers/room';
@@ -74,6 +76,7 @@ import { encodeUpdateFrame, handleSyncFrame } from '../lib/whiteboard/serverSync
 import { replaceSharedElements, getElementsFromArray, pruneTombstonedElements } from '../lib/whiteboard/yjsDoc';
 import { snapshotElements } from '../lib/whiteboard/sceneSnapshot';
 import { snapshotBudgetState } from '../lib/whiteboard/snapshotBudget';
+import { libraryStorageKey } from '../lib/whiteboard/roomLibrary';
 import {
   FOLLOW_MESSAGE_TYPE,
   decodeFollowMessagePayload,
@@ -485,6 +488,25 @@ export class RoomDO extends DurableObject {
       return forbidden();
     }
 
+    /*
+     * Owner-only, and denied to a guest outright, exactly as settings is.
+     *
+     * This gate is the authorization; the switch below only dispatches. A
+     * section with no entry here falls through to the `forbidden()` at the end
+     * of this function, which is how the diagnostics route shipped answering
+     * 403 to the very owner it was built for -- the handler checked ownership
+     * perfectly well and was never reached.
+     *
+     * Neither is board: the report describes the room, the library is the
+     * teacher's own working set, and a student has no business with either.
+     */
+    if (section === 'stats' || section === 'library') {
+      if (guest) return forbidden();
+      if (method === 'GET' || method === 'HEAD') return owner ? null : forbidden();
+      if (section === 'library' && method === 'POST') return owner ? null : forbidden();
+      return forbidden();
+    }
+
     if (section === 'waiting') {
       if (method === 'DELETE') {
         const peerId = url.searchParams.get('peerId');
@@ -627,6 +649,30 @@ export class RoomDO extends DurableObject {
         }
         if (method === 'POST' || method === 'PATCH') {
           return handleRoomSettings(this.db, roomId, request);
+        }
+        break;
+      case 'library':
+        /*
+         * The library is the owner's own shapes, held against the room so they
+         * are there from whichever machine they teach on. Its own storage key:
+         * not the shared document, whose weight is what makes an old room
+         * slow, and not the room row, which is read on every open.
+         */
+        if (method === 'GET') {
+          return handleRoomLibraryGet(
+            this.db,
+            roomId,
+            request,
+            async () => this.ctx.storage.get(libraryStorageKey(roomId)),
+          );
+        }
+        if (method === 'POST') {
+          return handleRoomLibraryPost(
+            this.db,
+            roomId,
+            request,
+            async (items) => { await this.ctx.storage.put(libraryStorageKey(roomId), items); },
+          );
         }
         break;
       case 'stats':
