@@ -20,6 +20,7 @@ interface FakeAvProvider extends AvProvider {
     detachTrack: string[];
   };
   connectError: Error | null;
+  cameraDenied: boolean;
   emit: AvProviderEvents;
 }
 
@@ -38,10 +39,16 @@ function makeProvider(): FakeAvProvider {
   const provider: FakeAvProvider = {
     calls,
     connectError: null,
+    cameraDenied: false,
     emit: {},
     async connect(token, url) {
       calls.connect.push(`${token}@${url}`);
       if (provider.connectError) throw provider.connectError;
+      // The real provider publishes both devices as part of connecting and
+      // then says what it actually got. A fake that stays silent would let the
+      // session's own guess about the camera pass for the truth.
+      events.onLocalMic?.(false);
+      events.onLocalCamera?.(!provider.cameraDenied);
     },
     disconnect() {
       calls.disconnect += 1;
@@ -185,7 +192,6 @@ describe('createAvSession', () => {
   it('provider error event moves to error status', async () => {
     const provider = makeProvider();
     const session = createAvSession(provider);
-    await session.join('token', 'url');
     provider.emit.onError?.({ kind: 'permission-denied', message: 'denied' });
     expect(session.status).toBe('error');
     expect(session.error?.kind).toBe('permission-denied');
@@ -199,6 +205,46 @@ describe('createAvSession', () => {
     await session.join('token', 'url');
     session.requestMute('peer-1');
     expect(provider.calls.requestMute).toEqual(['peer-1']);
+  });
+
+  it('does not claim the camera is on before the call is up', async () => {
+    // The panel reads this to label its button. Guessing the camera is already
+    // on makes the button read "Camera on" while it would in fact turn it off.
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+    expect(session.local.camOn).toBe(false);
+    provider.cameraDenied = true;
+    await session.join('token', 'url');
+    expect(session.local.camOn).toBe(false);
+  });
+
+  it('refuses a toggle until the call is up', async () => {
+    // Connecting publishes both devices itself, so anything pressed while that
+    // is in flight is overwritten a moment later. Better to refuse it than to
+    // take it and lose it.
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+    const joining = session.join('token', 'url');
+    session.toggleMicrophone();
+    session.toggleCamera();
+    expect(provider.calls.setMicrophone).toEqual([]);
+    expect(provider.calls.setCamera).toEqual([]);
+    await joining;
+    session.toggleMicrophone();
+    expect(provider.calls.setMicrophone).toEqual([true]);
+  });
+
+  it('keeps the call when a device fails mid-lesson', async () => {
+    // A refused camera is not a call that has ended. Reporting it as one takes
+    // the mic button away too, and the mic was working.
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+    await session.join('token', 'url');
+    provider.emit.onError?.({ kind: 'permission-denied', message: 'camera denied' });
+    expect(session.status).toBe('joined');
+    expect(session.error?.message).toBe('camera denied');
+    session.toggleMicrophone();
+    expect(provider.calls.setMicrophone).toEqual([true]);
   });
 
   it('attachTrack and detachTrack forward to the provider', async () => {

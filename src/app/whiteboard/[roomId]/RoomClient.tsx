@@ -24,6 +24,7 @@ import { LibraryPanel } from '@/components/whiteboard/LibraryPanel';
 import { ShortcutsHelp } from '@/components/whiteboard/ShortcutsHelp';
 import { UndoRedoBar } from '@/components/whiteboard/UndoRedoBar';
 import AvSessionPanel from '@/components/av/AvSessionPanel';
+import CallControls from '@/components/av/CallControls';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useScopedUndo } from '@/hooks/useScopedUndo';
 import * as store from '@/lib/whiteboard/store';
@@ -357,6 +358,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         onDisplayNameChange={handleJoin}
         onNavigate={handleBackToRooms}
         rosterExpanded={!presenceCollapsed}
+        center={avEnabled ? <CallControls av={av} /> : null}
       />
       <ToolSidebar
         activeTool={activeTool}
@@ -417,7 +419,12 @@ function RoomContent({ roomId }: { roomId: string }) {
         </div>
       )}
       {avEnabled && (
-        <AvSessionPanel av={av} localIdentity={localPeerId} isLocalHost={isLocalHost} />
+        <AvSessionPanel
+          av={av}
+          localIdentity={localPeerId}
+          isLocalHost={isLocalHost}
+          showControls={guestHost}
+        />
       )}
       {shouldOverlayConnectingScreen({ boardEverShown, isSynced }) && <LoadingScreen />}
       <LibraryPanel visible={isLocalHost && libraryOpen} onClose={() => setLibraryOpen(false)} />

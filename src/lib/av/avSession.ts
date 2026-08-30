@@ -108,7 +108,9 @@ export function mapProviderError(error: unknown): AvError {
 export function createAvSession(provider: AvProvider): AvSession {
   let status: AvSessionStatus = 'idle';
   let error: AvError | null = null;
-  let local: LocalState = { micMuted: false, camOn: true };
+  // The camera is off until a join publishes it and the provider says so.
+  // Seeding it on makes every label lie for as long as the join takes.
+  let local: LocalState = { micMuted: false, camOn: false };
   const participants: ParticipantState[] = [];
   const devices: Record<DeviceKind, string[]> = { microphone: [], camera: [] };
 
@@ -148,11 +150,14 @@ export function createAvSession(provider: AvProvider): AvSession {
     onDisconnected() {
       status = 'idle';
       clearParticipants();
-      local = { micMuted: false, camOn: true };
+      local = { micMuted: false, camOn: false };
     },
     onError(err) {
       error = err;
-      status = 'error';
+      // A refused device during a live call is worth saying, but it is not the
+      // call failing: leaving 'joined' would take the working half of the call
+      // (the mic, when it was the camera that was refused) away as well.
+      if (status !== 'joined') status = 'error';
     },
     onDevices(kind, deviceIds) {
       devices[kind] = deviceIds;
@@ -182,13 +187,13 @@ export function createAvSession(provider: AvProvider): AvSession {
     status = 'idle';
     error = null;
     clearParticipants();
-    local = { micMuted: false, camOn: true };
+    local = { micMuted: false, camOn: false };
     devices.microphone = [];
     devices.camera = [];
   }
 
   function toggleMicrophone(): void {
-    if (status === 'idle') return;
+    if (status !== 'joined') return;
     local.micMuted = !local.micMuted;
     try {
       provider.setMicrophone(local.micMuted);
@@ -200,7 +205,7 @@ export function createAvSession(provider: AvProvider): AvSession {
   }
 
   function toggleCamera(): void {
-    if (status === 'idle') return;
+    if (status !== 'joined') return;
     local.camOn = !local.camOn;
     try {
       provider.setCamera(local.camOn);

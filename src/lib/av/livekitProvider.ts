@@ -72,12 +72,27 @@ export class LiveKitProvider implements AvProvider {
     this.room.disconnect();
   }
 
+  /*
+   * A toggle the device refuses has to be taken back.
+   *
+   * The session flips its own state the moment somebody presses, and waits for
+   * this to confirm it. Dropping the rejection left the label saying "Camera
+   * off" over a camera that had never come on -- and the press that would fix
+   * it now reads as the press that broke it. Say what went wrong, then say
+   * what the devices are actually doing.
+   */
   setMicrophone(muted: boolean): void {
-    void this.room.localParticipant.setMicrophoneEnabled(!muted);
+    void this.room.localParticipant.setMicrophoneEnabled(!muted).catch((error: unknown) => {
+      this.events.onError?.(mapProviderError(error));
+      this.emitLocal();
+    });
   }
 
   setCamera(on: boolean): void {
-    void this.room.localParticipant.setCameraEnabled(on);
+    void this.room.localParticipant.setCameraEnabled(on).catch((error: unknown) => {
+      this.events.onError?.(mapProviderError(error));
+      this.emitLocal();
+    });
   }
 
   async selectDevice(kind: DeviceKind, deviceId: string): Promise<void> {

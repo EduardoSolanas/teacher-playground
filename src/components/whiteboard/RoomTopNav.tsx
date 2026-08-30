@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { isGuestHostname } from '@/lib/guest/guestHost';
 import BackToRoomsLink from './BackToRoomsLink';
 import { UserProfileMenu } from './UserProfileMenu';
@@ -9,11 +9,18 @@ export default function RoomTopNav({
   displayName,
   onDisplayNameChange,
   onNavigate,
+  center,
 }: {
   displayName: string | null;
   onDisplayNameChange: (name: string) => void;
   onNavigate?: () => void;
   rosterExpanded: boolean;
+  /**
+   * What to hold in the width of empty slate between the link and the avatar.
+   * A node rather than anything specific, so the bar stays ignorant of what it
+   * is carrying and whoever renders it decides.
+   */
+  center?: ReactNode;
 }) {
   const [showNav, setShowNav] = useState(false);
 
@@ -30,6 +37,14 @@ export default function RoomTopNav({
       className="fixed inset-x-0 top-0 z-[1100] flex h-[calc(3rem+env(safe-area-inset-top))] items-center justify-between border-b border-slate-700/80 bg-slate-900/95 pt-[env(safe-area-inset-top)] text-slate-200 shadow-lg shadow-slate-950/20 backdrop-blur-md"
     >
       <BackToRoomsLink embedded onNavigate={onNavigate} />
+      {center && (
+        <div
+          data-testid="whiteboard-top-nav-center"
+          className="flex min-w-0 flex-1 items-center justify-center px-2"
+        >
+          {center}
+        </div>
+      )}
       <div className="flex h-full items-center pr-[max(0.5rem,env(safe-area-inset-right))]">
         <UserProfileMenu
           displayName={displayName}

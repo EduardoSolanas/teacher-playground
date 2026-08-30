@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
+import CallControls from './CallControls';
 import type { UseAvSessionResult } from '@/hooks/useAvSession';
 import type { ParticipantState } from '@/lib/av/avSession';
 
@@ -9,7 +10,16 @@ interface AvSessionPanelProps {
   readonly av: UseAvSessionResult;
   readonly localIdentity: string;
   readonly isLocalHost: boolean;
+  /** Start out of the way rather than open. */
   readonly collapsed?: boolean;
+  /**
+   * Hold the mic and camera here after all.
+   *
+   * They live in the top bar now, which the guest hostname does not render --
+   * and that is the student side of a lesson, so without this the person most
+   * likely to need to mute in a hurry would have nothing to press.
+   */
+  readonly showControls?: boolean;
 }
 
 function errorCopy(av: UseAvSessionResult): string | null {
@@ -105,7 +115,8 @@ function ParticipantTile({
 }
 
 /**
- * Basic grid of local + remote A/V tiles with mic/camera/device controls.
+ * Grid of local + remote A/V tiles, and the device pickers. The mic and
+ * camera live in the top bar; this holds them only where there is no bar.
  * Rendered only for admitted participants (parent gates on !isWaiting).
  */
 export default function AvSessionPanel({
@@ -113,45 +124,49 @@ export default function AvSessionPanel({
   localIdentity,
   isLocalHost,
   collapsed = false,
+  showControls = false,
 }: AvSessionPanelProps) {
   const message = errorCopy(av);
   const tiles = av.participants.length > 0
     ? av.participants
     : [{ identity: localIdentity, micMuted: av.local.micMuted, camOn: av.local.camOn }];
+  const [open, setOpen] = useState(!collapsed);
 
-  if (collapsed) return null;
+  /*
+   * Put away, this is a pill in the same corner rather than nothing at all.
+   *
+   * The call carries on behind it -- the mic and camera are still live, and
+   * the top bar still says so -- so there has to be a way back to the faces.
+   */
+  if (!open) {
+    return (
+      <button
+        type="button"
+        data-testid="av-panel-open"
+        onClick={() => setOpen(true)}
+        className="fixed left-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+3.5rem)] z-[180] rounded-full border border-slate-700/80 bg-slate-900/95 px-3 py-1.5 text-[0.6875rem] font-medium text-slate-200 shadow-lg shadow-slate-900/30 sm:bottom-16 sm:left-14 sm:top-auto"
+      >
+        Show call ({tiles.length})
+      </button>
+    );
+  }
 
   return (
     <div
       data-testid="av-session-panel"
-      className="fixed left-2 right-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+3.5rem)] z-[180] w-auto rounded-xl border border-slate-700/80 bg-slate-900/95 p-2 shadow-xl shadow-slate-900/30 sm:bottom-16 sm:left-14 sm:right-auto sm:top-auto sm:w-[min(26.25rem,calc(100vw-18.75rem))]"
+      className="fixed left-2 right-14 top-[calc(max(0.5rem,env(safe-area-inset-top))+3.5rem)] z-[180] w-auto rounded-xl border border-slate-700/80 bg-slate-900/95 p-2 shadow-xl shadow-slate-900/30 sm:bottom-16 sm:left-14 sm:right-auto sm:top-auto sm:w-[min(26.25rem,calc(100vw-18.75rem))]"
     >
       <div className="mb-2 flex items-center justify-between gap-2 px-1">
-        <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-slate-400">
-          Call
-          {av.status === 'connecting' ? ' · connecting…' : ''}
-          {av.status === 'joined' ? ' · live' : ''}
-        </span>
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            data-testid="av-toggle-mic"
-            className="rounded-md border border-slate-600 px-2 py-1 text-[0.6875rem] text-slate-200 hover:bg-slate-700"
-            onClick={av.toggleMicrophone}
-            disabled={av.status === 'idle' && !av.unavailableReason}
-          >
-            {av.local.micMuted ? 'Unmute' : 'Mute'}
-          </button>
-          <button
-            type="button"
-            data-testid="av-toggle-cam"
-            className="rounded-md border border-slate-600 px-2 py-1 text-[0.6875rem] text-slate-200 hover:bg-slate-700"
-            onClick={av.toggleCamera}
-            disabled={av.status === 'idle' && !av.unavailableReason}
-          >
-            {av.local.camOn ? 'Camera off' : 'Camera on'}
-          </button>
-        </div>
+        <button
+          type="button"
+          data-testid="av-panel-collapse"
+          onClick={() => setOpen(false)}
+          aria-label="Hide the call"
+          className="rounded-md px-1.5 py-1 text-[0.6875rem] font-medium uppercase tracking-wide text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+        >
+          Hide
+        </button>
+        {showControls && <CallControls av={av} />}
       </div>
 
       {message ? (

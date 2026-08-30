@@ -26,19 +26,66 @@ function makeAv(overrides: Partial<UseAvSessionResult> = {}): UseAvSessionResult
 }
 
 describe('AvSessionPanel', () => {
-  it('renders a local tile and a camera toggle button', () => {
+  it('renders a local tile', () => {
     const av = makeAv({ local: { micMuted: false, camOn: true } });
     render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
-    expect(screen.getByTestId('av-toggle-cam')).toBeTruthy();
     expect(screen.getByTestId('av-tile-me')).toBeTruthy();
     expect(av.attachTrack).toHaveBeenCalledWith('me', 'camera', expect.any(HTMLVideoElement));
   });
 
-  it('camera toggle calls av.toggleCamera', () => {
+  it('leaves the controls to the bar that now holds them', () => {
     const av = makeAv({ local: { micMuted: false, camOn: true } });
     render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    expect(screen.queryByTestId('av-call-controls')).toBeNull();
+  });
+
+  it('keeps the controls when there is no bar to hold them', () => {
+    /*
+     * The top nav is not rendered on the guest hostname, which is the student
+     * side of a lesson. Without this the person most likely to need to mute in
+     * a hurry would have nothing to press.
+     */
+    const av = makeAv({ local: { micMuted: false, camOn: true } });
+    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} showControls />);
+    expect(screen.getByTestId('av-call-controls')).toBeTruthy();
     fireEvent.click(screen.getByTestId('av-toggle-cam'));
     expect(av.toggleCamera).toHaveBeenCalledTimes(1);
+  });
+
+  it('can be got out of the way, and brought back', () => {
+    /*
+     * On a phone this is a fixed block across the top of the board. A lesson
+     * spends most of its time drawing rather than looking at faces, so there
+     * has to be a way to put it away -- and, since the call carries on behind
+     * it, a way to get it back.
+     */
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    expect(screen.getByTestId('av-tile-me')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('av-panel-collapse'));
+    expect(screen.queryByTestId('av-tile-me')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('av-panel-open'));
+    expect(screen.getByTestId('av-tile-me')).toBeTruthy();
+  });
+
+  it('starts out of the way when asked to', () => {
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} collapsed />);
+    expect(screen.queryByTestId('av-tile-me')).toBeNull();
+    expect(screen.getByTestId('av-panel-open')).toBeTruthy();
+  });
+
+  it('stops short of the presence handle', () => {
+    // The handle is `right-2 w-11`, pinned half way down the right edge. A
+    // panel running to `right-2` sits on top of it, and the roster becomes
+    // unreachable on the one screen size where it overlaps.
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    const panel = screen.getByTestId('av-session-panel');
+    expect(panel.className).toContain('right-14');
+    expect(panel.className).not.toContain(' right-2');
   });
 
   it('shows "Camera off" placeholder when camOn is false', () => {

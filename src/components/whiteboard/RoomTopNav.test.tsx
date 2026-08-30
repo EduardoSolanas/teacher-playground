@@ -52,6 +52,31 @@ describe('RoomTopNav', () => {
     expect(expanded).not.toContain('sm:right-[13.75rem]');
   });
 
+  it('carries whatever belongs between the link and the profile', () => {
+    // The bar has a back link at one end and an avatar at the other, and a
+    // width of empty slate in between. The slot is deliberately a node rather
+    // than anything about calls: the nav stays ignorant of what it is holding.
+    render(
+      <RoomTopNav
+        displayName="eduardo"
+        onDisplayNameChange={() => undefined}
+        rosterExpanded={false}
+        center={<span data-testid="held">held</span>}
+      />,
+    );
+
+    const centre = screen.getByTestId('whiteboard-top-nav-center');
+    expect(centre.className).toContain('justify-center');
+    expect(centre.contains(screen.getByTestId('held'))).toBe(true);
+  });
+
+  it('leaves the middle alone when nothing was given to it', () => {
+    render(
+      <RoomTopNav displayName="eduardo" onDisplayNameChange={() => undefined} rosterExpanded={false} />,
+    );
+    expect(screen.queryByTestId('whiteboard-top-nav-center')).toBeNull();
+  });
+
   it('is hidden on the guest hostname', () => {
     vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', window.location.hostname);
 
