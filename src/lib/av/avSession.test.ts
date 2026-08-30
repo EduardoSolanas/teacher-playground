@@ -63,7 +63,7 @@ function makeProvider(): FakeAvProvider {
     },
     async selectDevice(kind, deviceId) {
       calls.selectDevice.push(`${kind}:${deviceId}`);
-      events.onDevices?.(kind, [deviceId]);
+      events.onDevices?.(kind, [{ deviceId, label: `${kind} ${deviceId}` }]);
     },
     requestMute(target) {
       calls.requestMute.push(target);
@@ -175,8 +175,8 @@ describe('createAvSession', () => {
     await session.selectDevice('microphone', 'dev-1');
     await session.selectDevice('camera', 'cam-1');
     expect(provider.calls.selectDevice).toEqual(['microphone:dev-1', 'camera:cam-1']);
-    expect(session.devices.microphone).toContain('dev-1');
-    expect(session.devices.camera).toContain('cam-1');
+    expect(session.devices.microphone.map((d) => d.deviceId)).toContain('dev-1');
+    expect(session.devices.camera.map((d) => d.deviceId)).toContain('cam-1');
   });
 
   it('disconnected event returns to idle and clears participants', async () => {

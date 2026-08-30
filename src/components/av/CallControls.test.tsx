@@ -4,6 +4,9 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import CallControls from './CallControls';
 import type { UseAvSessionResult } from '@/hooks/useAvSession';
 
+const mic = (deviceId: string, label = `Microphone ${deviceId}`) => ({ deviceId, label });
+const cam = (deviceId: string, label = `Camera ${deviceId}`) => ({ deviceId, label });
+
 function makeAv(overrides: Partial<UseAvSessionResult> = {}): UseAvSessionResult {
   return {
     status: 'joined',
@@ -11,7 +14,7 @@ function makeAv(overrides: Partial<UseAvSessionResult> = {}): UseAvSessionResult
     unavailableReason: null,
     participants: [],
     local: { micMuted: false, camOn: true },
-    devices: { microphone: ['mic-1'], camera: ['cam-1'] },
+    devices: { microphone: [mic('mic-1')], camera: [cam('cam-1')] },
     toggleMicrophone: vi.fn(),
     toggleCamera: vi.fn(),
     selectDevice: vi.fn(),

@@ -4,6 +4,9 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import AvSessionPanel from './AvSessionPanel';
 import type { UseAvSessionResult } from '@/hooks/useAvSession';
 
+const mic = (deviceId: string, label = `Microphone ${deviceId}`) => ({ deviceId, label });
+const cam = (deviceId: string, label = `Camera ${deviceId}`) => ({ deviceId, label });
+
 function makeAv(overrides: Partial<UseAvSessionResult> = {}): UseAvSessionResult {
   const attachTrack = vi.fn();
   const detachTrack = vi.fn();
@@ -13,7 +16,7 @@ function makeAv(overrides: Partial<UseAvSessionResult> = {}): UseAvSessionResult
     unavailableReason: null,
     participants: [],
     local: { micMuted: false, camOn: true },
-    devices: { microphone: ['mic-1'], camera: ['cam-1'] },
+    devices: { microphone: [mic('mic-1')], camera: [cam('cam-1')] },
     toggleMicrophone: vi.fn(),
     toggleCamera: vi.fn(),
     selectDevice: vi.fn(),
@@ -88,6 +91,80 @@ describe('AvSessionPanel', () => {
     expect(panel.className).not.toContain(' right-2');
   });
 
+  it('names the microphones rather than reciting their ids', () => {
+    // A device id is a forty-character hash. Three of those in a dropdown is
+    // not a choice anybody can make; the label is the whole point of the menu.
+    const av = makeAv({
+      devices: {
+        microphone: [mic('e181c4ad1c63', 'Headset (Jabra Evolve 65)'), mic('default', 'Default')],
+        camera: [cam('cam-1')],
+      },
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    const options = Array.from(screen.getByTestId('av-device-mic').querySelectorAll('option'));
+    expect(options.map((o) => o.textContent)).toContain('Headset (Jabra Evolve 65)');
+    expect(options.map((o) => o.textContent)).not.toContain('e181c4ad1c63');
+  });
+
+  it('numbers a device the browser has not named yet', () => {
+    // Labels stay empty until a permission is granted. "Microphone 2" is still
+    // something a person can pick between; a bare id is not.
+    const av = makeAv({
+      devices: { microphone: [mic('a', ''), mic('b', '')], camera: [cam('cam-1')] },
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    const options = Array.from(screen.getByTestId('av-device-mic').querySelectorAll('option'));
+    expect(options.map((o) => o.textContent)).toContain('Microphone 2');
+  });
+
+  it('keeps the faces when one device is missing', () => {
+    /*
+     * A machine with no webcam still has a call on it. Replacing the whole
+     * panel with the message hid a working conversation behind a complaint
+     * about the half of it that was never going to work.
+     */
+    const av = makeAv({
+      status: 'joined',
+      error: { kind: 'device-missing', message: 'Requested device not found' },
+      devices: { microphone: [mic('mic-1')], camera: [] },
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    expect(screen.getByTestId('av-tile-me')).toBeTruthy();
+    expect(screen.getByTestId('av-status-message')).toBeTruthy();
+  });
+
+  it('says which device is missing, when it can tell', () => {
+    // "No camera or microphone was found" over a working microphone reads as
+    // the call being broken. The device lists already say which one it is.
+    const noCam = makeAv({
+      error: { kind: 'device-missing', message: 'not found' },
+      devices: { microphone: [mic('mic-1')], camera: [] },
+    });
+    const { rerender } = render(<AvSessionPanel av={noCam} localIdentity="me" isLocalHost={false} />);
+    expect(screen.getByTestId('av-status-message').textContent).toContain('No camera');
+    expect(screen.getByTestId('av-status-message').textContent).not.toContain('microphone');
+
+    rerender(
+      <AvSessionPanel
+        av={makeAv({
+          error: { kind: 'device-missing', message: 'not found' },
+          devices: { microphone: [], camera: [cam('cam-1')] },
+        })}
+        localIdentity="me"
+        isLocalHost={false}
+      />,
+    );
+    expect(screen.getByTestId('av-status-message').textContent).toContain('No microphone');
+  });
+
+  it('shows nothing to act on when there is no call at all', () => {
+    // Unlike a missing device, these mean there is no call behind the message.
+    const av = makeAv({ status: 'idle', unavailableReason: 'unconfigured' });
+    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    expect(screen.getByTestId('av-status-message')).toBeTruthy();
+    expect(screen.queryByTestId('av-tile-me')).toBeNull();
+  });
+
   it('shows "Camera off" placeholder when camOn is false', () => {
     const av = makeAv({
       participants: [{ identity: 'me', micMuted: false, camOn: false }],
@@ -110,13 +187,13 @@ describe('AvSessionPanel', () => {
   });
 
   it('shows a camera device picker when more than one camera is available', () => {
-    const av = makeAv({ devices: { microphone: ['mic-1'], camera: ['cam-1', 'cam-2'] } });
+    const av = makeAv({ devices: { microphone: [mic('mic-1')], camera: [cam('cam-1'), cam('cam-2')] } });
     render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
     expect(screen.getByTestId('av-device-cam')).toBeTruthy();
   });
 
   it('does not show a camera device picker with a single camera', () => {
-    const av = makeAv({ devices: { microphone: ['mic-1'], camera: ['cam-1'] } });
+    const av = makeAv({ devices: { microphone: [mic('mic-1')], camera: [cam('cam-1')] } });
     render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
     expect(screen.queryByTestId('av-device-cam')).toBeNull();
   });

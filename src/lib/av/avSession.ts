@@ -36,6 +36,18 @@ export interface LocalState {
 
 export type DeviceKind = 'microphone' | 'camera';
 
+/**
+ * A device, with the name its owner would recognise.
+ *
+ * The id alone is a forty-character hash; a menu of those is not a choice
+ * anybody can make. The label is empty until the browser has a permission to
+ * show it by, so whoever renders one has to have a fallback.
+ */
+export interface AvDevice {
+  readonly deviceId: string;
+  readonly label: string;
+}
+
 export interface AvProviderEvents {
   onParticipant?: (participant: ParticipantState) => void;
   onParticipantRemoved?: (identity: string) => void;
@@ -43,7 +55,7 @@ export interface AvProviderEvents {
   onLocalCamera?: (on: boolean) => void;
   onDisconnected?: () => void;
   onError?: (error: AvError) => void;
-  onDevices?: (kind: DeviceKind, deviceIds: string[]) => void;
+  onDevices?: (kind: DeviceKind, devices: AvDevice[]) => void;
 }
 
 export interface AvProvider {
@@ -72,7 +84,7 @@ export interface AvSession {
   readonly error: AvError | null;
   readonly local: LocalState;
   readonly participants: ParticipantState[];
-  readonly devices: Record<DeviceKind, string[]>;
+  readonly devices: Record<DeviceKind, AvDevice[]>;
   join(token: string, url: string): Promise<void>;
   leave(): void;
   toggleMicrophone(): void;
@@ -112,7 +124,7 @@ export function createAvSession(provider: AvProvider): AvSession {
   // Seeding it on makes every label lie for as long as the join takes.
   let local: LocalState = { micMuted: false, camOn: false };
   const participants: ParticipantState[] = [];
-  const devices: Record<DeviceKind, string[]> = { microphone: [], camera: [] };
+  const devices: Record<DeviceKind, AvDevice[]> = { microphone: [], camera: [] };
 
   function updateLocalParticipant(): void {
     const index = participants.findIndex((p) => p.identity === '__local__');
@@ -159,8 +171,8 @@ export function createAvSession(provider: AvProvider): AvSession {
       // (the mic, when it was the camera that was refused) away as well.
       if (status !== 'joined') status = 'error';
     },
-    onDevices(kind, deviceIds) {
-      devices[kind] = deviceIds;
+    onDevices(kind, list) {
+      devices[kind] = list;
     },
   });
 
@@ -220,7 +232,9 @@ export function createAvSession(provider: AvProvider): AvSession {
     if (status === 'idle') return;
     try {
       await provider.selectDevice(kind, deviceId);
-      if (!devices[kind].includes(deviceId)) devices[kind].push(deviceId);
+      if (!devices[kind].some((device) => device.deviceId === deviceId)) {
+        devices[kind].push({ deviceId, label: '' });
+      }
     } catch (err) {
       error = mapProviderError(err);
       status = 'error';

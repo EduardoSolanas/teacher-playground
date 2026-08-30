@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import {
   createAvSession,
+  type AvDevice,
   type AvError,
   type AvSession,
   type AvSessionStatus,
@@ -27,7 +28,7 @@ export interface UseAvSessionResult {
   readonly error: AvError | null;
   readonly local: { micMuted: boolean; camOn: boolean };
   readonly participants: ParticipantState[];
-  readonly devices: Record<DeviceKind, string[]>;
+  readonly devices: Record<DeviceKind, AvDevice[]>;
   readonly unavailableReason: 'unconfigured' | 'forbidden' | 'waiting' | null;
   readonly toggleMicrophone: () => void;
   readonly toggleCamera: () => void;
@@ -79,7 +80,7 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
     error: null as AvError | null,
     local: { micMuted: false, camOn: false },
     participants: [] as ParticipantState[],
-    devices: { microphone: [] as string[], camera: [] as string[] },
+    devices: { microphone: [] as AvDevice[], camera: [] as AvDevice[] },
   }));
   const [unavailableReason, setUnavailableReason] = useState<
     'unconfigured' | 'forbidden' | 'waiting' | null

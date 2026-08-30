@@ -200,19 +200,33 @@ export class LiveKitProvider implements AvProvider {
     this.events.onLocalCamera?.(local.isCameraEnabled);
   }
 
+  /*
+   * Enumeration is allowed to fail, and says so by rejecting.
+   *
+   * On a machine with no webcam `getLocalDevices('videoinput')` throws
+   * NotFoundError, and `void` on a promise does not handle a rejection -- it
+   * only silences the linter. What reached the console was an uncaught
+   * NotFoundError with the page as its source, which reads like the board
+   * broke rather than like a desktop that has never had a camera.
+   *
+   * A kind that cannot be enumerated has no devices, which is the truth and
+   * is what the picker needs in order to leave itself out.
+   */
   private refreshDevices(): void {
-    void Room.getLocalDevices('audioinput').then((devices) => {
+    void this.listDevices('microphone', 'audioinput');
+    void this.listDevices('camera', 'videoinput');
+  }
+
+  private async listDevices(kind: DeviceKind, media: MediaDeviceKind): Promise<void> {
+    try {
+      const devices = await Room.getLocalDevices(media);
       this.events.onDevices?.(
-        'microphone',
-        devices.map((device) => device.deviceId),
+        kind,
+        devices.map((device) => ({ deviceId: device.deviceId, label: device.label })),
       );
-    });
-    void Room.getLocalDevices('videoinput').then((devices) => {
-      this.events.onDevices?.(
-        'camera',
-        devices.map((device) => device.deviceId),
-      );
-    });
+    } catch {
+      this.events.onDevices?.(kind, []);
+    }
   }
 
   private findParticipant(identity: string): Participant | undefined {

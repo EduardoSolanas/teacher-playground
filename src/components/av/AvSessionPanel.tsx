@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import CallControls from './CallControls';
 import type { UseAvSessionResult } from '@/hooks/useAvSession';
-import type { ParticipantState } from '@/lib/av/avSession';
+import type { AvDevice, ParticipantState } from '@/lib/av/avSession';
 
 interface AvSessionPanelProps {
   readonly av: UseAvSessionResult;
@@ -37,12 +37,35 @@ function errorCopy(av: UseAvSessionResult): string | null {
     return 'Camera or microphone permission was denied.';
   }
   if (av.error.kind === 'device-missing') {
+    /*
+     * Name the one that is actually missing.
+     *
+     * "No camera or microphone was found" over a working microphone reads as
+     * the whole call being broken, and the commonest case by far is a desktop
+     * that has simply never had a webcam. The enumerated lists already know
+     * which it is, so there is no need to guess.
+     */
+    const noCamera = av.devices.camera.length === 0;
+    const noMicrophone = av.devices.microphone.length === 0;
+    if (noCamera && !noMicrophone) return 'No camera was found. The call carries on with audio.';
+    if (noMicrophone && !noCamera) return 'No microphone was found.';
     return 'No camera or microphone was found.';
   }
   if (av.error.kind === 'network') {
     return 'Could not connect to the video room.';
   }
   return av.error.message;
+}
+
+/**
+ * What to call a device in the menu.
+ *
+ * The browser withholds the label until it has a permission to show it by, so
+ * a numbered fallback has to stand in -- "Microphone 2" is still something a
+ * person can choose between, and the bare id never was.
+ */
+function deviceLabel(device: AvDevice, index: number, kind: 'Microphone' | 'Camera'): string {
+  return device.label.trim() || `${kind} ${index + 1}`;
 }
 
 function ParticipantTile({
@@ -169,11 +192,19 @@ export default function AvSessionPanel({
         {showControls && <CallControls av={av} />}
       </div>
 
-      {message ? (
+      {message && (
         <p data-testid="av-status-message" className="px-1 pb-2 text-[0.75rem] text-amber-200">
           {message}
         </p>
-      ) : (
+      )}
+
+      {/*
+        * An unavailable call is the only thing with no faces behind it: not
+        * configured, not admitted, not allowed. A refused device is a fault
+        * within a call that is otherwise running, and hiding the call behind
+        * the complaint took a working conversation off the screen with it.
+        */}
+      {av.unavailableReason === null && (
         <div className="grid grid-cols-2 gap-2">
           {tiles.map((participant) => (
             <ParticipantTile
@@ -194,16 +225,16 @@ export default function AvSessionPanel({
               Mic
               <select
                 data-testid="av-device-mic"
-                className="flex-1 rounded border border-slate-600 bg-slate-800 px-1 py-0.5"
+                className="min-w-0 flex-1 truncate rounded border border-slate-600 bg-slate-800 px-1 py-0.5"
                 onChange={(event) => void av.selectDevice('microphone', event.target.value)}
                 defaultValue=""
               >
                 <option value="" disabled>
                   Select microphone
                 </option>
-                {av.devices.microphone.map((id) => (
-                  <option key={id} value={id}>
-                    {id.slice(0, 12)}…
+                {av.devices.microphone.map((device, index) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {deviceLabel(device, index, 'Microphone')}
                   </option>
                 ))}
               </select>
@@ -214,16 +245,16 @@ export default function AvSessionPanel({
               Cam
               <select
                 data-testid="av-device-cam"
-                className="flex-1 rounded border border-slate-600 bg-slate-800 px-1 py-0.5"
+                className="min-w-0 flex-1 truncate rounded border border-slate-600 bg-slate-800 px-1 py-0.5"
                 onChange={(event) => void av.selectDevice('camera', event.target.value)}
                 defaultValue=""
               >
                 <option value="" disabled>
                   Select camera
                 </option>
-                {av.devices.camera.map((id) => (
-                  <option key={id} value={id}>
-                    {id.slice(0, 12)}…
+                {av.devices.camera.map((device, index) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {deviceLabel(device, index, 'Camera')}
                   </option>
                 ))}
               </select>
