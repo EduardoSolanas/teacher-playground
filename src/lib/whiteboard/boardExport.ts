@@ -84,6 +84,32 @@ export function exportableElements(elements: readonly unknown[]): StoredElement[
   return elements.filter(isOnBoard) as StoredElement[];
 }
 
+/**
+ * Drops image elements whose bytes are not in the file set.
+ *
+ * `collectBoardFiles` leaves out a picture it cannot fetch, so that one image
+ * lost to a bucket error does not cost a teacher the whole export. Keeping the
+ * element anyway made the file internally inconsistent: it named a picture
+ * that was in no file map and in no bucket, and opening it in a room set the
+ * importing board asking for those bytes on every change, forever, because
+ * nothing anywhere could ever answer.
+ *
+ * An observed export had three image elements and two files. A reference with
+ * nothing behind it is not content being dropped -- it cannot render for
+ * anyone -- so the file is better without it.
+ */
+export function withResolvableImages(
+  elements: readonly unknown[],
+  files: readonly BoardFileEntry[],
+): StoredElement[] {
+  const have = new Set(files.map((file) => file.id));
+  return elements.filter((element) => {
+    const record = element as { type?: unknown; fileId?: unknown } | null;
+    if (record?.type !== 'image') return true;
+    return typeof record.fileId === 'string' && have.has(record.fileId);
+  }) as StoredElement[];
+}
+
 /** Assembles the scene and its images into the container Excalidraw reads. */
 export function buildExcalidrawContainer(
   elements: readonly unknown[],

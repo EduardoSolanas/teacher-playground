@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   boardFileName,
+  withResolvableImages,
   buildExcalidrawContainer,
   exportableElements,
   referencedFileIds,
@@ -92,6 +93,39 @@ describe('exportableElements', () => {
     // is left in the export rather than silently dropped from a backup.
     const kept = exportableElements([{ id: 'a', type: 'image', fileId: 'photo-1' }]);
     expect(kept.map((element) => element.id)).toEqual(['a']);
+  });
+});
+
+describe('withResolvableImages', () => {
+  it('keeps an image whose bytes came back', () => {
+    const kept = withResolvableImages([image('a', 'photo-1')], [file('photo-1')]);
+    expect(kept.map((element) => element.id)).toEqual(['a']);
+  });
+
+  /*
+   * The export observed in the wild: three image elements, two files. The
+   * third named a picture in no file map and in no bucket, and the board that
+   * imported it asked the room for those bytes on every change, forever,
+   * because nothing anywhere could answer.
+   */
+  it('drops an image whose bytes did not come', () => {
+    const kept = withResolvableImages(
+      [image('a', 'photo-1'), image('b', 'photo-missing')],
+      [file('photo-1')],
+    );
+    expect(kept.map((element) => element.id)).toEqual(['a']);
+  });
+
+  it('leaves everything that is not an image alone', () => {
+    const kept = withResolvableImages(
+      [{ id: 'line', type: 'line' }, { id: 'text', type: 'text' }],
+      [],
+    );
+    expect(kept.map((element) => element.id)).toEqual(['line', 'text']);
+  });
+
+  it('drops an image that names no file at all', () => {
+    expect(withResolvableImages([{ id: 'x', type: 'image' }], [])).toEqual([]);
   });
 });
 

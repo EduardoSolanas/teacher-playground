@@ -167,6 +167,8 @@ export default function ExcalidrawWrapper({
    */
   const uploadedFileIdsRef = useRef<Set<string>>(new Set());
   const fetchingFileIdsRef = useRef<Set<string>>(new Set());
+  /** Files this room answered 404 for: asked once, not on every change. */
+  const missingFileIdsRef = useRef<Set<string>>(new Set());
 
   /**
    * Adopt a scene that arrived from a peer as the publish baseline.
@@ -320,9 +322,29 @@ export default function ExcalidrawWrapper({
   const fetchBoardFile = useCallback(
     async (fileId: string) => {
       if (fetchingFileIdsRef.current.has(fileId)) return;
+      /*
+       * A picture the room does not have is not a picture that is late.
+       *
+       * This runs on every scene change, so without remembering the answer a
+       * 404 is asked again, and again, for as long as the board is open: an
+       * element referencing a file this room never held -- a scene brought in
+       * from somewhere else, whose bytes stayed behind -- produced a request
+       * per change and filled a teacher's console with hundreds of identical
+       * failures.
+       *
+       * Only a 404 is remembered. It is the one answer that says the file is
+       * not here rather than that the asking went wrong: a network failure or
+       * a 5xx is worth another go on the next change, and a 403 means the
+       * grant is not in place yet and may be a moment later.
+       */
+      if (missingFileIdsRef.current.has(fileId)) return;
       fetchingFileIdsRef.current.add(fileId);
       try {
         const response = await ajaxFetch(`/api/whiteboard/room/${roomId}/files/${fileId}`);
+        if (response.status === 404) {
+          missingFileIdsRef.current.add(fileId);
+          return;
+        }
         if (!response.ok) return;
         const mimeType = response.headers.get('content-type');
         if (!mimeType || !isAllowedMimeType(mimeType)) return;

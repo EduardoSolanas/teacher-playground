@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import { guestHostJoinUrl } from '@/lib/whiteboard/guestJoinUrl';
-import { boardFileName, buildExcalidrawContainer, exportableElements, referencedFileIds } from '@/lib/whiteboard/boardExport';
+import { boardFileName, buildExcalidrawContainer, exportableElements, referencedFileIds, withResolvableImages } from '@/lib/whiteboard/boardExport';
 import { collectBoardFiles, elementsFromSceneResponse } from '@/lib/whiteboard/boardDownload';
 import { isGuestJoinLockedOut } from '@/lib/whiteboard/guestPin';
 import CopyButton from './CopyButton';
@@ -299,7 +299,13 @@ export default function TeacherRoomList({
     if (!response.ok) return null;
     const elements = exportableElements(elementsFromSceneResponse(await response.json()));
     const files = await collectBoardFiles(roomId, referencedFileIds(elements), ajaxFetch);
-    return { elements, files };
+    /*
+     * An image whose bytes did not come is dropped with them. Keeping the
+     * element would write a file naming a picture that exists nowhere, and a
+     * board that imported it would ask the room for those bytes on every
+     * change for as long as it stayed open.
+     */
+    return { elements: withResolvableImages(elements, files), files };
   };
 
   const downloadBoard = async (room: TeacherRoomSummary) => {

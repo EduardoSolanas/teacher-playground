@@ -4,6 +4,8 @@ import { makeNoisePng, makePhotoPng } from './pngFixture';
 import { createHash } from 'node:crypto';
 import {
   appUrl,
+  appendElement,
+  excalidrawRectangle,
   createRoomWithMaxUsers,
   joinExistingRoom,
   approveFirstWaitingPeer,
@@ -100,6 +102,62 @@ async function fileIdsInScene(page: Page): Promise<string[]> {
 }
 
 test.describe('board images', () => {
+  const orphanImage = {
+    id: 'orphan-image', type: 'image', fileId: 'deadbeefdeadbeefdeadbeefdeadbeef',
+    x: 40, y: 40, width: 120, height: 90, angle: 0, strokeColor: '#000',
+    backgroundColor: 'transparent', fillStyle: 'solid', strokeWidth: 1,
+    strokeStyle: 'solid', roughness: 1, opacity: 100, groupIds: [], frameId: null,
+    roundness: null, seed: 1, version: 1, versionNonce: 1, isDeleted: false,
+    boundElements: null, updated: 1, link: null, locked: false, index: 'a0',
+    status: 'saved', scale: [1, 1], crop: null,
+  };
+
+  test('a picture the room does not hold is asked for once, not on every change', async ({ page, browser }) => {
+    test.setTimeout(180_000);
+    const roomId = await createRoomWithMaxUsers(page, 'MissingHost', 2);
+    await waitForExcalidrawApi(page);
+
+    const peerContext = await newAuthenticatedContext(browser);
+    const peerPage = await peerContext.newPage();
+    try {
+      await joinExistingRoom(peerPage, roomId, 'MissingPeer');
+      await expectWaiting(peerPage);
+      await approveFirstWaitingPeer(page);
+      await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+      await waitForExcalidrawApi(peerPage);
+
+      const asked: string[] = [];
+      peerPage.on('request', (request) => {
+        if (request.url().includes(`/room/${roomId}/files/`)) asked.push(request.url());
+      });
+
+      /*
+       * An element naming a file the room never held, arriving over the document
+       * -- which is what a scene brought in from elsewhere leaves behind once it
+       * is published: the reference travels, the bytes stayed with the file it
+       * came from.
+       */
+      await appendElement(page, orphanImage);
+      await page.waitForTimeout(1500);
+
+      // Then keep the board changing. Each remote change used to provoke another
+      // request for the same absent file.
+      for (let i = 0; i < 6; i += 1) {
+        await appendElement(page, excalidrawRectangle(`r-${i}`, 200 + i * 20, 200));
+        await page.waitForTimeout(400);
+      }
+      await page.waitForTimeout(2000);
+
+      console.log('ASKED ' + asked.length);
+      expect(asked.length).toBeGreaterThan(0);
+      expect(asked.length).toBeLessThanOrEqual(2);
+    } finally {
+      await peerPage.close();
+      await peerContext.close();
+    }
+  });
+
+
   test('stores a real photograph and serves back the same bytes', async ({ page }) => {
     const roomId = await createRoomWithMaxUsers(page, 'ImageHost', 2);
     /*
