@@ -4,6 +4,7 @@ import { handlePresencePost, handlePresenceGet, handlePresenceDelete } from './p
 import { handleRoomPost, handleRoomSettings } from './room';
 import { handleWaitingPost } from './waiting';
 import { getRoomDb } from '../roomDb';
+import { ACTIVE_WINDOW_MS, activePeerIds } from '../presence';
 import { approveAccount, requestAccess } from '../membership';
 
 const ISSUED_PEER_ID = new RegExp(`^user-[0-9a-f]{${CSPRNG_ID_HEX_LENGTH}}$`);
@@ -73,6 +74,28 @@ async function createOwnedRoom(roomId: string, owner: string) {
       }),
     }),
   );
+}
+
+/*
+ * The two timestamps behind every roster, read straight from the row.
+ *
+ * `last_seen` is what keeps a peer in the room and `first_seen` is what orders
+ * it, and the upsert has to move exactly one of them. Nothing asserted that
+ * until a change to the client's heartbeat passed the whole suite while every
+ * roster in production would have emptied inside ten seconds.
+ */
+function presenceTimes(roomId: string, peerId: string) {
+  return getRoomDb().prepare(
+    `SELECT first_seen AS firstSeen, last_seen AS lastSeen
+     FROM room_presence WHERE room_id = ? AND peer_id = ?`,
+  ).get(roomId, peerId) as { firstSeen: number; lastSeen: number } | undefined;
+}
+
+function backdate(roomId: string, peerId: string, lastSeen: number, firstSeen?: number) {
+  getRoomDb().prepare(
+    `UPDATE room_presence SET last_seen = ?, first_seen = COALESCE(?, first_seen)
+     WHERE room_id = ? AND peer_id = ?`,
+  ).run(lastSeen, firstSeen ?? null, roomId, peerId);
 }
 
 describe('room presence API', () => {
@@ -730,5 +753,86 @@ describe('room presence API', () => {
         expect.objectContaining({ peerId: join.data.peerId, handRaised: true }),
       ]),
     );
+  });
+
+  it('a heartbeat is what keeps a peer in the room', async () => {
+    /*
+     * The whole reason the client must keep posting even on a healthy socket:
+     * this upsert is the only writer of `last_seen`, and nothing on the
+     * signaling path touches it.
+     */
+    const roomId = `presence-heartbeat-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+
+    const join = await postPresence(roomId, owner, { peerId: 'peer-teacher', userName: 'Teacher', color: '#123456' });
+    const peerId = join.data.peerId!;
+
+    backdate(roomId, peerId, Date.now() - ACTIVE_WINDOW_MS - 5_000);
+    expect(activePeerIds(getRoomDb(), roomId).has(peerId)).toBe(false);
+
+    await postPresence(roomId, owner, { peerId: 'peer-teacher', userName: 'Teacher', color: '#123456' });
+    expect(activePeerIds(getRoomDb(), roomId).has(peerId)).toBe(true);
+  });
+
+  it('a heartbeat does not reset when the peer arrived', async () => {
+    // first_seen orders the roster and elects the first-user host. A heartbeat
+    // that moved it would reshuffle the room every two seconds, and could hand
+    // the lesson to whoever posted last.
+    const roomId = `presence-firstseen-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+
+    const join = await postPresence(roomId, owner, { peerId: 'peer-teacher', userName: 'Teacher', color: '#123456' });
+    const peerId = join.data.peerId!;
+
+    const arrived = Date.now() - 120_000;
+    backdate(roomId, peerId, Date.now(), arrived);
+
+    await postPresence(roomId, owner, { peerId: 'peer-teacher', userName: 'Teacher', color: '#123456' });
+    const after = presenceTimes(roomId, peerId)!;
+    expect(after.firstSeen).toBe(arrived);
+    expect(after.lastSeen).toBeGreaterThan(arrived);
+  });
+
+  it('admission puts a peer in the room without waiting for a heartbeat', async () => {
+    // Approval writes presence itself. If it did not, a student would be let
+    // in and still be missing from the roster until their next post.
+    const roomId = `presence-admit-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const guest = `acc-guest-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+
+    const join = await postPresence(roomId, guest, {
+      peerId: 'peer-student',
+      userName: 'Student',
+      color: '#e74c3c',
+    });
+    expect(join.data.isWaiting).toBe(true);
+
+    await handleWaitingPost(
+      getRoomDb(),
+      roomId,
+      new Request(accountUrl(roomId, '/waiting', owner), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ peerId: join.data.peerId, action: 'approve' }),
+      }),
+    );
+
+    expect(activePeerIds(getRoomDb(), roomId).has(join.data.peerId!)).toBe(true);
+  });
+
+  it('leaving removes a peer at once, without waiting out the window', async () => {
+    const roomId = `presence-leave-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+
+    const join = await postPresence(roomId, owner, { peerId: 'peer-teacher', userName: 'Teacher', color: '#123456' });
+    const peerId = join.data.peerId!;
+    expect(activePeerIds(getRoomDb(), roomId).has(peerId)).toBe(true);
+
+    await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, owner, peerId));
+    expect(presenceTimes(roomId, peerId)).toBeUndefined();
   });
 });
