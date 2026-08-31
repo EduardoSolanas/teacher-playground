@@ -44,6 +44,18 @@ const ExcalidrawWrapper = dynamic(
   },
 );
 
+/**
+ * The board spans the window; everything else floats over it.
+ *
+ * It used to start after the tool rail and stop before the roster, which cost
+ * a teacher a strip of drawing surface down each side that nothing was ever
+ * painted into -- both are `fixed`, and were drawing over the board's own
+ * layer regardless. Worse, the right-hand strip came and went with the roster,
+ * so collapsing it resized the canvas under a lesson in progress.
+ */
+export const ROOM_CANVAS_CLASS =
+  'absolute inset-x-0 bottom-0 overflow-hidden bg-slate-50';
+
 export function roomCanvasTopClass(guestHost: boolean): string {
   return guestHost ? 'top-0 sm:top-12' : 'top-[calc(3rem+env(safe-area-inset-top))] sm:top-12';
 }
@@ -384,7 +396,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         isGuiding={isGuiding}
         onToggleGuide={handleToggleGuide}
       />
-      <div className={`absolute inset-x-0 bottom-0 ${roomCanvasTopClass(guestHost)} overflow-hidden bg-slate-50 sm:inset-auto sm:left-14 sm:h-[calc(100vh-3rem)] sm:rounded-tl-2xl ${presenceCollapsed ? 'sm:w-[calc(100vw-4.25rem)]' : 'sm:w-[calc(100vw-17.25rem)]'}`} data-testid="whiteboard-canvas-area">
+      <div className={`${ROOM_CANVAS_CLASS} ${roomCanvasTopClass(guestHost)}`} data-testid="whiteboard-canvas-area">
         <ExcalidrawWrapper
           roomId={roomId}
           userName={userName}
