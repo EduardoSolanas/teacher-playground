@@ -36,7 +36,6 @@ import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import { resolveJoinDisplayName } from '@/lib/access/accessDisplayName';
 import { roomIdFromWhiteboardPath } from '@/lib/whiteboard/roomPath';
 import { shouldClearUsernameOnEviction } from '@/lib/whiteboard/evictionUi';
-import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 
 const ExcalidrawWrapper = dynamic(
   () => import('@/components/whiteboard/ExcalidrawWrapper'),
@@ -152,10 +151,25 @@ function RoomContent({ roomId }: { roomId: string }) {
     setIsGuiding(true);
   }, [isGuiding, sendFollowMessage]);
 
+  const localUser = users.find((user) => user.peerId === localPeerId);
+  // Host status comes only from the recorded host. A first-in-list fallback
+  // would let whoever happens to be listed first silently become host.
+  // Computed here rather than further down because the board controls below
+  // are gated on it, keyboard included.
+  const isLocalHost = Boolean(isHost || localUser?.isHost);
+
   const scopedUndo = useScopedUndo(yElementsArray);
+  /*
+   * The shortcuts are gated with the buttons, not left behind them.
+   *
+   * Hiding a control and leaving its accelerator live is a gate that only
+   * looks like one: Ctrl+Z would still walk the board back for anybody who
+   * knew to press it, and nothing on screen would explain why.
+   */
+  const noHostAction = useCallback(() => undefined, []);
   const { activeShortcuts, showShortcutsHelp, setShowShortcutsHelp } = useKeyboardShortcuts({
-    undo: scopedUndo.undo,
-    redo: scopedUndo.redo,
+    undo: isLocalHost ? scopedUndo.undo : noHostAction,
+    redo: isLocalHost ? scopedUndo.redo : noHostAction,
   });
 
   const { clearState, clearSession } = usePersistence(roomId, elements, { x: 0, y: 0, zoom: 1 } as any);
@@ -292,7 +306,7 @@ function RoomContent({ roomId }: { roomId: string }) {
    * undos in one corner, one of which can delete a child's drawing, is not a
    * choice anybody should be asked to make mid-lesson.
    */
-  const boardFooter = (
+  const boardFooter = !isLocalHost ? null : (
     <div className="flex items-center gap-1">
       <UndoRedoBar
         canUndo={scopedUndo.canUndo}
@@ -347,10 +361,6 @@ function RoomContent({ roomId }: { roomId: string }) {
   const waitingPosition = isWaiting
     ? waitingPeers.findIndex((p) => p.peerId === localPeerId) + 1
     : 0;
-  const localUser = users.find((user) => user.peerId === localPeerId);
-  // Host status comes only from the recorded host. A first-in-list fallback
-  // would let whoever happens to be listed first silently become host.
-  const isLocalHost = Boolean(isHost || localUser?.isHost);
 
   // A student knocking is the one event a collapsed roster hides that the
   // teacher has to act on, and the admit button lives inside the panel. Open it
@@ -540,15 +550,22 @@ function RoomContent({ roomId }: { roomId: string }) {
         isOpen={clearModalOpen}
         onConfirm={() => {
           setClearModalOpen(false);
-          // The Yjs array is the shared source of truth: emptying only the
-          // local store left the drawing on every other peer's board.
-          if (yDoc && yElementsArray) {
-            replaceSharedElements(yDoc, yElementsArray, [], 'board-clear');
-          }
-          setElements([]);
-          store.setElements([]);
-          store.deselectAll();
-          clearState();
+          /*
+           * Ask the room to empty itself; do not empty it from here.
+           *
+           * This used to write the empty array into the shared document
+           * directly, so the deletion travelled as an ordinary edit and the
+           * server never had a say -- anybody with a socket could wipe a
+           * lesson. The route is owner-only, and the deletion comes back over
+           * this peer's own socket like everybody else's.
+           */
+          void ajaxFetch(`/api/whiteboard/room/${roomId}/clear`, { method: 'POST' })
+            .then((response) => {
+              if (!response.ok) return;
+              store.deselectAll();
+              clearState();
+            })
+            .catch(() => undefined);
         }}
         onCancel={() => setClearModalOpen(false)}
       />

@@ -489,6 +489,21 @@ export class RoomDO extends DurableObject {
     }
 
     /*
+     * Emptying the board is the owner's alone, and it is checked here.
+     *
+     * A clear used to be an ordinary edit: the client emptied the shared array
+     * itself and the deletion travelled like any other stroke, so anybody with
+     * a socket could wipe a lesson and nothing on the server had an opinion
+     * about it. Hiding the button was never going to be the answer -- the
+     * button is not what does the deleting.
+     */
+    if (section === 'clear') {
+      if (guest) return forbidden();
+      if (method === 'POST') return owner ? null : forbidden();
+      return forbidden();
+    }
+
+    /*
      * Owner-only, and denied to a guest outright, exactly as settings is.
      *
      * This gate is the authorization; the switch below only dispatches. A
@@ -637,6 +652,9 @@ export class RoomDO extends DurableObject {
             return response;
           });
         }
+        break;
+      case 'clear':
+        if (method === 'POST') return this.clearBoard(roomId);
         break;
       case 'settings':
         if (method === 'GET' || method === 'HEAD') {
@@ -912,6 +930,36 @@ export class RoomDO extends DurableObject {
     // The peers hold their own copies, so the deletion has to travel; the
     // dirty marker the transaction set takes care of the stored copy.
     if (sweep) this.broadcastToRoom(roomId, encodeUpdateFrame(sweep));
+  }
+
+  /**
+   * Empties the shared board, on the server, for everybody at once.
+   *
+   * Modelled on the cursor sweep above: transact under a tagged origin, catch
+   * the update that transaction produced, and send that frame to the room. The
+   * peers hold their own copies, so the deletion has to travel; the document's
+   * own update listener marks the room dirty, which takes care of the stored
+   * copy.
+   *
+   * Doing it here rather than in the client is the whole point. The client
+   * still asks, but asking is now a request the owner check above can refuse,
+   * where before the deletion simply arrived as an edit.
+   */
+  private async clearBoard(roomId: string): Promise<Response> {
+    const doc = await this.getRoomDoc(roomId);
+    let cleared: Uint8Array | null = null;
+    const capture = (update: Uint8Array, origin: unknown) => {
+      if (origin === 'board-clear') cleared = update;
+    };
+    doc.on('update', capture);
+    try {
+      replaceSharedElements(doc, doc.getArray('elements'), [], 'board-clear');
+    } finally {
+      doc.off('update', capture);
+    }
+
+    if (cleared) this.broadcastToRoom(roomId, encodeUpdateFrame(cleared));
+    return Response.json({ ok: true }, { headers: { 'Cache-Control': 'no-store' } });
   }
 
   /**
