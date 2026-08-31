@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import type { Browser, Page } from '@playwright/test';
+import type { Browser, Page, Locator } from '@playwright/test';
 import { request as httpRequest } from 'node:http';
 import {
   appUrl,
@@ -11,6 +11,30 @@ import {
   moderateApprovedPeer,
 } from './helpers';
 import { guestOrigin } from './origins';
+
+/**
+ * Choose a tool and wait until the editor says it has it.
+ *
+ * Excalidraw's tool is a radio with its own icon painted over it, so a plain
+ * click lands on the icon; forcing dispatches to the control. But force also
+ * skips the actionability checks, and a forced click that arrives before
+ * Excalidraw has finished mounting is simply dropped -- leaving the selection
+ * tool active, so the drag that follows draws nothing at all and the test
+ * fails somewhere else entirely. Asking the editor what it holds is the only
+ * reliable acknowledgement.
+ */
+async function selectTool(locator: Locator, expected: string) {
+  await locator.click({ force: true });
+  await expect
+    .poll(
+      async () =>
+        locator.page().evaluate(
+          () => (window as any).__debugExcalidrawApi?.getAppState?.().activeTool?.type ?? null,
+        ),
+      { timeout: 15000 },
+    )
+    .toBe(expected);
+}
 
 const GUEST_PIN_ERROR = "That PIN didn't work. Check with your teacher and try again.";
 const GUEST_SESSION_COOKIE = '__Host-teacher-guest';
@@ -24,7 +48,7 @@ async function sceneElementIds(page: Page): Promise<string[]> {
 }
 
 async function drawPenStroke(page: Page, points: Array<{ x: number; y: number }>) {
-  await page.getByTestId('whiteboard-tool-pen').click();
+  await selectTool(page.getByTestId('toolbar-freedraw'), 'freedraw');
   await expect.poll(() => page.evaluate(() => (
     (window as unknown as {
       __debugExcalidrawApi?: { getAppState?: () => { activeTool?: { type?: string } } };

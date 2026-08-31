@@ -18,9 +18,7 @@ import { shouldCollapsePresenceForViewport } from '@/lib/whiteboard/presenceView
 import { shouldOverlayConnectingScreen } from '@/lib/whiteboard/connectingOverlay';
 import { shouldExpandForArrival } from '@/lib/whiteboard/waitingArrival';
 import ClearBoardModal from '@/components/whiteboard/ClearBoardModal';
-import ToolSidebar from '@/components/whiteboard/ToolSidebar';
 import RoomTopNav from '@/components/whiteboard/RoomTopNav';
-import { LibraryPanel } from '@/components/whiteboard/LibraryPanel';
 import { ShortcutsHelp } from '@/components/whiteboard/ShortcutsHelp';
 import AvSessionPanel from '@/components/av/AvSessionPanel';
 import StartCallButton from '@/components/av/StartCallButton';
@@ -93,7 +91,6 @@ function RoomContent({ roomId }: { roomId: string }) {
   }, []);
   const [boardEverShown, setBoardEverShown] = useState(false);
   const [presenceCollapsed, setPresenceCollapsed] = useState(false);
-  const [libraryOpen, setLibraryOpen] = useState(false);
   const [isGuiding, setIsGuiding] = useState(false);
   const {
     isConnected,
@@ -306,14 +303,46 @@ function RoomContent({ roomId }: { roomId: string }) {
    * pressed it.
    */
   const boardFooter = !isRoomOwner ? null : (
-    <div className="flex items-center gap-1">
+    /*
+     * Excalidraw's own button class rather than this application's styling.
+     *
+     * These sit inches from its zoom and undo, and Tailwind beside their
+     * design system reads as something bolted on. `excalidraw-button` carries
+     * their size, radius, border and -- the part no palette of ours can copy --
+     * their light and dark variables, so these follow the board's theme.
+     *
+     * The class is used rather than the exported `Button` component because
+     * importing from the package here would pull Excalidraw into this chunk,
+     * and it is deliberately behind `dynamic()`.
+     */
+    <div className="tp-board-footer">
       <button
+        type="button"
+        data-testid="whiteboard-tool-guide"
+        onClick={handleToggleGuide}
+        className={`excalidraw-button ${isGuiding ? 'tp-board-footer__button--active' : ''}`}
+        aria-label={isGuiding ? 'Stop guiding' : 'Guide class'}
+        title={isGuiding ? 'Stop guiding' : 'Guide class'}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M3 12h18" />
+          <path d="M12 3v18" />
+          <circle cx="12" cy="12" r="8" />
+        </svg>
+      </button>
+      <button
+        type="button"
         data-testid="whiteboard-clear-btn"
         onClick={() => setClearModalOpen(true)}
-        className="flex h-9 cursor-pointer items-center justify-center rounded-lg border border-slate-300 bg-white px-3 text-[0.8125rem] font-medium text-slate-600 transition-colors duration-150 hover:border-red-300 hover:text-red-500 sm:h-9 sm:px-2 sm:text-[0.6875rem]"
+        className="excalidraw-button tp-board-footer__button--danger"
+        aria-label="Clear board"
         title="Clear board"
       >
-        Clear
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M3 6h18" />
+          <path d="M8 6V4h8v2" />
+          <path d="M19 6l-1 14H6L5 6" />
+        </svg>
       </button>
     </div>
   );
@@ -461,15 +490,6 @@ function RoomContent({ roomId }: { roomId: string }) {
           />
         }
       />
-      <ToolSidebar
-        activeTool={activeTool}
-        onToolChange={handleToolChange}
-        onOpenLibrary={() => setLibraryOpen(true)}
-        onOpenHelp={() => setShowShortcutsHelp(true)}
-        showHostTools={isLocalHost}
-        isGuiding={isGuiding}
-        onToggleGuide={handleToggleGuide}
-      />
       <div className={`${ROOM_CANVAS_CLASS} ${roomCanvasTopClass(guestHost)}`} data-testid="whiteboard-canvas-area">
         <ExcalidrawWrapper
           roomId={roomId}
@@ -532,7 +552,6 @@ function RoomContent({ roomId }: { roomId: string }) {
         <StartCallButton onStart={() => setCallWanted(true)} />
       ))}
       {shouldOverlayConnectingScreen({ boardEverShown, isSynced }) && <LoadingScreen />}
-      <LibraryPanel visible={isLocalHost && libraryOpen} onClose={() => setLibraryOpen(false)} />
       <ShortcutsHelp
         visible={isLocalHost && showShortcutsHelp}
         shortcuts={activeShortcuts}

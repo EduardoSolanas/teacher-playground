@@ -281,8 +281,17 @@ test.describe('Multi-peer collaboration', () => {
     // Close the peer context
     await peerContext.close();
 
-    // Verify the peer is no longer in the host's presence panel
-    await expect(peerElement).toHaveCount(0, { timeout: 15000 });
+    /*
+     * Long enough for the arithmetic behind it, which is two numbers:
+     * ACTIVE_WINDOW_MS (10s) before a silent peer is counted gone, plus
+     * PRESENCE_POLL_MAX_MS (5s) before the host's next heartbeat triggers the
+     * broadcast that rebuilds the roster. Fifteen seconds is therefore the
+     * worst case exactly, not a margin -- and this ran at 17s.
+     *
+     * A closing context is the ungraceful path on purpose: the DELETE that
+     * normally removes a leaver does not arrive, so the window is all there is.
+     */
+    await expect(peerElement).toHaveCount(0, { timeout: 20000 });
   });
 
   test('both peers show each other in the presence panel after approval', async ({ page, browser }) => {

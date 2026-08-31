@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import type { Page } from '@playwright/test';
+import type { Page, Locator } from '@playwright/test';
 import {
   approveFirstWaitingPeer,
   createRoomWithMaxUsers,
@@ -8,6 +8,30 @@ import {
   newAuthenticatedContext,
 } from './helpers';
 import { summarizeLatencySamples } from '../../src/lib/whiteboard/latencyMetrics';
+
+/**
+ * Choose a tool and wait until the editor says it has it.
+ *
+ * Excalidraw's tool is a radio with its own icon painted over it, so a plain
+ * click lands on the icon; forcing dispatches to the control. But force also
+ * skips the actionability checks, and a forced click that arrives before
+ * Excalidraw has finished mounting is simply dropped -- leaving the selection
+ * tool active, so the drag that follows draws nothing at all and the test
+ * fails somewhere else entirely. Asking the editor what it holds is the only
+ * reliable acknowledgement.
+ */
+async function selectTool(locator: Locator, expected: string) {
+  await locator.click({ force: true });
+  await expect
+    .poll(
+      async () =>
+        locator.page().evaluate(
+          () => (window as any).__debugExcalidrawApi?.getAppState?.().activeTool?.type ?? null,
+        ),
+      { timeout: 15000 },
+    )
+    .toBe(expected);
+}
 
 type LatencyEvent = {
   kind: 'stroke-publish' | 'stroke-render' | 'cursor-publish' | 'cursor-render';
@@ -108,7 +132,7 @@ async function canvasInkPixels(page: Page) {
 }
 
 async function drawContinuousStroke(page: Page) {
-  await page.getByTestId('whiteboard-tool-pen').click();
+  await selectTool(page.getByTestId('toolbar-freedraw'), 'freedraw');
   await expect
     .poll(async () => page.evaluate(() => (window as any).__debugExcalidrawApi?.getAppState?.().activeTool?.type ?? null))
     .toBe('freedraw');

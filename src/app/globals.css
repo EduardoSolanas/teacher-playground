@@ -124,21 +124,6 @@ textarea {
   outline-offset:2px;
 }
 
-/* Below sm the app supplies its own bottom tool bar, which carries the same
-   tools. Excalidraw's mobile toolbar duplicates it and lands on top of the
-   "Back to rooms" button, so only one of the two is shown. */
-@media (max-width: 639px) {
-  .excalidraw .App-toolbar--mobile {
-    display: none;
-  }
-}
-
-/* Excalidraw's own help button, bottom right of the canvas. The tool rail
-   already carries a "?" that opens this application's shortcuts sheet, and
-   two help buttons in one room send a teacher to two different answers. */
-.excalidraw .help-icon {
-  display: none;
-}
 
 /* Excalidraw renders custom footer children centred, which on this board is
    where the tool bar now lives. Clear belongs with the zoom and the undo pair
@@ -147,4 +132,55 @@ textarea {
 .excalidraw .footer-center {
   justify-content: flex-start;
   margin-right: auto;
+}
+
+/* Excalidraw's tools, moved to the bottom.
+   The board is what a lesson is looking at, and a toolbar across the top of it
+   sat between the teacher and the room's own bar. Below the canvas it is a
+   thumb's reach from the zoom and the board controls, which is where every
+   other control in this room already lives.
+   Mobile is left alone: Excalidraw puts its own toolbar at the bottom there
+   already, and it is a different component. */
+@media (min-width: 640px) {
+  .excalidraw .App-toolbar-container {
+    /*
+     * Fixed, not absolute. Its own ancestors collapse to zero height near the
+     * top of the canvas, so `bottom` measured against them put the toolbar
+     * back where it started and clipped it under the room's bar. The viewport
+     * is the only containing block that means what it says here.
+     *
+     * `left: 50%` is Excalidraw's own; the translate is what centres it.
+     */
+    position: fixed;
+    top: auto;
+    bottom: 1rem;
+    transform: translateX(-50%);
+    z-index: 4;
+  }
+}
+
+/* The room's own controls in Excalidraw's footer. `excalidraw-button` gives
+   them its size, radius and theme variables; these two rules are only what
+   that class has no opinion about -- the spacing between them, the icon size,
+   and what "on" and "destructive" look like. */
+.tp-board-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.tp-board-footer .excalidraw-button svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.tp-board-footer__button--active {
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-primary-contrast, #fff);
+}
+
+.tp-board-footer__button--danger:hover {
+  color: var(--color-danger, #c92a2a);
+  border-color: var(--color-danger, #c92a2a);
 }

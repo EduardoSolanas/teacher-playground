@@ -33,7 +33,7 @@ test.describe('Excalidraw', () => {
 
   test('tool buttons are visible in sidebar', async ({ page }) => {
     await joinRoom(page, 'ToolUser');
-    await expect(page.getByTestId('whiteboard-tool-select')).toBeVisible();
+    await expect(page.getByTestId('toolbar-selection')).toBeVisible();
   });
 
   test('undo/redo bar is visible', async ({ page }) => {

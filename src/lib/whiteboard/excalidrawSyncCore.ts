@@ -12,6 +12,21 @@ export function toExcalidrawToolType(tool: string): string {
   return EXCALIDRAW_TOOL_BY_APP_TOOL[tool] ?? 'selection';
 }
 
+/**
+ * Whether this application has a tool of its own to name.
+ *
+ * Excalidraw's toolbar carries more than this map does -- diamond, image,
+ * frame, the laser pointer -- and `toExcalidrawToolType` answers `selection`
+ * for anything it does not know. That fallback is fine when the question is
+ * "what should I show for the tool this app holds", and wrong when the answer
+ * is about to be pushed back into the editor: choosing diamond would be
+ * reported here, mapped to `selection`, and sent back, so the tool bounced to
+ * the arrow a moment after it was picked.
+ */
+export function isMappedAppTool(tool: string): boolean {
+  return Object.prototype.hasOwnProperty.call(EXCALIDRAW_TOOL_BY_APP_TOOL, tool);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value);
 }

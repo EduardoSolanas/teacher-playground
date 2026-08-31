@@ -642,19 +642,21 @@ test.describe('Waiting Room', () => {
     await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
     await expectNotWaiting(peerPage);
 
-    await expect(hostPage.getByTestId('whiteboard-tool-library')).toBeVisible();
-    await expect(hostPage.getByTestId('whiteboard-tool-help')).toBeVisible();
-    await expect(peerPage.getByTestId('whiteboard-tool-library')).toHaveCount(0);
-    await expect(peerPage.getByTestId('whiteboard-tool-help')).toHaveCount(0);
+    /*
+     * The room's own host tools live in Excalidraw's footer now, beside its
+     * zoom: guiding the class, and clearing the board. This application's
+     * library and help buttons went with the tool rail -- Excalidraw carries
+     * both, and its library is still the host's alone.
+     */
+    await expect(hostPage.getByTestId('whiteboard-tool-guide')).toBeVisible();
+    await expect(hostPage.getByTestId('whiteboard-clear-btn')).toBeVisible();
+    await expect(peerPage.getByTestId('whiteboard-tool-guide')).toHaveCount(0);
+    await expect(peerPage.getByTestId('whiteboard-clear-btn')).toHaveCount(0);
     await expect(peerPage.locator('.layer-ui__wrapper__footer-right.zen-mode-transition')).toBeHidden();
     await expect(peerPage.locator('[data-whiteboard-role="peer"] [title="Library"]')).toBeHidden();
 
-    await hostPage.getByTestId('whiteboard-tool-library').click();
-    await expect(hostPage.getByTestId('whiteboard-library-panel')).toBeVisible();
-    await hostPage.getByTestId('whiteboard-library-close').click();
-    await expect(hostPage.getByTestId('whiteboard-library-panel')).toHaveCount(0);
-
-    await hostPage.getByTestId('whiteboard-tool-help').click();
+    // The shortcuts sheet has no button of its own now; "?" is how it opens.
+    await hostPage.keyboard.press('?');
     await expect(hostPage.getByTestId('whiteboard-shortcuts-help')).toBeVisible();
     await hostPage.getByTestId('whiteboard-shortcuts-close').click();
     await expect(hostPage.getByTestId('whiteboard-shortcuts-help')).toHaveCount(0);

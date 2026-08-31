@@ -1,6 +1,30 @@
 import { test, expect } from './fixtures';
-import { Page } from '@playwright/test';
+import { Page, Locator } from '@playwright/test';
 import { newAuthenticatedContext, expandPresenceIfCollapsed, clickCreateRoom } from './helpers';
+
+/**
+ * Choose a tool and wait until the editor says it has it.
+ *
+ * Excalidraw's tool is a radio with its own icon painted over it, so a plain
+ * click lands on the icon; forcing dispatches to the control. But force also
+ * skips the actionability checks, and a forced click that arrives before
+ * Excalidraw has finished mounting is simply dropped -- leaving the selection
+ * tool active, so the drag that follows draws nothing at all and the test
+ * fails somewhere else entirely. Asking the editor what it holds is the only
+ * reliable acknowledgement.
+ */
+async function selectTool(locator: Locator, expected: string) {
+  await locator.click({ force: true });
+  await expect
+    .poll(
+      async () =>
+        locator.page().evaluate(
+          () => (window as any).__debugExcalidrawApi?.getAppState?.().activeTool?.type ?? null,
+        ),
+      { timeout: 15000 },
+    )
+    .toBe(expected);
+}
 
 function appUrl(path: string) {
   return new URL(path, process.env.PLAYWRIGHT_BASE_URL).toString();
@@ -261,16 +285,18 @@ async function expectSameCommittedScene(pageA: Page, pageB: Page) {
 }
 
 const EXCALIDRAW_TOOL_BY_TEST_ID: Record<string, string> = {
-  'whiteboard-tool-select': 'selection',
-  'whiteboard-tool-pen': 'freedraw',
-  'whiteboard-tool-rectangle': 'rectangle',
-  'whiteboard-tool-circle': 'ellipse',
-  'whiteboard-tool-line': 'line',
-  'whiteboard-tool-arrow': 'arrow',
+  'toolbar-selection': 'selection',
+  'toolbar-freedraw': 'freedraw',
+  'toolbar-rectangle': 'rectangle',
+  'toolbar-ellipse': 'ellipse',
+  'toolbar-line': 'line',
+  'toolbar-arrow': 'arrow',
 };
 
 async function selectExcalidrawTool(page: Page, testId: keyof typeof EXCALIDRAW_TOOL_BY_TEST_ID) {
-  await page.getByTestId(testId).click();
+  // Excalidraw's tool is a radio with its own icon drawn over it, so the icon
+  // is what a plain click lands on. Forcing dispatches to the control.
+  await page.getByTestId(testId).click({ force: true });
   await expect
     .poll(
       async () =>
@@ -293,15 +319,15 @@ test.describe('Excalidraw', () => {
 
   test('tool buttons are visible in sidebar', async ({ page }) => {
     await joinRoom(page, 'ToolUser');
-    await expect(page.getByTestId('whiteboard-tool-select')).toBeVisible();
-    await expect(page.getByTestId('whiteboard-tool-pen')).toBeVisible();
-    await expect(page.getByTestId('whiteboard-tool-text')).toBeVisible();
-    await expect(page.getByTestId('whiteboard-tool-rectangle')).toBeVisible();
-    await expect(page.getByTestId('whiteboard-tool-circle')).toBeVisible();
-    await expect(page.getByTestId('whiteboard-tool-line')).toBeVisible();
-    await expect(page.getByTestId('whiteboard-tool-arrow')).toBeVisible();
-    await expect(page.getByTestId('whiteboard-tool-stickyNote')).toBeVisible();
-    await expect(page.getByTestId('whiteboard-tool-eraser')).toBeVisible();
+    await expect(page.getByTestId('toolbar-selection')).toBeVisible();
+    await expect(page.getByTestId('toolbar-freedraw')).toBeVisible();
+    await expect(page.getByTestId('toolbar-text')).toBeVisible();
+    await expect(page.getByTestId('toolbar-rectangle')).toBeVisible();
+    await expect(page.getByTestId('toolbar-ellipse')).toBeVisible();
+    await expect(page.getByTestId('toolbar-line')).toBeVisible();
+    await expect(page.getByTestId('toolbar-arrow')).toBeVisible();
+    await expect(page.getByTestId('toolbar-rectangle')).toBeVisible();
+    await expect(page.getByTestId('toolbar-eraser')).toBeVisible();
   });
 
   test('undo/redo bar is visible', async ({ page }) => {
@@ -311,26 +337,28 @@ test.describe('Excalidraw', () => {
 
   test('select tool is active by default', async ({ page }) => {
     await joinRoom(page, 'SelectUser');
-    const selectBtn = page.getByTestId('whiteboard-tool-select');
-    await expect(selectBtn).toHaveClass(/bg-blue-500/);
+    const selectBtn = page.getByTestId('toolbar-selection');
+    await expect(selectBtn).toBeChecked();
   });
 
   test('clicking a tool highlights it', async ({ page }) => {
     await joinRoom(page, 'ClickTool');
-    const penBtn = page.getByTestId('whiteboard-tool-pen');
-    const selectBtn = page.getByTestId('whiteboard-tool-select');
+    const penBtn = page.getByTestId('toolbar-freedraw');
+    const selectBtn = page.getByTestId('toolbar-selection');
 
-    await expect(selectBtn).toHaveClass(/bg-blue-500/);
-    await penBtn.click();
-    await page.waitForTimeout(500);
-    await expect(penBtn).toHaveClass(/bg-blue-500/);
-    await expect(selectBtn).not.toHaveClass(/bg-blue-500/);
+    // Through the helper, which waits for the editor to report the tool rather
+    // than for a fixed number of milliseconds: a click that lands before
+    // Excalidraw has finished mounting is dropped, and this test runs straight
+    // after the join.
+    await expect(selectBtn).toBeChecked();
+    await selectExcalidrawTool(page, 'toolbar-freedraw');
+    await expect(penBtn).toBeChecked();
+    await expect(selectBtn).not.toBeChecked();
 
-    const circleBtn = page.getByTestId('whiteboard-tool-circle');
-    await circleBtn.click();
-    await page.waitForTimeout(500);
-    await expect(circleBtn).toHaveClass(/bg-blue-500/);
-    await expect(penBtn).not.toHaveClass(/bg-blue-500/);
+    const circleBtn = page.getByTestId('toolbar-ellipse');
+    await selectExcalidrawTool(page, 'toolbar-ellipse');
+    await expect(circleBtn).toBeChecked();
+    await expect(penBtn).not.toBeChecked();
   });
 
   test('canvas has no drawn shapes on fresh room', async ({ page }) => {
@@ -356,7 +384,7 @@ test.describe('Excalidraw Collaboration', () => {
     await page1.waitForTimeout(3000);
     await page2.waitForTimeout(3000);
 
-    await selectExcalidrawTool(page1, 'whiteboard-tool-rectangle');
+    await selectExcalidrawTool(page1, 'toolbar-rectangle');
     await dragInCanvas(page1, [{ x: 420, y: 260 }, { x: 600, y: 400 }]);
 
     await expectCommittedElement(page1, 'rectangle', 1, { minWidth: 40, minHeight: 40 });
@@ -364,7 +392,7 @@ test.describe('Excalidraw Collaboration', () => {
     await expectCanvasInk(page1);
     await expectCanvasInk(page2);
 
-    await selectExcalidrawTool(page2, 'whiteboard-tool-line');
+    await selectExcalidrawTool(page2, 'toolbar-line');
     await dragInCanvas(page2, [{ x: 700, y: 260 }, { x: 700, y: 430 }]);
 
     await expectCommittedElement(page2, 'line', 1, { minPoints: 2 });
@@ -390,7 +418,7 @@ test.describe('Excalidraw Collaboration', () => {
     await page1.waitForTimeout(3000);
     await page2.waitForTimeout(3000);
 
-    await selectExcalidrawTool(page1, 'whiteboard-tool-rectangle');
+    await selectExcalidrawTool(page1, 'toolbar-rectangle');
     await dragInCanvas(page1, [{ x: 420, y: 260 }, { x: 600, y: 400 }]);
 
     const canvas2 = page2.locator('canvas').first();
@@ -417,7 +445,7 @@ test.describe('Excalidraw Collaboration', () => {
     await page1.waitForTimeout(3000);
     await page2.waitForTimeout(3000);
 
-    await selectExcalidrawTool(page1, 'whiteboard-tool-circle');
+    await selectExcalidrawTool(page1, 'toolbar-ellipse');
     await dragInCanvas(page1, [{ x: 420, y: 260 }, { x: 600, y: 400 }]);
     await expectCommittedElement(page1, 'ellipse', 1, { minWidth: 40, minHeight: 40 });
     await expectCommittedElement(page2, 'ellipse', 1, { minWidth: 40, minHeight: 40 });
@@ -441,7 +469,7 @@ test.describe('Excalidraw Collaboration', () => {
     await page1.waitForTimeout(3000);
     await page2.waitForTimeout(3000);
 
-    await selectExcalidrawTool(page1, 'whiteboard-tool-pen');
+    await selectExcalidrawTool(page1, 'toolbar-freedraw');
     await dragInCanvas(page1, [
       { x: 420, y: 320 },
       { x: 480, y: 280 },
@@ -465,16 +493,16 @@ test.describe('Excalidraw Collaboration', () => {
 
     await page1.waitForTimeout(3000);
 
-    const selectBtn1 = page1.getByTestId('whiteboard-tool-select');
-    await expect(selectBtn1).toHaveClass(/bg-blue-500/);
+    const selectBtn1 = page1.getByTestId('toolbar-selection');
+    await expect(selectBtn1).toBeChecked();
 
-    const penBtn1 = page1.getByTestId('whiteboard-tool-pen');
-    await penBtn1.click();
+    const penBtn1 = page1.getByTestId('toolbar-freedraw');
+    await selectTool(penBtn1, 'freedraw');
     await page1.waitForTimeout(500);
-    await expect(penBtn1).toHaveClass(/bg-blue-500/);
-    await expect(selectBtn1).not.toHaveClass(/bg-blue-500/);
+    await expect(penBtn1).toBeChecked();
+    await expect(selectBtn1).not.toBeChecked();
 
-    await expect(page1.getByTestId('whiteboard-tool-pen')).toHaveClass(/bg-blue-500/);
+    await expect(page1.getByTestId('toolbar-freedraw')).toBeChecked();
 
     await context.close();
   });
@@ -547,7 +575,7 @@ test.describe('Excalidraw Collaboration', () => {
       .poll(async () => (await getCollaborationState(page2)).providerConnected, { timeout: 10000 })
       .toBe(false);
 
-    await selectExcalidrawTool(page1, 'whiteboard-tool-pen');
+    await selectExcalidrawTool(page1, 'toolbar-freedraw');
     await dragInCanvas(page1, [
       { x: 420, y: 320 },
       { x: 480, y: 280 },
@@ -567,9 +595,9 @@ test.describe('Excalidraw Collaboration', () => {
     await joinRoom(page, 'PenLocal');
     await page.waitForTimeout(2000);
 
-    await selectExcalidrawTool(page, 'whiteboard-tool-pen');
+    await selectExcalidrawTool(page, 'toolbar-freedraw');
 
-    await expect(page.getByTestId('whiteboard-tool-pen')).toHaveClass(/bg-blue-500/);
+    await expect(page.getByTestId('toolbar-freedraw')).toBeChecked();
 
     await dragInCanvas(page, [
       { x: 420, y: 320 },
@@ -588,7 +616,7 @@ test.describe('Excalidraw Collaboration', () => {
     await joinRoom(page, 'PenHints');
     await page.waitForTimeout(2000);
 
-    await selectExcalidrawTool(page, 'whiteboard-tool-pen');
+    await selectExcalidrawTool(page, 'toolbar-freedraw');
 
     const canvasArea = page.getByTestId('whiteboard-canvas-area');
     const box = await canvasArea.boundingBox();
@@ -615,9 +643,9 @@ test.describe('Excalidraw Collaboration', () => {
     await joinRoom(page, 'ArrowUser');
     await page.waitForTimeout(2000);
 
-    await selectExcalidrawTool(page, 'whiteboard-tool-arrow');
+    await selectExcalidrawTool(page, 'toolbar-arrow');
 
-    await expect(page.getByTestId('whiteboard-tool-arrow')).toHaveClass(/bg-blue-500/);
+    await expect(page.getByTestId('toolbar-arrow')).toBeChecked();
 
     await dragInCanvas(page, [{ x: 420, y: 320 }, { x: 680, y: 320 }]);
     await expectCommittedElement(page, 'arrow', 1, { minPoints: 2 });

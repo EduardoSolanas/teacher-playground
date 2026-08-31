@@ -20,6 +20,7 @@ import {
   excalidrawElementsEqual,
   serializeExcalidrawElements,
   toExcalidrawToolType,
+  isMappedAppTool,
 } from '@/lib/whiteboard/excalidrawSync';
 import { reconcileRemoteElements } from '@/lib/whiteboard/excalidrawReconcile';
 import { getElementsFromArray, replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
@@ -668,6 +669,17 @@ export default function ExcalidrawWrapper({
 
   useEffect(() => {
     if (!apiRef.current || !activeTool) return;
+    /*
+     * Do not push back a tool this application cannot name.
+     *
+     * Excalidraw's toolbar is the room's only one now, and it carries tools
+     * this app has no word for. Those arrive here as themselves, map to
+     * `selection` on the way out, and were sent straight back -- so picking
+     * diamond, image, a frame or the laser flipped to the arrow a moment
+     * later. Silence is the correct answer: the editor already holds the tool
+     * it just told us about.
+     */
+    if (!isMappedAppTool(activeTool)) return;
     try {
       apiRef.current.setActiveTool(toExcalidrawActiveTool(activeTool));
     } catch {

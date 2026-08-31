@@ -5,15 +5,6 @@ import { getSelectedElements, deleteSelectedElements, duplicateSelectedElements 
 import type { ToolType } from '@/types/whiteboard';
 
 const SHORTCUTS: Array<{ key: string; label: string; action: () => void; ctrl?: boolean; shift?: boolean }> = [
-  { key: 'v', label: 'Select Tool (V)', action: () => store.setTool('select') },
-  { key: 'p', label: 'Pen Tool (P)', action: () => store.setTool('pen') },
-  { key: 't', label: 'Text Tool (T)', action: () => store.setTool('text') },
-  { key: 'r', label: 'Rectangle Tool (R)', action: () => store.setTool('rectangle') },
-  { key: 'c', label: 'Circle Tool (C)', action: () => store.setTool('circle') },
-  { key: 'l', label: 'Line Tool (L)', action: () => store.setTool('line') },
-  { key: 'a', label: 'Arrow Tool (A)', action: () => store.setTool('arrow') },
-  { key: 's', label: 'Sticky Note Tool (S)', action: () => store.setTool('stickyNote') },
-  { key: 'e', label: 'Eraser Tool (E)', action: () => store.setTool('eraser') },
   {
     key: 'delete',
     label: 'Delete Selected',
@@ -217,27 +208,16 @@ export function useKeyboardShortcuts() {
         }
       }
 
-      const toolMap: Record<string, ToolType> = {
-        v: 'select',
-        p: 'pen',
-        t: 'text',
-        r: 'rectangle',
-        c: 'circle',
-        l: 'line',
-        a: 'arrow',
-        s: 'stickyNote',
-        e: 'eraser',
-      };
-
-      const key = e.key.toLowerCase();
-      if (toolMap[key] && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-        const active = document.activeElement;
-        if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || (active as HTMLElement).contentEditable === 'true')) {
-          return;
-        }
-        e.preventDefault();
-        store.setTool(toolMap[key]);
-      }
+      /*
+       * Choosing a tool is Excalidraw's, keyboard included.
+       *
+       * This mapped v/p/t/r/c/l/a/s/e onto the store and called preventDefault
+       * in the capture phase, which beat Excalidraw to its own keys. With the
+       * toolbar now theirs, that would have left two sets of letters for one
+       * row of buttons -- and the pair that did not match (C for circle where
+       * they use O for ellipse, S for a sticky note that was only ever a
+       * rectangle) would have been the confusing half.
+       */
     }
 
     // Capture phase: once the Excalidraw canvas has focus (i.e. after drawing)

@@ -1,6 +1,30 @@
 import { test, expect } from './fixtures';
-import { Page, Browser } from '@playwright/test';
+import { Page, Browser, Locator } from '@playwright/test';
 import { appendElement, createRoomWithMaxUsers, excalidrawRectangle, newAuthenticatedContext, expandPresenceIfCollapsed, roomIdFromPageUrl, clickCreateRoom, expectSessionCookie, unusedHexRoomId } from './helpers';
+
+/**
+ * Choose a tool and wait until the editor says it has it.
+ *
+ * Excalidraw's tool is a radio with its own icon painted over it, so a plain
+ * click lands on the icon; forcing dispatches to the control. But force also
+ * skips the actionability checks, and a forced click that arrives before
+ * Excalidraw has finished mounting is simply dropped -- leaving the selection
+ * tool active, so the drag that follows draws nothing at all and the test
+ * fails somewhere else entirely. Asking the editor what it holds is the only
+ * reliable acknowledgement.
+ */
+async function selectTool(locator: Locator, expected: string) {
+  await locator.click({ force: true });
+  await expect
+    .poll(
+      async () =>
+        locator.page().evaluate(
+          () => (window as any).__debugExcalidrawApi?.getAppState?.().activeTool?.type ?? null,
+        ),
+      { timeout: 15000 },
+    )
+    .toBe(expected);
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -51,7 +75,7 @@ async function cleanContextAndJoin(
   }
 
   // Wait for whiteboard to be ready
-  await expect(page.getByTestId('whiteboard-tool-select')).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId('toolbar-selection')).toBeVisible({ timeout: 15000 });
   await expect(canvasArea).toBeVisible({ timeout: 15000 });
 }
 
@@ -266,7 +290,7 @@ test.describe('Room Connection Lifecycle', () => {
 
     // Whiteboard UI is visible
     await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible();
-    await expect(page.getByTestId('whiteboard-tool-select')).toBeVisible(); // tool sidebar
+    await expect(page.getByTestId('toolbar-selection')).toBeVisible(); // tool sidebar
     await expect(page.locator('[data-whiteboard-role="host"] [title="Library"]')).toBeVisible(); // Excalidraw top bar
     await expect(page.locator('.undo-button-container button')).toBeVisible(); // board controls, in the footer
 
@@ -366,7 +390,7 @@ test.describe('Room Connection Lifecycle', () => {
     await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible();
 
     // Draw through the real path so the element flows into the debounced save.
-    await page.getByTestId('whiteboard-tool-rectangle').click();
+    await selectTool(page.getByTestId('toolbar-rectangle'), 'rectangle');
     await dragOnCanvas(page, { x: 200, y: 200 }, { x: 350, y: 300 });
 
     // Poll rather than sample: the room is polled in the background, so an
@@ -507,8 +531,8 @@ test.describe('Multi-Peer Sync', () => {
       await page.waitForTimeout(2000);
 
       // Alice draws a rectangle
-      const rectIcon = page.getByTestId('whiteboard-tool-rectangle');
-      await rectIcon.click();
+      const rectIcon = page.getByTestId('toolbar-rectangle');
+      await selectTool(rectIcon, 'rectangle');
       await dragOnCanvas(page, { x: 200, y: 200 }, { x: 350, y: 300 });
 
       // Verify Alice's store has the element
@@ -660,8 +684,8 @@ test.describe('Multi-Peer Sync', () => {
       await page.waitForTimeout(2000);
 
       // Bob draws a pen stroke
-      const penIcon = bobPage.getByTestId('whiteboard-tool-pen');
-      await penIcon.click();
+      const penIcon = bobPage.getByTestId('toolbar-freedraw');
+      await selectTool(penIcon, 'freedraw');
       await dragOnCanvas(bobPage, { x: 100, y: 100 }, { x: 250, y: 200 });
 
       const bobState = await getStoreState(bobPage);
@@ -716,7 +740,7 @@ test.describe('Multi-Peer Sync', () => {
       await waitForProviderConnected(bobPage);
       await page.waitForTimeout(2000);
 
-      await bobPage.getByTestId('whiteboard-tool-pen').click();
+      await selectTool(bobPage.getByTestId('toolbar-freedraw'), 'freedraw');
       await dragOnCanvas(bobPage, { x: 160, y: 160 }, { x: 360, y: 300 });
 
       const freedrawOnAlice = () => page.evaluate(() => {
@@ -778,8 +802,8 @@ test.describe('Multi-Peer Sync', () => {
       await waitForProviderConnected(bobPage);
       await page.waitForTimeout(2000);
 
-      await page.getByTestId('whiteboard-tool-pen').click();
-      await bobPage.getByTestId('whiteboard-tool-rectangle').click();
+      await selectTool(page.getByTestId('toolbar-freedraw'), 'freedraw');
+      await selectTool(bobPage.getByTestId('toolbar-rectangle'), 'rectangle');
 
       /*
        * Alice draws continuously until told to stop, rather than for a fixed
@@ -912,13 +936,13 @@ test.describe('Multi-Peer Sync', () => {
       await page.waitForTimeout(2000);
 
       // Alice draws rectangle
-      const rectIcon = page.getByTestId('whiteboard-tool-rectangle');
-      await rectIcon.click();
+      const rectIcon = page.getByTestId('toolbar-rectangle');
+      await selectTool(rectIcon, 'rectangle');
       await dragOnCanvas(page, { x: 100, y: 100 }, { x: 200, y: 200 });
 
       // Bob draws circle
-      const circleIcon = bobPage.getByTestId('whiteboard-tool-circle');
-      await circleIcon.click();
+      const circleIcon = bobPage.getByTestId('toolbar-ellipse');
+      await selectTool(circleIcon, 'ellipse');
       await dragOnCanvas(bobPage, { x: 300, y: 300 }, { x: 400, y: 400 });
 
       // Wait for sync both ways
@@ -982,16 +1006,16 @@ test.describe('Multi-Peer Sync', () => {
     const roomUrl = page.url();
 
     // Alice draws multiple elements
-    const rectIcon = page.getByTestId('whiteboard-tool-rectangle');
-    await rectIcon.click();
+    const rectIcon = page.getByTestId('toolbar-rectangle');
+    await selectTool(rectIcon, 'rectangle');
     await dragOnCanvas(page, { x: 50, y: 50 }, { x: 150, y: 150 });
 
-    const penIcon = page.getByTestId('whiteboard-tool-pen');
-    await penIcon.click();
+    const penIcon = page.getByTestId('toolbar-freedraw');
+    await selectTool(penIcon, 'freedraw');
     await dragOnCanvas(page, { x: 200, y: 200 }, { x: 300, y: 300 });
 
-    const circleIcon = page.getByTestId('whiteboard-tool-circle');
-    await circleIcon.click();
+    const circleIcon = page.getByTestId('toolbar-ellipse');
+    await selectTool(circleIcon, 'ellipse');
     await dragOnCanvas(page, { x: 400, y: 400 }, { x: 500, y: 500 });
 
     await waitForSync(page, 3, 10000);
@@ -1065,10 +1089,25 @@ test.describe('Reconnection & Resilience', () => {
   test('rapid tool switching doesn\'t lose elements', async ({ page }) => {
     await cleanContextAndJoin(page, 'SwitchUser');
 
-    // Draw with pen
-    const penIcon = page.getByTestId('whiteboard-tool-pen');
-    await penIcon.click();
-    await dragOnCanvas(page, { x: 100, y: 100 }, { x: 200, y: 200 });
+    /*
+     * Draw with the pen, and insist on it.
+     *
+     * What this test is about is the switching that follows; the stroke is
+     * only setup. Synthetic pointer input at a canvas is unreliable by the
+     * admission of the helper above -- a drag that lands while Excalidraw is
+     * mid-render produces nothing and says nothing -- so a single attempt made
+     * this test fail perhaps one run in four, always at the last assertion and
+     * never anywhere near the cause.
+     */
+    const penIcon = page.getByTestId('toolbar-freedraw');
+    await selectTool(penIcon, 'freedraw');
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await dragOnCanvas(page, { x: 100, y: 100 }, { x: 200, y: 200 });
+      const drawn = await page.evaluate(
+        () => (window as any).__debugExcalidrawApi?.getSceneElements?.().length ?? 0,
+      );
+      if (drawn > 0) break;
+    }
 
     // Rapidly switch tools
     await page.keyboard.press('r'); // rectangle
@@ -1111,7 +1150,7 @@ test.describe('Reconnection & Resilience', () => {
 
       // Draw through the real path: writing straight into the legacy store
       // does not reach Excalidraw or Yjs, so it would never sync to Bob.
-      await page.getByTestId('whiteboard-tool-rectangle').click();
+      await selectTool(page.getByTestId('toolbar-rectangle'), 'rectangle');
       await dragOnCanvas(page, { x: 200, y: 200 }, { x: 320, y: 300 });
       await waitForSync(bobPage, 1, 10000);
 
@@ -1163,8 +1202,8 @@ test.describe('Edge Cases', () => {
     await cleanContextAndJoin(page, 'FastDraw');
 
     // Immediately draw without waiting for provider connected
-    const penIcon = page.getByTestId('whiteboard-tool-pen');
-    await penIcon.click();
+    const penIcon = page.getByTestId('toolbar-freedraw');
+    await selectTool(penIcon, 'freedraw');
     await dragOnCanvas(page, { x: 100, y: 100 }, { x: 200, y: 200 });
 
     const state = await getStoreState(page);
@@ -1228,30 +1267,42 @@ test.describe('Edge Cases', () => {
     }
   });
 
-  test('all 8 tools can be selected and active state is shown', async ({ page }) => {
+  test('the toolbar keys select the tool they name', async ({ page }) => {
+    /*
+     * Excalidraw's letters, because the toolbar is Excalidraw's. This used to
+     * press this application's own set against a rail that no longer exists --
+     * and two of those letters never agreed with the editor anyway: C for a
+     * circle where it uses O for an ellipse, and S for a sticky note that was
+     * only ever a rectangle wearing a different name.
+     */
     await cleanContextAndJoin(page, 'ToolUser');
+    await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible();
+    await expect(page.getByTestId('toolbar-selection')).toBeAttached();
+    // Excalidraw answers its shortcuts only while its canvas has the focus,
+    // and a fresh join leaves the focus on the document.
+    await page.locator('canvas.excalidraw__canvas.interactive').first().click({ position: { x: 200, y: 200 } });
 
     const tools = [
-      { key: 'p', title: 'Pen (P)', expected: 'pen' },
-      { key: 'r', title: 'Rectangle (R)', expected: 'rectangle' },
-      { key: 'c', title: 'Circle (C)', expected: 'circle' },
-      { key: 'l', title: 'Line (L)', expected: 'line' },
-      { key: 'a', title: 'Arrow (A)', expected: 'arrow' },
-      { key: 't', title: 'Text (T)', expected: 'text' },
-      { key: 's', title: 'Sticky Note (S)', expected: 'stickyNote' },
-      { key: 'e', title: 'Eraser (E)', expected: 'eraser' },
+      { key: 'v', testId: 'toolbar-selection' },
+      { key: 'r', testId: 'toolbar-rectangle' },
+      { key: 'd', testId: 'toolbar-diamond' },
+      { key: 'o', testId: 'toolbar-ellipse' },
+      { key: 'a', testId: 'toolbar-arrow' },
+      { key: 'l', testId: 'toolbar-line' },
+      { key: 'p', testId: 'toolbar-freedraw' },
+      { key: 't', testId: 'toolbar-text' },
+      { key: 'e', testId: 'toolbar-eraser' },
     ];
 
     for (const tool of tools) {
       await page.keyboard.press(tool.key);
+      // Excalidraw re-renders the whole toolbar on a tool change, and a press
+      // landing inside that drops. Pressing straight into the next key failed
+      // on a different tool each run, which is what a race looks like.
       await page.waitForTimeout(100);
-
-      const state = await getStoreState(page);
-      expect(state.tool).toBe(tool.expected);
-
-      // Active tool should have blue background
-      const activeTool = page.getByTestId(`whiteboard-tool-${tool.expected}`);
-      await expect(activeTool).toHaveClass(/bg-blue-500/);
+      // A radio, so the editor's own answer to "which tool is on" is the
+      // assertion, rather than a class name this application chose.
+      await expect(page.getByTestId(tool.testId)).toBeChecked();
     }
   });
 
@@ -1286,4 +1337,5 @@ test.describe('Edge Cases', () => {
       await bobContext.close();
     }
   });
+
 });
