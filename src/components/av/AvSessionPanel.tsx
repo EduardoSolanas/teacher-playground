@@ -13,14 +13,6 @@ interface AvSessionPanelProps {
   readonly isLocalHost: boolean;
   /** Start out of the way rather than open. */
   readonly collapsed?: boolean;
-  /**
-   * Hold the mic and camera here after all.
-   *
-   * They live in the top bar now, which the guest hostname does not render --
-   * and that is the student side of a lesson, so without this the person most
-   * likely to need to mute in a hurry would have nothing to press.
-   */
-  readonly showControls?: boolean;
 }
 
 function errorCopy(av: UseAvSessionResult): string | null {
@@ -177,8 +169,11 @@ function ParticipantTile({
 }
 
 /**
- * Grid of local + remote A/V tiles, and the device pickers. The mic and
- * camera live in the top bar; this holds them only where there is no bar.
+ * Grid of local + remote A/V tiles, with the mic, the camera and the device
+ * pickers. The controls belong to the call, so they travel with it: the panel
+ * moves and fullscreens, and a mute button on the far side of the screen from
+ * the face being muted is one you have to go looking for. It also reaches the
+ * guest hostname, which renders no top bar at all.
  * Rendered only for admitted participants (parent gates on !isWaiting).
  */
 export default function AvSessionPanel({
@@ -186,7 +181,6 @@ export default function AvSessionPanel({
   localIdentity,
   isLocalHost,
   collapsed = false,
-  showControls = false,
 }: AvSessionPanelProps) {
   const message = errorCopy(av);
   const tiles = av.participants.length > 0
@@ -335,7 +329,7 @@ export default function AvSessionPanel({
         >
           <span aria-hidden className="text-[0.75rem] leading-none tracking-[0.2em]">⠿</span>
         </div>
-        {showControls && <CallControls av={av} />}
+        <CallControls av={av} />
       </div>
 
       {message && (

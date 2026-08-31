@@ -36,20 +36,18 @@ describe('AvSessionPanel', () => {
     expect(av.attachTrack).toHaveBeenCalledWith('me', 'camera', expect.any(HTMLVideoElement));
   });
 
-  it('leaves the controls to the bar that now holds them', () => {
-    const av = makeAv({ local: { micMuted: false, camOn: true } });
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
-    expect(screen.queryByTestId('av-call-controls')).toBeNull();
-  });
-
-  it('keeps the controls when there is no bar to hold them', () => {
+  it('holds the mic and camera with the faces', () => {
     /*
-     * The top nav is not rendered on the guest hostname, which is the student
-     * side of a lesson. Without this the person most likely to need to mute in
-     * a hurry would have nothing to press.
+     * The controls belong to the call, so they travel with it. Parked in the
+     * top bar they were a fixed target, but the panel moves and fullscreens
+     * now, and a mute button on the far side of the screen from the face you
+     * are muting is a button you have to go looking for.
+     *
+     * It also puts them somewhere the guest hostname can reach: that side of a
+     * lesson renders no top bar at all.
      */
     const av = makeAv({ local: { micMuted: false, camOn: true } });
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} showControls />);
+    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
     expect(screen.getByTestId('av-call-controls')).toBeTruthy();
     fireEvent.click(screen.getByTestId('av-toggle-cam'));
     expect(av.toggleCamera).toHaveBeenCalledTimes(1);
