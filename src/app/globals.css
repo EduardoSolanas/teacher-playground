@@ -132,3 +132,10 @@ textarea {
     display: none;
   }
 }
+
+/* Excalidraw's own help button, bottom right of the canvas. The tool rail
+   already carries a "?" that opens this application's shortcuts sheet, and
+   two help buttons in one room send a teacher to two different answers. */
+.excalidraw .help-icon {
+  display: none;
+}
