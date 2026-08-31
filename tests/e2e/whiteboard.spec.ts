@@ -285,10 +285,12 @@ test.describe('Room Connection Lifecycle', () => {
     await waitForPresence(page, 'Joiner');
   });
 
-  test('in-room leave clears localStorage room and session keys', async ({ page }) => {
+  test('leaving a room clears localStorage room and session keys', async ({ page }) => {
+    // Leaving is "Back to rooms" now: the in-room Leave beside it did the same
+    // clearing and differed only in where it put you afterwards.
     const roomId = await createRoomWithMaxUsers(page, 'LeaveStorageHost', 2);
     await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible();
-    await expect(page.getByTestId('whiteboard-leave-room-btn')).toBeVisible();
+    await expect(page.getByTestId('whiteboard-back-to-rooms')).toBeVisible();
 
     // Seed board cache keys; peer id and username are set during join.
     await page.evaluate((rid) => {
@@ -309,8 +311,8 @@ test.describe('Room Connection Lifecycle', () => {
     expect(beforeLeave.peerId).not.toBeNull();
     expect(beforeLeave.username).toBe('LeaveStorageHost');
 
-    await page.getByTestId('whiteboard-leave-room-btn').click();
-    await expect(page.getByTestId('whiteboard-username-input')).toBeVisible({ timeout: 10000 });
+    await page.getByTestId('whiteboard-back-to-rooms').click();
+    await expect(page.locator('h1')).toContainText('Collaborative Whiteboard', { timeout: 10000 });
 
     const afterLeave = await page.evaluate((rid) => ({
       state: localStorage.getItem(`whiteboard:${rid}:state`),

@@ -261,13 +261,6 @@ function RoomContent({ roomId }: { roomId: string }) {
     syncUserName(name);
   };
 
-  const handleLeaveRoom = useCallback(() => {
-    clearSession();
-    av.leave();
-    leaveRoom();
-    setUserName(null);
-  }, [av, clearSession, leaveRoom]);
-
   const handleBackToRooms = useCallback(() => {
     clearSession();
     av.leave();
@@ -477,14 +470,6 @@ function RoomContent({ roomId }: { roomId: string }) {
           title="Clear board"
         >
           Clear
-        </button>
-        <button
-          data-testid="whiteboard-leave-room-btn"
-          onClick={handleLeaveRoom}
-          className="flex h-9 cursor-pointer items-center justify-center rounded-lg border border-slate-700 px-3 text-[0.8125rem] font-medium text-slate-300 transition-colors duration-150 hover:bg-slate-700 hover:text-slate-100 sm:h-7 sm:px-2 sm:text-[0.6875rem]"
-          title="Leave room"
-        >
-          Leave
         </button>
       </div>
       <ClearBoardModal
