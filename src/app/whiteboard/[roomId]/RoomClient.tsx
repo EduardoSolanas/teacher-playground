@@ -26,6 +26,7 @@ import { UndoRedoBar } from '@/components/whiteboard/UndoRedoBar';
 import AvSessionPanel from '@/components/av/AvSessionPanel';
 import StartCallButton from '@/components/av/StartCallButton';
 import ConnectionLostNotice from '@/components/whiteboard/ConnectionLostNotice';
+import RoomNameField from '@/components/whiteboard/RoomNameField';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useScopedUndo } from '@/hooks/useScopedUndo';
 import * as store from '@/lib/whiteboard/store';
@@ -105,6 +106,8 @@ function RoomContent({ roomId }: { roomId: string }) {
     error,
     status,
     connectionLost,
+    roomName,
+    setRoomName,
     maxUsers,
     elements,
     localPeerId,
@@ -308,6 +311,27 @@ function RoomContent({ roomId }: { roomId: string }) {
     </div>
   );
 
+  /*
+   * Takes the new name locally before the server has confirmed it.
+   *
+   * The bar is what the teacher is looking at while they type, so it has to
+   * settle on the words they just entered rather than snap back to the old
+   * ones until the next room fetch. A refusal is rare -- the only caller who
+   * sees the pencil is the owner, who is the only account allowed to rename --
+   * and the next read of the room corrects it if one ever happens.
+   */
+  const handleRenameRoom = useCallback(
+    (next: string) => {
+      setRoomName(next);
+      void ajaxFetch(`/api/whiteboard/room/${roomId}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: next }),
+      }).catch(() => undefined);
+    },
+    [roomId, setRoomName],
+  );
+
   const handleBackToRooms = useCallback(() => {
     clearSession();
     av.leave();
@@ -426,6 +450,13 @@ function RoomContent({ roomId }: { roomId: string }) {
         onDisplayNameChange={handleJoin}
         onNavigate={handleBackToRooms}
         rosterExpanded={!presenceCollapsed}
+        center={
+          <RoomNameField
+            name={roomName}
+            canRename={isLocalHost}
+            onRename={handleRenameRoom}
+          />
+        }
       />
       <ToolSidebar
         activeTool={activeTool}

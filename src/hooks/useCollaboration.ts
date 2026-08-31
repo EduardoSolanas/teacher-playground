@@ -79,6 +79,8 @@ export function useCollaboration(
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const [guideMessage, setGuideMessage] = useState<FollowMessage | null>(null);
   const [maxUsers, setMaxUsers] = useState(DEFAULT_MAX_USERS);
+  /** What the room is called; null until the room has been read, or unnamed. */
+  const [roomName, setRoomName] = useState<string | null>(null);
   const [waitingPeers, setWaitingPeers] = useState<WhiteboardUser[]>([]);
   const [isWaiting, setIsWaiting] = useState(false);
   // Bumped when the room must be re-read, e.g. after the host admits this peer.
@@ -264,6 +266,7 @@ export function useCollaboration(
           lastStoredViewportRef.current = loadedViewport;
           lastRoomUpdatedAtRef.current = data.updated_at || Date.now();
           setMaxUsers(data.maxUsers || DEFAULT_MAX_USERS);
+          setRoomName(typeof data.name === 'string' ? data.name : null);
           applyHostFromApi(hostPeerIdRef, data.hostPeerId, setHostPeerId);
           applyElements(loadedElements);
           // Also publish what the room already contains, so a board reopened
@@ -995,6 +998,9 @@ export function useCollaboration(
   return {
     isConnected,
     isSynced,
+    roomName,
+    /** Takes a rename locally, so the bar does not wait for a round trip. */
+    setRoomName,
     /** The socket has been down long enough that the fallbacks have stopped. */
     connectionLost,
     users,
