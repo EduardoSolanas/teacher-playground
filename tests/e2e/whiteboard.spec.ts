@@ -75,9 +75,18 @@ async function getExcalidrawSceneIds(page: Page) {
     .sort());
 }
 
+/**
+ * What the shared document says is on the board.
+ *
+ * Excalidraw deletes by marking `isDeleted` rather than by removing, so an
+ * undone element stays in the array as a tombstone for the server to prune.
+ * Counting those would be asking what the array holds, when the question here
+ * is what anybody can see.
+ */
 async function getSharedYjsElementIds(page: Page) {
   return page.evaluate(() => ((window as any).__whiteboardCollab?.provider?.doc?.getArray('elements')
     ?.toArray?.() ?? [])
+    .filter((element: { get: (key: string) => unknown }) => element.get('isDeleted') !== true)
     .map((element: { get: (key: string) => unknown }) => element.get('id'))
     .filter((id: unknown): id is string => typeof id === 'string')
     .sort());
@@ -1190,8 +1199,9 @@ test.describe('Edge Cases', () => {
       await waitForProviderConnected(bobPage);
       await page.waitForTimeout(2000);
 
-      // Alice adds 3 elements through the Excalidraw scene, which creates the
-      // local-origin Yjs transactions tracked by the scoped UndoManager.
+      // Alice adds 3 elements through the Excalidraw scene. Her undo is
+      // Excalidraw's own, and remote work never enters it: updates from Bob
+      // are applied with CaptureUpdateAction.NEVER.
       const elementIds = ['undo-yjs-1', 'undo-yjs-2', 'undo-yjs-3'];
       for (let i = 0; i < elementIds.length; i += 1) {
         await appendElement(page, excalidrawRectangle(elementIds[i], i * 50, 0, i + 1));

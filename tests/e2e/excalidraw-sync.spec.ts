@@ -106,6 +106,24 @@ async function sharedElementIds(page: Page): Promise<string[]> {
   });
 }
 
+/**
+ * What the shared document says is actually on the board.
+ *
+ * Excalidraw deletes by marking `isDeleted` rather than by removing, so an
+ * undone element stays in the array as a tombstone -- the server prunes those
+ * separately. `sharedElementIds` counts them, which is right for asking what
+ * the array holds and wrong for asking what anybody can see.
+ */
+async function liveSharedElementIds(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const elements = (window as any).__whiteboardCollab?.provider?.doc?.getArray('elements');
+    return (elements?.toArray?.() ?? [])
+      .filter((element: any) => element.get('isDeleted') !== true)
+      .map((element: any) => element.get('id'))
+      .sort();
+  });
+}
+
 async function replaceElement(page: Page, element: Record<string, unknown>) {
   await waitForExcalidrawApi(page);
   await page.evaluate((nextElement) => {
@@ -333,7 +351,10 @@ test.describe('Excalidraw scene sync', () => {
       await page.locator('.undo-button-container button').click();
       await expect.poll(async () => sceneElementIds(page), { timeout: 20000 }).toEqual(['undo-bob']);
       await expect.poll(async () => sceneElementIds(bobPage), { timeout: 20000 }).toEqual(['undo-bob']);
-      await expect.poll(async () => sharedElementIds(page), { timeout: 20000 }).toEqual(['undo-bob']);
+      // Alice's element is tombstoned in the array, not removed: what matters
+      // is that nothing anybody can see went with it except her own work.
+      await expect.poll(async () => liveSharedElementIds(page), { timeout: 20000 })
+        .toEqual(['undo-bob']);
 
       await expect(page.locator('.redo-button-container button')).toBeEnabled();
       await page.locator('.redo-button-container button').click();

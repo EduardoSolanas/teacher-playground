@@ -555,6 +555,17 @@ function RoomContent({ roomId }: { roomId: string }) {
           void ajaxFetch(`/api/whiteboard/room/${roomId}/clear`, { method: 'POST' })
             .then((response) => {
               if (!response.ok) return;
+              /*
+               * The document is emptied by the server and the deletion arrives
+               * over this peer's socket, but the local caches beside it are
+               * not on that path: the legacy store, the React copy and the
+               * saved snapshot each hold their own elements. They were reset
+               * here before the route existed, and still have to be -- the
+               * difference is only that it now happens once the clear has been
+               * allowed rather than instead of asking.
+               */
+              setElements([]);
+              store.setElements([]);
               store.deselectAll();
               clearState();
             })
