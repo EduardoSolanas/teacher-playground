@@ -36,6 +36,24 @@ describe('AvSessionPanel', () => {
     expect(av.attachTrack).toHaveBeenCalledWith('me', 'camera', expect.any(HTMLVideoElement));
   });
 
+  it('ends the call when asked, without leaving the room', () => {
+    // A call that can be joined has to be leavable, and leaving it is not the
+    // same as leaving the lesson -- the board carries on either way.
+    const onEndCall = vi.fn();
+    const av = makeAv();
+    render(
+      <AvSessionPanel av={av} localIdentity="me" isLocalHost={false} onEndCall={onEndCall} />,
+    );
+    fireEvent.click(screen.getByTestId('av-end-call'));
+    expect(onEndCall).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves out the end control when there is nothing to end it with', () => {
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    expect(screen.queryByTestId('av-end-call')).toBeNull();
+  });
+
   it('holds the mic and camera with the faces', () => {
     /*
      * The controls belong to the call, so they travel with it. Parked in the

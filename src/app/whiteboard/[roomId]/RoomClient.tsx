@@ -24,6 +24,7 @@ import { LibraryPanel } from '@/components/whiteboard/LibraryPanel';
 import { ShortcutsHelp } from '@/components/whiteboard/ShortcutsHelp';
 import { UndoRedoBar } from '@/components/whiteboard/UndoRedoBar';
 import AvSessionPanel from '@/components/av/AvSessionPanel';
+import StartCallButton from '@/components/av/StartCallButton';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useScopedUndo } from '@/hooks/useScopedUndo';
 import * as store from '@/lib/whiteboard/store';
@@ -137,13 +138,29 @@ function RoomContent({ roomId }: { roomId: string }) {
   useClearSessionOnEviction(clearSession, { wasKicked, wasRejected, wasSuspended });
 
   // Voice only after admission. Waiting / kicked peers never fetch a token.
-  const avEnabled = Boolean(userName) && !isWaiting && !wasKicked;
+  const avAllowed = Boolean(userName) && !isWaiting && !wasKicked;
+  /*
+   * And only once somebody has asked for it.
+   *
+   * Opening a room used to take the camera and the microphone whether or not
+   * the lesson wanted a call, so the browser's recording indicator came on for
+   * someone who had only opened a whiteboard, and a teacher setting a board up
+   * an hour early sat live in an empty room.
+   */
+  const [callWanted, setCallWanted] = useState(false);
+  const avEnabled = avAllowed && callWanted;
   const av = useAvSession({
     roomId,
     identity: localPeerId,
     displayName: userName ?? 'Anonymous',
     enabled: avEnabled,
   });
+
+  // Losing the right to a call ends any wish for one, so admission does not
+  // drop somebody straight back into a call they left before being kicked.
+  useEffect(() => {
+    if (!avAllowed) setCallWanted(false);
+  }, [avAllowed]);
 
   useEffect(() => { cleanupStaleRooms(); }, []);
 
@@ -416,9 +433,16 @@ function RoomContent({ roomId }: { roomId: string }) {
           {moderationError}
         </div>
       )}
-      {avEnabled && (
-        <AvSessionPanel av={av} localIdentity={localPeerId} isLocalHost={isLocalHost} />
-      )}
+      {avAllowed && (avEnabled ? (
+        <AvSessionPanel
+          av={av}
+          localIdentity={localPeerId}
+          isLocalHost={isLocalHost}
+          onEndCall={() => setCallWanted(false)}
+        />
+      ) : (
+        <StartCallButton onStart={() => setCallWanted(true)} />
+      ))}
       {shouldOverlayConnectingScreen({ boardEverShown, isSynced }) && <LoadingScreen />}
       <LibraryPanel visible={isLocalHost && libraryOpen} onClose={() => setLibraryOpen(false)} />
       <ShortcutsHelp

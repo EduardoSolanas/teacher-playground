@@ -13,6 +13,13 @@ interface AvSessionPanelProps {
   readonly isLocalHost: boolean;
   /** Start out of the way rather than open. */
   readonly collapsed?: boolean;
+  /**
+   * Hang up, without leaving the room.
+   *
+   * The board carries on either way, so this is not the Leave in the bottom
+   * bar. Absent where the call is not something the caller can end.
+   */
+  readonly onEndCall?: () => void;
 }
 
 function errorCopy(av: UseAvSessionResult): string | null {
@@ -181,6 +188,7 @@ export default function AvSessionPanel({
   localIdentity,
   isLocalHost,
   collapsed = false,
+  onEndCall,
 }: AvSessionPanelProps) {
   const message = errorCopy(av);
   const tiles = av.participants.length > 0
@@ -330,6 +338,17 @@ export default function AvSessionPanel({
           <span aria-hidden className="text-[0.75rem] leading-none tracking-[0.2em]">⠿</span>
         </div>
         <CallControls av={av} />
+        {onEndCall && (
+          <button
+            type="button"
+            data-testid="av-end-call"
+            onClick={onEndCall}
+            title="Leave the call"
+            className="rounded-md border border-rose-500/60 px-2 py-1 text-[0.6875rem] text-rose-200 transition-colors hover:bg-rose-500/20"
+          >
+            End
+          </button>
+        )}
       </div>
 
       {message && (
