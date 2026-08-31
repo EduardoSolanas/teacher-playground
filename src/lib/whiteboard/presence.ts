@@ -20,7 +20,19 @@ export function activePeerIds(db: RoomDatabase, roomId: string): Set<string> {
 
 export function readActiveUsers(db: RoomDatabase, roomId: string) {
   const cutoff = Date.now() - ACTIVE_WINDOW_MS;
-  db.prepare(`DELETE FROM room_presence WHERE last_seen < ?`).run(cutoff);
+  /*
+   * Sweep this room, not every room.
+   *
+   * The read is per-room and the sweep was not, so reading one room's roster
+   * deleted stale rows belonging to rooms nobody had mentioned. Nothing broke
+   * -- every reader filters by the same window, so the rows were already
+   * invisible -- but it made one lesson's traffic decide when another lesson's
+   * rows disappeared, which is a coupling no caller asked for and none could
+   * see. What is left behind goes when the room does.
+   */
+  db.prepare(
+    `DELETE FROM room_presence WHERE room_id = ? AND last_seen < ?`,
+  ).run(roomId, cutoff);
 
   const allowFirstUserHost = getRoomAllowFirstUserHost(db, roomId);
 

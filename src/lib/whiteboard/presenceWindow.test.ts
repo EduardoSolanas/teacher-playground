@@ -69,6 +69,33 @@ describe('the presence active window', () => {
     expect(rowCount()).toBe(0);
   });
 
+  it('sweeps only the room it was asked about', () => {
+    /*
+     * The read is per-room; the sweep was not. A room being read had no
+     * business deleting the rows of a room nobody had mentioned -- and a peer
+     * quietly stale in one room could be swept by traffic in another, which is
+     * a coupling nothing here wants and nothing states.
+     */
+    db.prepare(
+      `INSERT INTO rooms (room_id, host_peer_id, allow_first_user_host, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run('OTHERRM', null, 0, Date.now(), Date.now());
+    const stale = Date.now() - (ACTIVE_WINDOW_MS + MARGIN_MS);
+    db.prepare(
+      `INSERT INTO room_presence (room_id, peer_id, user_name, color, first_seen, last_seen, account_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run('OTHERRM', 'theirs', 'user-theirs', '#112233', stale, stale, 'acc-theirs');
+    seedPeer('gone', stale);
+
+    readActiveUsers(db, ROOM);
+
+    expect(rowCount()).toBe(1);
+    const remaining = db.prepare(
+      `SELECT room_id AS roomId FROM room_presence`,
+    ).all() as Array<{ roomId: string }>;
+    expect(remaining.map((r) => r.roomId)).toEqual(['OTHERRM']);
+  });
+
   it('orders the roster by arrival, not by last report', () => {
     // first_seen is what orders the roster and what the first-user host
     // fallback elects on, so a heartbeat must never be allowed to reset it.
