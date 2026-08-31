@@ -139,3 +139,14 @@ textarea {
 .excalidraw .help-icon {
   display: none;
 }
+
+/* Excalidraw's own undo/redo, bottom left. The room supplies its own pair in
+   the same footer, and that one is scoped to local origins: it walks back your
+   work and never reaches into a peer's. Excalidraw's reverts its whole scene
+   snapshot, remote elements included, and that gets published back to the
+   shared document -- so a student pressing it could delete the teacher's
+   strokes. Two undos in one corner, one of which can take a child's drawing
+   with it, is not a choice to leave on the screen. */
+.excalidraw .undo-redo-buttons {
+  display: none;
+}

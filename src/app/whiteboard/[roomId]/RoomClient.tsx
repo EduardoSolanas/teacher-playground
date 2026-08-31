@@ -276,6 +276,38 @@ function RoomContent({ roomId }: { roomId: string }) {
     syncUserName(name);
   };
 
+  /*
+   * The room's own controls, for Excalidraw's footer.
+   *
+   * They used to sit in a bar of their own floating over the middle of the
+   * board, which is the one part of it somebody is usually drawing on. The
+   * footer is bottom left, beside the zoom, where a hand already goes.
+   *
+   * The undo here is the room's, not Excalidraw's: it is scoped to `local`
+   * origins, so it walks back your own work and never reaches into a peer's.
+   * Excalidraw's own pair is hidden in globals.css for that reason -- two
+   * undos in one corner, one of which can delete a child's drawing, is not a
+   * choice anybody should be asked to make mid-lesson.
+   */
+  const boardFooter = (
+    <div className="flex items-center gap-1">
+      <UndoRedoBar
+        canUndo={scopedUndo.canUndo}
+        canRedo={scopedUndo.canRedo}
+        onUndo={scopedUndo.undo}
+        onRedo={scopedUndo.redo}
+      />
+      <button
+        data-testid="whiteboard-clear-btn"
+        onClick={() => setClearModalOpen(true)}
+        className="flex h-9 cursor-pointer items-center justify-center rounded-lg border border-slate-300 bg-white px-3 text-[0.8125rem] font-medium text-slate-600 transition-colors duration-150 hover:border-red-300 hover:text-red-500 sm:h-9 sm:px-2 sm:text-[0.6875rem]"
+        title="Clear board"
+      >
+        Clear
+      </button>
+    </div>
+  );
+
   const handleBackToRooms = useCallback(() => {
     clearSession();
     av.leave();
@@ -424,6 +456,7 @@ function RoomContent({ roomId }: { roomId: string }) {
           guideMessage={guideMessage}
           isGuiding={isGuiding}
           onGuideViewport={handleGuideViewport}
+          footer={boardFooter}
         />
       </div>
       {connectionLost && <ConnectionLostNotice />}
@@ -472,22 +505,6 @@ function RoomContent({ roomId }: { roomId: string }) {
         onClose={() => setShowShortcutsHelp(false)}
       />
       {/* Stacked above the mobile tool bar; centred on its own row from sm: up. */}
-      <div className="fixed bottom-[calc(max(0.5rem,env(safe-area-inset-bottom))+4rem)] left-1/2 -translate-x-1/2 flex items-center gap-2 z-[200] rounded-xl border border-slate-700/80 bg-slate-900 p-1 shadow-xl shadow-slate-900/20 sm:bottom-4" data-testid="whiteboard-bottom-controls">
-        <UndoRedoBar
-          canUndo={scopedUndo.canUndo}
-          canRedo={scopedUndo.canRedo}
-          onUndo={scopedUndo.undo}
-          onRedo={scopedUndo.redo}
-        />
-        <button
-          data-testid="whiteboard-clear-btn"
-          onClick={() => setClearModalOpen(true)}
-          className="flex h-9 cursor-pointer items-center justify-center rounded-lg border border-slate-700 px-3 text-[0.8125rem] font-medium text-slate-300 transition-colors duration-150 hover:bg-slate-700 hover:text-red-400 sm:h-7 sm:px-2 sm:text-[0.6875rem]"
-          title="Clear board"
-        >
-          Clear
-        </button>
-      </div>
       <ClearBoardModal
         isOpen={clearModalOpen}
         onConfirm={() => {

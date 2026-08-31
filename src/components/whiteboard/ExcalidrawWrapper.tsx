@@ -1,12 +1,12 @@
 'use client';
 
-import { useCallback, useRef, useEffect, useMemo, useState } from 'react';
+import { useCallback, useRef, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { diffScene, shouldPublish, elementsToPublish } from '@/lib/whiteboard/scenePublish';
 import { livePointCount, strokeCommitIntervalMs } from '@/lib/whiteboard/strokeCadence';
 // MUST stay above the Excalidraw import: it sets EXCALIDRAW_ASSET_PATH, and ES
 // module imports are evaluated in order, before this module's own body runs.
 import '@/lib/whiteboard/excalidrawAssetPath';
-import { CaptureUpdateAction, Excalidraw, MainMenu } from '@teacher-playground/excalidraw';
+import { CaptureUpdateAction, Excalidraw, Footer, MainMenu } from '@teacher-playground/excalidraw';
 import type {
   ExcalidrawImperativeAPI,
   ExcalidrawProps,
@@ -117,6 +117,14 @@ type ExcalidrawWrapperProps = {
   guideMessage: FollowMessage | null;
   isGuiding: boolean;
   onGuideViewport: (viewport: { x: number; y: number; zoom: number }) => void;
+  /**
+   * Room controls to sit in Excalidraw's own footer, beside the zoom.
+   *
+   * Passed in rather than built here, because they belong to the room and not
+   * to the canvas -- this component only knows where the footer is. Excalidraw
+   * puts it bottom left, which is where a hand already goes for the zoom.
+   */
+  footer?: ReactNode;
 };
 
 export default function ExcalidrawWrapper({
@@ -138,6 +146,7 @@ export default function ExcalidrawWrapper({
   guideMessage,
   isGuiding,
   onGuideViewport,
+  footer,
 }: ExcalidrawWrapperProps) {
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const [isClient, setIsClient] = useState(false);
@@ -1152,6 +1161,7 @@ export default function ExcalidrawWrapper({
           * the actions themselves permit, so neither one being wrong on its
           * own hands a guest a copy of a child's work.
           */}
+        {footer && <Footer>{footer}</Footer>}
         <MainMenu>
           {isLocalHost && <MainMenu.DefaultItems.Export />}
           {isLocalHost && <MainMenu.DefaultItems.SaveAsImage />}

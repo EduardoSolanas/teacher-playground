@@ -259,7 +259,7 @@ test.describe('Room Connection Lifecycle', () => {
     await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible();
     await expect(page.getByTestId('whiteboard-tool-select')).toBeVisible(); // tool sidebar
     await expect(page.locator('[data-whiteboard-role="host"] [title="Library"]')).toBeVisible(); // Excalidraw top bar
-    await expect(page.getByTestId('whiteboard-bottom-controls')).toBeVisible(); // bottom controls
+    await expect(page.getByTestId('whiteboard-undo-btn')).toBeVisible(); // board controls, in the footer
 
     // Presence panel shows correct name
     await waitForPresence(page, 'Alice');

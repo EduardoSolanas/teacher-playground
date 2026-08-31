@@ -38,6 +38,6 @@ test.describe('Excalidraw', () => {
 
   test('undo/redo bar is visible', async ({ page }) => {
     await joinRoom(page, 'UndoUser');
-    await expect(page.getByTestId('whiteboard-bottom-controls')).toBeVisible();
+    await expect(page.getByTestId('whiteboard-undo-btn')).toBeVisible();
   });
 });
