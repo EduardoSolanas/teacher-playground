@@ -762,9 +762,10 @@ export function useCollaboration(
       } else if (disconnectedSinceRef.current === null) {
         disconnectedSinceRef.current = Date.now();
       }
+      // Note the socket does not appear here: the poll is what writes
+      // `last_seen`, so a live socket does not excuse a peer from beating.
       const wanted = shouldPollPresence({
         isWaiting,
-        socketConnected,
         hidden: document.visibilityState === 'hidden',
         callLive: callLiveRef?.current ?? false,
       });

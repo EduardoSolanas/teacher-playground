@@ -2,62 +2,46 @@ import { describe, expect, it } from 'vitest';
 
 import { shouldPollPresence } from './presencePolling';
 
-/** A visible tab with no call, which is what the original cases assumed. */
-const poll = (input: { isWaiting: boolean; socketConnected: boolean }) =>
-  shouldPollPresence({ ...input, hidden: false, callLive: false });
-
 describe('shouldPollPresence', () => {
-  it('stops polling once an admitted peer has a live socket', () => {
-    expect(poll({ isWaiting: false, socketConnected: true })).toBe(false);
+  it('keeps beating even with a live socket', () => {
+    /*
+     * The poll is the heartbeat, not a fallback: `POST /presence` is the only
+     * writer of `last_seen`, and the roster is built from rows inside the
+     * active window. A connected peer that stops posting stops being present,
+     * and the next join or leave collapses every roster in the room.
+     */
+    expect(shouldPollPresence({ isWaiting: false, hidden: false, callLive: false })).toBe(true);
+    expect(shouldPollPresence({ isWaiting: false, hidden: false, callLive: true })).toBe(true);
   });
 
-  it('keeps polling while the socket is down', () => {
-    expect(poll({ isWaiting: false, socketConnected: false })).toBe(true);
-  });
-
-  it('keeps polling for a waiting peer even if a socket somehow reports connected', () => {
-    // /signaling only opens once admitted, so a waiting peer has no push
-    // channel. The poll is the only way they learn they were let in.
-    expect(poll({ isWaiting: true, socketConnected: true })).toBe(true);
-  });
-
-  it('keeps polling for a waiting peer with no socket', () => {
-    expect(poll({ isWaiting: true, socketConnected: false })).toBe(true);
-  });
-
-  it('never leaves a peer with neither channel', () => {
-    // The property that matters, stated directly: for every combination, the
-    // peer either has a connected socket or is polling.
-    for (const isWaiting of [true, false]) {
-      for (const socketConnected of [true, false]) {
-        const polling = poll({ isWaiting, socketConnected });
-        const pushed = socketConnected && !isWaiting;
-        expect(polling || pushed).toBe(true);
-      }
-    }
-  });
-
-  it('goes quiet in a backgrounded tab with no call in it', () => {
-    // Nobody is watching the roster and nobody is in the lesson, so the
-    // heartbeat would be buying an accurate answer for an empty chair.
-    expect(
-      shouldPollPresence({ isWaiting: false, socketConnected: false, hidden: true, callLive: false }),
-    ).toBe(false);
+  it('goes quiet only in a backgrounded tab with no call in it', () => {
+    // Nobody watching the roster, nobody in the lesson. Dropping out of the
+    // roster is the point, not a side effect.
+    expect(shouldPollPresence({ isWaiting: false, hidden: true, callLive: false })).toBe(false);
   });
 
   it('keeps beating in a hidden tab that is on a call', () => {
     // Somebody hidden is still in the room, and is being spoken to. Dropping
-    // them from the roster mid-sentence is the wrong kind of thrift.
-    expect(
-      shouldPollPresence({ isWaiting: false, socketConnected: false, hidden: true, callLive: true }),
-    ).toBe(true);
+    // them mid-sentence is the wrong kind of thrift.
+    expect(shouldPollPresence({ isWaiting: false, hidden: true, callLive: true })).toBe(true);
   });
 
   it('still hears about admission in a hidden tab', () => {
-    // A student who backgrounds the waiting screen must still learn they were
-    // let in; nothing else can tell them.
-    expect(
-      shouldPollPresence({ isWaiting: true, socketConnected: false, hidden: true, callLive: false }),
-    ).toBe(true);
+    // /signaling only opens once admitted, so nothing else can tell them.
+    expect(shouldPollPresence({ isWaiting: true, hidden: true, callLive: false })).toBe(true);
+  });
+
+  it('never leaves a peer present in the roster but silent', () => {
+    // The property that matters, stated directly: any peer that is not polling
+    // must be one that is meant to fall out of the roster.
+    for (const isWaiting of [true, false]) {
+      for (const hidden of [true, false]) {
+        for (const callLive of [true, false]) {
+          const polling = shouldPollPresence({ isWaiting, hidden, callLive });
+          const meantToDropOut = hidden && !callLive && !isWaiting;
+          expect(polling || meantToDropOut).toBe(true);
+        }
+      }
+    }
   });
 });
