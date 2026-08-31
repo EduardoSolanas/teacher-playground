@@ -2,6 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { isYjsProviderConnected, shouldPollRoomApiFallback } from './providerStatus';
 
 describe('providerStatus', () => {
+  it('does not depend on a `connected` field, which nothing sets', () => {
+    /*
+     * y-websocket carries `wsconnected` and `bcconnected`; it has no
+     * `connected` at all, and the wrapper in yWebsocketProvider only ever
+     * assigns `synced`. Code that reached for `provider.connected === true`
+     * was therefore testing `undefined === true` on a healthy socket -- which
+     * is how the presence heartbeat came to run for ever. Everything asks
+     * here now, so there is one answer to the question.
+     */
+    expect(isYjsProviderConnected({ wsconnected: true } as { wsconnected: boolean })).toBe(true);
+    expect(isYjsProviderConnected({} as Record<string, never>)).toBe(false);
+  });
+
   it('treats y-websocket wsconnected as the live link', () => {
     expect(isYjsProviderConnected({ wsconnected: true })).toBe(true);
     expect(isYjsProviderConnected({ connected: true })).toBe(true);

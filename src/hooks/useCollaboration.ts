@@ -25,7 +25,7 @@ import {
   ROOM_POLL_MAX_MS,
   nextPollDelay,
 } from '@/lib/whiteboard/pollBackoff';
-import { shouldPollRoomApiFallback } from '@/lib/whiteboard/providerStatus';
+import { isYjsProviderConnected, shouldPollRoomApiFallback } from '@/lib/whiteboard/providerStatus';
 import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 import { VIEWPORT_SAVE_DEBOUNCE_MS, shouldStoreViewport } from '@/lib/whiteboard/viewportPersist';
 import { shouldPollPresence } from '@/lib/whiteboard/presencePolling';
@@ -696,8 +696,21 @@ export function useCollaboration(roomId: string) {
 
     const onConnectionChange = () => {
       const collab = collaborationRef.current;
-      const socketConnected = Boolean(collab?.provider)
-        && (collab!.provider as any).connected === true;
+      /*
+       * Ask the one function that knows what connected means.
+       *
+       * This read `provider.connected === true` directly, and no provider ever
+       * sets that: y-websocket carries `wsconnected`, and the wrapper here only
+       * ever assigns `synced`. So the test was `undefined === true` -- false
+       * forever, on a perfectly healthy socket -- and the heartbeat it gates
+       * never stopped. That is 43,200 requests a day per tab, spent proving
+       * over HTTP what the open socket was already saying.
+       *
+       * The board poll beside it was right, because it went through
+       * `isYjsProviderConnected`. Two readings of one fact is how they drifted;
+       * there is one now.
+       */
+      const socketConnected = isYjsProviderConnected(collab?.provider);
       if (shouldPollPresence({ isWaiting, socketConnected })) startPolling();
       else stopPolling();
     };
