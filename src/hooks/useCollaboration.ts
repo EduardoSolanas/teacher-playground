@@ -19,6 +19,12 @@ import { mergeApiSnapshotElements, uniqueElementsById } from '@/lib/whiteboard/e
 import { isLocalRoomHost } from '@/lib/whiteboard/localHost';
 import { admissionFromPresenceStatus } from '@/lib/whiteboard/presenceAdmission';
 import { mergeCursorPresence } from '@/lib/whiteboard/mergeCursorPresence';
+import {
+  POLL_BASE_MS,
+  PRESENCE_POLL_MAX_MS,
+  ROOM_POLL_MAX_MS,
+  nextPollDelay,
+} from '@/lib/whiteboard/pollBackoff';
 import { shouldPollRoomApiFallback } from '@/lib/whiteboard/providerStatus';
 import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 import { VIEWPORT_SAVE_DEBOUNCE_MS, shouldStoreViewport } from '@/lib/whiteboard/viewportPersist';
@@ -323,21 +329,24 @@ export function useCollaboration(roomId: string) {
     // dropped, which is when this fallback is needed.
     let cancelled = false;
 
-    async function pollRoomState() {
+    async function pollRoomState(): Promise<boolean> {
       // Skip polling when WebRTC is synced — it's the source of truth.
       // Note: y-webrtc leaves `connected` set after disconnect(), so this also
       // suppresses the catch-up fallback. See the fixme'd
       // "disconnected peer catches up from API fallback" e2e test.
       const entry = collaborationRef.current;
-      if (!shouldPollRoomApiFallback(entry?.provider, roomGrantedRef.current)) return;
+      // Not polling at all is not the same as a quiet room: a provider that
+      // has only just fallen out of sync should be asked straight away, not
+      // after whatever backoff the last quiet spell had reached.
+      if (!shouldPollRoomApiFallback(entry?.provider, roomGrantedRef.current)) return true;
 
       try {
         const res = await ajaxFetch(`/api/whiteboard/room/${roomId}`);
-        if (cancelled || !res.ok) return;
+        if (cancelled || !res.ok) return false;
 
         const data = await res.json();
         const updatedAt = data.updated_at || 0;
-        if (updatedAt <= lastRoomUpdatedAtRef.current) return;
+        if (updatedAt <= lastRoomUpdatedAtRef.current) return false;
 
         const remoteElements = data.elements || [];
         const remoteViewport = data.viewport || { x: 0, y: 0, zoom: 1 };
@@ -352,8 +361,10 @@ export function useCollaboration(roomId: string) {
         applyElements(merged);
         publishToSharedDoc(merged);
         applyViewport(remoteViewport);
+        return true;
       } catch {
         // WebRTC/Yjs and local edits can continue when polling is unavailable.
+        return false;
       }
     }
 
@@ -369,10 +380,43 @@ export function useCollaboration(roomId: string) {
     }
 
     const publishTimer = window.setInterval(publishPending, 250);
-    const interval = window.setInterval(pollRoomState, 2_000);
+
+    /*
+     * A self-rescheduling timeout rather than an interval, because the whole
+     * point is that the gap changes: a quiet room is asked less and less
+     * often, and a hidden tab as rarely as the cap allows.
+     */
+    let roomDelay = POLL_BASE_MS;
+    let roomTimer: number | undefined;
+    const scheduleRoomPoll = () => {
+      roomTimer = window.setTimeout(async () => {
+        const changed = await pollRoomState();
+        if (cancelled) return;
+        roomDelay = nextPollDelay({
+          current: roomDelay,
+          changed,
+          hidden: document.visibilityState === 'hidden',
+          maxMs: ROOM_POLL_MAX_MS,
+        });
+        scheduleRoomPoll();
+      }, roomDelay);
+    };
+    scheduleRoomPoll();
+
+    // Coming back to a tab should not mean waiting out the backoff it built up
+    // while nobody was watching it.
+    const onRoomVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      roomDelay = POLL_BASE_MS;
+      if (roomTimer !== undefined) window.clearTimeout(roomTimer);
+      scheduleRoomPoll();
+    };
+    document.addEventListener('visibilitychange', onRoomVisible);
+
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      if (roomTimer !== undefined) window.clearTimeout(roomTimer);
+      document.removeEventListener('visibilitychange', onRoomVisible);
       window.clearInterval(publishTimer);
     };
   }, [roomId, applyElements, applyViewport, publishToSharedDoc]);
@@ -607,18 +651,46 @@ export function useCollaboration(roomId: string) {
 
     // Polling management: stop when socket is connected, restart when disconnected.
     // A peer in WAITING room has no socket, so keep polling for them.
-    let pollInterval: number | null = null;
+    let pollTimer: number | null = null;
+
+    /*
+     * The heartbeat eases off in a room where nothing is arriving, but only as
+     * far as PRESENCE_POLL_MAX_MS: a peer that reports less often than the
+     * server's active window sweeps itself out of its own roster.
+     *
+     * That cap is half the window, so one lost request still does not make a
+     * present peer look gone -- and it is why this backs off to five seconds
+     * where the board poll goes to thirty.
+     */
+    let polling = false;
+    let presenceDelay = POLL_BASE_MS;
+
+    const schedulePresence = () => {
+      pollTimer = window.setTimeout(async () => {
+        await updatePresence();
+        if (cancelled || !polling) return;
+        presenceDelay = nextPollDelay({
+          current: presenceDelay,
+          changed: false,
+          hidden: document.visibilityState === 'hidden',
+          maxMs: PRESENCE_POLL_MAX_MS,
+        });
+        schedulePresence();
+      }, presenceDelay);
+    };
 
     const startPolling = () => {
-      if (pollInterval === null) {
-        pollInterval = window.setInterval(updatePresence, 2_000);
-      }
+      if (polling) return;
+      polling = true;
+      presenceDelay = POLL_BASE_MS;
+      schedulePresence();
     };
 
     const stopPolling = () => {
-      if (pollInterval !== null) {
-        window.clearInterval(pollInterval);
-        pollInterval = null;
+      polling = false;
+      if (pollTimer !== null) {
+        window.clearTimeout(pollTimer);
+        pollTimer = null;
       }
     };
 
@@ -651,7 +723,14 @@ export function useCollaboration(roomId: string) {
     // no push channel to fall back on: /signaling only opens once admitted.
     // Refreshing the moment the tab is visible again closes that gap.
     const onVisible = () => {
-      if (document.visibilityState === 'visible') updatePresence();
+      if (document.visibilityState !== 'visible') return;
+      updatePresence();
+      // Do not make somebody returning to the tab wait out the backoff that
+      // built up while they were away.
+      if (polling) {
+        stopPolling();
+        startPolling();
+      }
     };
     document.addEventListener('visibilitychange', onVisible);
 

@@ -1,7 +1,13 @@
 import type { RoomDatabase } from './db';
 import { getRoomAllowFirstUserHost } from './roomSchema';
 
-const ACTIVE_WINDOW_MS = 10_000;
+/**
+ * How long a peer stays present without saying so again.
+ *
+ * Exported because the client's heartbeat has to stay comfortably inside it:
+ * a peer that reports less often than this sweeps itself out of its own room.
+ */
+export const ACTIVE_WINDOW_MS = 10_000;
 
 /** The peers a room still counts as present, by the same window as the roster. */
 export function activePeerIds(db: RoomDatabase, roomId: string): Set<string> {
