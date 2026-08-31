@@ -16,7 +16,7 @@ import { randomHexId } from '@/lib/crypto/randomId';
 import * as store from '@/lib/whiteboard/store';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import { mergeApiSnapshotElements, uniqueElementsById } from '@/lib/whiteboard/excalidrawSync';
-import { isLocalRoomHost } from '@/lib/whiteboard/localHost';
+import { isLocalRoomHost, isRoomOwner } from '@/lib/whiteboard/localHost';
 import { admissionFromPresenceStatus } from '@/lib/whiteboard/presenceAdmission';
 import { mergeCursorPresence } from '@/lib/whiteboard/mergeCursorPresence';
 import {
@@ -1011,6 +1011,12 @@ export function useCollaboration(
     localPeerId,
     hostPeerId,
     isHost: isLocalRoomHost(grantRole, users, localPeerId),
+    /*
+     * Separate from isHost on purpose: the first-user fallback makes a peer
+     * host without making them owner, and anything the server checks has to
+     * be gated on this one or it offers a control it will then refuse.
+     */
+    isRoomOwner: isRoomOwner(grantRole),
     provider: collaborationEpoch >= 0 ? collaborationRef.current?.provider ?? null : null,
     elementsArray: elements,
     status,

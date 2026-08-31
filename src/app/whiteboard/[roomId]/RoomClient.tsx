@@ -109,6 +109,7 @@ function RoomContent({ roomId }: { roomId: string }) {
     elements,
     localPeerId,
     isHost,
+    isRoomOwner,
     provider,
     waitingPeers,
     isWaiting,
@@ -298,8 +299,13 @@ function RoomContent({ roomId }: { roomId: string }) {
    * two clusters of them. Excalidraw has no clear of its own -- its canvas
    * action is switched off, because replacing the scene at once fights the
    * shared document instead of travelling through it.
+   *
+   * Owner, not host. The route refuses anybody who is not the owner, and the
+   * first-user fallback makes a stand-in host who is not one -- so gating on
+   * host would show this button to a peer and then answer 403 when they
+   * pressed it.
    */
-  const boardFooter = !isLocalHost ? null : (
+  const boardFooter = !isRoomOwner ? null : (
     <div className="flex items-center gap-1">
       <button
         data-testid="whiteboard-clear-btn"
