@@ -119,10 +119,21 @@ export default function ToolSidebar({
   onToggleGuide,
 }: ToolSidebarProps) {
   return (
+    /*
+     * Centred along the bottom, at every size.
+     *
+     * This was a column down the left edge on anything wider than a phone,
+     * which cost the board a strip of drawing surface for its whole height and
+     * left the tools somewhere no other control lives. The middle of the
+     * bottom edge came free when undo, redo and Clear moved into Excalidraw's
+     * footer, and a horizontal bar there is the shape the phone always had --
+     * so the desktop stops being the odd one out.
+     */
     <div
-      className="fixed inset-x-0 bottom-[max(0.5rem,env(safe-area-inset-bottom))] z-50 flex items-center justify-center px-2 pointer-events-none sm:inset-x-auto sm:bottom-0 sm:left-0 sm:top-0 sm:w-16 sm:flex-col sm:px-0"
+      data-testid="whiteboard-tool-bar"
+      className="fixed inset-x-0 bottom-[max(0.5rem,env(safe-area-inset-bottom))] z-50 flex items-center justify-center px-2 pointer-events-none"
     >
-      <div className="bg-slate-900/95 border border-slate-700/80 rounded-2xl p-1.5 shadow-2xl shadow-slate-950/30 backdrop-blur-md flex max-w-full flex-row gap-1 overflow-x-auto pointer-events-auto sm:max-w-none sm:flex-col sm:overflow-visible [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="bg-slate-900/95 border border-slate-700/80 rounded-2xl p-1.5 shadow-2xl shadow-slate-950/30 backdrop-blur-md flex max-w-full flex-row gap-1 overflow-x-auto pointer-events-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {TOOLS.map((t) => {
           const isActive = activeTool === t.id;
           const shortcut = TOOL_SHORTCUTS[t.id];
