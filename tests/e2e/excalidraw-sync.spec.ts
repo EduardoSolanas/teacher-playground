@@ -323,14 +323,20 @@ test.describe('Excalidraw scene sync', () => {
       await expect.poll(async () => sharedElementIds(page), { timeout: 20000 })
         .toEqual(['undo-alice', 'undo-bob']);
 
-      await expect(page.getByTestId('whiteboard-undo-btn')).toBeEnabled();
-      await page.getByTestId('whiteboard-undo-btn').click();
+      /*
+       * Excalidraw's own undo, which is the board's only one now. This is the
+       * test that says it is safe to use here: Alice undoes and Bob's element
+       * survives, because remote updates are applied with
+       * CaptureUpdateAction.NEVER and so never enter Alice's history.
+       */
+      await expect(page.locator('.undo-button-container button')).toBeEnabled();
+      await page.locator('.undo-button-container button').click();
       await expect.poll(async () => sceneElementIds(page), { timeout: 20000 }).toEqual(['undo-bob']);
       await expect.poll(async () => sceneElementIds(bobPage), { timeout: 20000 }).toEqual(['undo-bob']);
       await expect.poll(async () => sharedElementIds(page), { timeout: 20000 }).toEqual(['undo-bob']);
 
-      await expect(page.getByTestId('whiteboard-redo-btn')).toBeEnabled();
-      await page.getByTestId('whiteboard-redo-btn').click();
+      await expect(page.locator('.redo-button-container button')).toBeEnabled();
+      await page.locator('.redo-button-container button').click();
       await expect.poll(async () => sharedElementIds(page), { timeout: 20000 })
         .toEqual(['undo-alice', 'undo-bob']);
       await expect.poll(async () => sceneElementIds(page), { timeout: 20000 })

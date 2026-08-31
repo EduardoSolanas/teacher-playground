@@ -259,7 +259,7 @@ test.describe('Room Connection Lifecycle', () => {
     await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible();
     await expect(page.getByTestId('whiteboard-tool-select')).toBeVisible(); // tool sidebar
     await expect(page.locator('[data-whiteboard-role="host"] [title="Library"]')).toBeVisible(); // Excalidraw top bar
-    await expect(page.getByTestId('whiteboard-undo-btn')).toBeVisible(); // board controls, in the footer
+    await expect(page.locator('.undo-button-container button')).toBeVisible(); // board controls, in the footer
 
     // Presence panel shows correct name
     await waitForPresence(page, 'Alice');
@@ -1201,14 +1201,14 @@ test.describe('Edge Cases', () => {
       await expect.poll(() => getSharedYjsElementIds(page)).toEqual(elementIds);
 
       // Undo once
-      const undoBtn = page.getByTestId('whiteboard-undo-btn');
+      const undoBtn = page.locator('.undo-button-container button');
       await expect(undoBtn).toBeEnabled();
       await undoBtn.click();
       await expect.poll(() => getExcalidrawSceneIds(page)).toEqual(elementIds.slice(0, 2));
       await expect.poll(() => getSharedYjsElementIds(page)).toEqual(elementIds.slice(0, 2));
 
       // Redo once
-      const redoBtn = page.getByTestId('whiteboard-redo-btn');
+      const redoBtn = page.locator('.redo-button-container button');
       await expect(redoBtn).toBeEnabled();
       await redoBtn.click();
       await expect.poll(() => getExcalidrawSceneIds(page)).toEqual(elementIds);

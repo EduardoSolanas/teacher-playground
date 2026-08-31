@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import * as store from '@/lib/whiteboard/store';
-import { useUndoRedo } from './useUndoRedo';
 import { pushHistory } from './useUndoRedo';
 import { getSelectedElements, deleteSelectedElements, duplicateSelectedElements } from '@/lib/whiteboard/selection';
 import type { ToolType } from '@/types/whiteboard';
@@ -130,16 +129,8 @@ const SHORTCUTS: Array<{ key: string; label: string; action: () => void; ctrl?: 
   },
 ];
 
-export type KeyboardShortcutOverrides = {
-  undo?: () => void;
-  redo?: () => void;
-};
-
-export function useKeyboardShortcuts(overrides: KeyboardShortcutOverrides = {}) {
+export function useKeyboardShortcuts() {
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
-  const { undo: storeUndo, redo: storeRedo } = useUndoRedo();
-  const undo = overrides.undo ?? storeUndo;
-  const redo = overrides.redo ?? storeRedo;
   const shown = useRef(false);
 
   useEffect(() => {
@@ -169,16 +160,16 @@ export function useKeyboardShortcuts(overrides: KeyboardShortcutOverrides = {}) 
 
       if (e.ctrlKey || e.metaKey) {
         const key = e.key.toLowerCase();
-        if (key === 'z' && !e.shiftKey) {
-          e.preventDefault();
-          undo();
-          return;
-        }
-        if ((key === 'z' && e.shiftKey) || key === 'y') {
-          e.preventDefault();
-          redo();
-          return;
-        }
+        /*
+         * Undo and redo are Excalidraw's, keyboard included.
+         *
+         * This used to catch Ctrl+Z first and call preventDefault, which meant
+         * that whichever undo the room decided to show, the keyboard reached
+         * the other one -- and once the buttons were Excalidraw's, the
+         * accelerator would have gone on driving a stack nothing was showing.
+         * They are still listed in the help sheet: the shortcut works, it is
+         * simply not this hook that answers it.
+         */
         if (key === 'd') {
           e.preventDefault();
           duplicateSelectedElements(store);
@@ -254,7 +245,7 @@ export function useKeyboardShortcuts(overrides: KeyboardShortcutOverrides = {}) 
     // Text entry is still respected via the INPUT/TEXTAREA guard above.
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [undo, redo]);
+  }, []);
 
   return { activeShortcuts: SHORTCUTS, showShortcutsHelp, setShowShortcutsHelp };
 }

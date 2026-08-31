@@ -22,13 +22,11 @@ import ToolSidebar from '@/components/whiteboard/ToolSidebar';
 import RoomTopNav from '@/components/whiteboard/RoomTopNav';
 import { LibraryPanel } from '@/components/whiteboard/LibraryPanel';
 import { ShortcutsHelp } from '@/components/whiteboard/ShortcutsHelp';
-import { UndoRedoBar } from '@/components/whiteboard/UndoRedoBar';
 import AvSessionPanel from '@/components/av/AvSessionPanel';
 import StartCallButton from '@/components/av/StartCallButton';
 import ConnectionLostNotice from '@/components/whiteboard/ConnectionLostNotice';
 import RoomNameField from '@/components/whiteboard/RoomNameField';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
-import { useScopedUndo } from '@/hooks/useScopedUndo';
 import * as store from '@/lib/whiteboard/store';
 import { cleanupStaleRooms } from '@/lib/whiteboard/persistence';
 import { isWhiteboardDebugEnabled } from '@/lib/whiteboard/ywebrtcProvider';
@@ -158,19 +156,7 @@ function RoomContent({ roomId }: { roomId: string }) {
   // are gated on it, keyboard included.
   const isLocalHost = Boolean(isHost || localUser?.isHost);
 
-  const scopedUndo = useScopedUndo(yElementsArray);
-  /*
-   * The shortcuts are gated with the buttons, not left behind them.
-   *
-   * Hiding a control and leaving its accelerator live is a gate that only
-   * looks like one: Ctrl+Z would still walk the board back for anybody who
-   * knew to press it, and nothing on screen would explain why.
-   */
-  const noHostAction = useCallback(() => undefined, []);
-  const { activeShortcuts, showShortcutsHelp, setShowShortcutsHelp } = useKeyboardShortcuts({
-    undo: isLocalHost ? scopedUndo.undo : noHostAction,
-    redo: isLocalHost ? scopedUndo.redo : noHostAction,
-  });
+  const { activeShortcuts, showShortcutsHelp, setShowShortcutsHelp } = useKeyboardShortcuts();
 
   const { clearState, clearSession } = usePersistence(roomId, elements, { x: 0, y: 0, zoom: 1 } as any);
 
@@ -306,14 +292,15 @@ function RoomContent({ roomId }: { roomId: string }) {
    * undos in one corner, one of which can delete a child's drawing, is not a
    * choice anybody should be asked to make mid-lesson.
    */
+  /*
+   * Clear sits with Excalidraw's own zoom and undo in the footer, because it
+   * is the same kind of control and there is no reason for the board to carry
+   * two clusters of them. Excalidraw has no clear of its own -- its canvas
+   * action is switched off, because replacing the scene at once fights the
+   * shared document instead of travelling through it.
+   */
   const boardFooter = !isLocalHost ? null : (
     <div className="flex items-center gap-1">
-      <UndoRedoBar
-        canUndo={scopedUndo.canUndo}
-        canRedo={scopedUndo.canRedo}
-        onUndo={scopedUndo.undo}
-        onRedo={scopedUndo.redo}
-      />
       <button
         data-testid="whiteboard-clear-btn"
         onClick={() => setClearModalOpen(true)}

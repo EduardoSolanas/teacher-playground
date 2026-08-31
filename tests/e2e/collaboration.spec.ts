@@ -306,7 +306,7 @@ test.describe('Excalidraw', () => {
 
   test('undo/redo bar is visible', async ({ page }) => {
     await joinRoom(page, 'UndoUser');
-    await expect(page.getByTestId('whiteboard-undo-btn')).toBeVisible();
+    await expect(page.locator('.undo-button-container button')).toBeVisible();
   });
 
   test('select tool is active by default', async ({ page }) => {

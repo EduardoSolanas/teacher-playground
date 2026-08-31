@@ -121,20 +121,20 @@ test.describe('Undo/Redo Bar', () => {
   test('undo button is visible', async ({ page }) => {
     await joinRoom(page, 'UndoVisible');
     await page.waitForTimeout(2000);
-    await expect(page.getByTestId('whiteboard-undo-btn')).toBeVisible();
+    await expect(page.locator('.undo-button-container button')).toBeVisible();
   });
 
   test('redo button is visible', async ({ page }) => {
     await joinRoom(page, 'RedoVisible');
     await page.waitForTimeout(2000);
-    await expect(page.getByTestId('whiteboard-redo-btn')).toBeVisible();
+    await expect(page.locator('.redo-button-container button')).toBeVisible();
   });
 
   test('undo and redo buttons are disabled initially', async ({ page }) => {
     await joinRoom(page, 'InitUndo');
     await page.waitForTimeout(2000);
-    await expect(page.getByTestId('whiteboard-undo-btn')).toBeDisabled();
-    await expect(page.getByTestId('whiteboard-redo-btn')).toBeDisabled();
+    await expect(page.locator('.undo-button-container button')).toBeDisabled();
+    await expect(page.locator('.redo-button-container button')).toBeDisabled();
   });
 
   test('undo is enabled after adding an element', async ({ page }) => {
@@ -146,6 +146,6 @@ test.describe('Undo/Redo Bar', () => {
       (window as any).__debugExcalidrawApi?.getSceneElements?.() ?? []
     ).some((element: { id: string }) => element.id === 'undo-test'))).toBe(true);
 
-    await expect(page.getByTestId('whiteboard-undo-btn')).toBeEnabled();
+    await expect(page.locator('.undo-button-container button')).toBeEnabled();
   });
 });
