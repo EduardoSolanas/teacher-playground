@@ -21,8 +21,10 @@ import { admissionFromPresenceStatus } from '@/lib/whiteboard/presenceAdmission'
 import { mergeCursorPresence } from '@/lib/whiteboard/mergeCursorPresence';
 import {
   POLL_BASE_MS,
+  POLL_GIVE_UP_MS,
   PRESENCE_POLL_MAX_MS,
   ROOM_POLL_MAX_MS,
+  hasGivenUp,
   nextPollDelay,
 } from '@/lib/whiteboard/pollBackoff';
 import { isYjsProviderConnected, shouldPollRoomApiFallback } from '@/lib/whiteboard/providerStatus';
@@ -54,7 +56,18 @@ function applyHostFromApi(
   }
 }
 
-export function useCollaboration(roomId: string) {
+export function useCollaboration(
+  roomId: string,
+  /*
+   * Whether a call is live, read through a ref rather than taken as a value.
+   *
+   * The call cannot be created before this hook runs -- it is gated on the
+   * admission this hook reports -- so there is no value to pass at call time.
+   * A ref the caller owns and fills in afterwards breaks that circle without
+   * re-running anything here.
+   */
+  callLiveRef?: { readonly current: boolean },
+) {
   const [isConnected, setIsConnected] = useState(false);
   const [roomLoaded, setRoomLoaded] = useState(false);
   const [isSynced, setIsSynced] = useState(false);
@@ -79,6 +92,12 @@ export function useCollaboration(roomId: string) {
   // The poll below runs on an interval that must not be torn down and rebuilt
   // every time admission changes, so it reads the grant through a ref.
   const roomGrantedRef = useRef(false);
+  /*
+   * When the socket went down, or null while it is up. Both fallback loops
+   * read it, so it lives out here rather than inside either effect.
+   */
+  const disconnectedSinceRef = useRef<number | null>(null);
+  const [connectionLost, setConnectionLost] = useState(false);
   const [accessStatus, setAccessStatus] = useState<RoomAccessStatus | null>(null);
   const [grantRole, setGrantRole] = useState<GrantedPublicRole | null>(null);
   const [collaborationEpoch, setCollaborationEpoch] = useState(0);
@@ -390,7 +409,24 @@ export function useCollaboration(roomId: string) {
     let roomTimer: number | undefined;
     const scheduleRoomPoll = () => {
       roomTimer = window.setTimeout(async () => {
-        const changed = await pollRoomState();
+        /*
+         * This effect runs before the presence one is mounted, so it keeps the
+         * disconnection clock itself rather than relying on the status handler
+         * over there to have started it.
+         */
+        const now = Date.now();
+        if (isYjsProviderConnected(collaborationRef.current?.provider)) {
+          disconnectedSinceRef.current = null;
+        } else if (disconnectedSinceRef.current === null) {
+          disconnectedSinceRef.current = now;
+        }
+        const givenUp = hasGivenUp({ disconnectedSince: disconnectedSinceRef.current, now });
+        if (givenUp) setConnectionLost(true);
+
+        // The timer stays, the request goes. A stopped chain could never
+        // notice a socket that came back; a chain making no requests costs
+        // nothing while it waits to.
+        const changed = givenUp ? false : await pollRoomState();
         if (cancelled) return;
         roomDelay = nextPollDelay({
           current: roomDelay,
@@ -667,7 +703,13 @@ export function useCollaboration(roomId: string) {
 
     const schedulePresence = () => {
       pollTimer = window.setTimeout(async () => {
-        await updatePresence();
+        if (hasGivenUp({ disconnectedSince: disconnectedSinceRef.current, now: Date.now() })) {
+          // Keep the timer, drop the request: something has to notice if the
+          // socket ever comes back, and that costs nothing over the network.
+          setConnectionLost(true);
+        } else {
+          await updatePresence();
+        }
         if (cancelled || !polling) return;
         presenceDelay = nextPollDelay({
           current: presenceDelay,
@@ -711,7 +753,22 @@ export function useCollaboration(roomId: string) {
        * there is one now.
        */
       const socketConnected = isYjsProviderConnected(collab?.provider);
-      if (shouldPollPresence({ isWaiting, socketConnected })) startPolling();
+      // A reconnection is the one thing that undoes giving up, and the status
+      // event is what announces it. Clearing here is why a session that comes
+      // back does not need the reload the notice offers.
+      if (socketConnected) {
+        disconnectedSinceRef.current = null;
+        setConnectionLost(false);
+      } else if (disconnectedSinceRef.current === null) {
+        disconnectedSinceRef.current = Date.now();
+      }
+      const wanted = shouldPollPresence({
+        isWaiting,
+        socketConnected,
+        hidden: document.visibilityState === 'hidden',
+        callLive: callLiveRef?.current ?? false,
+      });
+      if (wanted) startPolling();
       else stopPolling();
     };
 
@@ -736,8 +793,14 @@ export function useCollaboration(roomId: string) {
     // no push channel to fall back on: /signaling only opens once admitted.
     // Refreshing the moment the tab is visible again closes that gap.
     const onVisible = () => {
-      if (document.visibilityState !== 'visible') return;
+      // Hiding can now stop the heartbeat outright, not just slow it, so the
+      // decision has to be re-made in both directions.
+      if (document.visibilityState !== 'visible') {
+        onConnectionChange();
+        return;
+      }
       updatePresence();
+      onConnectionChange();
       // Do not make somebody returning to the tab wait out the backoff that
       // built up while they were away.
       if (polling) {
@@ -755,7 +818,7 @@ export function useCollaboration(roomId: string) {
       }
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [roomLoaded, hasJoined, roomId, localUserName, isWaiting, applyPresencePayload]);
+  }, [roomLoaded, hasJoined, roomId, localUserName, isWaiting, applyPresencePayload, callLiveRef]);
 
   /**
    * Releases the presence row only when this room is actually left. Doing it in
@@ -931,6 +994,8 @@ export function useCollaboration(roomId: string) {
   return {
     isConnected,
     isSynced,
+    /** The socket has been down long enough that the fallbacks have stopped. */
+    connectionLost,
     users,
     cursors,
     error,

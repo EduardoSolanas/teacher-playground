@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { ACTIVE_WINDOW_MS } from './presence';
 import {
   POLL_BASE_MS,
+  POLL_GIVE_UP_MS,
   PRESENCE_POLL_MAX_MS,
   ROOM_POLL_MAX_MS,
+  hasGivenUp,
   nextPollDelay,
 } from './pollBackoff';
 
@@ -46,5 +48,27 @@ describe('nextPollDelay', () => {
      */
     expect(PRESENCE_POLL_MAX_MS * 2).toBeLessThanOrEqual(ACTIVE_WINDOW_MS);
     expect(quiet(PRESENCE_POLL_MAX_MS, PRESENCE_POLL_MAX_MS)).toBe(PRESENCE_POLL_MAX_MS);
+  });
+});
+
+describe('hasGivenUp', () => {
+  const now = 1_000_000;
+
+  it('never gives up while the socket is up', () => {
+    expect(hasGivenUp({ disconnectedSince: null, now })).toBe(false);
+  });
+
+  it('holds on through the outages that actually happen', () => {
+    // y-websocket reconnects on its own; a real drop is seconds, and the
+    // fallbacks exist precisely to cover it.
+    expect(hasGivenUp({ disconnectedSince: now - 5_000, now })).toBe(false);
+    expect(hasGivenUp({ disconnectedSince: now - (POLL_GIVE_UP_MS - 1), now })).toBe(false);
+  });
+
+  it('gives up on a socket that has had five minutes to come back', () => {
+    // Past here it is not an outage, it is a broken session -- and one that
+    // would otherwise poll for as long as the tab stayed open, telling nobody.
+    expect(hasGivenUp({ disconnectedSince: now - POLL_GIVE_UP_MS, now })).toBe(true);
+    expect(hasGivenUp({ disconnectedSince: now - 60 * 60_000, now })).toBe(true);
   });
 });

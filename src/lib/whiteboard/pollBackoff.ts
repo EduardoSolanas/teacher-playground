@@ -43,3 +43,23 @@ export function nextPollDelay(input: NextPollDelayInput): number {
   if (input.changed) return POLL_BASE_MS;
   return Math.min(input.current * 2, input.maxMs);
 }
+
+/**
+ * How long a socket may stay down before the fallbacks stop asking.
+ *
+ * y-websocket reconnects on its own, so a real outage is seconds. A tab still
+ * disconnected five minutes later is not in a fallback situation, it is a
+ * broken session -- and one that would otherwise poll for as long as it stayed
+ * open, silently, telling nobody. Better to stop and say so: the person can
+ * reload, which is the only thing that would have helped anyway.
+ */
+export const POLL_GIVE_UP_MS = 5 * 60_000;
+
+export function hasGivenUp(input: {
+  /** When the socket went down, or null while it is up. */
+  readonly disconnectedSince: number | null;
+  readonly now: number;
+}): boolean {
+  if (input.disconnectedSince === null) return false;
+  return input.now - input.disconnectedSince >= POLL_GIVE_UP_MS;
+}

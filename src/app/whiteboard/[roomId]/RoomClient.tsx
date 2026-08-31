@@ -25,6 +25,7 @@ import { ShortcutsHelp } from '@/components/whiteboard/ShortcutsHelp';
 import { UndoRedoBar } from '@/components/whiteboard/UndoRedoBar';
 import AvSessionPanel from '@/components/av/AvSessionPanel';
 import StartCallButton from '@/components/av/StartCallButton';
+import ConnectionLostNotice from '@/components/whiteboard/ConnectionLostNotice';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useScopedUndo } from '@/hooks/useScopedUndo';
 import * as store from '@/lib/whiteboard/store';
@@ -69,6 +70,14 @@ function RoomContent({ roomId }: { roomId: string }) {
   // The store is the single source of truth for the active tool: keyboard
   // shortcuts write to it directly, so deriving from it keeps the sidebar
   // highlight and Excalidraw's own tool in step with them.
+  /*
+   * Whether a call is live, for the presence heartbeat to consult.
+   *
+   * A ref rather than a value because of the ordering: the call is gated on
+   * the admission `useCollaboration` reports, so it cannot exist before that
+   * hook runs. The ref is created first and filled in below.
+   */
+  const callLiveRef = useRef(false);
   const [activeTool, setActiveTool] = useState(() => store.getState().tool);
 
   useEffect(
@@ -95,6 +104,7 @@ function RoomContent({ roomId }: { roomId: string }) {
     cursors,
     error,
     status,
+    connectionLost,
     maxUsers,
     elements,
     localPeerId,
@@ -124,7 +134,7 @@ function RoomContent({ roomId }: { roomId: string }) {
     hostPeerId,
     guideMessage,
     sendFollowMessage,
-  } = useCollaboration(roomId);
+  } = useCollaboration(roomId, callLiveRef);
 
   const handleGuideViewport = useCallback((nextViewport: { x: number; y: number; zoom: number }) => {
     sendFollowMessage({ active: true, viewport: nextViewport });
@@ -167,6 +177,11 @@ function RoomContent({ roomId }: { roomId: string }) {
     displayName: userName ?? 'Anonymous',
     enabled: avEnabled,
   });
+
+  // A hidden tab stops its heartbeat unless somebody in it is on a call.
+  useEffect(() => {
+    callLiveRef.current = av.status === 'joined';
+  }, [av.status]);
 
   // Losing the right to a call ends any wish for one, so admission does not
   // drop somebody straight back into a call they left before being kicked.
@@ -411,6 +426,7 @@ function RoomContent({ roomId }: { roomId: string }) {
           onGuideViewport={handleGuideViewport}
         />
       </div>
+      {connectionLost && <ConnectionLostNotice />}
       <RaisedHandCue users={users} localPeerId={localPeerId} isLocalHost={isLocalHost} />
       <PresencePanel
         users={users}
