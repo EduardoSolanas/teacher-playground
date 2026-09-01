@@ -168,7 +168,10 @@ textarea {
 .tp-board-footer {
   display: flex;
   align-items: center;
-  margin-left: 0.5rem;
+  /* The same step Excalidraw puts between its own footer islands, so this
+     one reads as the next in the row rather than as a separate thing that
+     happens to be nearby. */
+  margin-left: calc(var(--space-factor) * 1);
   overflow: hidden;
   background-color: var(--island-bg-color);
   border-radius: var(--border-radius-lg);
