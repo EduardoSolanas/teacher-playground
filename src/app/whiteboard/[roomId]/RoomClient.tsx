@@ -382,6 +382,18 @@ function RoomContent({ roomId }: { roomId: string }) {
   }, [roomId, roomName]);
 
   const handleOpenLibrary = useCallback(() => {
+    /*
+     * Fold the roster away first.
+     *
+     * Excalidraw's sidebar opens down the right edge, which is where this room
+     * keeps who is in it, so the library came up behind the roster: half of it
+     * visible, and the half with the buttons not. Raising the sidebar does not
+     * help -- the roster is not inside Excalidraw's stacking context, so
+     * nothing within it can be lifted over the roster from there. They want the
+     * same edge, so one of them has to give it up, and the one somebody just
+     * asked for is not the one to hide.
+     */
+    setPresenceCollapsed(true);
     boardActionsRef.current?.openLibrary();
   }, []);
 

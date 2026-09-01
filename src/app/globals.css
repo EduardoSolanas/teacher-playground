@@ -178,7 +178,12 @@ textarea {
   box-shadow: 0 0 0 1px var(--color-surface-lowest);
 }
 
-.tp-board-footer button {
+/* Scoped under .excalidraw for the specificity, not for the scope: its own
+   `.excalidraw .ToolIcon_type_button` sets `background-color: initial` and a
+   radius, and a rule of ours with one class ties and then loses on load order.
+   Two classes and an element beats it outright, which is tidier than the
+   !important its own undo/redo rule reaches for. */
+.excalidraw .tp-board-footer button {
   border: none;
   border-radius: 0;
   width: var(--lg-button-size);
@@ -186,33 +191,40 @@ textarea {
   background-color: var(--color-surface-low);
 }
 
-.tp-board-footer button svg {
+.excalidraw .tp-board-footer button svg {
   width: var(--lg-icon-size);
   height: var(--lg-icon-size);
 }
 
 /* Guiding is a mode that stays on, so it has to look held down. */
-.tp-board-footer .tp-board-footer__button--active,
-.tp-board-footer .tp-board-footer__button--active:hover {
+.excalidraw .tp-board-footer .tp-board-footer__button--active,
+.excalidraw .tp-board-footer .tp-board-footer__button--active:hover {
   background-color: var(--color-primary);
   color: var(--color-primary-contrast, #fff);
 }
 
-.tp-board-footer .tp-board-footer__button--danger:hover {
+.excalidraw .tp-board-footer .tp-board-footer__button--danger:hover {
   color: var(--color-danger, #c92a2a);
 }
 
 /* Excalidraw's own help button, bottom right. The room has one "?" now and it
    reaches a person: a dialog of accelerators is not what somebody presses this
    for while a class is waiting. */
-.excalidraw .help-icon {
+/* The element as well as the class, so this outranks Excalidraw's own rule
+   whichever stylesheet the bundler puts last. */
+.excalidraw button.help-icon {
   display: none;
 }
 
-/* And its library button, which floated over the canvas. The room's title
-   menu opens the same sidebar, so the board keeps the feature and loses the
-   thing sitting on top of the drawing. */
-.excalidraw .layer-ui__wrapper__footer-right {
+/* And its library button, which floated over the canvas. The room's title menu
+   opens the same sidebar, so the board keeps the feature and loses the thing
+   sitting on top of the drawing.
+
+   `.default-sidebar-trigger`, in the top right -- not the footer, which is
+   where an earlier version of this rule looked and found only the help icon
+   and the zen-mode exit. Two classes for the specificity, as elsewhere here:
+   one ties with Excalidraw's own rule and then loses on load order. */
+.excalidraw .sidebar-trigger.default-sidebar-trigger {
   display: none;
 }
 

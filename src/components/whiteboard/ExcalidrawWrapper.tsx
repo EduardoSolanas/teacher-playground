@@ -614,9 +614,12 @@ export default function ExcalidrawWrapper({
         // Excalidraw keys its files by id; the exporter takes a list.
         files: Object.values(api.getFiles() ?? {}) as readonly BoardFileEntry[],
       }),
-      // Excalidraw's library is a sidebar; the button that used to float on
-      // the canvas only ever toggled it.
-      openLibrary: () => api.toggleSidebar({ name: 'library' }),
+      /*
+       * The library is a tab of the default sidebar, not a sidebar of its own.
+       * Asking for one called "library" is not an error -- nothing opens, and
+       * nothing says why.
+       */
+      openLibrary: () => api.toggleSidebar({ name: 'default', tab: 'library' }),
     });
 
     if (typeof api.onUserFollow === 'function') {
