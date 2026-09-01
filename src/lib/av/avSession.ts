@@ -79,12 +79,24 @@ export interface AvProvider {
   ): void;
 }
 
+export interface AvSessionSnapshot {
+  readonly status: AvSessionStatus;
+  readonly error: AvError | null;
+  readonly local: Readonly<LocalState>;
+  readonly participants: readonly ParticipantState[];
+  readonly devices: Readonly<Record<DeviceKind, readonly AvDevice[]>>;
+}
+
+export type AvSessionListener = () => void;
+
 export interface AvSession {
   readonly status: AvSessionStatus;
   readonly error: AvError | null;
   readonly local: LocalState;
   readonly participants: ParticipantState[];
   readonly devices: Record<DeviceKind, AvDevice[]>;
+  getSnapshot(): AvSessionSnapshot;
+  subscribe(listener: AvSessionListener): () => void;
   join(token: string, url: string): Promise<void>;
   leave(): void;
   toggleMicrophone(): void;
@@ -125,6 +137,28 @@ export function createAvSession(provider: AvProvider): AvSession {
   let local: LocalState = { micMuted: false, camOn: false };
   const participants: ParticipantState[] = [];
   const devices: Record<DeviceKind, AvDevice[]> = { microphone: [], camera: [] };
+  const listeners = new Set<AvSessionListener>();
+  let snapshot: AvSessionSnapshot;
+
+  function updateSnapshot(): void {
+    snapshot = {
+      status,
+      error,
+      local: { ...local },
+      participants: [...participants],
+      devices: {
+        microphone: [...devices.microphone],
+        camera: [...devices.camera],
+      },
+    };
+  }
+
+  function emitChange(): void {
+    updateSnapshot();
+    listeners.forEach((listener) => listener());
+  }
+
+  updateSnapshot();
 
   function updateLocalParticipant(): void {
     const index = participants.findIndex((p) => p.identity === '__local__');
@@ -146,23 +180,28 @@ export function createAvSession(provider: AvProvider): AvSession {
       const index = participants.findIndex((p) => p.identity === participant.identity);
       if (index >= 0) participants[index] = participant;
       else participants.push(participant);
+      emitChange();
     },
     onParticipantRemoved(identity) {
       const index = participants.findIndex((p) => p.identity === identity);
       if (index >= 0) participants.splice(index, 1);
+      emitChange();
     },
     onLocalMic(muted) {
       local.micMuted = muted;
       updateLocalParticipant();
+      emitChange();
     },
     onLocalCamera(on) {
       local.camOn = on;
       updateLocalParticipant();
+      emitChange();
     },
     onDisconnected() {
       status = 'idle';
       clearParticipants();
       local = { micMuted: false, camOn: false };
+      emitChange();
     },
     onError(err) {
       error = err;
@@ -170,9 +209,11 @@ export function createAvSession(provider: AvProvider): AvSession {
       // call failing: leaving 'joined' would take the working half of the call
       // (the mic, when it was the camera that was refused) away as well.
       if (status !== 'joined') status = 'error';
+      emitChange();
     },
     onDevices(kind, list) {
       devices[kind] = list;
+      emitChange();
     },
   });
 
@@ -181,12 +222,15 @@ export function createAvSession(provider: AvProvider): AvSession {
     status = 'connecting';
     error = null;
     updateLocalParticipant();
+    emitChange();
     try {
       await provider.connect(token, url);
       status = 'joined';
+      emitChange();
     } catch (err) {
       error = mapProviderError(err);
       status = 'error';
+      emitChange();
     }
   }
 
@@ -202,6 +246,7 @@ export function createAvSession(provider: AvProvider): AvSession {
     local = { micMuted: false, camOn: false };
     devices.microphone = [];
     devices.camera = [];
+    emitChange();
   }
 
   function toggleMicrophone(): void {
@@ -214,6 +259,7 @@ export function createAvSession(provider: AvProvider): AvSession {
       status = 'error';
     }
     updateLocalParticipant();
+    emitChange();
   }
 
   function toggleCamera(): void {
@@ -226,6 +272,7 @@ export function createAvSession(provider: AvProvider): AvSession {
       status = 'error';
     }
     updateLocalParticipant();
+    emitChange();
   }
 
   async function selectDevice(kind: DeviceKind, deviceId: string): Promise<void> {
@@ -239,6 +286,7 @@ export function createAvSession(provider: AvProvider): AvSession {
       error = mapProviderError(err);
       status = 'error';
     }
+    emitChange();
   }
 
   function requestMute(targetIdentity: string): void {
@@ -248,7 +296,15 @@ export function createAvSession(provider: AvProvider): AvSession {
     } catch (err) {
       error = mapProviderError(err);
       status = 'error';
+      emitChange();
     }
+  }
+
+  function subscribe(listener: AvSessionListener): () => void {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
   }
 
   function attachTrack(
@@ -283,6 +339,10 @@ export function createAvSession(provider: AvProvider): AvSession {
     get devices() {
       return devices;
     },
+    getSnapshot() {
+      return snapshot;
+    },
+    subscribe,
     get isActive() {
       return status === 'connecting' || status === 'joined';
     },

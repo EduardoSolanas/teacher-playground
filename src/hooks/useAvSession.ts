@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import {
@@ -8,6 +8,7 @@ import {
   type AvDevice,
   type AvError,
   type AvSession,
+  type AvSessionSnapshot,
   type AvSessionStatus,
   type DeviceKind,
   type ParticipantState,
@@ -54,18 +55,13 @@ interface TokenResponse {
   reason?: string;
 }
 
-function snapshot(session: AvSession) {
-  return {
-    status: session.status,
-    error: session.error,
-    local: { ...session.local },
-    participants: [...session.participants],
-    devices: {
-      microphone: [...session.devices.microphone],
-      camera: [...session.devices.camera],
-    },
-  };
-}
+const EMPTY_SNAPSHOT: AvSessionSnapshot = {
+  status: 'idle',
+  error: null,
+  local: { micMuted: false, camOn: false },
+  participants: [],
+  devices: { microphone: [], camera: [] },
+};
 
 /**
  * Fetches a short-lived LiveKit token and drives the voice session while the
@@ -75,34 +71,29 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
   const { roomId, identity, displayName, enabled } = options;
   const sessionRef = useRef<AvSession | null>(null);
   const providerRef = useRef<LiveKitProvider | null>(null);
-  const [state, setState] = useState(() => ({
-    status: 'idle' as AvSessionStatus,
-    error: null as AvError | null,
-    local: { micMuted: false, camOn: false },
-    participants: [] as ParticipantState[],
-    devices: { microphone: [] as AvDevice[], camera: [] as AvDevice[] },
-  }));
+  const [session, setSession] = useState<AvSession | null>(null);
+  const [startupError, setStartupError] = useState<AvError | null>(null);
   const [unavailableReason, setUnavailableReason] = useState<
     'unconfigured' | 'forbidden' | 'waiting' | null
   >(null);
-
-  const refresh = useCallback(() => {
-    if (!sessionRef.current) return;
-    setState(snapshot(sessionRef.current));
-  }, []);
+  const sessionSnapshot = useSyncExternalStore(
+    useCallback((onStoreChange) => session?.subscribe(onStoreChange) ?? (() => {}), [session]),
+    useCallback(() => session?.getSnapshot() ?? EMPTY_SNAPSHOT, [session]),
+    () => EMPTY_SNAPSHOT,
+  );
+  const state = session
+    ? sessionSnapshot
+    : startupError
+      ? { ...EMPTY_SNAPSHOT, status: 'error' as const, error: startupError }
+      : EMPTY_SNAPSHOT;
 
   const leave = useCallback(() => {
     sessionRef.current?.leave();
     sessionRef.current = null;
+    setSession(null);
     providerRef.current = null;
+    setStartupError(null);
     setUnavailableReason(null);
-    setState({
-      status: 'idle',
-      error: null,
-      local: { micMuted: false, camOn: false },
-      participants: [],
-      devices: { microphone: [], camera: [] },
-    });
   }, []);
 
   useEffect(() => {
@@ -113,7 +104,6 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
     if (!identity) return;
 
     let cancelled = false;
-    let pollTimer: number | undefined;
 
     async function start() {
       // Identity is not sent: the server always binds the LiveKit identity
@@ -137,11 +127,8 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
         return;
       }
       if (!response.ok) {
-        setState((prev) => ({
-          ...prev,
-          status: 'error',
-          error: { kind: 'unknown', message: `Token request failed (${response.status})` },
-        }));
+        setSession(null);
+        setStartupError({ kind: 'unknown', message: `Token request failed (${response.status})` });
         return;
       }
 
@@ -155,18 +142,15 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
       const session = createAvSession(provider);
       providerRef.current = provider;
       sessionRef.current = session;
+      setSession(session);
+      setStartupError(null);
       setUnavailableReason(null);
-
-      pollTimer = window.setInterval(() => {
-        if (!cancelled) refresh();
-      }, 250);
 
       await session.join(body.token, body.url);
       if (cancelled) {
         session.leave();
         return;
       }
-      refresh();
     }
 
     /*
@@ -186,38 +170,25 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
      * covers a connection that merely dropped.
      */
     void start().catch((error: unknown) => {
-      /*
-       * Stop the poll before anything else.
-       *
-       * It is started before the join, so a join that never succeeds leaves it
-       * running: four setState calls a second, for as long as the tab is open,
-       * re-rendering the room around a call that is not going to happen. That
-       * is work competing with drawing, on the same thread, in the one place a
-       * teacher notices delay.
-       */
-      if (pollTimer !== undefined) {
-        window.clearInterval(pollTimer);
-        pollTimer = undefined;
-      }
       if (cancelled) return;
-      setState((prev) => ({
-        ...prev,
-        status: 'error',
-        error: {
-          kind: 'unknown',
-          message: error instanceof Error && error.message
+      setSession(null);
+      sessionRef.current = null;
+      providerRef.current = null;
+      setStartupError({
+        kind: 'unknown',
+        message:
+          error instanceof Error && error.message
             ? `Could not join the call: ${error.message}`
             : 'Could not join the call.',
-        },
-      }));
+      });
+      setUnavailableReason(null);
     });
 
     return () => {
       cancelled = true;
-      if (pollTimer !== undefined) window.clearInterval(pollTimer);
       leave();
     };
-  }, [enabled, roomId, identity, displayName, leave, refresh]);
+  }, [enabled, roomId, identity, displayName, leave]);
 
   useEffect(() => {
     const onPageHide = () => leave();
@@ -228,21 +199,21 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
   return {
     status: state.status,
     error: state.error,
-    local: state.local,
-    participants: state.participants,
-    devices: state.devices,
+    local: { ...state.local },
+    participants: [...state.participants],
+    devices: {
+      microphone: [...state.devices.microphone],
+      camera: [...state.devices.camera],
+    },
     unavailableReason,
     toggleMicrophone: () => {
       sessionRef.current?.toggleMicrophone();
-      refresh();
     },
     toggleCamera: () => {
       sessionRef.current?.toggleCamera();
-      refresh();
     },
     selectDevice: async (kind, deviceId) => {
       await sessionRef.current?.selectDevice(kind, deviceId);
-      refresh();
     },
     requestMute: async (target) => {
       await ajaxFetch(`/api/av/mute?${new URLSearchParams({ roomId }).toString()}`, {

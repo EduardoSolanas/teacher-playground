@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 
 import { useAvSession } from './useAvSession';
+import { LiveKitProvider } from '@/lib/av/livekitProvider';
 
 /*
  * A room does not take the camera until somebody asks it to.
@@ -105,5 +106,47 @@ describe('useAvSession', () => {
     expect(init?.credentials).toBe('same-origin');
     expect(new Headers(init?.headers).get('X-Requested-With')).toBe('XMLHttpRequest');
     expect(init?.body).toBe(JSON.stringify({ target: 'peer-2' }));
+  });
+
+  it('reflects provider-driven state changes without creating a polling interval', async () => {
+    const setIntervalSpy = vi.spyOn(window, 'setInterval');
+    const connect = vi.spyOn(LiveKitProvider.prototype, 'connect').mockResolvedValue();
+    const disconnect = vi.spyOn(LiveKitProvider.prototype, 'disconnect').mockImplementation(() => {});
+    const providerEmitters: Array<{
+      onParticipant?: (participant: { identity: string; micMuted: boolean; camOn: boolean }) => void;
+      onLocalMic?: (muted: boolean) => void;
+      onLocalCamera?: (on: boolean) => void;
+    }> = [];
+    const onEvents = vi.spyOn(LiveKitProvider.prototype, 'onEvents').mockImplementation(function (events) {
+      providerEmitters.push(events);
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ token: 'token-1', url: 'wss://livekit.test' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const { result } = renderHook(() => useAvSession({ ...options, enabled: true }));
+
+    await waitFor(() => expect(result.current.status).toBe('joined'));
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(setIntervalSpy.mock.calls.some(([, delay]) => delay === 250)).toBe(false);
+
+    act(() => {
+      providerEmitters[0]?.onLocalCamera?.(true);
+      providerEmitters[0]?.onParticipant?.({ identity: 'peer-2', micMuted: true, camOn: false });
+    });
+    await waitFor(() => expect(result.current.participants.map((p) => p.identity)).toContain('peer-2'));
+
+    act(() => {
+      providerEmitters[0]?.onLocalMic?.(true);
+    });
+    await waitFor(() => expect(result.current.local.micMuted).toBe(true));
+
+    disconnect.mockRestore();
+    connect.mockRestore();
+    onEvents.mockRestore();
   });
 });

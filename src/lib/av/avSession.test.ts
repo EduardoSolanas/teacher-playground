@@ -5,6 +5,7 @@ import {
   mapProviderError,
   type AvProvider,
   type AvProviderEvents,
+  type AvSessionListener,
   type ParticipantState,
 } from './avSession';
 
@@ -144,6 +145,29 @@ describe('createAvSession', () => {
     expect(session.participants).toHaveLength(2);
     provider.emit.onParticipantRemoved?.('peer-1');
     expect(session.participants.map((p) => p.identity)).toEqual(['peer-2']);
+  });
+
+  it('notifies listeners when provider events change session state', async () => {
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+    const listener = vi.fn<AvSessionListener>();
+    const unsubscribe = session.subscribe(listener);
+
+    await session.join('token', 'url');
+    listener.mockClear();
+
+    addParticipant(provider, { identity: 'peer-1', micMuted: true, camOn: false });
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    provider.emit.onLocalMic?.(true);
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    provider.emit.onParticipantRemoved?.('peer-1');
+    expect(listener).toHaveBeenCalledTimes(3);
+
+    unsubscribe();
+    provider.emit.onLocalCamera?.(true);
+    expect(listener).toHaveBeenCalledTimes(3);
   });
 
   it('toggleMicrophone flips local state and calls the provider', async () => {
