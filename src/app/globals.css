@@ -159,28 +159,42 @@ textarea {
   }
 }
 
-/* The room's own controls in Excalidraw's footer. `excalidraw-button` gives
-   them its size, radius and theme variables; these two rules are only what
-   that class has no opinion about -- the spacing between them, the icon size,
-   and what "on" and "destructive" look like. */
+/* The room's own controls, as one of Excalidraw's footer islands.
+   Its zoom and undo clusters are a rounded panel carrying the background and
+   the hairline, with square borderless buttons sitting flush inside. These two
+   follow the same recipe, so they read as part of that row rather than as two
+   bordered buttons from somewhere else -- and because the values are its own
+   variables, they track its light and dark themes without a palette of ours. */
 .tp-board-footer {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  margin-left: 0.5rem;
+  overflow: hidden;
+  background-color: var(--island-bg-color);
+  border-radius: var(--border-radius-lg);
+  box-shadow: 0 0 0 1px var(--color-surface-lowest);
 }
 
-.tp-board-footer .excalidraw-button svg {
-  width: 1rem;
-  height: 1rem;
+.tp-board-footer button {
+  border: none;
+  border-radius: 0;
+  width: var(--lg-button-size);
+  height: var(--lg-button-size);
+  background-color: var(--color-surface-low);
 }
 
-.tp-board-footer__button--active {
+.tp-board-footer button svg {
+  width: var(--lg-icon-size);
+  height: var(--lg-icon-size);
+}
+
+/* Guiding is a mode that stays on, so it has to look held down. */
+.tp-board-footer .tp-board-footer__button--active,
+.tp-board-footer .tp-board-footer__button--active:hover {
   background-color: var(--color-primary);
-  border-color: var(--color-primary);
   color: var(--color-primary-contrast, #fff);
 }
 
-.tp-board-footer__button--danger:hover {
+.tp-board-footer .tp-board-footer__button--danger:hover {
   color: var(--color-danger, #c92a2a);
-  border-color: var(--color-danger, #c92a2a);
 }

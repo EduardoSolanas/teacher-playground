@@ -304,45 +304,50 @@ function RoomContent({ roomId }: { roomId: string }) {
    */
   const boardFooter = !isRoomOwner ? null : (
     /*
-     * Excalidraw's own button class rather than this application's styling.
+     * Built out of Excalidraw's own footer parts, not approximations of them.
      *
-     * These sit inches from its zoom and undo, and Tailwind beside their
-     * design system reads as something bolted on. `excalidraw-button` carries
-     * their size, radius, border and -- the part no palette of ours can copy --
-     * their light and dark variables, so these follow the board's theme.
+     * Its zoom and undo clusters are islands: a rounded panel carrying the
+     * background and the hairline, with square, borderless buttons flush
+     * inside it. Two separately bordered buttons beside that read as belonging
+     * to a different application, which is what they were.
      *
-     * The class is used rather than the exported `Button` component because
-     * importing from the package here would pull Excalidraw into this chunk,
-     * and it is deliberately behind `dynamic()`.
+     * The classes are Excalidraw's -- `ToolIcon` for the button, an inner
+     * `ToolIcon__icon` for the glyph -- rather than the exported `Button`
+     * component, because importing from the package here would pull Excalidraw
+     * into a chunk that `dynamic()` deliberately keeps it out of.
      */
     <div className="tp-board-footer">
       <button
         type="button"
         data-testid="whiteboard-tool-guide"
         onClick={handleToggleGuide}
-        className={`excalidraw-button ${isGuiding ? 'tp-board-footer__button--active' : ''}`}
+        className={`ToolIcon_type_button ToolIcon_size_medium ToolIcon_type_button--show ToolIcon${isGuiding ? ' tp-board-footer__button--active' : ''}`}
         aria-label={isGuiding ? 'Stop guiding' : 'Guide class'}
         title={isGuiding ? 'Stop guiding' : 'Guide class'}
       >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-          <path d="M3 12h18" />
-          <path d="M12 3v18" />
-          <circle cx="12" cy="12" r="8" />
-        </svg>
+        <div className="ToolIcon__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 12h18" />
+            <path d="M12 3v18" />
+            <circle cx="12" cy="12" r="8" />
+          </svg>
+        </div>
       </button>
       <button
         type="button"
         data-testid="whiteboard-clear-btn"
         onClick={() => setClearModalOpen(true)}
-        className="excalidraw-button tp-board-footer__button--danger"
+        className="ToolIcon_type_button ToolIcon_size_medium ToolIcon_type_button--show ToolIcon tp-board-footer__button--danger"
         aria-label="Clear board"
         title="Clear board"
       >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-          <path d="M3 6h18" />
-          <path d="M8 6V4h8v2" />
-          <path d="M19 6l-1 14H6L5 6" />
-        </svg>
+        <div className="ToolIcon__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 6h18" />
+            <path d="M8 6V4h8v2" />
+            <path d="M19 6l-1 14H6L5 6" />
+          </svg>
+        </div>
       </button>
     </div>
   );
