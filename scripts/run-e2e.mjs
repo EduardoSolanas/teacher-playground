@@ -195,6 +195,10 @@ try {
           // The production workflow does not set this, so production builds
           // continue to use the immutable release base.
           NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH: '/',
+          // The support panel does not render without an address, so the suite
+          // needs one to have a "?" to press. A reserved domain, because the
+          // security scan refuses a real address in anything tracked.
+          NEXT_PUBLIC_SUPPORT_EMAIL: 'support@example.com',
         },
       });
       buildDone = waitForChild(buildProcess);
