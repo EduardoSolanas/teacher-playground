@@ -108,6 +108,17 @@ describe('useAvSession', () => {
     expect(init?.body).toBe(JSON.stringify({ target: 'peer-2' }));
   });
 
+  it('sends video mute when the caller targets the camera', async () => {
+    const { result } = renderHook(() => useAvSession({ ...options, enabled: false }));
+
+    await waitFor(() => expect(result.current.status).toBe('idle'));
+    await result.current.requestMute('peer-2', 'video');
+
+    expect(muteRequests()).toHaveLength(1);
+    const [, init] = muteRequests()[0];
+    expect(init?.body).toBe(JSON.stringify({ target: 'peer-2', kind: 'video' }));
+  });
+
   it('reflects provider-driven state changes without creating a polling interval', async () => {
     const setIntervalSpy = vi.spyOn(window, 'setInterval');
     const connect = vi.spyOn(LiveKitProvider.prototype, 'connect').mockResolvedValue();

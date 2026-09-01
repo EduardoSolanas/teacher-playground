@@ -34,7 +34,7 @@ export interface UseAvSessionResult {
   readonly toggleMicrophone: () => void;
   readonly toggleCamera: () => void;
   readonly selectDevice: (kind: DeviceKind, deviceId: string) => Promise<void>;
-  readonly requestMute: (identity: string) => Promise<void>;
+  readonly requestMute: (identity: string, kind?: 'audio' | 'video') => Promise<void>;
   readonly attachTrack: (
     identity: string,
     kind: 'camera' | 'microphone',
@@ -215,11 +215,11 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
     selectDevice: async (kind, deviceId) => {
       await sessionRef.current?.selectDevice(kind, deviceId);
     },
-    requestMute: async (target) => {
+    requestMute: async (target, kind = 'audio') => {
       await ajaxFetch(`/api/av/mute?${new URLSearchParams({ roomId }).toString()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target }),
+        body: JSON.stringify(kind === 'audio' ? { target } : { target, kind }),
       });
     },
     attachTrack: (id, kind, el) => sessionRef.current?.attachTrack(id, kind, el),

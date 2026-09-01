@@ -28,6 +28,10 @@ interface PresencePanelProps {
   mutedPeerIds?: ReadonlySet<string>;
   /** Peer ids currently speaking in the voice session. */
   speakingPeerIds?: ReadonlySet<string>;
+  /** A/V participant state keyed by whiteboard peer id. */
+  avPeerStates?: ReadonlyMap<string, { micMuted: boolean; camOn: boolean }>;
+  /** Owner-only row controls for muting remote published tracks. */
+  onMutePeer?: (peerId: string, kind: 'audio' | 'video') => void;
   /** Room capacity from settings; used for the "N of M" count. */
   maxUsers?: number;
 }
@@ -128,6 +132,8 @@ export default function PresencePanel({
   onRaiseHand,
   mutedPeerIds,
   speakingPeerIds,
+  avPeerStates,
+  onMutePeer,
   maxUsers = DEFAULT_MAX_USERS,
 }: PresencePanelProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -483,6 +489,8 @@ export default function PresencePanel({
                   ? accountNameDisc(user.accountId)
                   : null;
               const isSpeaking = Boolean(speakingPeerIds?.has(user.peerId));
+              const avState = avPeerStates?.get(user.peerId);
+              const canMuteAv = Boolean(avState && canModerate && onMutePeer);
 
               return (
                 <div
@@ -552,8 +560,44 @@ export default function PresencePanel({
                           Muted
                         </span>
                       )}
+                      {avState && (
+                        <span
+                          data-testid={`whiteboard-user-av-${user.peerId}`}
+                          className="text-[0.625rem] font-semibold uppercase tracking-wide text-slate-500"
+                        >
+                          {avState.micMuted ? 'Mic off' : 'Mic on'} · {avState.camOn ? 'Camera on' : 'Camera off'}
+                        </span>
+                      )}
                     </div>
                   </div>
+                  {canMuteAv && (
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        data-testid={`whiteboard-user-mute-audio-${user.peerId}`}
+                        aria-label={`Mute ${user.userName} microphone`}
+                        className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[0.6875rem] font-semibold text-slate-700 transition-colors duration-150 hover:bg-slate-100"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onMutePeer?.(user.peerId, 'audio');
+                        }}
+                      >
+                        Mute mic
+                      </button>
+                      <button
+                        type="button"
+                        data-testid={`whiteboard-user-mute-video-${user.peerId}`}
+                        aria-label={`Mute ${user.userName} camera`}
+                        className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[0.6875rem] font-semibold text-slate-700 transition-colors duration-150 hover:bg-slate-100"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onMutePeer?.(user.peerId, 'video');
+                        }}
+                      >
+                        Mute cam
+                      </button>
+                    </div>
+                  )}
                   {canModerate && (
                     <button
                       data-testid={`whiteboard-user-options-${user.peerId}`}

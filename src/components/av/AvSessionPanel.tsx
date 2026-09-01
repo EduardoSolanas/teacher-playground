@@ -10,15 +10,14 @@ import { clampPanelPosition, type PanelPoint } from '@/lib/av/panelPosition';
 interface AvSessionPanelProps {
   readonly av: UseAvSessionResult;
   readonly localIdentity: string;
-  readonly isLocalHost: boolean;
   /** Start out of the way rather than open. */
   readonly collapsed?: boolean;
   /**
    * Hang up, without leaving the room.
    *
-   * The board carries on either way, so this is not the Leave in the bottom
-   * bar. Absent where the call is not something the caller can end.
-   */
+  * The board carries on either way, so this is not the Leave in the bottom
+  * bar. Absent where the call is not something the caller can end.
+  */
   readonly onEndCall?: () => void;
 }
 
@@ -71,12 +70,10 @@ function deviceLabel(device: AvDevice, index: number, kind: 'Microphone' | 'Came
 function ParticipantTile({
   participant,
   isLocal,
-  isLocalHost,
   av,
 }: {
   participant: ParticipantState;
   isLocal: boolean;
-  isLocalHost: boolean;
   av: UseAvSessionResult;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -159,17 +156,6 @@ function ParticipantTile({
           {isLocal ? 'You' : participant.identity}
           {participant.micMuted ? ' · muted' : ''}
         </span>
-        {isLocalHost && !isLocal && !participant.micMuted && (
-          <button
-            type="button"
-            data-testid={`av-host-mute-${participant.identity}`}
-            className="rounded bg-black/60 px-1.5 py-0.5 text-[0.6875rem] text-amber-200 hover:bg-black/80"
-            onClick={() => av.requestMute(participant.identity)}
-            title="Request mute"
-          >
-            Mute
-          </button>
-        )}
       </div>
     </div>
   );
@@ -186,7 +172,6 @@ function ParticipantTile({
 export default function AvSessionPanel({
   av,
   localIdentity,
-  isLocalHost,
   collapsed = false,
   onEndCall,
 }: AvSessionPanelProps) {
@@ -370,7 +355,6 @@ export default function AvSessionPanel({
               key={participant.identity}
               participant={participant}
               isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
-              isLocalHost={isLocalHost}
               av={av}
             />
           ))}

@@ -1487,7 +1487,7 @@ describe('kick and suspend evict LiveKit participant', () => {
 });
 
 describe('A/V mute endpoint', () => {
-  type LiveKitMuteCall = { roomId: string; identity: string };
+  type LiveKitMuteCall = { roomId: string; identity: string; kind?: 'audio' | 'video' };
   const GUEST = 'https://join.example.com';
 
   function roomStub(roomId: string) {
@@ -1501,6 +1501,7 @@ describe('A/V mute endpoint', () => {
         instance.liveKitMuteCalls!.push({
           roomId: input.roomId,
           identity: input.identity,
+          kind: input.kind,
         });
         return { ok: true };
       };
@@ -1553,7 +1554,29 @@ describe('A/V mute endpoint', () => {
     expect(mute.status).toBe(200);
 
     expect(await readMuteCalls(roomId)).toEqual([
-      { roomId, identity: editor.accountId },
+      { roomId, identity: editor.accountId, kind: 'audio' },
+    ]);
+  });
+
+  it('owner can mute a participant camera', async () => {
+    const owner = await bootstrapLocalSession('av-mute-camera-owner');
+    const editor = await bootstrapLocalSession('av-mute-camera-editor');
+    const roomId = 'av-mute-camera-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+
+    await installMuteSpy(roomId);
+
+    const mute = await authenticatedFetch(`/api/whiteboard/room/${roomId}/av`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'mute', target: editor.accountId, kind: 'video' }),
+    });
+    expect(mute.status).toBe(200);
+
+    expect(await readMuteCalls(roomId)).toEqual([
+      { roomId, identity: editor.accountId, kind: 'video' },
     ]);
   });
 
@@ -1641,6 +1664,20 @@ describe('A/V mute endpoint', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ action: 'mute', target: 123 }),
+    });
+    expect(mute.status).toBe(400);
+  });
+
+  it('mute with non-string kind returns 400', async () => {
+    const owner = await bootstrapLocalSession('av-mute-bad-kind-owner');
+    const roomId = 'av-mute-bad-kind-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const mute = await authenticatedFetch(`/api/whiteboard/room/${roomId}/av`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'mute', target: 'acct-student', kind: 123 }),
     });
     expect(mute.status).toBe(400);
   });

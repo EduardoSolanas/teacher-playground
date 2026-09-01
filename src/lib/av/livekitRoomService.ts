@@ -77,6 +77,7 @@ export interface MuteLiveKitParticipantInput {
   readonly env: unknown;
   readonly roomId: string;
   readonly identity: string;
+  readonly kind?: 'audio' | 'video';
 }
 
 export type MuteLiveKitParticipantResult =
@@ -108,7 +109,9 @@ export async function muteLiveKitParticipant(
       room: input.roomId,
     });
 
-    // First call: GetParticipant to find the audio track
+    const targetKind = input.kind === 'video' ? 'video' : 'audio';
+
+    // First call: GetParticipant to find the requested published track.
     const getResponse = await fetch(getParticipantUrl, {
       method: 'POST',
       headers: {
@@ -131,12 +134,14 @@ export async function muteLiveKitParticipant(
       };
     };
 
-    // Find first audio track
-    const audioTrack = (getResponseJson.participant?.tracks ?? []).find(
-      (track) => track.type === 'AUDIO' || track.source === 'MICROPHONE',
+    const targetTrack = (getResponseJson.participant?.tracks ?? []).find(
+      (track) =>
+        targetKind === 'video'
+          ? track.type === 'VIDEO' || track.source === 'CAMERA'
+          : track.type === 'AUDIO' || track.source === 'MICROPHONE',
     );
 
-    if (!audioTrack) {
+    if (!targetTrack) {
       return { ok: true, skipped: true };
     }
 
@@ -151,7 +156,7 @@ export async function muteLiveKitParticipant(
       body: JSON.stringify({
         room: input.roomId,
         identity: input.identity,
-        track_sid: audioTrack.sid,
+        track_sid: targetTrack.sid,
         muted: true,
       }),
     });

@@ -19,10 +19,12 @@ const noop = vi.fn();
 function renderPanel(
   users: WhiteboardUser[],
   options: {
+    avPeerStates?: ReadonlyMap<string, { micMuted: boolean; camOn: boolean }>;
     localPeerId?: string;
     isLocalHost?: boolean;
     waitingPeers?: WhiteboardUser[];
     speakingPeerIds?: ReadonlySet<string>;
+    onMutePeer?: (peerId: string, kind: 'audio' | 'video') => void;
   } = {},
 ) {
   return render(
@@ -37,6 +39,8 @@ function renderPanel(
       onReject={noop}
       onKick={noop}
       onSuspend={noop}
+      avPeerStates={options.avPeerStates}
+      onMutePeer={options.onMutePeer}
       speakingPeerIds={options.speakingPeerIds}
     />,
   );
@@ -205,6 +209,69 @@ describe('PresencePanel speaking indicator', () => {
       'Bob is speaking',
     );
     expect(screen.queryByTestId('whiteboard-user-speaking-peer-1')).toBeNull();
+  });
+});
+
+describe('PresencePanel A/V roster state', () => {
+  it('shows mic and camera state only for call participants', () => {
+    renderPanel(
+      [
+        makeUser({ peerId: 'peer-1', userName: 'Alice' }),
+        makeUser({ peerId: 'peer-2', userName: 'Bob' }),
+      ],
+      {
+        avPeerStates: new Map([
+          ['peer-2', { micMuted: true, camOn: false }],
+        ]),
+      },
+    );
+
+    expect(screen.queryByTestId('whiteboard-user-av-peer-1')).toBeNull();
+    expect(screen.getByTestId('whiteboard-user-av-peer-2').textContent).toContain('Mic off');
+    expect(screen.getByTestId('whiteboard-user-av-peer-2').textContent).toContain('Camera off');
+  });
+
+  it('shows owner-only mute controls for remote call participants', () => {
+    const onMutePeer = vi.fn();
+    renderPanel(
+      [
+        makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true }),
+        makeUser({ peerId: 'peer-student', userName: 'Student', accountId: 'acct-student' }),
+      ],
+      {
+        localPeerId: 'peer-owner',
+        isLocalHost: true,
+        avPeerStates: new Map([
+          ['peer-student', { micMuted: false, camOn: true }],
+        ]),
+        onMutePeer,
+      },
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-mute-audio-peer-student'));
+    expect(onMutePeer).toHaveBeenCalledWith('peer-student', 'audio');
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-mute-video-peer-student'));
+    expect(onMutePeer).toHaveBeenCalledWith('peer-student', 'video');
+  });
+
+  it('does not show owner mute controls to non-owners', () => {
+    renderPanel(
+      [
+        makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true }),
+        makeUser({ peerId: 'peer-student', userName: 'Student' }),
+      ],
+      {
+        localPeerId: 'peer-student',
+        isLocalHost: false,
+        avPeerStates: new Map([
+          ['peer-owner', { micMuted: false, camOn: true }],
+        ]),
+      },
+    );
+
+    expect(screen.queryByTestId('whiteboard-user-mute-audio-peer-owner')).toBeNull();
+    expect(screen.queryByTestId('whiteboard-user-mute-video-peer-owner')).toBeNull();
   });
 });
 

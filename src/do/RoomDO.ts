@@ -166,6 +166,13 @@ function stringField(body: Record<string, unknown> | null, field: string): strin
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+function muteKindField(body: Record<string, unknown> | null): 'audio' | 'video' | null {
+  const value = body?.kind;
+  if (value === undefined) return 'audio';
+  if (value === 'audio' || value === 'video') return value;
+  return null;
+}
+
 interface SocketIdentity {
   accountId: string;
   sessionId: string;
@@ -220,7 +227,7 @@ export class RoomDO extends DurableObject {
   ) => Promise<MuteLiveKitParticipantResult> = muteLiveKitParticipant;
 
   /** Populated by tests when {@link muteLiveKitParticipantHook} is replaced with a spy. */
-  liveKitMuteCalls?: { roomId: string; identity: string }[];
+  liveKitMuteCalls?: { roomId: string; identity: string; kind?: 'audio' | 'video' }[];
 
   /** Test-only override for the per-room socket cap; production always uses 32. */
   static signalingMaxSocketsPerRoomForTests: number | null = null;
@@ -751,11 +758,16 @@ export class RoomDO extends DurableObject {
           if (!target) {
             return Response.json({ error: 'Missing target' }, { status: 400 });
           }
+          const kind = muteKindField(body);
+          if (!kind) {
+            return Response.json({ error: 'Invalid kind' }, { status: 400 });
+          }
 
           const result = await this.muteLiveKitParticipantHook({
             env: this.roomEnv,
             roomId,
             identity: target,
+            kind,
           });
 
           if (!result.ok) {

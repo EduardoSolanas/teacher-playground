@@ -218,6 +218,36 @@ describe('muteLiveKitParticipant', () => {
     });
   });
 
+  it('can mute the participant camera track when asked for video', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(
+      JSON.stringify({
+        participant: {
+          identity: 'acct-user',
+          tracks: [
+            { sid: 'audio-sid-123', type: 'AUDIO', source: 'MICROPHONE' },
+            { sid: 'video-sid-456', type: 'VIDEO', source: 'CAMERA' },
+          ],
+        },
+      }),
+      { status: 200 },
+    )).mockResolvedValueOnce(new Response('', { status: 200 }));
+
+    await muteLiveKitParticipant({
+      env: LIVEKIT_ENV,
+      roomId: 'room-video',
+      identity: 'acct-user',
+      kind: 'video',
+    });
+
+    const [, muteInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(JSON.parse(muteInit.body as string)).toEqual({
+      room: 'room-video',
+      identity: 'acct-user',
+      track_sid: 'video-sid-456',
+      muted: true,
+    });
+  });
+
   it('picks first audio track even when source is MICROPHONE', async () => {
     fetchMock.mockResolvedValueOnce(new Response(
       JSON.stringify({
@@ -260,6 +290,28 @@ describe('muteLiveKitParticipant', () => {
       env: LIVEKIT_ENV,
       roomId: 'room-1',
       identity: 'acct-1',
+    });
+
+    expect(result).toEqual({ ok: true, skipped: true });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('returns skipped when participant has no camera track for a video mute', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(
+      JSON.stringify({
+        participant: {
+          identity: 'acct-user',
+          tracks: [{ sid: 'audio-only', type: 'AUDIO', source: 'MICROPHONE' }],
+        },
+      }),
+      { status: 200 },
+    ));
+
+    const result = await muteLiveKitParticipant({
+      env: LIVEKIT_ENV,
+      roomId: 'room-1',
+      identity: 'acct-1',
+      kind: 'video',
     });
 
     expect(result).toEqual({ ok: true, skipped: true });

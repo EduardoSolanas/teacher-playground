@@ -36,6 +36,7 @@ import { resolveJoinDisplayName } from '@/lib/access/accessDisplayName';
 import { roomIdFromWhiteboardPath } from '@/lib/whiteboard/roomPath';
 import { shouldClearUsernameOnEviction } from '@/lib/whiteboard/evictionUi';
 import type { ParticipantState } from '@/lib/av/avSession';
+import type { WhiteboardUser } from '@/types/whiteboard';
 
 const ExcalidrawWrapper = dynamic(
   () => import('@/components/whiteboard/ExcalidrawWrapper'),
@@ -63,14 +64,46 @@ export function roomCanvasTopClass(guestHost: boolean): string {
 
 export function mapAvPeerIds(
   participants: readonly ParticipantState[],
+  users: readonly WhiteboardUser[],
   localPeerId: string,
   include: (participant: ParticipantState) => boolean,
 ): ReadonlySet<string> {
   return new Set(
     participants
       .filter(include)
-      .map((participant) => (participant.identity === '__local__' ? localPeerId : participant.identity)),
+      .flatMap((participant) => {
+        const peerId = participant.identity === '__local__'
+          ? localPeerId
+          : users.find((user) => user.accountId === participant.identity)?.peerId;
+        return peerId ? [peerId] : [];
+      }),
   );
+}
+
+export function mapAvPeerStateByPeerId(
+  participants: readonly ParticipantState[],
+  users: readonly WhiteboardUser[],
+  localPeerId: string,
+): ReadonlyMap<string, { micMuted: boolean; camOn: boolean }> {
+  return new Map(
+    participants.flatMap((participant) => {
+      const peerId = participant.identity === '__local__'
+        ? localPeerId
+        : users.find((user) => user.accountId === participant.identity)?.peerId;
+      return peerId
+        ? [[peerId, { micMuted: participant.micMuted, camOn: participant.camOn }] as const]
+        : [];
+    }),
+  );
+}
+
+export function resolveAvTargetAccountId(
+  users: readonly WhiteboardUser[],
+  localPeerId: string,
+  peerId: string,
+): string | null {
+  if (peerId === localPeerId) return '__local__';
+  return users.find((user) => user.peerId === peerId)?.accountId ?? null;
 }
 
 function RoomContent({ roomId }: { roomId: string }) {
@@ -194,6 +227,7 @@ function RoomContent({ roomId }: { roomId: string }) {
     displayName: userName ?? 'Anonymous',
     enabled: avEnabled,
   });
+  const avPeerStates = mapAvPeerStateByPeerId(av.participants, users, localPeerId);
 
   // A hidden tab stops its heartbeat unless somebody in it is on a call.
   useEffect(() => {
@@ -592,8 +626,14 @@ function RoomContent({ roomId }: { roomId: string }) {
         onSuspend={sendToWaitingRoom}
         onRaiseHand={setHandRaised}
         maxUsers={maxUsers}
-        mutedPeerIds={mapAvPeerIds(av.participants, localPeerId, (participant) => participant.micMuted)}
-        speakingPeerIds={mapAvPeerIds(av.participants, localPeerId, (participant) => participant.isSpeaking)}
+        avPeerStates={avPeerStates}
+        onMutePeer={(peerId, kind) => {
+          const targetIdentity = resolveAvTargetAccountId(users, localPeerId, peerId);
+          if (!targetIdentity) return;
+          void av.requestMute(targetIdentity, kind);
+        }}
+        mutedPeerIds={mapAvPeerIds(av.participants, users, localPeerId, (participant) => participant.micMuted)}
+        speakingPeerIds={mapAvPeerIds(av.participants, users, localPeerId, (participant) => participant.isSpeaking)}
       />
       {moderationError && (
         <div
@@ -608,7 +648,6 @@ function RoomContent({ roomId }: { roomId: string }) {
         <AvSessionPanel
           av={av}
           localIdentity={localPeerId}
-          isLocalHost={isLocalHost}
           onEndCall={() => setCallWanted(false)}
         />
       ) : (

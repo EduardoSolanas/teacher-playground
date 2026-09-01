@@ -31,7 +31,7 @@ function makeAv(overrides: Partial<UseAvSessionResult> = {}): UseAvSessionResult
 describe('AvSessionPanel', () => {
   it('renders a local tile', () => {
     const av = makeAv({ local: { micMuted: false, camOn: true } });
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     expect(screen.getByTestId('av-tile-me')).toBeTruthy();
     expect(av.attachTrack).toHaveBeenCalledWith('me', 'camera', expect.any(HTMLVideoElement));
   });
@@ -42,7 +42,7 @@ describe('AvSessionPanel', () => {
     const onEndCall = vi.fn();
     const av = makeAv();
     render(
-      <AvSessionPanel av={av} localIdentity="me" isLocalHost={false} onEndCall={onEndCall} />,
+      <AvSessionPanel av={av} localIdentity="me" onEndCall={onEndCall} />,
     );
     fireEvent.click(screen.getByTestId('av-end-call'));
     expect(onEndCall).toHaveBeenCalledTimes(1);
@@ -50,7 +50,7 @@ describe('AvSessionPanel', () => {
 
   it('leaves out the end control when there is nothing to end it with', () => {
     const av = makeAv();
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     expect(screen.queryByTestId('av-end-call')).toBeNull();
   });
 
@@ -65,7 +65,7 @@ describe('AvSessionPanel', () => {
      * lesson renders no top bar at all.
      */
     const av = makeAv({ local: { micMuted: false, camOn: true } });
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     expect(screen.getByTestId('av-call-controls')).toBeTruthy();
     fireEvent.click(screen.getByTestId('av-toggle-cam'));
     expect(av.toggleCamera).toHaveBeenCalledTimes(1);
@@ -79,7 +79,7 @@ describe('AvSessionPanel', () => {
      * it, a way to get it back.
      */
     const av = makeAv();
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     expect(screen.getByTestId('av-tile-me')).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('av-panel-collapse'));
@@ -91,7 +91,7 @@ describe('AvSessionPanel', () => {
 
   it('starts out of the way when asked to', () => {
     const av = makeAv();
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} collapsed />);
+    render(<AvSessionPanel av={av} localIdentity="me" collapsed />);
     expect(screen.queryByTestId('av-tile-me')).toBeNull();
     expect(screen.getByTestId('av-panel-open')).toBeTruthy();
   });
@@ -101,7 +101,7 @@ describe('AvSessionPanel', () => {
     // panel running to `right-2` sits on top of it, and the roster becomes
     // unreachable on the one screen size where it overlaps.
     const av = makeAv();
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     const panel = screen.getByTestId('av-session-panel');
     expect(panel.className).toContain('right-14');
     expect(panel.className).not.toContain(' right-2');
@@ -116,7 +116,7 @@ describe('AvSessionPanel', () => {
         camera: [cam('cam-1')],
       },
     });
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     const options = Array.from(screen.getByTestId('av-device-mic').querySelectorAll('option'));
     expect(options.map((o) => o.textContent)).toContain('Headset (Jabra Evolve 65)');
     expect(options.map((o) => o.textContent)).not.toContain('e181c4ad1c63');
@@ -128,7 +128,7 @@ describe('AvSessionPanel', () => {
     const av = makeAv({
       devices: { microphone: [mic('a', ''), mic('b', '')], camera: [cam('cam-1')] },
     });
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     const options = Array.from(screen.getByTestId('av-device-mic').querySelectorAll('option'));
     expect(options.map((o) => o.textContent)).toContain('Microphone 2');
   });
@@ -144,7 +144,7 @@ describe('AvSessionPanel', () => {
       error: { kind: 'device-missing', message: 'Requested device not found' },
       devices: { microphone: [mic('mic-1')], camera: [] },
     });
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     expect(screen.getByTestId('av-tile-me')).toBeTruthy();
     expect(screen.getByTestId('av-status-message')).toBeTruthy();
   });
@@ -156,7 +156,7 @@ describe('AvSessionPanel', () => {
       error: { kind: 'device-missing', message: 'not found' },
       devices: { microphone: [mic('mic-1')], camera: [] },
     });
-    const { rerender } = render(<AvSessionPanel av={noCam} localIdentity="me" isLocalHost={false} />);
+    const { rerender } = render(<AvSessionPanel av={noCam} localIdentity="me" />);
     expect(screen.getByTestId('av-status-message').textContent).toContain('No camera');
     expect(screen.getByTestId('av-status-message').textContent).not.toContain('microphone');
 
@@ -167,7 +167,6 @@ describe('AvSessionPanel', () => {
           devices: { microphone: [], camera: [cam('cam-1')] },
         })}
         localIdentity="me"
-        isLocalHost={false}
       />,
     );
     expect(screen.getByTestId('av-status-message').textContent).toContain('No microphone');
@@ -176,7 +175,7 @@ describe('AvSessionPanel', () => {
   it('shows nothing to act on when there is no call at all', () => {
     // Unlike a missing device, these mean there is no call behind the message.
     const av = makeAv({ status: 'idle', unavailableReason: 'unconfigured' });
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     expect(screen.getByTestId('av-status-message')).toBeTruthy();
     expect(screen.queryByTestId('av-tile-me')).toBeNull();
   });
@@ -190,7 +189,7 @@ describe('AvSessionPanel', () => {
      * stay above it deliberately -- those take the screen over on purpose.
      */
     const av = makeAv();
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     expect(screen.getByTestId('av-session-panel').className).toContain('z-[1400]');
 
     fireEvent.click(screen.getByTestId('av-panel-collapse'));
@@ -204,7 +203,7 @@ describe('AvSessionPanel', () => {
      * so it has to be movable out of the way rather than only hideable.
      */
     const av = makeAv();
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     const panel = screen.getByTestId('av-session-panel');
     const handle = screen.getByTestId('av-panel-drag');
 
@@ -220,7 +219,7 @@ describe('AvSessionPanel', () => {
 
   it('stays put when the drag never starts', () => {
     const av = makeAv();
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     const panel = screen.getByTestId('av-session-panel');
     fireEvent.pointerMove(window, { clientX: 400, clientY: 400 });
     expect(panel.style.left).toBe('');
@@ -231,7 +230,7 @@ describe('AvSessionPanel', () => {
     // Moving the panel and then hiding it should not send it back to a corner
     // it was deliberately dragged out of.
     const av = makeAv();
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     fireEvent.pointerDown(screen.getByTestId('av-panel-drag'), { clientX: 100, clientY: 100, button: 0 });
     fireEvent.pointerMove(window, { clientX: 220, clientY: 260 });
     fireEvent.pointerUp(window, { clientX: 220, clientY: 260 });
@@ -248,7 +247,7 @@ describe('AvSessionPanel', () => {
         { identity: 'peer-1', micMuted: false, camOn: true, isSpeaking: false },
       ],
     });
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     expect(screen.getByTestId('av-fullscreen-me')).toBeTruthy();
     expect(screen.getByTestId('av-fullscreen-peer-1')).toBeTruthy();
   });
@@ -257,7 +256,7 @@ describe('AvSessionPanel', () => {
     // jsdom has no Fullscreen API, and neither does an iframe denied the
     // permission. Pressing the button there must do nothing, not throw.
     const av = makeAv();
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     expect(() => fireEvent.click(screen.getByTestId('av-fullscreen-me'))).not.toThrow();
   });
 
@@ -266,7 +265,7 @@ describe('AvSessionPanel', () => {
       participants: [{ identity: 'me', micMuted: false, camOn: false, isSpeaking: false }],
       local: { micMuted: false, camOn: false },
     });
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     const tile = screen.getByTestId('av-tile-me');
     expect(tile.textContent).toContain('Camera off');
     expect(tile.querySelector('video')?.className).toContain('hidden');
@@ -277,20 +276,20 @@ describe('AvSessionPanel', () => {
       participants: [{ identity: 'peer-1', micMuted: true, camOn: false, isSpeaking: false }],
       local: { micMuted: false, camOn: true },
     });
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={true} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     expect(screen.getByTestId('av-tile-peer-1')).toBeTruthy();
     expect(screen.getByTestId('av-tile-peer-1').textContent).toContain('Camera off');
   });
 
   it('shows a camera device picker when more than one camera is available', () => {
     const av = makeAv({ devices: { microphone: [mic('mic-1')], camera: [cam('cam-1'), cam('cam-2')] } });
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     expect(screen.getByTestId('av-device-cam')).toBeTruthy();
   });
 
   it('does not show a camera device picker with a single camera', () => {
     const av = makeAv({ devices: { microphone: [mic('mic-1')], camera: [cam('cam-1')] } });
-    render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
+    render(<AvSessionPanel av={av} localIdentity="me" />);
     expect(screen.queryByTestId('av-device-cam')).toBeNull();
   });
 });
