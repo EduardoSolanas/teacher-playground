@@ -6,7 +6,7 @@ import { livePointCount, strokeCommitIntervalMs } from '@/lib/whiteboard/strokeC
 // MUST stay above the Excalidraw import: it sets EXCALIDRAW_ASSET_PATH, and ES
 // module imports are evaluated in order, before this module's own body runs.
 import '@/lib/whiteboard/excalidrawAssetPath';
-import { CaptureUpdateAction, Excalidraw, Footer } from '@teacher-playground/excalidraw';
+import { CaptureUpdateAction, Excalidraw, Footer, useHandleLibrary } from '@teacher-playground/excalidraw';
 import type {
   ExcalidrawImperativeAPI,
   ExcalidrawProps,
@@ -26,6 +26,7 @@ import { reconcileRemoteElements } from '@/lib/whiteboard/excalidrawReconcile';
 import { getElementsFromArray, replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 import { snapshotElements } from '@/lib/whiteboard/sceneSnapshot';
 import { libraryFileIds } from '@/lib/whiteboard/roomLibrary';
+import { whiteboardRoomHref } from '@/lib/whiteboard/roomPath';
 import { collaboratorsFromPresence } from '@/lib/whiteboard/collaborators';
 import type { CanvasElement, RemoteCursor, WhiteboardUser } from '@/types/whiteboard';
 import type { FollowMessage } from '@/lib/whiteboard/followMessage';
@@ -603,10 +604,45 @@ export default function ExcalidrawWrapper({
     }
   }, [initialViewport, apiReady]);
 
+  /*
+   * The editor as state as well as a ref.
+   *
+   * `useHandleLibrary` takes the instance rather than a ref, so it has to
+   * re-run when the editor appears; the ref beside it stays because everything
+   * else here reads it from callbacks that must not re-subscribe.
+   */
+  const [libraryApi, setLibraryApi] = useState<ExcalidrawImperativeAPI | null>(null);
+
+  /*
+   * Computed in the browser, because a static export has no room id at build
+   * time -- and the room's own address is the only place a teacher should be
+   * returned to after installing a shape set.
+   */
+  const [libraryReturnUrl, setLibraryReturnUrl] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    setLibraryReturnUrl(`${window.location.origin}${whiteboardRoomHref(roomId)}`);
+  }, [roomId]);
+
+  /*
+   * Installing a library from Excalidraw's public repository.
+   *
+   * The repository sends the browser back with the library in the URL, and
+   * without this nothing reads it: the trip appeared to work, and not one
+   * shape ever arrived. This is the hook that consumes it.
+   *
+   * No adapter and no initial items on purpose. The room already loads its
+   * library from `/library` on mount and saves it back through
+   * `onLibraryChange`, so anything installed here is persisted by the path
+   * that was already there -- and handing the hook an adapter as well would
+   * give the library two owners.
+   */
+  useHandleLibrary({ excalidrawAPI: libraryApi });
+
   const handleAPI = useCallback((api: ExcalidrawImperativeAPI) => {
     followUnsubscribeRef.current?.();
     followUnsubscribeRef.current = null;
     apiRef.current = api;
+    setLibraryApi(api);
 
     onBoardActionsRef.current?.({
       readScene: () => ({
@@ -1195,6 +1231,13 @@ export default function ExcalidrawWrapper({
         zenModeEnabled={false}
         gridModeEnabled={false}
         isCollaborating={true}
+        /*
+         * Where the public repository returns to. Left unset it guesses from
+         * the current URL, and this application is a static export whose room
+         * pages are rewritten by the Worker -- so the guess is not reliably
+         * the room somebody started from.
+         */
+        libraryReturnUrl={libraryReturnUrl}
       >
         {/*
           * The room's own controls, in Excalidraw's footer beside its zoom.

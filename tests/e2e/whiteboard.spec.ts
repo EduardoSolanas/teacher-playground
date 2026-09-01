@@ -1299,6 +1299,68 @@ test.describe('Edge Cases', () => {
     }
   });
 
+  test('the title menu opens the library, and shapes put there survive a reload', async ({ page }) => {
+    /*
+     * The test that was missing.
+     *
+     * "Add to library" was covered only by a unit test asserting the menu item
+     * called its callback -- which proves the button is wired to something and
+     * nothing at all about whether a library opens. It did not: the callback
+     * asked for a sidebar named "library", and there is no such sidebar. It is
+     * a tab of the default one, and asking Excalidraw for a sidebar that does
+     * not exist is not an error, so nothing opened and nothing complained.
+     *
+     * A mock of the thing under test is not a test of it. This drives the menu
+     * and then looks at the room.
+     */
+    await cleanContextAndJoin(page, 'LibraryUser');
+    await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible();
+    await expect(page.getByTestId('toolbar-selection')).toBeAttached();
+
+    await page.getByTestId('room-title-trigger').click();
+    await page.getByTestId('room-menu-library').click();
+    await expect(page.locator('.sidebar')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('.library-menu-items-container')).toBeVisible({ timeout: 10000 });
+
+    // The roster shares that edge, so it folds away rather than covering it.
+    await expect(page.getByTestId('whiteboard-presence-panel')).toHaveCount(0);
+
+    /*
+     * And a shape put into the library is still there after a reload, which is
+     * the half the room owns: Excalidraw announces the change, the room writes
+     * it to /library, and the next open reads it back.
+     */
+    await page.evaluate(async () => {
+      const api = (window as any).__debugExcalidrawApi;
+      await api.updateLibrary({
+        libraryItems: [{
+          status: 'unpublished',
+          id: 'library-probe',
+          created: Date.now(),
+          elements: [{
+            type: 'rectangle', id: 'library-probe-el', x: 0, y: 0, width: 20, height: 20,
+            angle: 0, strokeColor: '#1e1e1e', backgroundColor: 'transparent',
+            fillStyle: 'solid', strokeWidth: 2, strokeStyle: 'solid', roughness: 1,
+            opacity: 100, groupIds: [], seed: 1, version: 1, versionNonce: 1,
+            isDeleted: false, boundElements: null, updated: 1, link: null,
+            locked: false, frameId: null, roundness: null,
+          }],
+        }],
+        merge: true,
+      });
+    });
+
+    const roomId = roomIdFromPageUrl(page);
+    await expect
+      .poll(async () => {
+        const response = await page.request.get(appUrl(`/api/whiteboard/room/${roomId}/library`));
+        if (!response.ok()) return -1;
+        const body = await response.json() as { items?: unknown[] };
+        return body.items?.length ?? 0;
+      }, { timeout: 15000 })
+      .toBeGreaterThanOrEqual(1);
+  });
+
   test('the toolbar keys select the tool they name', async ({ page }) => {
     /*
      * Excalidraw's letters, because the toolbar is Excalidraw's. This used to
