@@ -124,6 +124,29 @@ describe('LiveKitProvider speaking state', () => {
     livekit.remoteParticipant.on.mockReset();
   });
 
+  it('ignores peer mute-request data messages', async () => {
+    const handlers = new Map<string, (...args: unknown[]) => void>();
+    livekit.roomOn.mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
+      handlers.set(event, handler);
+      return livekit.room;
+    });
+
+    const provider = new LiveKitProvider();
+    const onLocalMic = vi.fn();
+    const events: AvProviderEvents = { onLocalMic };
+    provider.onEvents(events);
+
+    const muteRequestPayload = new TextEncoder().encode(
+      JSON.stringify({ type: 'tp.av.mute-request', target: 'local-peer' }),
+    );
+    handlers.get('dataReceived')?.(muteRequestPayload, undefined);
+
+    // The handler should NOT have called setMicrophoneEnabled(false)
+    expect(livekit.setMicrophoneEnabled).not.toHaveBeenCalledWith(false);
+    // The handler should NOT have emitted onLocalMic
+    expect(onLocalMic).not.toHaveBeenCalled();
+  });
+
   it('emits participant updates when LiveKit active speakers change', async () => {
     const handlers = new Map<string, (...args: unknown[]) => void>();
     livekit.roomOn.mockImplementation((event: string, handler: (...args: unknown[]) => void) => {

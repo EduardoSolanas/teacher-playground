@@ -16,7 +16,6 @@ interface FakeAvProvider extends AvProvider {
     setMicrophone: boolean[];
     setCamera: boolean[];
     selectDevice: string[];
-    requestMute: string[];
     attachTrack: string[];
     detachTrack: string[];
   };
@@ -33,7 +32,6 @@ function makeProvider(): FakeAvProvider {
     setMicrophone: [] as boolean[],
     setCamera: [] as boolean[],
     selectDevice: [] as string[],
-    requestMute: [] as string[],
     attachTrack: [] as string[],
     detachTrack: [] as string[],
   };
@@ -65,9 +63,6 @@ function makeProvider(): FakeAvProvider {
     async selectDevice(kind, deviceId) {
       calls.selectDevice.push(`${kind}:${deviceId}`);
       events.onDevices?.(kind, [{ deviceId, label: `${kind} ${deviceId}` }]);
-    },
-    requestMute(target) {
-      calls.requestMute.push(target);
     },
     attachTrack(identity, kind, element) {
       calls.attachTrack.push(`${identity}:${kind}:${element.tagName}`);
@@ -219,16 +214,6 @@ describe('createAvSession', () => {
     provider.emit.onError?.({ kind: 'permission-denied', message: 'denied' });
     expect(session.status).toBe('error');
     expect(session.error?.kind).toBe('permission-denied');
-  });
-
-  it('requestMute forwards only when joined', async () => {
-    const provider = makeProvider();
-    const session = createAvSession(provider);
-    session.requestMute('peer-1');
-    expect(provider.calls.requestMute).toEqual([]);
-    await session.join('token', 'url');
-    session.requestMute('peer-1');
-    expect(provider.calls.requestMute).toEqual(['peer-1']);
   });
 
   it('does not claim the camera is on before the call is up', async () => {

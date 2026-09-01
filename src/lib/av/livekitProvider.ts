@@ -29,8 +29,6 @@ import type {
 } from './avSession';
 import { mapProviderError } from './avSession';
 
-const MUTE_REQUEST_TOPIC = 'tp.av.mute-request';
-
 function mapConnectionQuality(
   quality: ConnectionQuality | undefined,
 ): 'excellent' | 'good' | 'poor' | 'lost' | 'unknown' {
@@ -123,13 +121,6 @@ export class LiveKitProvider implements AvProvider {
     await this.room.switchActiveDevice(mediaKind(kind), deviceId);
   }
 
-  requestMute(targetIdentity: string): void {
-    const payload = new TextEncoder().encode(
-      JSON.stringify({ type: MUTE_REQUEST_TOPIC, target: targetIdentity }),
-    );
-    void this.room.localParticipant.publishData(payload, { reliable: true });
-  }
-
   attachTrack(
     identity: string,
     kind: 'camera' | 'microphone',
@@ -194,9 +185,6 @@ export class LiveKitProvider implements AvProvider {
       .on(RoomEvent.Disconnected, () => {
         this.events.onDisconnected?.();
       })
-      .on(RoomEvent.DataReceived, (payload, participant) => {
-        this.handleData(payload, participant?.identity);
-      })
       .on(RoomEvent.MediaDevicesChanged, () => {
         this.refreshDevices();
       })
@@ -206,21 +194,6 @@ export class LiveKitProvider implements AvProvider {
       .on(RoomEvent.ActiveSpeakersChanged, (participants: Participant[]) => {
         this.handleActiveSpeakersChanged(participants);
       });
-  }
-
-  private handleData(payload: Uint8Array, _from: string | undefined): void {
-    try {
-      const message = JSON.parse(new TextDecoder().decode(payload)) as {
-        type?: string;
-        target?: string;
-      };
-      if (message.type !== MUTE_REQUEST_TOPIC) return;
-      if (message.target !== this.room.localParticipant.identity) return;
-      void this.room.localParticipant.setMicrophoneEnabled(false);
-      this.events.onLocalMic?.(true);
-    } catch {
-      // ignore malformed peer data
-    }
   }
 
   private emitLocal(): void {

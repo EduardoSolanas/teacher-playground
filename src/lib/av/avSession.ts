@@ -68,8 +68,6 @@ export interface AvProvider {
   setCamera(on: boolean): void;
   selectDevice(kind: DeviceKind, deviceId: string): Promise<void>;
   onEvents(events: AvProviderEvents): void;
-  /** Host soft-mute: ask a remote peer to mute their mic (best-effort). */
-  requestMute?(targetIdentity: string): void;
   attachTrack?(
     identity: string,
     kind: 'camera' | 'microphone',
@@ -105,7 +103,6 @@ export interface AvSession {
   toggleMicrophone(): void;
   toggleCamera(): void;
   selectDevice(kind: DeviceKind, deviceId: string): Promise<void>;
-  requestMute(targetIdentity: string): void;
   attachTrack(
     identity: string,
     kind: 'camera' | 'microphone',
@@ -302,17 +299,6 @@ export function createAvSession(provider: AvProvider): AvSession {
     emitChange();
   }
 
-  function requestMute(targetIdentity: string): void {
-    if (status !== 'joined') return;
-    try {
-      provider.requestMute?.(targetIdentity);
-    } catch (err) {
-      error = mapProviderError(err);
-      status = 'error';
-      emitChange();
-    }
-  }
-
   function subscribe(listener: AvSessionListener): () => void {
     listeners.add(listener);
     return () => {
@@ -364,7 +350,6 @@ export function createAvSession(provider: AvProvider): AvSession {
     toggleMicrophone,
     toggleCamera,
     selectDevice,
-    requestMute,
     attachTrack,
     detachTrack,
   };
