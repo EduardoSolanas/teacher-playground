@@ -145,8 +145,8 @@ export function isRouteAllowedOnHost(
     return false;
   }
 
-  // LiveKit join tokens: both hosts; Worker still enforces POST + session + grant.
-  if (pathname === '/api/av/token') {
+  // LiveKit A/V: both hosts; Worker still enforces POST + session + grant/owner.
+  if (pathname === '/api/av/token' || pathname === '/api/av/mute') {
     return true;
   }
 

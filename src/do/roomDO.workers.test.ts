@@ -1486,6 +1486,204 @@ describe('kick and suspend evict LiveKit participant', () => {
   });
 });
 
+describe('A/V mute endpoint', () => {
+  type LiveKitMuteCall = { roomId: string; identity: string };
+  const GUEST = 'https://join.example.com';
+
+  function roomStub(roomId: string) {
+    return env.ROOMS.get(env.ROOMS.idFromName(roomId));
+  }
+
+  async function installMuteSpy(roomId: string) {
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      instance.liveKitMuteCalls = [];
+      instance.muteLiveKitParticipantHook = async (input) => {
+        instance.liveKitMuteCalls!.push({
+          roomId: input.roomId,
+          identity: input.identity,
+        });
+        return { ok: true };
+      };
+    });
+  }
+
+  async function readMuteCalls(roomId: string): Promise<LiveKitMuteCall[]> {
+    return runInDurableObject(
+      roomStub(roomId),
+      (instance: RoomDO) => [...(instance.liveKitMuteCalls ?? [])],
+    );
+  }
+
+  async function grantEditor(
+    owner: LocalAuthSession,
+    editor: LocalAuthSession,
+    roomId: string,
+  ) {
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Editor' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${editor.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    )).status).toBe(200);
+  }
+
+  it('owner can mute a participant', async () => {
+    const owner = await bootstrapLocalSession('av-mute-owner');
+    const editor = await bootstrapLocalSession('av-mute-editor');
+    const roomId = 'av-mute-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+
+    await installMuteSpy(roomId);
+
+    const mute = await authenticatedFetch(`/api/whiteboard/room/${roomId}/av`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'mute', target: editor.accountId }),
+    });
+    expect(mute.status).toBe(200);
+
+    expect(await readMuteCalls(roomId)).toEqual([
+      { roomId, identity: editor.accountId },
+    ]);
+  });
+
+  it('non-owner cannot mute a participant', async () => {
+    const owner = await bootstrapLocalSession('av-mute-nonowner-owner');
+    const editor = await bootstrapLocalSession('av-mute-nonowner-editor');
+    const roomId = 'av-mute-nonowner-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+
+    await installMuteSpy(roomId);
+
+    const mute = await authenticatedFetch(`/api/whiteboard/room/${roomId}/av`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'mute', target: 'acct-student' }),
+    });
+    expect(mute.status).toBe(403);
+
+    expect(await readMuteCalls(roomId)).toEqual([]);
+  });
+
+  it('guest cannot mute a participant', async () => {
+    const owner = await bootstrapLocalSession('av-mute-guest-owner');
+    const roomId = 'av-mute-guest-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    await installMuteSpy(roomId);
+
+    const pin = await runInDurableObject(
+      roomStub(roomId),
+      (instance: RoomDO) => issueGuestPin(instance.db, roomId, Date.now()),
+    );
+
+    const guestAuth = await SELF.fetch(`${GUEST}/auth/guest`, {
+      method: 'POST',
+      headers: {
+        Origin: GUEST,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ roomId, pin, displayName: 'Guest' }),
+    });
+    expect(guestAuth.status).toBe(200);
+    expect(await guestAuth.json()).toEqual({ ok: true });
+    const guestCookie = guestAuth.headers.get('set-cookie')?.split(';', 1)[0];
+    expect(guestCookie).toBeTruthy();
+
+    const mute = await SELF.fetch(`${GUEST}/api/whiteboard/room/${roomId}/av`, {
+      method: 'POST',
+      headers: {
+        Origin: GUEST,
+        'content-type': 'application/json',
+        Cookie: guestCookie!,
+      },
+      body: JSON.stringify({ action: 'mute', target: 'acct-student' }),
+    });
+    expect(mute.status).toBe(403);
+
+    expect(await readMuteCalls(roomId)).toEqual([]);
+  });
+
+  it('mute with missing target returns 400', async () => {
+    const owner = await bootstrapLocalSession('av-mute-missing-target-owner');
+    const roomId = 'av-mute-missing-target-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const mute = await authenticatedFetch(`/api/whiteboard/room/${roomId}/av`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'mute' }),
+    });
+    expect(mute.status).toBe(400);
+  });
+
+  it('mute with non-string target returns 400', async () => {
+    const owner = await bootstrapLocalSession('av-mute-bad-target-owner');
+    const roomId = 'av-mute-bad-target-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const mute = await authenticatedFetch(`/api/whiteboard/room/${roomId}/av`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'mute', target: 123 }),
+    });
+    expect(mute.status).toBe(400);
+  });
+
+  it('mute returns 502 when LiveKit mute fails', async () => {
+    const owner = await bootstrapLocalSession('av-mute-fail-owner');
+    const editor = await bootstrapLocalSession('av-mute-fail-editor');
+    const roomId = 'av-mute-fail-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      instance.muteLiveKitParticipantHook = async () => ({ ok: false, status: 500 });
+    });
+
+    const mute = await authenticatedFetch(`/api/whiteboard/room/${roomId}/av`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'mute', target: editor.accountId }),
+    });
+    expect(mute.status).toBe(502);
+  });
+
+  it('non-mute action still mints token for granted roles', async () => {
+    const owner = await bootstrapLocalSession('av-token-owner');
+    const editor = await bootstrapLocalSession('av-token-editor');
+    const roomId = 'av-token-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+
+    const tokenRes = await authenticatedFetch(`/api/whiteboard/room/${roomId}/av`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(tokenRes.status).toBe(200);
+    const tokenData = await tokenRes.json() as { token?: string };
+    expect(tokenData.token).toBeDefined();
+  });
+});
+
 describe('kick increments room grant version', () => {
   async function connectGranted(who: LocalAuthSession, roomId: string): Promise<WebSocket> {
     const res = await authenticatedFetch(`/signaling?room=${roomId}`, who, {

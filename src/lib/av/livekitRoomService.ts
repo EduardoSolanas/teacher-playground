@@ -72,3 +72,95 @@ export async function removeLiveKitParticipant(
     return { ok: false, status: 0 };
   }
 }
+
+export interface MuteLiveKitParticipantInput {
+  readonly env: unknown;
+  readonly roomId: string;
+  readonly identity: string;
+}
+
+export type MuteLiveKitParticipantResult =
+  | { readonly ok: true; readonly skipped?: true }
+  | { readonly ok: false; readonly status: number };
+
+/**
+ * Mutes a participant's audio track in a LiveKit room via the Room Service HTTP API.
+ *
+ * When LiveKit is unconfigured, returns a no-op success so callers are not
+ * blocked. If the participant has no audio track, returns skipped. Network and
+ * HTTP failures return `{ ok: false, status }` without throwing.
+ */
+export async function muteLiveKitParticipant(
+  input: MuteLiveKitParticipantInput,
+): Promise<MuteLiveKitParticipantResult> {
+  const config = parseLiveKitConfig(input.env);
+  if (!config) {
+    return { ok: true, skipped: true };
+  }
+
+  const host = liveKitHttpHost(config.url);
+  const getParticipantUrl = `${host}/twirp/livekit.RoomService/GetParticipant`;
+
+  try {
+    const token = await buildLiveKitRoomServiceToken({
+      apiKey: config.apiKey,
+      apiSecret: config.apiSecret,
+      room: input.roomId,
+    });
+
+    // First call: GetParticipant to find the audio track
+    const getResponse = await fetch(getParticipantUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        room: input.roomId,
+        identity: input.identity,
+      }),
+    });
+
+    if (getResponse.status !== 200) {
+      return { ok: false, status: getResponse.status };
+    }
+
+    const getResponseJson = await getResponse.json() as {
+      participant?: {
+        tracks?: Array<{ sid: string; type?: string; source?: string }>;
+      };
+    };
+
+    // Find first audio track
+    const audioTrack = (getResponseJson.participant?.tracks ?? []).find(
+      (track) => track.type === 'AUDIO' || track.source === 'MICROPHONE',
+    );
+
+    if (!audioTrack) {
+      return { ok: true, skipped: true };
+    }
+
+    // Second call: MutePublishedTrack
+    const muteUrl = `${host}/twirp/livekit.RoomService/MutePublishedTrack`;
+    const muteResponse = await fetch(muteUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        room: input.roomId,
+        identity: input.identity,
+        track_sid: audioTrack.sid,
+        muted: true,
+      }),
+    });
+
+    if (muteResponse.status === 200) {
+      return { ok: true };
+    }
+    return { ok: false, status: muteResponse.status };
+  } catch {
+    return { ok: false, status: 0 };
+  }
+}

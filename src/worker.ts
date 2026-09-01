@@ -80,6 +80,7 @@ const ROOM_PLACEHOLDER = '/whiteboard/_room';
 const ROOM_API = /^\/api\/whiteboard\/room\/([^/]+)(\/.*)?$/;
 const BOARD_FILE_API = /^\/api\/whiteboard\/room\/([^/]+)\/files\/([^/]+)$/;
 const AV_TOKEN = '/api/av/token';
+const AV_MUTE = '/api/av/mute';
 const SESSION_ISSUE = '/auth/session';
 const SESSION_CURRENT = '/auth/session/current';
 const SESSION_CONFIRM = '/auth/session/confirm';
@@ -973,7 +974,7 @@ const worker = {
         // signaling and the A/V token carry it on the query string instead.
         const guestRoomId = url.pathname === '/signaling'
           ? url.searchParams.get('room')
-          : url.pathname === AV_TOKEN
+          : url.pathname === AV_TOKEN || url.pathname === AV_MUTE
             ? url.searchParams.get('roomId')
             : (() => {
               const roomMatch = url.pathname.match(ROOM_API);
@@ -1013,6 +1014,18 @@ const worker = {
       // POST-only: SameSite=Lax sends the session cookie on top-level GET
       // navigations and the origin guard deliberately exempts GETs, so a GET
       // that mints a credential would combine both exemptions.
+      if (request.method !== 'POST') {
+        return withSecurityHeaders(Response.json({ error: 'Method not allowed' }, { status: 405, headers: { Allow: 'POST' } }));
+      }
+      const roomId = url.searchParams.get('roomId');
+      if (!roomId || !isValidRoomId(roomId)) {
+        return withSecurityHeaders(Response.json({ error: 'Missing or invalid roomId' }, { status: 400 }));
+      }
+      return forward(env, roomId, '/room/av', request, url, session, guestCaller);
+    }
+
+    // A/V mute action: owner only. RoomDO enforces authorization.
+    if (url.pathname === AV_MUTE) {
       if (request.method !== 'POST') {
         return withSecurityHeaders(Response.json({ error: 'Method not allowed' }, { status: 405, headers: { Allow: 'POST' } }));
       }

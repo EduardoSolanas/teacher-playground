@@ -58,6 +58,9 @@ import {
   removeLiveKitParticipant,
   type RemoveLiveKitParticipantInput,
   type RemoveLiveKitParticipantResult,
+  muteLiveKitParticipant,
+  type MuteLiveKitParticipantInput,
+  type MuteLiveKitParticipantResult,
 } from '../lib/av/livekitRoomService';
 import {
   MAX_BODY_BYTES,
@@ -210,6 +213,14 @@ export class RoomDO extends DurableObject {
 
   /** Populated by tests when {@link evictLiveKitParticipant} is replaced with a spy. */
   liveKitEvictCalls?: { roomId: string; identity: string }[];
+
+  /** Injectable hook; defaults to {@link muteLiveKitParticipant}. */
+  muteLiveKitParticipantHook: (
+    input: MuteLiveKitParticipantInput,
+  ) => Promise<MuteLiveKitParticipantResult> = muteLiveKitParticipant;
+
+  /** Populated by tests when {@link muteLiveKitParticipantHook} is replaced with a spy. */
+  liveKitMuteCalls?: { roomId: string; identity: string }[];
 
   /** Test-only override for the per-room socket cap; production always uses 32. */
   static signalingMaxSocketsPerRoomForTests: number | null = null;
@@ -429,7 +440,8 @@ export class RoomDO extends DurableObject {
    *   POST   /requests                 any authenticated except banned
    *   GET    /requests                 owner
    *   POST   /requests/:id             owner
-   *   POST   /av                       granted (viewer/editor/owner)
+   *   POST   /av token                 granted (viewer/editor/owner)
+   *   POST   /av mute                  owner
    *
    *   Guest account denials (guest=1):
    *   POST   /room (create)           403 (non-existent room)
@@ -439,6 +451,7 @@ export class RoomDO extends DurableObject {
    *   GET    /requests                403
    *   POST   /requests/:id            403 (approve)
    *   POST   /presence kick|suspend   403
+   *   POST   /av mute                 403
    *
    *   Guest permissions (guest=1):
    *   POST   /room (scene)            allowed once granted editor
@@ -569,10 +582,16 @@ export class RoomDO extends DurableObject {
       return method === 'GET' || method === 'HEAD' ? null : forbidden();
     }
 
-    // A/V tokens: granted participants only. Pending, banned, and outsiders
-    // get 403 so this route cannot probe room existence.
+    // A/V: token minting for granted participants, and owner-only mute action
     if (section === 'av') {
       if (method !== 'POST') return forbidden();
+      const action = stringField(body, 'action');
+      if (action === 'mute') {
+        if (guest) return forbidden();
+        return owner ? null : forbidden();
+      }
+      // Token minting: granted participants only. Pending, banned, and outsiders
+      // get 403 so this route cannot probe room existence.
       return isGrantedRole(role) ? null : forbidden();
     }
 
@@ -608,7 +627,7 @@ export class RoomDO extends DurableObject {
     return forbidden();
   }
 
-  private route(request: Request, url: URL, roomId: string): Promise<Response> {
+  private async route(request: Request, url: URL, roomId: string): Promise<Response> {
     const segments = url.pathname.split('/').filter(Boolean);
     // Paths arrive as /room, /room/presence, /room/requests/<requestId>, ...
     const section = segments[1] ?? '';
@@ -720,8 +739,33 @@ export class RoomDO extends DurableObject {
         if (method !== 'POST') break;
         const accountId = url.searchParams.get('accountId');
         if (!accountId) {
-          return Promise.resolve(forbidden('Account required'));
+          return forbidden('Account required');
         }
+
+        const bodyText = await request.text();
+        const body = parseJsonObject(bodyText);
+        const action = stringField(body, 'action');
+
+        if (action === 'mute') {
+          const target = stringField(body, 'target');
+          if (!target) {
+            return Response.json({ error: 'Missing target' }, { status: 400 });
+          }
+
+          const result = await this.muteLiveKitParticipantHook({
+            env: this.roomEnv,
+            roomId,
+            identity: target,
+          });
+
+          if (!result.ok) {
+            return Response.json({ ok: false }, { status: 502 });
+          }
+
+          return Response.json({ ok: true }, { status: 200 });
+        }
+
+        // Token minting path
         // Identity is always the verified account. A client-chosen identity
         // would let one admitted participant join as another and bump that
         // participant's live session off the call (LiveKit enforces one

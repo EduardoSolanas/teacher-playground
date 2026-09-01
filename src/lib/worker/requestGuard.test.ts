@@ -124,6 +124,12 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(isRouteAllowedOnHost('/api/av/token', 'GET', 'teacher')).toBe(true);
     });
 
+    it('POST /api/av/mute is allowed on both hosts', () => {
+      expect(isRouteAllowedOnHost('/api/av/mute', 'POST', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/av/mute', 'POST', 'guest')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/av/mute', 'GET', 'teacher')).toBe(true);
+    });
+
     // Dual paths - method matters
     it('GET/HEAD /whiteboard/<roomId> (32 hex) is allowed on both hosts', () => {
       const roomId = 'a'.repeat(32); // 32 lowercase hex chars

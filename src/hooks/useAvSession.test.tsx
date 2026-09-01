@@ -20,6 +20,12 @@ function tokenRequests(): string[] {
     .filter((url) => url.includes('/api/av/token'));
 }
 
+function muteRequests(): ReadonlyArray<readonly [string, RequestInit | undefined]> {
+  return fetchMock.mock.calls
+    .map(([input, init]) => [typeof input === 'string' ? input : String(input), init] as const)
+    .filter(([url]) => url.includes('/api/av/mute'));
+}
+
 beforeEach(() => {
   fetchMock.mockReset();
   fetchMock.mockResolvedValue(
@@ -84,5 +90,20 @@ describe('useAvSession', () => {
     renderHook(() => useAvSession({ ...options, identity: '', enabled: true }));
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(tokenRequests()).toEqual([]);
+  });
+
+  it('sends host mute to the server endpoint for the current room', async () => {
+    const { result } = renderHook(() => useAvSession({ ...options, enabled: false }));
+
+    await waitFor(() => expect(result.current.status).toBe('idle'));
+    await result.current.requestMute('peer-2');
+
+    expect(muteRequests()).toHaveLength(1);
+    const [url, init] = muteRequests()[0];
+    expect(url).toContain('/api/av/mute?roomId=room-1');
+    expect(init?.method).toBe('POST');
+    expect(init?.credentials).toBe('same-origin');
+    expect(new Headers(init?.headers).get('X-Requested-With')).toBe('XMLHttpRequest');
+    expect(init?.body).toBe(JSON.stringify({ target: 'peer-2' }));
   });
 });
