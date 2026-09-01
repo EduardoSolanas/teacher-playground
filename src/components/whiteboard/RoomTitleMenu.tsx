@@ -178,7 +178,7 @@ export default function RoomTitleMenu({
               onOpenLibrary();
             }}
           >
-            Add to library
+            Manage library
           </button>
         </div>
       )}

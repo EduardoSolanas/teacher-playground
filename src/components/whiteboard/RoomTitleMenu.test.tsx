@@ -45,6 +45,14 @@ describe('RoomTitleMenu', () => {
     expect(screen.getByTestId('room-menu-library')).toBeTruthy();
   });
 
+  it('says what the library item does, which is more than adding to it', () => {
+    // It opens Excalidraw's library panel: what is in there, what has been
+    // installed, and removing any of it. "Add to library" named a third of it.
+    render(<RoomTitleMenu {...make()} />);
+    fireEvent.click(screen.getByTestId('room-title-trigger'));
+    expect(screen.getByTestId('room-menu-library').textContent).toBe('Manage library');
+  });
+
   it('saves and opens the library through the caller', () => {
     const props = make();
     render(<RoomTitleMenu {...props} />);

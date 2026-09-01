@@ -145,6 +145,13 @@ type ExcalidrawWrapperProps = {
   footer?: ReactNode;
   /** Receives the board actions once the editor exists, and null when it goes. */
   onBoardActions?: (actions: BoardActions | null) => void;
+  /**
+   * Whether Excalidraw's sidebar is open.
+   *
+   * It shares the right edge with the room's roster, and the room is the only
+   * thing that can decide which of the two gets it.
+   */
+  onSidebarOpenChange?: (open: boolean) => void;
 };
 
 export default function ExcalidrawWrapper({
@@ -168,6 +175,7 @@ export default function ExcalidrawWrapper({
   onGuideViewport,
   footer,
   onBoardActions,
+  onSidebarOpenChange,
 }: ExcalidrawWrapperProps) {
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const [isClient, setIsClient] = useState(false);
@@ -871,8 +879,26 @@ export default function ExcalidrawWrapper({
   commitElementsRef.current = commitElements;
 
 
+  /*
+   * Reported from onChange rather than set once when the menu opens it.
+   *
+   * The sidebar can be closed from its own X, pinned, or opened again by
+   * Excalidraw itself, and a room that folded its roster away only at the
+   * moment the menu was used got out of step with all of those -- the roster
+   * came back over the top of an open library.
+   */
+  const sidebarOpenRef = useRef(false);
+  const onSidebarOpenChangeRef = useRef(onSidebarOpenChange);
+  useEffect(() => { onSidebarOpenChangeRef.current = onSidebarOpenChange; }, [onSidebarOpenChange]);
+
   const handleElementsChange = useCallback(
-    (el: ExcalidrawChangeElements, _appState: ExcalidrawChangeAppState, files?: ExcalidrawChangeFiles) => {
+    (el: ExcalidrawChangeElements, appState: ExcalidrawChangeAppState, files?: ExcalidrawChangeFiles) => {
+      const sidebarOpen = Boolean((appState as { openSidebar?: unknown } | null)?.openSidebar);
+      if (sidebarOpen !== sidebarOpenRef.current) {
+        sidebarOpenRef.current = sidebarOpen;
+        onSidebarOpenChangeRef.current?.(sidebarOpen);
+      }
+
       // The bytes are Excalidraw's to hand over and nobody else's: this is the
       // only place a pasted image is seen before it would be lost on reload.
       if (files) {
