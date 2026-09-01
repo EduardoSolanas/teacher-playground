@@ -177,7 +177,7 @@ async function waitForProviderConnected(page: Page, timeout = 20000) {
  * for. This still exercises the real path: tool selection, element creation,
  * Yjs sync, and the store bridge.
  */
-async function dragOnCanvas(page: Page, from: { x: number; y: number }, to: { x: number; y: number }) {
+async function dispatchDrag(page: Page, from: { x: number; y: number }, to: { x: number; y: number }) {
   const canvas = page.getByTestId('whiteboard-canvas-area');
   await expect(canvas).toBeVisible();
   const box = await canvas.boundingBox();
@@ -248,6 +248,42 @@ async function dragOnCanvas(page: Page, from: { x: number; y: number }, to: { x:
   await page.waitForTimeout(150);
 }
 
+/**
+ * Draws, and makes sure something was drawn.
+ *
+ * Synthetic pointer input at a canvas is unreliable in a way nothing here can
+ * fix: a sequence that lands while Excalidraw is mid-render produces no
+ * element and reports no error. Every caller draws in order to assert
+ * something about the result, so a drag that quietly did nothing always
+ * surfaced later as "expected an element, found none" -- somewhere unrelated,
+ * one run in four or so.
+ *
+ * Comparing against the count before the drag rather than against zero,
+ * because several callers draw a second and third shape onto a board that
+ * already has one. A drag that still has not landed after three attempts is
+ * left alone: the caller's own assertion is the right place for that verdict,
+ * not a throw from a helper.
+ */
+async function dragOnCanvas(page: Page, from: { x: number; y: number }, to: { x: number; y: number }) {
+  const sceneCount = () => page.evaluate(
+    () => (window as any).__debugExcalidrawApi?.getSceneElements?.().length ?? 0,
+  );
+  const before = await sceneCount();
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await dispatchDrag(page, from, to);
+    const landed = await page
+      .waitForFunction(
+        (n) => ((window as any).__debugExcalidrawApi?.getSceneElements?.().length ?? 0) > n,
+        before,
+        { timeout: 2000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+    if (landed) return;
+  }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 test.describe('Room Connection Lifecycle', () => {
@@ -291,7 +327,9 @@ test.describe('Room Connection Lifecycle', () => {
     // Whiteboard UI is visible
     await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible();
     await expect(page.getByTestId('toolbar-selection')).toBeVisible(); // tool sidebar
-    await expect(page.locator('[data-whiteboard-role="host"] [title="Library"]')).toBeVisible(); // Excalidraw top bar
+    // The library is reached from the room's title menu now; Excalidraw's own
+    // button floated over the canvas and has gone with the hamburger.
+    await expect(page.getByTestId('room-title-trigger')).toBeVisible();
     await expect(page.locator('.undo-button-container button')).toBeVisible(); // board controls, in the footer
 
     // Presence panel shows correct name
@@ -1101,13 +1139,7 @@ test.describe('Reconnection & Resilience', () => {
      */
     const penIcon = page.getByTestId('toolbar-freedraw');
     await selectTool(penIcon, 'freedraw');
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      await dragOnCanvas(page, { x: 100, y: 100 }, { x: 200, y: 200 });
-      const drawn = await page.evaluate(
-        () => (window as any).__debugExcalidrawApi?.getSceneElements?.().length ?? 0,
-      );
-      if (drawn > 0) break;
-    }
+    await dragOnCanvas(page, { x: 100, y: 100 }, { x: 200, y: 200 });
 
     // Rapidly switch tools
     await page.keyboard.press('r'); // rectangle

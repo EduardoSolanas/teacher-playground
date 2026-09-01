@@ -167,20 +167,6 @@ test.describe('Excalidraw scene sync', () => {
     expect(await sceneElementIds(page)).toEqual([]);
   });
 
-  /**
-   * Opens Excalidraw's own menu and reads what it offers.
-   *
-   * The menu is the editor's, not ours, so this asks it by its labels rather
-   * than by a test id we control -- which is the point: what is being checked
-   * is what a person actually sees when they open it.
-   */
-  async function mainMenuItems(target: Page): Promise<string[]> {
-    await waitForExcalidrawApi(target);
-    await target.waitForTimeout(400);
-    await target.locator('.dropdown-menu-button').first().click();
-    await expect(target.locator('.dropdown-menu-item').first()).toBeVisible({ timeout: 10000 });
-    return target.locator('.dropdown-menu-item').allInnerTexts();
-  }
 
   test('the host can take the board away and a peer cannot', async ({ page, browser }) => {
     /*
@@ -188,18 +174,19 @@ test.describe('Excalidraw scene sync', () => {
      * recovery is the whole of the backup story, so a room that is deleted
      * takes the work on it with it unless somebody saved a copy first.
      *
-     * Host only, and that is the half worth guarding: a board is usually a
+     * Owner only, and that is the half worth guarding: a board is usually a
      * child's work, and a guest admitted for one lesson should not be able to
-     * walk off with a copy of everything anyone has drawn on it. The three
-     * actions beside it stay off for a different reason -- loading a scene and
-     * clearing the canvas replace everything at once, behind the shared
-     * document rather than through it.
+     * walk off with a copy of everything anyone has drawn on it.
+     *
+     * It moved out of Excalidraw's menu into the room's title menu when that
+     * menu was removed, so this asks the room rather than the editor. The
+     * property is the same one, and `UIOptions.canvasActions.export` still
+     * gates the editor's own path behind the same check.
      */
     const roomId = await createRoomWithMaxUsers(page, 'ExportHost', 2);
-    const hostMenu = await mainMenuItems(page);
-    expect(hostMenu.join(' ')).toContain('Save to');
-    expect(hostMenu.join(' ')).toContain('Export image');
-    expect(hostMenu.join(' ')).not.toContain('Reset the canvas');
+    await page.getByTestId('room-title-trigger').click();
+    await expect(page.getByTestId('room-menu-save')).toBeVisible();
+    await page.keyboard.press('Escape');
 
     const peerContext = await newAuthenticatedContext(browser);
     const peerPage = await peerContext.newPage();
@@ -209,9 +196,10 @@ test.describe('Excalidraw scene sync', () => {
       await approveFirstWaitingPeer(page);
       await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
 
-      const peerMenu = await mainMenuItems(peerPage);
-      expect(peerMenu.join(' ')).not.toContain('Save to');
-      expect(peerMenu.join(' ')).not.toContain('Export image');
+      // No menu at all rather than a menu that refuses: the trigger is the
+      // owner's, and with it goes the only way to take a copy away.
+      await expect(peerPage.getByTestId('room-title-trigger')).toHaveCount(0);
+      await expect(peerPage.getByTestId('room-menu-save')).toHaveCount(0);
     } finally {
       await peerPage.close();
       await peerContext.close();

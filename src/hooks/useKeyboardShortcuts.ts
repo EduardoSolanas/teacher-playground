@@ -121,17 +121,15 @@ const SHORTCUTS: Array<{ key: string; label: string; action: () => void; ctrl?: 
 ];
 
 export function useKeyboardShortcuts() {
-  const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
   const shown = useRef(false);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === '?') {
-        e.preventDefault();
-        setShowShortcutsHelp((prev) => !prev);
-        return;
-      }
-
+      /*
+       * "?" is not this hook's any more. It used to toggle a sheet of
+       * accelerators; the only "?" in the room now is the support button, and
+       * swallowing the key here would have stopped anybody typing one.
+       */
       if (e.key === 'Escape') {
         e.preventDefault();
         store.deselectAll();
@@ -227,5 +225,5 @@ export function useKeyboardShortcuts() {
     return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, []);
 
-  return { activeShortcuts: SHORTCUTS, showShortcutsHelp, setShowShortcutsHelp };
+  return { activeShortcuts: SHORTCUTS };
 }

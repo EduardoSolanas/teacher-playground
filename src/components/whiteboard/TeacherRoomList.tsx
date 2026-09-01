@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import { guestHostJoinUrl } from '@/lib/whiteboard/guestJoinUrl';
+import { saveBlob } from '@/lib/whiteboard/saveBlob';
 import { boardFileName, buildExcalidrawContainer, exportableElements, referencedFileIds, withResolvableImages } from '@/lib/whiteboard/boardExport';
 import { collectBoardFiles, elementsFromSceneResponse } from '@/lib/whiteboard/boardDownload';
 import { isGuestJoinLockedOut } from '@/lib/whiteboard/guestPin';
@@ -272,18 +273,6 @@ export default function TeacherRoomList({
     } finally {
       setPinBusyId((current) => (current === roomId ? null : current));
     }
-  };
-
-  /** Hands one built file to the browser as a download. */
-  const saveBlob = (blob: Blob, fileName: string) => {
-    const url = URL.createObjectURL(blob);
-    const anchorElement = document.createElement('a');
-    anchorElement.href = url;
-    anchorElement.download = fileName;
-    document.body.appendChild(anchorElement);
-    anchorElement.click();
-    document.body.removeChild(anchorElement);
-    URL.revokeObjectURL(url);
   };
 
   /**

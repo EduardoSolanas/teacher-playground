@@ -6,7 +6,7 @@ import { livePointCount, strokeCommitIntervalMs } from '@/lib/whiteboard/strokeC
 // MUST stay above the Excalidraw import: it sets EXCALIDRAW_ASSET_PATH, and ES
 // module imports are evaluated in order, before this module's own body runs.
 import '@/lib/whiteboard/excalidrawAssetPath';
-import { CaptureUpdateAction, Excalidraw, Footer, MainMenu } from '@teacher-playground/excalidraw';
+import { CaptureUpdateAction, Excalidraw, Footer } from '@teacher-playground/excalidraw';
 import type {
   ExcalidrawImperativeAPI,
   ExcalidrawProps,
@@ -29,6 +29,7 @@ import { libraryFileIds } from '@/lib/whiteboard/roomLibrary';
 import { collaboratorsFromPresence } from '@/lib/whiteboard/collaborators';
 import type { CanvasElement, RemoteCursor, WhiteboardUser } from '@/types/whiteboard';
 import type { FollowMessage } from '@/lib/whiteboard/followMessage';
+import type { BoardFileEntry } from '@/lib/whiteboard/boardExport';
 import {
   isWhiteboardLatencyProbeEnabled,
   recordWhiteboardLatencyEvent,
@@ -47,6 +48,21 @@ type ExcalidrawChangeFiles = Parameters<ExcalidrawOnChange>[2];
 type ExcalidrawPointerPayload = Parameters<ExcalidrawPointerUpdate>[0];
 type ExcalidrawTool = Parameters<ExcalidrawImperativeAPI['setActiveTool']>[0]['type'];
 type ExcalidrawStandardTool = Exclude<ExcalidrawTool, 'custom'>;
+
+/**
+ * The handful of board actions the room's own title menu drives.
+ *
+ * A small object rather than the editor itself, so nothing above has to import
+ * from `@teacher-playground/excalidraw`: this component sits behind
+ * `dynamic()` precisely to keep that package out of the room's first chunk,
+ * and a type import from the caller would quietly undo it.
+ */
+export interface BoardActions {
+  /** The scene as it stands, for the room to write to a file. */
+  readScene: () => { elements: readonly unknown[]; files: readonly BoardFileEntry[] };
+  /** Opens Excalidraw's library, which used to have a button floating on the canvas. */
+  openLibrary: () => void;
+}
 type ExcalidrawSubscriptionsAPI = ExcalidrawImperativeAPI & {
   onToolChange?: (callback: (tool: { type: string }) => void) => () => void;
 };
@@ -126,6 +142,8 @@ type ExcalidrawWrapperProps = {
    * puts it bottom left, which is where a hand already goes for the zoom.
    */
   footer?: ReactNode;
+  /** Receives the board actions once the editor exists, and null when it goes. */
+  onBoardActions?: (actions: BoardActions | null) => void;
 };
 
 export default function ExcalidrawWrapper({
@@ -148,6 +166,7 @@ export default function ExcalidrawWrapper({
   isGuiding,
   onGuideViewport,
   footer,
+  onBoardActions,
 }: ExcalidrawWrapperProps) {
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const [isClient, setIsClient] = useState(false);
@@ -243,6 +262,10 @@ export default function ExcalidrawWrapper({
   /** Latest onElementsChange, so the unmount flush needs no dependency on it. */
   const onElementsChangeRef = useRef(onElementsChange);
   useEffect(() => { onElementsChangeRef.current = onElementsChange; }, [onElementsChange]);
+
+  /** Latest onBoardActions, so the unmount release needs no dependency on it. */
+  const onBoardActionsRef = useRef(onBoardActions);
+  useEffect(() => { onBoardActionsRef.current = onBoardActions; }, [onBoardActions]);
 
   /** Remote scenes coalesce into one React update rather than ~20 a second. */
   const REMOTE_STATE_FLUSH_MS = 200;
@@ -499,6 +522,10 @@ export default function ExcalidrawWrapper({
           delete window.__debugExcalidrawApi;
         }
       }
+
+      // The menu above outlives this component, so it has to be told the board
+      // has gone rather than left holding actions against a dead editor.
+      onBoardActionsRef.current?.(null);
     };
   }, []);
 
@@ -580,6 +607,17 @@ export default function ExcalidrawWrapper({
     followUnsubscribeRef.current?.();
     followUnsubscribeRef.current = null;
     apiRef.current = api;
+
+    onBoardActionsRef.current?.({
+      readScene: () => ({
+        elements: api.getSceneElements() as readonly unknown[],
+        // Excalidraw keys its files by id; the exporter takes a list.
+        files: Object.values(api.getFiles() ?? {}) as readonly BoardFileEntry[],
+      }),
+      // Excalidraw's library is a sidebar; the button that used to float on
+      // the canvas only ever toggled it.
+      openLibrary: () => api.toggleSidebar({ name: 'library' }),
+    });
 
     if (typeof api.onUserFollow === 'function') {
       followUnsubscribeRef.current = api.onUserFollow((payload) => {
@@ -1156,31 +1194,18 @@ export default function ExcalidrawWrapper({
         isCollaborating={true}
       >
         {/*
-          * The menu is listed rather than inherited.
+          * The room's own controls, in Excalidraw's footer beside its zoom.
           *
-          * Excalidraw's default menu ends with links to its GitHub, its
-          * Discord and its social accounts. They are reasonable defaults for
-          * a drawing tool that people arrive at on its own site, and wrong
-          * here: this board is used by children in a lesson, and a menu on it
-          * should not be a way out to a chat server. Naming the items keeps
-          * that decision in one visible place -- an item added upstream shows
-          * up when it is asked for, rather than appearing on a pupil's screen
-          * the next time the fork is bumped.
-          *
-          * Save and image export are the host's alone, for the reason the
-          * UIOptions above give. They are gated in both places on purpose:
-          * this decides what the menu offers, and the UIOptions decide what
-          * the actions themselves permit, so neither one being wrong on its
-          * own hands a guest a copy of a child's work.
+          * Its main menu is not listed here any more: everything this room
+          * wanted from it -- saving a copy, the library -- is behind the room
+          * title now, and what remained was a hamburger offering Excalidraw's
+          * own defaults, which end in links out to its GitHub and its Discord.
+          * That is a reasonable menu for a drawing tool somebody arrived at on
+          * its own site, and the wrong one on a board used by children. The
+          * trigger is hidden in globals.css, since not passing a menu makes
+          * Excalidraw render exactly those defaults.
           */}
         {footer && <Footer>{footer}</Footer>}
-        <MainMenu>
-          {isLocalHost && <MainMenu.DefaultItems.Export />}
-          {isLocalHost && <MainMenu.DefaultItems.SaveAsImage />}
-          <MainMenu.DefaultItems.SearchMenu />
-          <MainMenu.DefaultItems.Help />
-          <MainMenu.DefaultItems.ToggleTheme />
-        </MainMenu>
       </Excalidraw>
     </div>
   );

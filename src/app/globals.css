@@ -201,3 +201,30 @@ textarea {
 .tp-board-footer .tp-board-footer__button--danger:hover {
   color: var(--color-danger, #c92a2a);
 }
+
+/* Excalidraw's own help button, bottom right. The room has one "?" now and it
+   reaches a person: a dialog of accelerators is not what somebody presses this
+   for while a class is waiting. */
+.excalidraw .help-icon {
+  display: none;
+}
+
+/* And its library button, which floated over the canvas. The room's title
+   menu opens the same sidebar, so the board keeps the feature and loses the
+   thing sitting on top of the drawing. */
+.excalidraw .layer-ui__wrapper__footer-right {
+  display: none;
+}
+
+/* Excalidraw's hamburger, top left of the canvas. Saving a copy and the
+   library are behind the room title now, and what was left in it were
+   Excalidraw's own defaults -- which end in links out to its GitHub and its
+   Discord. Reasonable for a drawing tool somebody arrived at on its own site,
+   wrong on a board a child is using. */
+/* Two classes rather than one, because Excalidraw sets `display: flex` on
+   `.excalidraw .dropdown-menu-button` and a single-class rule of ours ties on
+   specificity -- which its stylesheet then wins on load order. Matching both
+   classes settles it without reaching for !important. */
+.excalidraw .dropdown-menu-button.main-menu-trigger {
+  display: none;
+}

@@ -643,23 +643,30 @@ test.describe('Waiting Room', () => {
     await expectNotWaiting(peerPage);
 
     /*
-     * The room's own host tools live in Excalidraw's footer now, beside its
-     * zoom: guiding the class, and clearing the board. This application's
-     * library and help buttons went with the tool rail -- Excalidraw carries
-     * both, and its library is still the host's alone.
+     * The room's host tools are in two places now, and both are the owner's:
+     * guide and clear in Excalidraw's footer, and everything else behind the
+     * room title -- save, rename, the library.
      */
     await expect(hostPage.getByTestId('whiteboard-tool-guide')).toBeVisible();
     await expect(hostPage.getByTestId('whiteboard-clear-btn')).toBeVisible();
+    await expect(hostPage.getByTestId('room-title-trigger')).toBeVisible();
     await expect(peerPage.getByTestId('whiteboard-tool-guide')).toHaveCount(0);
     await expect(peerPage.getByTestId('whiteboard-clear-btn')).toHaveCount(0);
-    await expect(peerPage.locator('.layer-ui__wrapper__footer-right.zen-mode-transition')).toBeHidden();
-    await expect(peerPage.locator('[data-whiteboard-role="peer"] [title="Library"]')).toBeHidden();
+    await expect(peerPage.getByTestId('room-title-trigger')).toHaveCount(0);
+    // A peer still sees the room's name; it is the menu that is not theirs.
+    await expect(peerPage.getByTestId('room-name')).toBeVisible();
 
-    // The shortcuts sheet has no button of its own now; "?" is how it opens.
-    await hostPage.keyboard.press('?');
-    await expect(hostPage.getByTestId('whiteboard-shortcuts-help')).toBeVisible();
-    await hostPage.getByTestId('whiteboard-shortcuts-close').click();
-    await expect(hostPage.getByTestId('whiteboard-shortcuts-help')).toHaveCount(0);
+    await hostPage.getByTestId('room-title-trigger').click();
+    await expect(hostPage.getByTestId('room-menu-save')).toBeVisible();
+    await expect(hostPage.getByTestId('room-menu-rename')).toBeVisible();
+    await expect(hostPage.getByTestId('room-menu-library')).toBeVisible();
+    await hostPage.keyboard.press('Escape');
+
+    // The one "?" in the room reaches a person rather than a list of keys.
+    await hostPage.getByTestId('whiteboard-support-btn').click();
+    await expect(hostPage.getByTestId('whiteboard-support-email')).toBeVisible();
+    await hostPage.getByTestId('whiteboard-support-close').click();
+    await expect(hostPage.getByTestId('whiteboard-support-panel')).toHaveCount(0);
 
     await context1.close();
     await context2.close();

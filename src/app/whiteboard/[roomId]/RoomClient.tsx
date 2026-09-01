@@ -19,11 +19,14 @@ import { shouldOverlayConnectingScreen } from '@/lib/whiteboard/connectingOverla
 import { shouldExpandForArrival } from '@/lib/whiteboard/waitingArrival';
 import ClearBoardModal from '@/components/whiteboard/ClearBoardModal';
 import RoomTopNav from '@/components/whiteboard/RoomTopNav';
-import { ShortcutsHelp } from '@/components/whiteboard/ShortcutsHelp';
 import AvSessionPanel from '@/components/av/AvSessionPanel';
 import StartCallButton from '@/components/av/StartCallButton';
 import ConnectionLostNotice from '@/components/whiteboard/ConnectionLostNotice';
-import RoomNameField from '@/components/whiteboard/RoomNameField';
+import RoomTitleMenu from '@/components/whiteboard/RoomTitleMenu';
+import { saveBlob } from '@/lib/whiteboard/saveBlob';
+import { boardFileName, buildExcalidrawContainer } from '@/lib/whiteboard/boardExport';
+import type { BoardActions } from '@/components/whiteboard/ExcalidrawWrapper';
+import SupportButton from '@/components/whiteboard/SupportButton';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import * as store from '@/lib/whiteboard/store';
 import { cleanupStaleRooms } from '@/lib/whiteboard/persistence';
@@ -154,7 +157,7 @@ function RoomContent({ roomId }: { roomId: string }) {
   // are gated on it, keyboard included.
   const isLocalHost = Boolean(isHost || localUser?.isHost);
 
-  const { activeShortcuts, showShortcutsHelp, setShowShortcutsHelp } = useKeyboardShortcuts();
+  useKeyboardShortcuts();
 
   const { clearState, clearSession } = usePersistence(roomId, elements, { x: 0, y: 0, zoom: 1 } as any);
 
@@ -361,6 +364,27 @@ function RoomContent({ roomId }: { roomId: string }) {
    * sees the pencil is the owner, who is the only account allowed to rename --
    * and the next read of the room corrects it if one ever happens.
    */
+  /*
+   * The board's own actions, handed up by the wrapper once the editor exists.
+   * A ref, not state: nothing renders differently for having them, and the
+   * menu only reads them when somebody presses an item.
+   */
+  const boardActionsRef = useRef<BoardActions | null>(null);
+
+  const handleSaveAs = useCallback(() => {
+    const scene = boardActionsRef.current?.readScene();
+    if (!scene) return;
+    const container = buildExcalidrawContainer(scene.elements, scene.files, 'teacher-playground');
+    saveBlob(
+      new Blob([JSON.stringify(container)], { type: 'application/json' }),
+      boardFileName(roomId, roomName, 'excalidraw', Date.now()),
+    );
+  }, [roomId, roomName]);
+
+  const handleOpenLibrary = useCallback(() => {
+    boardActionsRef.current?.openLibrary();
+  }, []);
+
   const handleRenameRoom = useCallback(
     (next: string) => {
       setRoomName(next);
@@ -488,10 +512,12 @@ function RoomContent({ roomId }: { roomId: string }) {
         onNavigate={handleBackToRooms}
         rosterExpanded={!presenceCollapsed}
         center={
-          <RoomNameField
+          <RoomTitleMenu
             name={roomName}
-            canRename={isLocalHost}
+            canManage={isRoomOwner}
             onRename={handleRenameRoom}
+            onSaveAs={handleSaveAs}
+            onOpenLibrary={handleOpenLibrary}
           />
         }
       />
@@ -516,9 +542,11 @@ function RoomContent({ roomId }: { roomId: string }) {
           isGuiding={isGuiding}
           onGuideViewport={handleGuideViewport}
           footer={boardFooter}
+          onBoardActions={(actions) => { boardActionsRef.current = actions; }}
         />
       </div>
       {connectionLost && <ConnectionLostNotice />}
+      <SupportButton />
       <RaisedHandCue users={users} localPeerId={localPeerId} isLocalHost={isLocalHost} />
       <PresencePanel
         users={users}
@@ -557,11 +585,6 @@ function RoomContent({ roomId }: { roomId: string }) {
         <StartCallButton onStart={() => setCallWanted(true)} />
       ))}
       {shouldOverlayConnectingScreen({ boardEverShown, isSynced }) && <LoadingScreen />}
-      <ShortcutsHelp
-        visible={isLocalHost && showShortcutsHelp}
-        shortcuts={activeShortcuts}
-        onClose={() => setShowShortcutsHelp(false)}
-      />
       {/* Stacked above the mobile tool bar; centred on its own row from sm: up. */}
       <ClearBoardModal
         isOpen={clearModalOpen}
