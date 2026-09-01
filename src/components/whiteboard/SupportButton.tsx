@@ -2,8 +2,20 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-/** Where a teacher's question goes. */
-export const SUPPORT_EMAIL = 'clickaceltd@gmail.com';
+/**
+ * Where a teacher's question goes, from configuration rather than from here.
+ *
+ * The repository's own scan refuses any real address in a tracked file, and it
+ * is right to: an address in source is one that cannot be changed without a
+ * deploy, and it is scraped from a public repository the moment it lands. This
+ * follows the same NEXT_PUBLIC_ path the guest hostname already takes.
+ *
+ * Unset means no button. A "?" that opens a panel with nowhere to write is
+ * worse than no "?" at all.
+ */
+export function supportEmail(): string {
+  return process.env.NEXT_PUBLIC_SUPPORT_EMAIL ?? '';
+}
 
 /**
  * The one "?" in the room, and it reaches a person.
@@ -34,6 +46,9 @@ export default function SupportButton() {
     };
   }, [open]);
 
+  const email = supportEmail();
+  if (!email) return null;
+
   return (
     <div
       ref={rootRef}
@@ -63,10 +78,10 @@ export default function SupportButton() {
           </p>
           <a
             data-testid="whiteboard-support-email"
-            href={`mailto:${SUPPORT_EMAIL}`}
+            href={`mailto:${email}`}
             className="block break-all rounded-lg border border-slate-700 px-3 py-2 text-[0.8125rem] font-medium text-blue-300 transition-colors hover:border-blue-400 hover:text-blue-200"
           >
-            {SUPPORT_EMAIL}
+            {email}
           </a>
         </div>
       )}

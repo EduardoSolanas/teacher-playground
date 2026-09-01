@@ -1,7 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 
-import SupportButton, { SUPPORT_EMAIL } from './SupportButton';
+import SupportButton from './SupportButton';
+
+/*
+ * A reserved domain on purpose. The repository's own scan refuses a real
+ * address in any tracked file, tests included -- which is also why the address
+ * is configuration rather than a constant in the component.
+ */
+const ADDRESS = 'support@example.com';
+
+beforeEach(() => {
+  vi.stubEnv('NEXT_PUBLIC_SUPPORT_EMAIL', ADDRESS);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('SupportButton', () => {
   it('is a question mark until it is pressed', () => {
@@ -15,8 +30,8 @@ describe('SupportButton', () => {
     fireEvent.click(screen.getByTestId('whiteboard-support-btn'));
 
     const link = screen.getByTestId('whiteboard-support-email') as HTMLAnchorElement;
-    expect(link.getAttribute('href')).toBe(`mailto:${SUPPORT_EMAIL}`);
-    expect(link.textContent).toBe(SUPPORT_EMAIL);
+    expect(link.getAttribute('href')).toBe(`mailto:${ADDRESS}`);
+    expect(link.textContent).toBe(ADDRESS);
   });
 
   it('closes again', () => {
@@ -41,5 +56,12 @@ describe('SupportButton', () => {
     render(<SupportButton />);
     fireEvent.click(screen.getByTestId('whiteboard-support-btn'));
     expect(screen.getByTestId('whiteboard-support-panel').textContent).toMatch(/help|support/i);
+  });
+
+  it('offers nothing at all when no address is configured', () => {
+    // A "?" that opens a panel with nowhere to write is worse than no "?".
+    vi.stubEnv('NEXT_PUBLIC_SUPPORT_EMAIL', '');
+    render(<SupportButton />);
+    expect(screen.queryByTestId('whiteboard-support-btn')).toBeNull();
   });
 });

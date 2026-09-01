@@ -51,6 +51,12 @@ jobs:
         run: npm test
 
       - name: Build static export
+        # Inlined at build time, so it has to be present here rather than set
+        # on the Worker. Not a secret -- it is printed to every teacher who
+        # opens the panel -- but it is an address, and the security scan
+        # refuses those in tracked files for good reason.
+        env:
+          NEXT_PUBLIC_SUPPORT_EMAIL: ${{ secrets.SUPPORT_EMAIL }}
         run: npm run build
 
       - name: Worker tests (real workerd)
