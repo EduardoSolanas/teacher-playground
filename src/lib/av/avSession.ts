@@ -27,6 +27,7 @@ export interface ParticipantState {
   readonly identity: string;
   readonly micMuted: boolean;
   readonly camOn: boolean;
+  readonly isSpeaking: boolean;
 }
 
 export interface LocalState {
@@ -53,6 +54,7 @@ export interface AvProviderEvents {
   onParticipantRemoved?: (identity: string) => void;
   onLocalMic?: (muted: boolean) => void;
   onLocalCamera?: (on: boolean) => void;
+  onLocalSpeaking?: (speaking: boolean) => void;
   onDisconnected?: () => void;
   onError?: (error: AvError) => void;
   onDevices?: (kind: DeviceKind, devices: AvDevice[]) => void;
@@ -135,6 +137,7 @@ export function createAvSession(provider: AvProvider): AvSession {
   // The camera is off until a join publishes it and the provider says so.
   // Seeding it on makes every label lie for as long as the join takes.
   let local: LocalState = { micMuted: false, camOn: false };
+  let localSpeaking = false;
   const participants: ParticipantState[] = [];
   const devices: Record<DeviceKind, AvDevice[]> = { microphone: [], camera: [] };
   const listeners = new Set<AvSessionListener>();
@@ -166,6 +169,7 @@ export function createAvSession(provider: AvProvider): AvSession {
       identity: '__local__',
       micMuted: local.micMuted,
       camOn: local.camOn,
+      isSpeaking: localSpeaking,
     };
     if (index >= 0) participants[index] = entry;
     else participants.push(entry);
@@ -197,10 +201,16 @@ export function createAvSession(provider: AvProvider): AvSession {
       updateLocalParticipant();
       emitChange();
     },
+    onLocalSpeaking(speaking) {
+      localSpeaking = speaking;
+      updateLocalParticipant();
+      emitChange();
+    },
     onDisconnected() {
       status = 'idle';
       clearParticipants();
       local = { micMuted: false, camOn: false };
+      localSpeaking = false;
       emitChange();
     },
     onError(err) {
@@ -244,6 +254,7 @@ export function createAvSession(provider: AvProvider): AvSession {
     error = null;
     clearParticipants();
     local = { micMuted: false, camOn: false };
+    localSpeaking = false;
     devices.microphone = [];
     devices.camera = [];
     emitChange();

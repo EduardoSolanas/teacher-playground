@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ROOM_CANVAS_CLASS, roomCanvasTopClass } from './RoomClient';
+import { ROOM_CANVAS_CLASS, mapAvPeerIds, roomCanvasTopClass } from './RoomClient';
 
 describe('room canvas responsive top offset', () => {
   it('keeps the guest canvas at the viewport top while retaining the desktop nav offset', () => {
@@ -21,5 +21,20 @@ describe('room canvas width', () => {
     expect(ROOM_CANVAS_CLASS).toContain('inset-x-0');
     expect(ROOM_CANVAS_CLASS).not.toContain('sm:left-14');
     expect(ROOM_CANVAS_CLASS).not.toContain('100vw');
+  });
+});
+
+describe('mapAvPeerIds', () => {
+  it('maps the local av placeholder onto the room local peer id', () => {
+    expect(
+      mapAvPeerIds(
+        [
+          { identity: '__local__', micMuted: false, camOn: true, isSpeaking: true },
+          { identity: 'peer-2', micMuted: true, camOn: false, isSpeaking: false },
+        ],
+        'peer-local',
+        (participant) => participant.isSpeaking,
+      ),
+    ).toEqual(new Set(['peer-local']));
   });
 });

@@ -26,6 +26,8 @@ interface PresencePanelProps {
   onRaiseHand?: (raised: boolean) => void;
   /** Peer ids whose microphone is currently muted in the voice session. */
   mutedPeerIds?: ReadonlySet<string>;
+  /** Peer ids currently speaking in the voice session. */
+  speakingPeerIds?: ReadonlySet<string>;
   /** Room capacity from settings; used for the "N of M" count. */
   maxUsers?: number;
 }
@@ -101,11 +103,13 @@ function UsersIcon({ className }: { className?: string }) {
 
 function UserAvatar({ user, ring }: { user: WhiteboardUser; ring?: boolean }) {
   return (
-    <div
-      className={`flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ${ring ? 'ring-2 ring-sky-400 ring-offset-1 ring-offset-white' : ''}`}
-      style={{ background: user.color }}
-    >
-      {user.userName.charAt(0).toUpperCase()}
+    <div className="flex h-6 w-6 flex-shrink-0 items-center justify-center">
+      <div
+        className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold text-white ${ring ? 'ring-2 ring-sky-400 ring-offset-1 ring-offset-white' : ''}`}
+        style={{ background: user.color }}
+      >
+        {user.userName.charAt(0).toUpperCase()}
+      </div>
     </div>
   );
 }
@@ -123,6 +127,7 @@ export default function PresencePanel({
   onSuspend,
   onRaiseHand,
   mutedPeerIds,
+  speakingPeerIds,
   maxUsers = DEFAULT_MAX_USERS,
 }: PresencePanelProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -477,6 +482,7 @@ export default function PresencePanel({
                 isLocalHost && duplicateNames.has(user.userName)
                   ? accountNameDisc(user.accountId)
                   : null;
+              const isSpeaking = Boolean(speakingPeerIds?.has(user.peerId));
 
               return (
                 <div
@@ -486,7 +492,17 @@ export default function PresencePanel({
                   onClick={canModerate ? (e) => handleOpenMenu(user.peerId, e) : undefined}
                   onContextMenu={canModerate ? (e) => handleContextMenu(user.peerId, e) : undefined}
                 >
-                  <UserAvatar user={user} ring={isSelf} />
+                  <div className="relative">
+                    <UserAvatar user={user} ring={isSelf} />
+                    {isSpeaking ? (
+                      <span
+                        data-testid={`whiteboard-user-speaking-${user.peerId}`}
+                        role="img"
+                        aria-label={`${user.userName} is speaking`}
+                        className="pointer-events-none absolute -inset-1 rounded-full border-2 border-emerald-400 shadow-[0_0_0_2px_rgba(255,255,255,0.85)] animate-pulse"
+                      />
+                    ) : null}
+                  </div>
                   <div
                     className="min-w-0 overflow-hidden flex-1"
                     style={{ cursor: canModerate ? 'pointer' : 'default' }}

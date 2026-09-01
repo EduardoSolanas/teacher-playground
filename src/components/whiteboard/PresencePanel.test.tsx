@@ -22,6 +22,7 @@ function renderPanel(
     localPeerId?: string;
     isLocalHost?: boolean;
     waitingPeers?: WhiteboardUser[];
+    speakingPeerIds?: ReadonlySet<string>;
   } = {},
 ) {
   return render(
@@ -36,6 +37,7 @@ function renderPanel(
       onReject={noop}
       onKick={noop}
       onSuspend={noop}
+      speakingPeerIds={options.speakingPeerIds}
     />,
   );
 }
@@ -186,6 +188,23 @@ describe('PresencePanel name discriminators', () => {
 
     expect(screen.queryByTestId('whiteboard-user-disc-peer-owner')).toBeNull();
     expect(screen.queryByTestId('whiteboard-user-disc-peer-impostor')).toBeNull();
+  });
+});
+
+describe('PresencePanel speaking indicator', () => {
+  it('shows a readable speaking ring on the active user row avatar only', () => {
+    renderPanel(
+      [
+        makeUser({ peerId: 'peer-1', userName: 'Alice' }),
+        makeUser({ peerId: 'peer-2', userName: 'Bob' }),
+      ],
+      { speakingPeerIds: new Set(['peer-2']) },
+    );
+
+    expect(screen.getByTestId('whiteboard-user-speaking-peer-2').getAttribute('aria-label')).toBe(
+      'Bob is speaking',
+    );
+    expect(screen.queryByTestId('whiteboard-user-speaking-peer-1')).toBeNull();
   });
 });
 

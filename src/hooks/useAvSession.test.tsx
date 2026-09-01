@@ -113,7 +113,7 @@ describe('useAvSession', () => {
     const connect = vi.spyOn(LiveKitProvider.prototype, 'connect').mockResolvedValue();
     const disconnect = vi.spyOn(LiveKitProvider.prototype, 'disconnect').mockImplementation(() => {});
     const providerEmitters: Array<{
-      onParticipant?: (participant: { identity: string; micMuted: boolean; camOn: boolean }) => void;
+      onParticipant?: (participant: { identity: string; micMuted: boolean; camOn: boolean; isSpeaking: boolean }) => void;
       onLocalMic?: (muted: boolean) => void;
       onLocalCamera?: (on: boolean) => void;
     }> = [];
@@ -136,7 +136,7 @@ describe('useAvSession', () => {
 
     act(() => {
       providerEmitters[0]?.onLocalCamera?.(true);
-      providerEmitters[0]?.onParticipant?.({ identity: 'peer-2', micMuted: true, camOn: false });
+      providerEmitters[0]?.onParticipant?.({ identity: 'peer-2', micMuted: true, camOn: false, isSpeaking: false });
     });
     await waitFor(() => expect(result.current.participants.map((p) => p.identity)).toContain('peer-2'));
 

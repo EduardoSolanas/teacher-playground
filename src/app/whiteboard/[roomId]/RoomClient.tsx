@@ -35,6 +35,7 @@ import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import { resolveJoinDisplayName } from '@/lib/access/accessDisplayName';
 import { roomIdFromWhiteboardPath } from '@/lib/whiteboard/roomPath';
 import { shouldClearUsernameOnEviction } from '@/lib/whiteboard/evictionUi';
+import type { ParticipantState } from '@/lib/av/avSession';
 
 const ExcalidrawWrapper = dynamic(
   () => import('@/components/whiteboard/ExcalidrawWrapper'),
@@ -58,6 +59,18 @@ export const ROOM_CANVAS_CLASS =
 
 export function roomCanvasTopClass(guestHost: boolean): string {
   return guestHost ? 'top-0 sm:top-12' : 'top-[calc(3rem+env(safe-area-inset-top))] sm:top-12';
+}
+
+export function mapAvPeerIds(
+  participants: readonly ParticipantState[],
+  localPeerId: string,
+  include: (participant: ParticipantState) => boolean,
+): ReadonlySet<string> {
+  return new Set(
+    participants
+      .filter(include)
+      .map((participant) => (participant.identity === '__local__' ? localPeerId : participant.identity)),
+  );
 }
 
 function RoomContent({ roomId }: { roomId: string }) {
@@ -579,9 +592,8 @@ function RoomContent({ roomId }: { roomId: string }) {
         onSuspend={sendToWaitingRoom}
         onRaiseHand={setHandRaised}
         maxUsers={maxUsers}
-        mutedPeerIds={new Set(
-          av.participants.filter((p) => p.micMuted).map((p) => (p.identity === '__local__' ? localPeerId : p.identity)),
-        )}
+        mutedPeerIds={mapAvPeerIds(av.participants, localPeerId, (participant) => participant.micMuted)}
+        speakingPeerIds={mapAvPeerIds(av.participants, localPeerId, (participant) => participant.isSpeaking)}
       />
       {moderationError && (
         <div

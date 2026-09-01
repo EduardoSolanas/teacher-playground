@@ -193,7 +193,7 @@ export default function AvSessionPanel({
   const message = errorCopy(av);
   const tiles = av.participants.length > 0
     ? av.participants
-    : [{ identity: localIdentity, micMuted: av.local.micMuted, camOn: av.local.camOn }];
+    : [{ identity: localIdentity, micMuted: av.local.micMuted, camOn: av.local.camOn, isSpeaking: false }];
   const [open, setOpen] = useState(!collapsed);
   const panelRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<PanelPoint | null>(null);

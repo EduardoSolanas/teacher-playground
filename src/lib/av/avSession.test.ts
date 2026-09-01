@@ -128,7 +128,7 @@ describe('createAvSession', () => {
     const provider = makeProvider();
     const session = createAvSession(provider);
     await session.join('token', 'url');
-    addParticipant(provider, { identity: 'peer-1', micMuted: false, camOn: true });
+    addParticipant(provider, { identity: 'peer-1', micMuted: false, camOn: true, isSpeaking: false });
     expect(session.participants.length).toBeGreaterThan(0);
     session.leave();
     expect(session.status).toBe('idle');
@@ -139,9 +139,9 @@ describe('createAvSession', () => {
   it('tracks remote participants and removals', async () => {
     const provider = makeProvider();
     const session = createAvSession(provider);
-    addParticipant(provider, { identity: 'peer-1', micMuted: true, camOn: false });
-    expect(session.participants).toEqual([{ identity: 'peer-1', micMuted: true, camOn: false }]);
-    addParticipant(provider, { identity: 'peer-2', micMuted: false, camOn: true });
+    addParticipant(provider, { identity: 'peer-1', micMuted: true, camOn: false, isSpeaking: false });
+    expect(session.participants).toEqual([{ identity: 'peer-1', micMuted: true, camOn: false, isSpeaking: false }]);
+    addParticipant(provider, { identity: 'peer-2', micMuted: false, camOn: true, isSpeaking: true });
     expect(session.participants).toHaveLength(2);
     provider.emit.onParticipantRemoved?.('peer-1');
     expect(session.participants.map((p) => p.identity)).toEqual(['peer-2']);
@@ -156,7 +156,7 @@ describe('createAvSession', () => {
     await session.join('token', 'url');
     listener.mockClear();
 
-    addParticipant(provider, { identity: 'peer-1', micMuted: true, camOn: false });
+    addParticipant(provider, { identity: 'peer-1', micMuted: true, camOn: false, isSpeaking: false });
     expect(listener).toHaveBeenCalledTimes(1);
 
     provider.emit.onLocalMic?.(true);
@@ -207,7 +207,7 @@ describe('createAvSession', () => {
     const provider = makeProvider();
     const session = createAvSession(provider);
     await session.join('token', 'url');
-    addParticipant(provider, { identity: 'peer-1', micMuted: false, camOn: true });
+    addParticipant(provider, { identity: 'peer-1', micMuted: false, camOn: true, isSpeaking: false });
     provider.emit.onDisconnected?.();
     expect(session.status).toBe('idle');
     expect(session.participants).toEqual([]);
@@ -279,6 +279,34 @@ describe('createAvSession', () => {
     session.detachTrack('peer-1', 'microphone', el);
     expect(provider.calls.attachTrack).toEqual(['peer-1:microphone:AUDIO']);
     expect(provider.calls.detachTrack).toEqual(['peer-1:microphone:AUDIO']);
+  });
+
+  it('defaults the local fallback participant to not speaking and updates speaking changes', async () => {
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+
+    await session.join('token', 'url');
+
+    expect(session.participants).toContainEqual({
+      identity: '__local__',
+      micMuted: false,
+      camOn: true,
+      isSpeaking: false,
+    });
+
+    addParticipant(provider, {
+      identity: 'peer-1',
+      micMuted: false,
+      camOn: true,
+      isSpeaking: true,
+    });
+
+    expect(session.participants).toContainEqual({
+      identity: 'peer-1',
+      micMuted: false,
+      camOn: true,
+      isSpeaking: true,
+    });
   });
 });
 

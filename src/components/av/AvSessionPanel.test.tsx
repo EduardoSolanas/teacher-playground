@@ -244,8 +244,8 @@ describe('AvSessionPanel', () => {
   it('offers a fullscreen control on every face', () => {
     const av = makeAv({
       participants: [
-        { identity: 'me', micMuted: false, camOn: true },
-        { identity: 'peer-1', micMuted: false, camOn: true },
+        { identity: 'me', micMuted: false, camOn: true, isSpeaking: false },
+        { identity: 'peer-1', micMuted: false, camOn: true, isSpeaking: false },
       ],
     });
     render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
@@ -263,7 +263,7 @@ describe('AvSessionPanel', () => {
 
   it('shows "Camera off" placeholder when camOn is false', () => {
     const av = makeAv({
-      participants: [{ identity: 'me', micMuted: false, camOn: false }],
+      participants: [{ identity: 'me', micMuted: false, camOn: false, isSpeaking: false }],
       local: { micMuted: false, camOn: false },
     });
     render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={false} />);
@@ -274,7 +274,7 @@ describe('AvSessionPanel', () => {
 
   it('renders remote participant tiles from the roster', () => {
     const av = makeAv({
-      participants: [{ identity: 'peer-1', micMuted: true, camOn: false }],
+      participants: [{ identity: 'peer-1', micMuted: true, camOn: false, isSpeaking: false }],
       local: { micMuted: false, camOn: true },
     });
     render(<AvSessionPanel av={av} localIdentity="me" isLocalHost={true} />);

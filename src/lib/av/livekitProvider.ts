@@ -11,6 +11,7 @@
  */
 
 import {
+  ParticipantEvent,
   Room,
   RoomEvent,
   Track,
@@ -34,6 +35,7 @@ function participantState(participant: Participant): ParticipantState {
     identity: participant.identity,
     micMuted: !participant.isMicrophoneEnabled,
     camOn: participant.isCameraEnabled,
+    isSpeaking: participant.isSpeaking,
   };
 }
 
@@ -45,10 +47,12 @@ export class LiveKitProvider implements AvProvider {
   private readonly room = new Room();
   private events: AvProviderEvents = {};
   private wired = false;
+  private activeSpeakerIds = new Set<string>();
 
   async connect(token: string, url: string): Promise<void> {
     this.ensureWired();
     await this.room.connect(url, token);
+    this.wireSpeakingParticipant(this.room.localParticipant);
     // Publish microphone + camera. Mic denial is fatal for the call UX; camera
     // denial is soft — stay joined with cam off (tile shows "Camera off").
     try {
@@ -64,6 +68,7 @@ export class LiveKitProvider implements AvProvider {
     this.emitLocal();
     this.refreshDevices();
     for (const participant of this.room.remoteParticipants.values()) {
+      this.wireSpeakingParticipant(participant);
       this.events.onParticipant?.(participantState(participant));
     }
   }
@@ -143,9 +148,11 @@ export class LiveKitProvider implements AvProvider {
 
     this.room
       .on(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
+        this.wireSpeakingParticipant(participant);
         this.events.onParticipant?.(participantState(participant));
       })
       .on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
+        this.activeSpeakerIds.delete(participant.identity);
         this.events.onParticipantRemoved?.(participant.identity);
       })
       .on(RoomEvent.TrackMuted, (_pub: TrackPublication, participant: Participant) => {
@@ -176,6 +183,9 @@ export class LiveKitProvider implements AvProvider {
       })
       .on(RoomEvent.MediaDevicesError, (error: Error) => {
         this.events.onError?.(mapProviderError(error));
+      })
+      .on(RoomEvent.ActiveSpeakersChanged, (participants: Participant[]) => {
+        this.handleActiveSpeakersChanged(participants);
       });
   }
 
@@ -198,6 +208,33 @@ export class LiveKitProvider implements AvProvider {
     const local = this.room.localParticipant;
     this.events.onLocalMic?.(!local.isMicrophoneEnabled);
     this.events.onLocalCamera?.(local.isCameraEnabled);
+    this.events.onLocalSpeaking?.(local.isSpeaking);
+  }
+
+  private wireSpeakingParticipant(participant: Participant): void {
+    participant.on(ParticipantEvent.IsSpeakingChanged, () => {
+      this.emitParticipantSpeaking(participant);
+    });
+  }
+
+  private emitParticipantSpeaking(participant: Participant): void {
+    if (participant === this.room.localParticipant) {
+      this.events.onLocalSpeaking?.(participant.isSpeaking);
+      return;
+    }
+    this.events.onParticipant?.(participantState(participant));
+  }
+
+  private handleActiveSpeakersChanged(participants: Participant[]): void {
+    const nextIds = new Set(participants.map((participant) => participant.identity));
+    const changedIds = new Set<string>([...this.activeSpeakerIds, ...nextIds]);
+    this.activeSpeakerIds = nextIds;
+
+    for (const identity of changedIds) {
+      const participant = this.findParticipant(identity);
+      if (!participant) continue;
+      this.emitParticipantSpeaking(participant);
+    }
   }
 
   /*
