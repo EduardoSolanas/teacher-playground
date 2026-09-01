@@ -71,6 +71,99 @@ describe('AvSessionPanel', () => {
     expect(av.toggleCamera).toHaveBeenCalledTimes(1);
   });
 
+  it('defaults to rail mode and offers accessible rail, focus and off controls', () => {
+    const av = makeAv({
+      participants: [
+        { identity: 'me', micMuted: false, camOn: true, isSpeaking: false },
+        { identity: 'peer-1', micMuted: false, camOn: true, isSpeaking: false },
+      ],
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+
+    expect(screen.getByRole('radiogroup', { name: 'Video layout' })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: 'Rail' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('radio', { name: 'Focus' }).getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByRole('radio', { name: 'Off' }).getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByTestId('av-tiles-rail')).toBeTruthy();
+  });
+
+  it('turns tiles off without ending the call controls, and can return to rail', () => {
+    const av = makeAv({
+      participants: [
+        { identity: 'me', micMuted: false, camOn: true, isSpeaking: false },
+        { identity: 'peer-1', micMuted: false, camOn: true, isSpeaking: false },
+      ],
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Off' }));
+    expect(screen.queryByTestId('av-tile-me')).toBeNull();
+    expect(screen.queryByTestId('av-tile-peer-1')).toBeNull();
+    expect(screen.getByTestId('av-call-controls')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Rail' }));
+    expect(screen.getByTestId('av-tile-me')).toBeTruthy();
+    expect(screen.getByTestId('av-tile-peer-1')).toBeTruthy();
+  });
+
+  it('keeps remote microphone audio attached in off mode without any visible tiles', () => {
+    const av = makeAv({
+      participants: [
+        { identity: 'me', micMuted: false, camOn: true, isSpeaking: false },
+        { identity: 'peer-1', micMuted: false, camOn: true, isSpeaking: false },
+      ],
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+
+    const remoteAudio = screen.getByTestId('av-remote-audio-peer-1');
+    expect(av.attachTrack).toHaveBeenCalledWith('peer-1', 'microphone', remoteAudio);
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Off' }));
+
+    expect(screen.queryByTestId('av-tile-me')).toBeNull();
+    expect(screen.queryByTestId('av-tile-peer-1')).toBeNull();
+    expect(screen.getByTestId('av-call-controls')).toBeTruthy();
+    expect(screen.getByTestId('av-remote-audio-peer-1')).toBeTruthy();
+    expect(av.detachTrack).not.toHaveBeenCalledWith('peer-1', 'microphone', remoteAudio);
+    expect(av.attachTrack).toHaveBeenCalledWith(
+      'peer-1',
+      'microphone',
+      screen.getByTestId('av-remote-audio-peer-1'),
+    );
+  });
+
+  it('focuses the active speaker when nobody is pinned, then pins a tile into focus mode', () => {
+    const av = makeAv({
+      participants: [
+        { identity: 'me', micMuted: false, camOn: true, isSpeaking: false },
+        { identity: 'peer-1', micMuted: false, camOn: true, isSpeaking: true },
+        { identity: 'peer-2', micMuted: false, camOn: true, isSpeaking: false },
+      ],
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Focus' }));
+    expect(screen.getByRole('radio', { name: 'Focus' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByTestId('av-focus-primary').getAttribute('data-participant')).toBe('peer-1');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Focus peer-2' }));
+    expect(screen.getByRole('radio', { name: 'Focus' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByTestId('av-focus-primary').getAttribute('data-participant')).toBe('peer-2');
+  });
+
+  it('falls back to the first tile in focus mode when nobody is speaking', () => {
+    const av = makeAv({
+      participants: [
+        { identity: 'me', micMuted: false, camOn: true, isSpeaking: false },
+        { identity: 'peer-1', micMuted: false, camOn: true, isSpeaking: false },
+      ],
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Focus' }));
+    expect(screen.getByTestId('av-focus-primary').getAttribute('data-participant')).toBe('me');
+  });
+
   it('can be got out of the way, and brought back', () => {
     /*
      * On a phone this is a fixed block across the top of the board. A lesson

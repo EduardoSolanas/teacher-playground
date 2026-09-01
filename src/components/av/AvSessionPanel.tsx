@@ -1,11 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import CallControls from './CallControls';
 import type { UseAvSessionResult } from '@/hooks/useAvSession';
 import type { AvDevice, ParticipantState } from '@/lib/av/avSession';
 import { clampPanelPosition, type PanelPoint } from '@/lib/av/panelPosition';
+
+export type AvPanelMode = 'rail' | 'focus' | 'off';
 
 interface AvSessionPanelProps {
   readonly av: UseAvSessionResult;
@@ -71,13 +73,16 @@ function ParticipantTile({
   participant,
   isLocal,
   av,
+  onFocus,
+  pinned = false,
 }: {
   participant: ParticipantState;
   isLocal: boolean;
   av: UseAvSessionResult;
+  onFocus?: (() => void) | null;
+  pinned?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const audioRef = useRef<HTMLAudioElement>(null);
   const tileRef = useRef<HTMLDivElement>(null);
 
   /*
@@ -106,19 +111,12 @@ function ParticipantTile({
 
   useEffect(() => {
     const video = videoRef.current;
-    const audio = audioRef.current;
     if (!video) return;
     av.attachTrack(participant.identity, 'camera', video);
-    if (!isLocal && audio) {
-      av.attachTrack(participant.identity, 'microphone', audio);
-    }
     return () => {
       av.detachTrack(participant.identity, 'camera', video);
-      if (!isLocal && audio) {
-        av.detachTrack(participant.identity, 'microphone', audio);
-      }
     };
-  }, [av, participant.identity, participant.camOn, isLocal]);
+  }, [av, participant.identity, participant.camOn]);
 
   return (
     <div
@@ -138,7 +136,6 @@ function ParticipantTile({
           Camera off
         </div>
       )}
-      {!isLocal && <audio ref={audioRef} autoPlay playsInline />}
       <button
         type="button"
         data-testid={`av-fullscreen-${participant.identity}`}
@@ -156,9 +153,56 @@ function ParticipantTile({
           {isLocal ? 'You' : participant.identity}
           {participant.micMuted ? ' · muted' : ''}
         </span>
+        {onFocus && (
+          <button
+            type="button"
+            onClick={onFocus}
+            aria-label={`Focus ${isLocal ? 'you' : participant.identity}`}
+            className={`rounded px-1.5 py-0.5 text-[0.6875rem] text-white transition-colors ${
+              pinned ? 'bg-sky-600/80 hover:bg-sky-500' : 'bg-black/60 hover:bg-black/80'
+            }`}
+          >
+            {pinned ? 'Pinned' : 'Focus'}
+          </button>
+        )}
       </div>
     </div>
   );
+}
+
+function RemoteParticipantAudio({
+  participant,
+  av,
+}: {
+  participant: ParticipantState;
+  av: UseAvSessionResult;
+}) {
+  const audioRef = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    av.attachTrack(participant.identity, 'microphone', audio);
+    return () => {
+      av.detachTrack(participant.identity, 'microphone', audio);
+    };
+  }, [av, participant.identity]);
+
+  return (
+    <audio
+      ref={audioRef}
+      data-testid={`av-remote-audio-${participant.identity}`}
+      autoPlay
+      playsInline
+      className="absolute h-px w-px overflow-hidden whitespace-nowrap border-0 p-0 [-webkit-clip-path:inset(50%)] [clip-path:inset(50%)] [clip:rect(0,0,0,0)]"
+    />
+  );
+}
+
+function modeButtonClass(selected: boolean): string {
+  return `rounded-md px-2 py-1 text-[0.6875rem] font-medium transition-colors ${
+    selected ? 'bg-slate-200 text-slate-900' : 'bg-slate-800 text-slate-200 hover:bg-slate-700'
+  }`;
 }
 
 /**
@@ -176,10 +220,15 @@ export default function AvSessionPanel({
   onEndCall,
 }: AvSessionPanelProps) {
   const message = errorCopy(av);
-  const tiles = av.participants.length > 0
-    ? av.participants
-    : [{ identity: localIdentity, micMuted: av.local.micMuted, camOn: av.local.camOn, isSpeaking: false }];
+  const tiles = useMemo(
+    () => (av.participants.length > 0
+      ? av.participants
+      : [{ identity: localIdentity, micMuted: av.local.micMuted, camOn: av.local.camOn, isSpeaking: false }]),
+    [av.local.camOn, av.local.micMuted, av.participants, localIdentity],
+  );
   const [open, setOpen] = useState(!collapsed);
+  const [mode, setMode] = useState<AvPanelMode>('rail');
+  const [pinnedIdentity, setPinnedIdentity] = useState<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<PanelPoint | null>(null);
   /** Where in the panel it was grabbed, so it does not jump under the pointer. */
@@ -258,6 +307,28 @@ export default function AvSessionPanel({
   const placement = position
     ? 'w-[min(26.25rem,calc(100vw-1rem))]'
     : 'left-2 right-14 top-[calc(max(0.5rem,env(safe-area-inset-top))+3.5rem)] w-auto sm:bottom-16 sm:left-14 sm:right-auto sm:top-auto sm:w-[min(26.25rem,calc(100vw-18.75rem))]';
+  const focusTile = pinnedIdentity
+    ? tiles.find((participant) => participant.identity === pinnedIdentity) ?? null
+    : tiles.find((participant) => participant.isSpeaking) ?? tiles[0] ?? null;
+  const secondaryTiles = focusTile
+    ? tiles.filter((participant) => participant.identity !== focusTile.identity)
+    : [];
+
+  useEffect(() => {
+    if (pinnedIdentity && !tiles.some((participant) => participant.identity === pinnedIdentity)) {
+      setPinnedIdentity(null);
+    }
+  }, [pinnedIdentity, tiles]);
+
+  const selectMode = (nextMode: AvPanelMode) => {
+    setMode(nextMode);
+    if (nextMode !== 'focus') setPinnedIdentity(null);
+  };
+
+  const focusParticipant = (identity: string) => {
+    setPinnedIdentity(identity);
+    setMode('focus');
+  };
 
   /*
    * Put away, this is a pill in the same corner rather than nothing at all.
@@ -336,6 +407,21 @@ export default function AvSessionPanel({
         )}
       </div>
 
+      <div role="radiogroup" aria-label="Video layout" className="mb-2 flex items-center gap-1 px-1">
+        {(['rail', 'focus', 'off'] as const).map((option) => (
+          <button
+            key={option}
+            type="button"
+            role="radio"
+            aria-checked={mode === option}
+            onClick={() => selectMode(option)}
+            className={modeButtonClass(mode === option)}
+          >
+            {option[0].toUpperCase() + option.slice(1)}
+          </button>
+        ))}
+      </div>
+
       {message && (
         <p data-testid="av-status-message" className="px-1 pb-2 text-[0.75rem] text-amber-200">
           {message}
@@ -349,16 +435,61 @@ export default function AvSessionPanel({
         * the complaint took a working conversation off the screen with it.
         */}
       {av.unavailableReason === null && (
-        <div className="grid grid-cols-2 gap-2">
-          {tiles.map((participant) => (
-            <ParticipantTile
-              key={participant.identity}
-              participant={participant}
-              isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
-              av={av}
-            />
-          ))}
-        </div>
+        <>
+          <div aria-hidden className="absolute">
+            {tiles
+              .filter((participant) => participant.identity !== localIdentity && participant.identity !== '__local__')
+              .map((participant) => (
+                <RemoteParticipantAudio
+                  key={participant.identity}
+                  participant={participant}
+                  av={av}
+                />
+              ))}
+          </div>
+          {mode === 'rail' && (
+            <div data-testid="av-tiles-rail" className="flex gap-2 overflow-x-auto pb-1">
+              {tiles.map((participant) => (
+                <div key={participant.identity} className="min-w-0 shrink-0 basis-40">
+                  <ParticipantTile
+                    participant={participant}
+                    isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
+                    av={av}
+                    onFocus={() => focusParticipant(participant.identity)}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+          {mode === 'focus' && focusTile && (
+            <div className="flex flex-col gap-2">
+              <div data-testid="av-focus-primary" data-participant={focusTile.identity}>
+                <ParticipantTile
+                  participant={focusTile}
+                  isLocal={focusTile.identity === localIdentity || focusTile.identity === '__local__'}
+                  av={av}
+                  onFocus={() => focusParticipant(focusTile.identity)}
+                  pinned={pinnedIdentity === focusTile.identity}
+                />
+              </div>
+              {secondaryTiles.length > 0 && (
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {secondaryTiles.map((participant) => (
+                    <div key={participant.identity} className="min-w-0 shrink-0 basis-28">
+                      <ParticipantTile
+                        participant={participant}
+                        isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
+                        av={av}
+                        onFocus={() => focusParticipant(participant.identity)}
+                        pinned={pinnedIdentity === participant.identity}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
 
       {(av.devices.microphone.length > 1 || av.devices.camera.length > 1) && (

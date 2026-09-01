@@ -64,6 +64,37 @@ async function waitForJoinedCall(page: Page) {
  * worse than one that asks a smaller question honestly.
  */
 test.describe('video calling panel', () => {
+  test('an admitted host can hide tiles with Off and return to Rail while call controls remain', async ({ browser }) => {
+    const host = await newAuthenticatedContext(browser, 'av-layout-host');
+    const hostPage = await host.newPage();
+
+    await createRoomWithMaxUsers(hostPage, 'AvHost', 1);
+
+    const hostToken = hostPage.waitForResponse((candidate) =>
+      isAvTokenResponse(candidate.url(), candidate.request().method()),
+    );
+    await hostPage.getByTestId('av-start-call').click();
+    const tokenResponse = await hostToken;
+    if (tokenResponse.status() === 503) {
+      test.skip(true, 'LiveKit is not configured in this E2E environment.');
+    }
+    await waitForJoinedCall(hostPage);
+
+    await expect(hostPage.getByRole('radio', { name: 'Rail' })).toHaveAttribute('aria-checked', 'true');
+    const tiles = hostPage.locator('[data-testid^="av-tile-"]');
+    await expect(tiles.first()).toBeVisible({ timeout: 15000 });
+
+    await hostPage.getByRole('radio', { name: 'Off' }).click();
+    await expect(hostPage.getByTestId('av-call-controls')).toBeVisible({ timeout: 15000 });
+    await expect(hostPage.getByTestId('av-toggle-mic')).toBeVisible({ timeout: 15000 });
+    await expect(hostPage.getByTestId('av-toggle-cam')).toBeVisible({ timeout: 15000 });
+    await expect(tiles).toHaveCount(0);
+
+    await hostPage.getByRole('radio', { name: 'Rail' }).click();
+    await expect(hostPage.getByRole('radio', { name: 'Rail' })).toHaveAttribute('aria-checked', 'true');
+    await expect(tiles.first()).toBeVisible({ timeout: 15000 });
+  });
+
   test('an admitted host is offered a call; a peer who is not in gets nothing', async ({ browser }) => {
     const host = await newAuthenticatedContext(browser, 'av-host');
     const guest = await newAuthenticatedContext(browser, 'av-guest');
