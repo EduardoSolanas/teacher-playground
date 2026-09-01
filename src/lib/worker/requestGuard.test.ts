@@ -370,7 +370,8 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
 
     it('restricts connect-src to the page origin and matching websocket origin', () => {
       expect(connectSrcForPageOrigin('https://app.example:8443')).toBe(
-        "connect-src 'self' https://app.example:8443 wss://app.example:8443",
+        "connect-src 'self' https://app.example:8443 wss://app.example:8443"
+        + ' https://libraries.excalidraw.com',
       );
       const wrapped = withSecurityHeaders(
         new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
@@ -389,12 +390,27 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
         connectSrcForPageOrigin('https://app.example', 'wss://project.livekit.cloud'),
       ).toBe(
         "connect-src 'self' https://app.example wss://app.example"
-        + ' https://project.livekit.cloud wss://project.livekit.cloud',
+        + ' https://project.livekit.cloud wss://project.livekit.cloud'
+        + ' https://libraries.excalidraw.com',
       );
     });
 
+    it('admits the shape library so a teacher can install one', () => {
+      /*
+       * Installing from Excalidraw's public repository is a fetch to
+       * libraries.excalidraw.com, and the page origin does not cover it: the
+       * browser blocked it outright and the room showed "Failed to fetch"
+       * with no indication of why. Read-only, https only -- no websocket,
+       * because nothing streams from there.
+       */
+      const csp = connectSrcForPageOrigin('https://app.example');
+      expect(csp).toContain('https://libraries.excalidraw.com');
+      expect(csp).not.toContain('wss://libraries.excalidraw.com');
+    });
+
     it('leaves connect-src alone when LiveKit is unconfigured or unparseable', () => {
-      const bare = "connect-src 'self' https://app.example wss://app.example";
+      const bare = "connect-src 'self' https://app.example wss://app.example"
+        + ' https://libraries.excalidraw.com';
       expect(connectSrcForPageOrigin('https://app.example')).toBe(bare);
       expect(connectSrcForPageOrigin('https://app.example', null)).toBe(bare);
       expect(connectSrcForPageOrigin('https://app.example', '')).toBe(bare);

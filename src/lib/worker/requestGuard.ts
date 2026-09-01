@@ -308,8 +308,12 @@ export function isPublicPath(pathname: string): boolean {
   return false;
 }
 
+/** Where Excalidraw's published shape libraries are fetched from. */
+const EXCALIDRAW_LIBRARY_HOST = 'libraries.excalidraw.com';
+
 /**
- * Same-origin HTTP and WebSocket only. Never a wildcard `wss:` scheme.
+ * Same-origin HTTP and WebSocket only, plus the two hosts the room genuinely
+ * reaches: the media server and the shape library. Never a wildcard scheme.
  */
 export function connectSrcForPageOrigin(
   pageOrigin: string,
@@ -328,6 +332,19 @@ export function connectSrcForPageOrigin(
   if (livekitHost) {
     sources.push(`https://${livekitHost}`, `wss://${livekitHost}`);
   }
+
+  /*
+   * Excalidraw's public shape repository, for the same reason as LiveKit: the
+   * page origin does not cover it, so the browser refuses the request whatever
+   * the application intends. Installing a library from the room's title menu
+   * is a fetch to this host, and without it the room answered "Failed to
+   * fetch" with nothing to say about why.
+   *
+   * https only, and read-only: a library is a JSON file pulled down and handed
+   * to the editor. Nothing streams from there, so no websocket, and nothing is
+   * ever sent to it.
+   */
+  sources.push(`https://${EXCALIDRAW_LIBRARY_HOST}`);
 
   return `connect-src ${sources.join(' ')}`;
 }

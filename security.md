@@ -651,9 +651,13 @@ have no shared hardening. Sensitive JSON has no explicit `Cache-Control`.
 - [x] Restrict CSP `connect-src` to the actual HTTPS/WSS/TURN allowlist.
   - Evidence: `connectSrcForPageOrigin` sets `connect-src 'self'` plus the
     exact page origin and matching `ws:`/`wss:` host (no scheme-wide `wss:`).
-    HTML responses from the Worker pass that directive. Residual: LiveKit/
-    TURN hosts are not in CSP until those secrets are configured; A/V degrades
-    to 503 without them.
+    HTML responses from the Worker pass that directive. Two third-party hosts
+    are named, each because the browser refuses the request otherwise: the
+    configured LiveKit host over `https:` and `wss:`, and
+    `https://libraries.excalidraw.com` for installing a shape library — read
+    only, no websocket, nothing sent to it. Residual: LiveKit/TURN hosts are
+    not in CSP until those secrets are configured; A/V degrades to 503 without
+    them.
 - [x] Promote the CSP from report-only to enforced once violations are observed
   to be clean against a real Excalidraw session.
   - Evidence: independent verifier APPROVE. Enforced CSP header; Report-Only
