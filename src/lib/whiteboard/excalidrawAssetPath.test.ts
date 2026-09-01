@@ -10,7 +10,7 @@ import {
 describe('Excalidraw asset distribution', () => {
   it('pins the production fork release to the immutable CDN directory', () => {
     expect(EXCALIDRAW_CDN_BASE_PATH).toBe(
-      'https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.10/dist/prod/',
+      'https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.11/dist/prod/',
     );
     expect(EXCALIDRAW_ASSET_PATH).toBe('/');
     expect(EXCALIDRAW_ASSET_PATH.endsWith('/')).toBe(true);

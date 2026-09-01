@@ -11,14 +11,14 @@ rewritten drawing editor.
 | Working copy | `excalidraw/` in this checkout (see [Open risks](#open-risks)) |
 | Release branch | `teacher-playground/release-v0.18.1` |
 | Package identity | `@teacher-playground/excalidraw` |
-| Current release | `teacher-playground-v0.18.1-tp.10` |
+| Current release | `teacher-playground-v0.18.1-tp.11` |
 | Upstream base | `v0.18.1` |
 
 The application consumes the immutable release tarball, pinned in
 `package.json` and `package-lock.json`:
 
 ```text
-https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.10/package.tgz
+https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.11/package.tgz
 ```
 
 **The fork is on the current upstream release.** `@excalidraw/excalidraw@0.18.1`
@@ -32,7 +32,7 @@ The fork owns its R2 bucket (`teacher-playground-excalidraw`), CORS, custom
 domain, release objects, and release metadata, published by its own GitHub
 Actions workflow using the `prod` environment's `CLOUDFLARE_API_TOKEN` secret
 and `CLOUDFLARE_ACCOUNT_ID` variable. The application consumes the immutable
-base `https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.10/dist/prod/`.
+base `https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.11/dist/prod/`.
 Versioned objects carry one-year immutable cache headers.
 
 ## What the fork actually contains
@@ -50,14 +50,16 @@ roughly 2,950 deletions against 13 insertions**. Almost all of it is removal:
 
 Beyond that there are **three single-line source edits** — in `App.tsx`,
 `TTDDialog/common.ts` and a `welcome-screen` stylesheet — the additive
-increment and tool-change API described below, and one deliberate behavioural
+increment and tool-change API described below, and four deliberate behavioural
 divergences: **`MAX_ALLOWED_FILE_BYTES` is 12MB rather than upstream's 4MB**
-(tp.8), **an inserted image is re-encoded to WebP at ingest** (tp.9), and
-**an image may be saved into the library** (tp.10). Those three are the
+(tp.8), **an inserted image is re-encoded to WebP at ingest** (tp.9),
+**an image may be saved into the library** (tp.10), and **the editor listens
+for `pagehide` rather than `unload`** (tp.11). Those four are the
 fork's changes to what the editor *does* rather than how it is packaged,
 and they are justified in [Image size](#image-size),
-[Image format conversion to WebP at ingest](#image-format-conversion-to-webp-at-ingest)
-and [Images in the library](#images-in-the-library).
+[Image format conversion to WebP at ingest](#image-format-conversion-to-webp-at-ingest),
+[Images in the library](#images-in-the-library) and
+[Page teardown](#page-teardown).
 
 That is the fork's defining property and the thing to protect: it changes
 essentially no editor behaviour, so nothing custom can rot, and adopting a
@@ -259,6 +261,26 @@ widens its type to a bare string.
 
 The fileId derivation is unchanged — it is generated from the original file before
 resizing, which keeps it stable across browsers whose WebP encoders may differ.
+
+### Page teardown
+
+Upstream registers its teardown listener on `unload`. Chrome now disallows
+unload listeners by default and refuses to register that one, logging a
+permissions-policy violation on every page that mounts the editor — so the
+listener never ran, and said so in the console of every room.
+
+The fork listens for `pagehide` instead. It fires in the cases `unload` did and
+also when a page enters the back/forward cache, which an unload listener
+suppressed altogether. The handler is two lines and only clears focus state
+(`this.onBlur()`), so it is correct under both.
+
+`EVENT.UNLOAD` is left in the enum although nothing uses it: it is part of a
+public shape and keeping it narrows the diff against upstream.
+`EVENT.BEFORE_UNLOAD`, used by the library code, is untouched — a different
+event, and not deprecated.
+
+Upstream will almost certainly make this change itself, at which point the
+divergence disappears on the next rebase.
 
 ### Asset loading
 

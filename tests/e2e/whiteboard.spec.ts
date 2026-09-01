@@ -272,11 +272,20 @@ async function dragOnCanvas(page: Page, from: { x: number; y: number }, to: { x:
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await dispatchDrag(page, from, to);
+    /*
+     * Four seconds, not two.
+     *
+     * The wait is how long the drag is given to show up before another is
+     * dispatched, and dispatching one while the last is still being handled is
+     * worse than waiting: Excalidraw sees a second pointerdown mid-sequence.
+     * Under a full suite two seconds was short enough to overlap them, and the
+     * element count came back one short with all three attempts spent.
+     */
     const landed = await page
       .waitForFunction(
         (n) => ((window as any).__debugExcalidrawApi?.getSceneElements?.().length ?? 0) > n,
         before,
-        { timeout: 2000 },
+        { timeout: 4000 },
       )
       .then(() => true)
       .catch(() => false);

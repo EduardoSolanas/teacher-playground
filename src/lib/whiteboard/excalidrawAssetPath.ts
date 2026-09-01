@@ -15,7 +15,7 @@
  * production build (for example, local development and preview builds).
  */
 export const EXCALIDRAW_CDN_BASE_PATH =
-  'https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.10/dist/prod/';
+  'https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.11/dist/prod/';
 
 export function resolveExcalidrawAssetPath(env: {
   NODE_ENV?: string;
