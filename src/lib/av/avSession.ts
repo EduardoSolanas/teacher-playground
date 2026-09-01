@@ -28,6 +28,7 @@ export interface ParticipantState {
   readonly micMuted: boolean;
   readonly camOn: boolean;
   readonly isSpeaking: boolean;
+  readonly quality?: 'excellent' | 'good' | 'poor' | 'lost' | 'unknown';
 }
 
 export interface LocalState {
@@ -170,6 +171,7 @@ export function createAvSession(provider: AvProvider): AvSession {
       micMuted: local.micMuted,
       camOn: local.camOn,
       isSpeaking: localSpeaking,
+      quality: 'unknown',
     };
     if (index >= 0) participants[index] = entry;
     else participants.push(entry);

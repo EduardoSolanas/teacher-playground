@@ -84,14 +84,18 @@ export function mapAvPeerStateByPeerId(
   participants: readonly ParticipantState[],
   users: readonly WhiteboardUser[],
   localPeerId: string,
-): ReadonlyMap<string, { micMuted: boolean; camOn: boolean }> {
+): ReadonlyMap<string, { micMuted: boolean; camOn: boolean; quality?: ParticipantState['quality'] }> {
   return new Map(
     participants.flatMap((participant) => {
       const peerId = participant.identity === '__local__'
         ? localPeerId
         : users.find((user) => user.accountId === participant.identity)?.peerId;
       return peerId
-        ? [[peerId, { micMuted: participant.micMuted, camOn: participant.camOn }] as const]
+        ? [[peerId, {
+          micMuted: participant.micMuted,
+          camOn: participant.camOn,
+          quality: participant.quality,
+        }] as const]
         : [];
     }),
   );

@@ -27,6 +27,7 @@ const livekit = vi.hoisted(() => {
     isMicrophoneEnabled: true,
     isCameraEnabled: true,
     isSpeaking: false,
+    connectionQuality: 'excellent',
     on: vi.fn(),
     getTrackPublication: vi.fn(),
   };
@@ -71,8 +72,17 @@ vi.mock('livekit-client', () => {
     ActiveSpeakersChanged = 'activeSpeakersChanged',
   }
 
+  enum ConnectionQuality {
+    Excellent = 'excellent',
+    Good = 'good',
+    Poor = 'poor',
+    Lost = 'lost',
+    Unknown = 'unknown',
+  }
+
   enum ParticipantEvent {
     IsSpeakingChanged = 'isSpeakingChanged',
+    ConnectionQualityChanged = 'connectionQualityChanged',
   }
 
   return {
@@ -91,6 +101,7 @@ vi.mock('livekit-client', () => {
     ),
     RoomEvent,
     ParticipantEvent,
+    ConnectionQuality,
     Track: { Source: { Camera: 'camera', Microphone: 'microphone' } },
   };
 });
@@ -108,6 +119,7 @@ describe('LiveKitProvider speaking state', () => {
     livekit.remoteParticipant.isMicrophoneEnabled = true;
     livekit.remoteParticipant.isCameraEnabled = true;
     livekit.remoteParticipant.isSpeaking = false;
+    livekit.remoteParticipant.connectionQuality = 'excellent';
     livekit.localParticipant.on.mockReset();
     livekit.remoteParticipant.on.mockReset();
   });
@@ -121,7 +133,13 @@ describe('LiveKitProvider speaking state', () => {
     livekit.room.remoteParticipants.set(livekit.remoteParticipant.identity, livekit.remoteParticipant);
 
     const provider = new LiveKitProvider();
-    const seen: Array<{ identity: string; micMuted: boolean; camOn: boolean; isSpeaking: boolean }> = [];
+    const seen: Array<{
+      identity: string;
+      micMuted: boolean;
+      camOn: boolean;
+      isSpeaking: boolean;
+      quality?: string;
+    }> = [];
     const events: AvProviderEvents = {
       onParticipant: (participant) => {
         seen.push(participant);
@@ -141,6 +159,7 @@ describe('LiveKitProvider speaking state', () => {
       micMuted: false,
       camOn: true,
       isSpeaking: true,
+      quality: 'excellent',
     });
 
     livekit.remoteParticipant.isSpeaking = false;
@@ -151,6 +170,53 @@ describe('LiveKitProvider speaking state', () => {
       micMuted: false,
       camOn: true,
       isSpeaking: false,
+      quality: 'excellent',
+    });
+  });
+
+  it('emits remote participant quality updates when LiveKit connection quality changes', async () => {
+    const handlers = new Map<string, (...args: unknown[]) => void>();
+    const participantHandlers = new Map<string, (...args: unknown[]) => void>();
+    livekit.roomOn.mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
+      handlers.set(event, handler);
+      return livekit.room;
+    });
+    livekit.remoteParticipant.on.mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
+      participantHandlers.set(event, handler);
+      return livekit.remoteParticipant;
+    });
+    livekit.room.remoteParticipants.set(livekit.remoteParticipant.identity, livekit.remoteParticipant);
+
+    const provider = new LiveKitProvider();
+    const seen: Array<{
+      identity: string;
+      micMuted: boolean;
+      camOn: boolean;
+      isSpeaking: boolean;
+      quality?: string;
+    }> = [];
+
+    provider.onEvents({
+      onParticipant: (participant) => {
+        seen.push(participant);
+      },
+    });
+    await provider.connect('token', 'wss://livekit.test');
+
+    expect(livekit.remoteParticipant.on).toHaveBeenCalledWith(
+      'connectionQualityChanged',
+      expect.any(Function),
+    );
+
+    livekit.remoteParticipant.connectionQuality = 'poor';
+    participantHandlers.get('connectionQualityChanged')?.();
+
+    expect(seen).toContainEqual({
+      identity: 'peer-2',
+      micMuted: false,
+      camOn: true,
+      isSpeaking: false,
+      quality: 'poor',
     });
   });
 });

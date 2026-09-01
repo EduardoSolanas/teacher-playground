@@ -103,8 +103,8 @@ describe('mapAvPeerStateByPeerId', () => {
     expect(
       mapAvPeerStateByPeerId(
         [
-          { identity: 'acct-student', micMuted: true, camOn: false, isSpeaking: true },
-          { identity: 'acct-stale', micMuted: false, camOn: true, isSpeaking: false },
+          { identity: 'acct-student', micMuted: true, camOn: false, isSpeaking: true, quality: 'poor' },
+          { identity: 'acct-stale', micMuted: false, camOn: true, isSpeaking: false, quality: 'good' },
         ],
         [
           makeUser({ peerId: 'peer-owner', accountId: 'acct-owner', userName: 'Teacher', isHost: true }),
@@ -113,7 +113,24 @@ describe('mapAvPeerStateByPeerId', () => {
         'peer-owner',
       ),
     ).toEqual(new Map([
-      ['peer-student', { micMuted: true, camOn: false }],
+      ['peer-student', { micMuted: true, camOn: false, quality: 'poor' }],
+    ]));
+  });
+
+  it('maps poor account-linked av quality onto the roster peer id', () => {
+    expect(
+      mapAvPeerStateByPeerId(
+        [
+          { identity: 'acct-student', micMuted: false, camOn: true, isSpeaking: false, quality: 'poor' },
+        ],
+        [
+          makeUser({ peerId: 'peer-owner', accountId: 'acct-owner', userName: 'Teacher', isHost: true }),
+          makeUser({ peerId: 'peer-student', accountId: 'acct-student', userName: 'Student' }),
+        ],
+        'peer-owner',
+      ),
+    ).toEqual(new Map([
+      ['peer-student', { micMuted: false, camOn: true, quality: 'poor' }],
     ]));
   });
 });

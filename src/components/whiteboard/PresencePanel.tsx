@@ -29,7 +29,10 @@ interface PresencePanelProps {
   /** Peer ids currently speaking in the voice session. */
   speakingPeerIds?: ReadonlySet<string>;
   /** A/V participant state keyed by whiteboard peer id. */
-  avPeerStates?: ReadonlyMap<string, { micMuted: boolean; camOn: boolean }>;
+  avPeerStates?: ReadonlyMap<
+    string,
+    { micMuted: boolean; camOn: boolean; quality?: 'excellent' | 'good' | 'poor' | 'lost' | 'unknown' }
+  >;
   /** Owner-only row controls for muting remote published tracks. */
   onMutePeer?: (peerId: string, kind: 'audio' | 'video') => void;
   /** Room capacity from settings; used for the "N of M" count. */
@@ -116,6 +119,12 @@ function UserAvatar({ user, ring }: { user: WhiteboardUser; ring?: boolean }) {
       </div>
     </div>
   );
+}
+
+function showConnectionIssue(
+  quality: 'excellent' | 'good' | 'poor' | 'lost' | 'unknown' | undefined,
+): quality is 'poor' | 'lost' {
+  return quality === 'poor' || quality === 'lost';
 }
 
 export default function PresencePanel({
@@ -491,6 +500,7 @@ export default function PresencePanel({
               const isSpeaking = Boolean(speakingPeerIds?.has(user.peerId));
               const avState = avPeerStates?.get(user.peerId);
               const canMuteAv = Boolean(avState && canModerate && onMutePeer);
+              const showQualityIssue = showConnectionIssue(avState?.quality);
 
               return (
                 <div
@@ -566,6 +576,16 @@ export default function PresencePanel({
                           className="text-[0.625rem] font-semibold uppercase tracking-wide text-slate-500"
                         >
                           {avState.micMuted ? 'Mic off' : 'Mic on'} · {avState.camOn ? 'Camera on' : 'Camera off'}
+                        </span>
+                      )}
+                      {showQualityIssue && (
+                        <span
+                          data-testid={`whiteboard-user-connection-quality-${user.peerId}`}
+                          role="img"
+                          aria-label={`${user.userName} connection is ${avState.quality}`}
+                          className="text-[0.625rem] font-semibold uppercase tracking-wide text-amber-700"
+                        >
+                          {avState.quality === 'lost' ? 'Connection lost' : 'Poor connection'}
                         </span>
                       )}
                     </div>

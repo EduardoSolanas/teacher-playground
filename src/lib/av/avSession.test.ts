@@ -292,6 +292,7 @@ describe('createAvSession', () => {
       micMuted: false,
       camOn: true,
       isSpeaking: false,
+      quality: 'unknown',
     });
 
     addParticipant(provider, {

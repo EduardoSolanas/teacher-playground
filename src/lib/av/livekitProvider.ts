@@ -11,6 +11,7 @@
  */
 
 import {
+  ConnectionQuality,
   ParticipantEvent,
   Room,
   RoomEvent,
@@ -30,12 +31,30 @@ import { mapProviderError } from './avSession';
 
 const MUTE_REQUEST_TOPIC = 'tp.av.mute-request';
 
+function mapConnectionQuality(
+  quality: ConnectionQuality | undefined,
+): 'excellent' | 'good' | 'poor' | 'lost' | 'unknown' {
+  switch (quality) {
+    case ConnectionQuality.Excellent:
+      return 'excellent';
+    case ConnectionQuality.Good:
+      return 'good';
+    case ConnectionQuality.Poor:
+      return 'poor';
+    case ConnectionQuality.Lost:
+      return 'lost';
+    default:
+      return 'unknown';
+  }
+}
+
 function participantState(participant: Participant): ParticipantState {
   return {
     identity: participant.identity,
     micMuted: !participant.isMicrophoneEnabled,
     camOn: participant.isCameraEnabled,
     isSpeaking: participant.isSpeaking,
+    quality: mapConnectionQuality(participant.connectionQuality),
   };
 }
 
@@ -214,6 +233,13 @@ export class LiveKitProvider implements AvProvider {
   private wireSpeakingParticipant(participant: Participant): void {
     participant.on(ParticipantEvent.IsSpeakingChanged, () => {
       this.emitParticipantSpeaking(participant);
+    });
+    participant.on(ParticipantEvent.ConnectionQualityChanged, () => {
+      if (participant === this.room.localParticipant) {
+        this.emitLocal();
+        return;
+      }
+      this.events.onParticipant?.(participantState(participant));
     });
   }
 

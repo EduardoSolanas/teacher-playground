@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 
 import PresencePanel from './PresencePanel';
 import type { WhiteboardUser } from '@/types/whiteboard';
+import type { ParticipantState } from '@/lib/av/avSession';
 
 function makeUser(overrides: Partial<WhiteboardUser> = {}): WhiteboardUser {
   return {
@@ -19,7 +20,10 @@ const noop = vi.fn();
 function renderPanel(
   users: WhiteboardUser[],
   options: {
-    avPeerStates?: ReadonlyMap<string, { micMuted: boolean; camOn: boolean }>;
+    avPeerStates?: ReadonlyMap<
+      string,
+      { micMuted: boolean; camOn: boolean; quality?: ParticipantState['quality'] }
+    >;
     localPeerId?: string;
     isLocalHost?: boolean;
     waitingPeers?: WhiteboardUser[];
@@ -229,6 +233,37 @@ describe('PresencePanel A/V roster state', () => {
     expect(screen.queryByTestId('whiteboard-user-av-peer-1')).toBeNull();
     expect(screen.getByTestId('whiteboard-user-av-peer-2').textContent).toContain('Mic off');
     expect(screen.getByTestId('whiteboard-user-av-peer-2').textContent).toContain('Camera off');
+  });
+
+  it('shows an accessible poor connection indicator only for poor or lost participants', () => {
+    renderPanel(
+      [
+        makeUser({ peerId: 'peer-poor', userName: 'Poor Peer' }),
+        makeUser({ peerId: 'peer-lost', userName: 'Lost Peer' }),
+        makeUser({ peerId: 'peer-good', userName: 'Good Peer' }),
+        makeUser({ peerId: 'peer-excellent', userName: 'Excellent Peer' }),
+        makeUser({ peerId: 'peer-unknown', userName: 'Unknown Peer' }),
+      ],
+      {
+        avPeerStates: new Map([
+          ['peer-poor', { micMuted: false, camOn: true, quality: 'poor' }],
+          ['peer-lost', { micMuted: false, camOn: true, quality: 'lost' }],
+          ['peer-good', { micMuted: false, camOn: true, quality: 'good' }],
+          ['peer-excellent', { micMuted: false, camOn: true, quality: 'excellent' }],
+          ['peer-unknown', { micMuted: false, camOn: true, quality: 'unknown' }],
+        ]),
+      },
+    );
+
+    expect(screen.getByTestId('whiteboard-user-connection-quality-peer-poor').getAttribute('aria-label')).toBe(
+      'Poor Peer connection is poor',
+    );
+    expect(screen.getByTestId('whiteboard-user-connection-quality-peer-lost').getAttribute('aria-label')).toBe(
+      'Lost Peer connection is lost',
+    );
+    expect(screen.queryByTestId('whiteboard-user-connection-quality-peer-good')).toBeNull();
+    expect(screen.queryByTestId('whiteboard-user-connection-quality-peer-excellent')).toBeNull();
+    expect(screen.queryByTestId('whiteboard-user-connection-quality-peer-unknown')).toBeNull();
   });
 
   it('shows owner-only mute controls for remote call participants', () => {
