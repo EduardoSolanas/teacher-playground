@@ -846,17 +846,6 @@ const worker = {
       );
     if (hostKind === 'unknown') return hostNotFound();
 
-    // Silence Next.js RSC tree prefetch requests that otherwise 404 in static export
-    if (url.pathname.includes('_tree.txt')) {
-      return withSecurityHeaders(new Response('', {
-        status: 200,
-        headers: {
-          'Content-Type': 'text/plain; charset=utf-8',
-          'Cache-Control': 'public, max-age=3600',
-        },
-      }));
-    }
-
     // The landing surface is static and entirely public. It never verifies
     // Access, never issues a session, and never reaches a Durable Object, so it
     // is served and returned before any of that machinery runs.
