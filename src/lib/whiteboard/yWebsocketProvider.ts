@@ -11,7 +11,15 @@ import {
 } from './followMessage';
 
 export interface WhiteboardProvider {
-  connected?: boolean;
+  /*
+   * `wsconnected` and no `connected`.
+   *
+   * y-websocket carries `wsconnected`; nothing ever sets `connected` on a real
+   * provider. While the seam was typed loosely a `provider.connected === true`
+   * check compiled and read `undefined === true` -- false forever, on a healthy
+   * socket. Declaring only the property that exists is what stops that being
+   * writable again; ask `isYjsProviderConnected`, never a field directly.
+   */
   wsconnected?: boolean;
   shouldConnect?: boolean;
   synced?: boolean;
@@ -46,7 +54,6 @@ let providerCache: Map<string, ProviderEntry> = new Map();
  */
 function createServerProvider(doc: Y.Doc): WhiteboardProvider {
   return {
-    connected: false,
     wsconnected: false,
     shouldConnect: false,
     awareness: new Awareness(doc),
