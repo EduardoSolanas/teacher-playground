@@ -652,6 +652,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         <AvSessionPanel
           av={av}
           localIdentity={localPeerId}
+          users={users}
           onEndCall={() => setCallWanted(false)}
         />
       ) : (

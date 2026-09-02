@@ -12,9 +12,18 @@ import { clampPanelPosition, type PanelPoint } from '@/lib/av/panelPosition';
 
 export type AvPanelMode = 'rail' | 'focus' | 'off';
 
+export interface AvUser {
+  readonly peerId: string;
+  readonly userName: string;
+  readonly accountId?: string | null;
+  readonly handRaised?: boolean;
+}
+
 interface AvSessionPanelProps {
   readonly av: UseAvSessionResult;
   readonly localIdentity: string;
+  /** Users in the room to resolve human names and hand raised state. */
+  readonly users?: readonly AvUser[];
   /** Start out of the way rather than open. */
   readonly collapsed?: boolean;
   /**
@@ -93,16 +102,58 @@ function AudioPlaybackBanner({ room }: { readonly room: Room }) {
   );
 }
 
+function getInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
+  return name.slice(0, 2).toUpperCase();
+}
+
+function resolveParticipantInfo(
+  participantIdentity: string,
+  localIdentity: string,
+  isLocal: boolean,
+  users?: readonly AvUser[],
+): { displayName: string; initials: string; handRaised: boolean } {
+  const isMe = isLocal || participantIdentity === localIdentity || participantIdentity === '__local__';
+  const user = users?.find(
+    (u) => u.peerId === participantIdentity || (u.accountId && u.accountId === participantIdentity),
+  );
+
+  const handRaised = Boolean(user?.handRaised);
+
+  if (isMe) {
+    const name = user?.userName ? `${user.userName} (you)` : 'You';
+    const initials = user?.userName ? getInitials(user.userName) : 'YO';
+    return { displayName: name, initials, handRaised };
+  }
+
+  if (user?.userName) {
+    return { displayName: user.userName, initials: getInitials(user.userName), handRaised };
+  }
+
+  return {
+    displayName: participantIdentity,
+    initials: participantIdentity.slice(0, 2).toUpperCase(),
+    handRaised,
+  };
+}
+
 function ParticipantTile({
   participant,
   isLocal,
   av,
+  localIdentity,
+  users,
   onFocus,
   pinned = false,
 }: {
   participant: ParticipantState;
   isLocal: boolean;
   av: UseAvSessionResult;
+  localIdentity: string;
+  users?: readonly AvUser[];
   onFocus?: (() => void) | null;
   pinned?: boolean;
 }) {
@@ -169,6 +220,13 @@ function ParticipantTile({
   const isScreenShare = videoPublication?.source === Track.Source.ScreenShare;
   const shouldMirror = isLocal && !isScreenShare;
 
+  const { displayName, initials, handRaised } = resolveParticipantInfo(
+    participant.identity,
+    localIdentity,
+    isLocal,
+    users,
+  );
+
   return (
     <div
       ref={tileRef}
@@ -195,14 +253,30 @@ function ParticipantTile({
       {!participant.camOn && !isScreenShare && (
         <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-gradient-to-b from-slate-800/90 to-slate-950/95 p-2 text-slate-300">
           <div className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-600/60 bg-slate-700/60 text-xs font-bold text-slate-200 shadow-inner">
-            {(isLocal ? 'You' : participant.identity).slice(0, 2).toUpperCase()}
+            {initials}
           </div>
           <span className="text-[0.6875rem] font-medium text-slate-400">
             Camera off
           </span>
         </div>
       )}
-      {(participant.quality === 'poor' || participant.quality === 'lost') && (
+      {handRaised && (
+        <div
+          data-testid={`av-hand-raised-${participant.identity}`}
+          className="absolute left-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-amber-500/90 px-1.5 py-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-slate-950 shadow-md animate-pulse"
+        >
+          <span>✋</span> Hand raised
+        </div>
+      )}
+      {isScreenShare && (
+        <div
+          data-testid={`av-screenshare-badge-${participant.identity}`}
+          className="absolute left-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-emerald-500/90 px-1.5 py-0.5 text-[0.625rem] font-semibold text-white shadow-md backdrop-blur-sm"
+        >
+          <span>🖥️</span> Screen
+        </div>
+      )}
+      {(participant.quality === 'poor' || participant.quality === 'lost') && !handRaised && (
         <div
           data-testid={`av-quality-${participant.identity}`}
           className={`absolute left-1.5 top-1.5 z-10 flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[0.625rem] font-medium text-white shadow-md backdrop-blur-sm ${
@@ -219,7 +293,7 @@ function ParticipantTile({
           data-testid={`av-pip-${participant.identity}`}
           onClick={togglePictureInPicture}
           title="Picture in Picture"
-          aria-label={`Picture in picture ${isLocal ? 'your camera' : participant.identity}`}
+          aria-label={`Picture in picture ${isLocal ? 'your camera' : displayName}`}
           className="rounded-md border border-white/10 bg-slate-950/70 p-1 text-[0.6875rem] text-slate-200 backdrop-blur-md transition-all hover:bg-slate-800 hover:text-white shadow-sm"
         >
           ⧉
@@ -229,7 +303,7 @@ function ParticipantTile({
           data-testid={`av-fullscreen-${participant.identity}`}
           onClick={toggleFullscreen}
           title="Fullscreen"
-          aria-label={`Fullscreen ${isLocal ? 'your camera' : participant.identity}`}
+          aria-label={`Fullscreen ${isLocal ? 'your camera' : displayName}`}
           className="rounded-md border border-white/10 bg-slate-950/70 p-1 text-[0.6875rem] text-slate-200 backdrop-blur-md transition-all hover:bg-slate-800 hover:text-white shadow-sm"
         >
           ⛶
@@ -237,14 +311,14 @@ function ParticipantTile({
       </div>
       <div className="absolute bottom-1.5 left-1.5 right-1.5 flex items-center justify-between gap-1">
         <span className="truncate rounded-md border border-white/10 bg-slate-950/75 px-2 py-0.5 text-[0.6875rem] font-medium text-slate-200 backdrop-blur-md shadow-sm">
-          {isLocal ? 'You' : participant.identity}
+          {displayName}
           {participant.micMuted ? ' · muted' : ''}
         </span>
         {onFocus && (
           <button
             type="button"
             onClick={onFocus}
-            aria-label={`Focus ${isLocal ? 'you' : participant.identity}`}
+            aria-label={`Focus ${displayName}`}
             className={`rounded-md px-2 py-0.5 text-[0.6875rem] font-medium transition-all shadow-sm ${
               pinned
                 ? 'bg-sky-500 text-white shadow-sky-500/30 font-semibold'
@@ -299,6 +373,7 @@ function RemoteParticipantAudio({
 export default function AvSessionPanel({
   av,
   localIdentity,
+  users,
   collapsed = false,
   onEndCall,
 }: AvSessionPanelProps) {
@@ -542,6 +617,8 @@ export default function AvSessionPanel({
                         participant={participant}
                         isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
                         av={av}
+                        localIdentity={localIdentity}
+                        users={users}
                         onFocus={() => focusParticipant(participant.identity)}
                       />
                     </div>
@@ -555,6 +632,8 @@ export default function AvSessionPanel({
                       participant={focusTile}
                       isLocal={focusTile.identity === localIdentity || focusTile.identity === '__local__'}
                       av={av}
+                      localIdentity={localIdentity}
+                      users={users}
                       onFocus={() => focusParticipant(focusTile.identity)}
                       pinned={pinnedIdentity === focusTile.identity}
                     />
@@ -567,6 +646,8 @@ export default function AvSessionPanel({
                             participant={participant}
                             isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
                             av={av}
+                            localIdentity={localIdentity}
+                            users={users}
                             onFocus={() => focusParticipant(participant.identity)}
                             pinned={pinnedIdentity === participant.identity}
                           />
@@ -598,6 +679,8 @@ export default function AvSessionPanel({
                         participant={participant}
                         isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
                         av={av}
+                        localIdentity={localIdentity}
+                        users={users}
                         onFocus={() => focusParticipant(participant.identity)}
                       />
                     </div>
@@ -611,6 +694,8 @@ export default function AvSessionPanel({
                       participant={focusTile}
                       isLocal={focusTile.identity === localIdentity || focusTile.identity === '__local__'}
                       av={av}
+                      localIdentity={localIdentity}
+                      users={users}
                       onFocus={() => focusParticipant(focusTile.identity)}
                       pinned={pinnedIdentity === focusTile.identity}
                     />
@@ -623,6 +708,8 @@ export default function AvSessionPanel({
                             participant={participant}
                             isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
                             av={av}
+                            localIdentity={localIdentity}
+                            users={users}
                             onFocus={() => focusParticipant(participant.identity)}
                             pinned={pinnedIdentity === participant.identity}
                           />

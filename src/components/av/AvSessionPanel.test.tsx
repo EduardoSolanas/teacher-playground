@@ -662,4 +662,41 @@ describe('AvSessionPanel', () => {
     expect(videoTrack).toBeTruthy();
     expect(videoTrack.className).not.toContain('-scale-x-100');
   });
+
+  it('displays human display names and initials instead of raw peer IDs on video tiles', () => {
+    const av = makeAv({
+      participants: [
+        { identity: 'me', micMuted: false, micPresent: true, camOn: false, isSpeaking: false },
+        { identity: 'peer-alice', micMuted: false, micPresent: true, camOn: false, isSpeaking: false },
+      ],
+    });
+    const users = [
+      { peerId: 'me', userName: 'Teacher' },
+      { peerId: 'peer-alice', userName: 'Alice Smith' },
+    ];
+    render(<AvSessionPanel av={av} localIdentity="me" users={users} />);
+
+    const aliceTile = screen.getByTestId('av-tile-peer-alice');
+    expect(aliceTile.textContent).toContain('Alice Smith');
+    expect(aliceTile.textContent).toContain('AS');
+
+    const meTile = screen.getByTestId('av-tile-me');
+    expect(meTile.textContent).toContain('Teacher (you)');
+  });
+
+  it('shows hand-raised indicator on a participant tile when their hand is raised', () => {
+    const av = makeAv({
+      participants: [
+        { identity: 'peer-bob', micMuted: false, micPresent: true, camOn: false, isSpeaking: false },
+      ],
+    });
+    const users = [
+      { peerId: 'peer-bob', userName: 'Bob', handRaised: true },
+    ];
+    render(<AvSessionPanel av={av} localIdentity="me" users={users} />);
+
+    expect(screen.getByTestId('av-hand-raised-peer-bob')).toBeTruthy();
+    expect(screen.getByTestId('av-hand-raised-peer-bob').textContent).toContain('Hand raised');
+  });
 });
+

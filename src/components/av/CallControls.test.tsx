@@ -101,4 +101,12 @@ describe('CallControls', () => {
     expect(screen.getByTestId('av-call-status').className).toContain('hidden');
     expect(screen.getByTestId('av-call-status').className).toContain('sm:inline');
   });
+
+  it('arranges action buttons in a balanced 3-column grid', () => {
+    render(<CallControls av={makeAv()} />);
+    const buttons = screen.getByTestId('av-call-buttons');
+    expect(buttons.className).toContain('grid');
+    expect(buttons.className).toContain('grid-cols-3');
+  });
 });
+
