@@ -572,10 +572,11 @@ test.describe('Multi-Peer Sync', () => {
       await approveWaitingPeerIfPresent(page);
       await expect(bobPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
 
-      // Wait for both peers to be connected
+      // Wait for both peers to be connected and present in rosters
       await waitForProviderConnected(page);
       await waitForProviderConnected(bobPage);
-      await page.waitForTimeout(2000);
+      await waitForPresence(page, 'Bob');
+      await waitForPresence(bobPage, 'Alice');
 
       // Alice draws a rectangle
       const rectIcon = page.getByTestId('toolbar-rectangle');
@@ -583,21 +584,20 @@ test.describe('Multi-Peer Sync', () => {
       await dragOnCanvas(page, { x: 200, y: 200 }, { x: 350, y: 300 });
 
       // Verify Alice's store has the element
-      const aliceState = await getStoreState(page);
-      expect(aliceState.elements?.length).toBeGreaterThanOrEqual(1);
+      await expect
+        .poll(async () => (await getStoreState(page)).elements?.length ?? 0, { timeout: 15000 })
+        .toBeGreaterThanOrEqual(1);
 
       // Bob should see the element via Yjs sync
       await waitForSync(bobPage, 1, 15000);
 
-      const bobState = await getStoreState(bobPage);
-      const remoteRect = bobState.elements?.at(-1);
-      expect(remoteRect?.type).toBe('rectangle');
-      expect(remoteRect?.x).toBe(200);
-      expect(remoteRect?.y).toBe(200);
-
-      // Verify presence: Alice sees Bob, Bob sees Alice
-      await waitForPresence(page, 'Bob');
-      await waitForPresence(bobPage, 'Alice');
+      await expect
+        .poll(async () => {
+          const bobState = await getStoreState(bobPage);
+          const remoteRect = bobState.elements?.at(-1);
+          return remoteRect?.type === 'rectangle' && remoteRect?.x === 200 && remoteRect?.y === 200;
+        }, { timeout: 15000 })
+        .toBe(true);
     } finally {
       await bobContext.close();
     }
@@ -728,23 +728,24 @@ test.describe('Multi-Peer Sync', () => {
 
       await waitForProviderConnected(page);
       await waitForProviderConnected(bobPage);
-      await page.waitForTimeout(2000);
+      await waitForPresence(page, 'Bob');
+      await waitForPresence(bobPage, 'Alice');
 
       // Bob draws a pen stroke
       const penIcon = bobPage.getByTestId('toolbar-freedraw');
       await selectTool(penIcon, 'freedraw');
       await dragOnCanvas(bobPage, { x: 100, y: 100 }, { x: 250, y: 200 });
 
-      const bobState = await getStoreState(bobPage);
-      expect(bobState.elements?.length).toBeGreaterThanOrEqual(1);
+      await expect
+        .poll(async () => (await getStoreState(bobPage)).elements?.length ?? 0, { timeout: 15000 })
+        .toBeGreaterThanOrEqual(1);
 
       // Alice should see the element
       await waitForSync(page, 1, 15000);
 
-      const aliceState = await getStoreState(page);
-      const remotePen = aliceState.elements?.at(-1);
-      // The pen tool produces Excalidraw's freehand element type.
-      expect(remotePen?.type).toBe('freedraw');
+      await expect
+        .poll(async () => (await getStoreState(page)).elements?.at(-1)?.type, { timeout: 15000 })
+        .toBe('freedraw');
 
       // Stroke geometry lives on the Excalidraw element; the legacy store
       // projection has no `points` field, so assert against the real scene.
@@ -785,7 +786,8 @@ test.describe('Multi-Peer Sync', () => {
 
       await waitForProviderConnected(page);
       await waitForProviderConnected(bobPage);
-      await page.waitForTimeout(2000);
+      await waitForPresence(page, 'InkBob');
+      await waitForPresence(bobPage, 'Alice');
 
       await selectTool(bobPage.getByTestId('toolbar-freedraw'), 'freedraw');
       await dragOnCanvas(bobPage, { x: 160, y: 160 }, { x: 360, y: 300 });
@@ -847,7 +849,8 @@ test.describe('Multi-Peer Sync', () => {
 
       await waitForProviderConnected(page);
       await waitForProviderConnected(bobPage);
-      await page.waitForTimeout(2000);
+      await waitForPresence(page, 'BusyBob');
+      await waitForPresence(bobPage, 'Alice');
 
       await selectTool(page.getByTestId('toolbar-freedraw'), 'freedraw');
       await selectTool(bobPage.getByTestId('toolbar-rectangle'), 'rectangle');
@@ -980,7 +983,8 @@ test.describe('Multi-Peer Sync', () => {
 
       await waitForProviderConnected(page);
       await waitForProviderConnected(bobPage);
-      await page.waitForTimeout(2000);
+      await waitForPresence(page, 'SimBob');
+      await waitForPresence(bobPage, 'Alice');
 
       // Alice draws rectangle
       const rectIcon = page.getByTestId('toolbar-rectangle');
@@ -1029,7 +1033,6 @@ test.describe('Multi-Peer Sync', () => {
 
       await waitForProviderConnected(page);
       await waitForProviderConnected(bobPage);
-      await page.waitForTimeout(2000);
 
       // Both present
       await waitForPresence(page, 'LeftBob');
@@ -1038,11 +1041,10 @@ test.describe('Multi-Peer Sync', () => {
       // Bob closes his page
       await bobPage.close();
 
-      // Alice should see Bob disappear (presence updates via polling)
-      await page.waitForTimeout(4000);
-      const presencePanel = page.getByTestId('whiteboard-presence-toggle');
-      const panelText = await presencePanel.textContent();
-      expect(panelText).not.toContain('LeftBob');
+      // Alice should see Bob disappear from presence roster without a fixed sleep
+      await expect(
+        page.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: 'LeftBob' }),
+      ).toHaveCount(0, { timeout: 15000 });
     } finally {
       await bobContext.close();
     }
@@ -1126,11 +1128,12 @@ test.describe('Reconnection & Resilience', () => {
       }
     });
 
-    await page.waitForTimeout(3000);
+    await waitForProviderConnected(page);
 
     // Elements should still be there after reconnect
-    const stateAfter = await getStoreState(page);
-    expect(stateAfter.elements?.length).toBe(1);
+    await expect
+      .poll(async () => (await getStoreState(page)).elements?.length ?? 0, { timeout: 15000 })
+      .toBe(1);
   });
 
   test('rapid tool switching doesn\'t lose elements', async ({ page }) => {
@@ -1187,7 +1190,8 @@ test.describe('Reconnection & Resilience', () => {
 
       await waitForProviderConnected(page);
       await waitForProviderConnected(bobPage);
-      await page.waitForTimeout(2000);
+      await waitForPresence(page, 'ClearBob');
+      await waitForPresence(bobPage, 'Alice');
 
       // Draw through the real path: writing straight into the legacy store
       // does not reach Excalidraw or Yjs, so it would never sync to Bob.
@@ -1278,7 +1282,8 @@ test.describe('Edge Cases', () => {
 
       await waitForProviderConnected(page);
       await waitForProviderConnected(bobPage);
-      await page.waitForTimeout(2000);
+      await waitForPresence(page, 'UndoBob');
+      await waitForPresence(bobPage, 'Alice');
 
       // Alice adds 3 elements through the Excalidraw scene. Her undo is
       // Excalidraw's own, and remote work never enters it: updates from Bob
@@ -1429,7 +1434,8 @@ test.describe('Edge Cases', () => {
 
       await waitForProviderConnected(page);
       await waitForProviderConnected(bobPage);
-      await page.waitForTimeout(3000);
+      await waitForPresence(page, 'CountBob');
+      await waitForPresence(bobPage, 'CountAlice');
 
       // Both should show "2/X" participants. The header count is compact
       // because "2 of 2" wrapped "IN THE ROOM" onto two lines in the rail.
