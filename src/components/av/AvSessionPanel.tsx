@@ -453,15 +453,36 @@ export default function AvSessionPanel({
       style={position ? { left: position.x, top: position.y } : undefined}
     >
       <div className="mb-2.5 flex items-center justify-between gap-2 px-0.5">
-        <button
-          type="button"
-          data-testid="av-panel-collapse"
-          onClick={() => setOpen(false)}
-          aria-label="Hide the call"
-          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[0.6875rem] font-medium uppercase tracking-wider text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200"
-        >
-          Hide
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            data-testid="av-panel-collapse"
+            onClick={() => setOpen(false)}
+            aria-label="Hide the call"
+            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[0.6875rem] font-medium uppercase tracking-wider text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200"
+          >
+            Hide
+          </button>
+          <div
+            role="radiogroup"
+            aria-label="Video layout"
+            className="inline-flex items-center gap-0.5 rounded-xl border border-slate-800 bg-slate-950/60 p-0.5 shadow-inner"
+          >
+            {(['rail', 'focus', 'off'] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                role="radio"
+                aria-checked={mode === option}
+                onClick={() => selectMode(option)}
+                className={modeButtonClass(mode === option)}
+              >
+                {option[0].toUpperCase() + option.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/*
           * The grip is the empty middle of the header, which is space the
           * panel already had. `touch-action: none` is what stops a drag on a
@@ -476,33 +497,18 @@ export default function AvSessionPanel({
         >
           <span aria-hidden className="inline-flex items-center gap-0.5 rounded-full bg-slate-800/80 px-2 py-0.5 text-[0.6875rem] text-slate-400">⠿</span>
         </div>
-        <CallControls av={av} />
+
         {onEndCall && (
           <button
             type="button"
             data-testid="av-end-call"
             onClick={onEndCall}
             title="Leave the call"
-            className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 text-[0.6875rem] font-medium text-rose-300 transition-all shadow-sm hover:bg-rose-500/25 hover:border-rose-500/60"
+            className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 text-[0.6875rem] font-medium text-rose-300 transition-all shadow-sm hover:bg-rose-500/25 hover:border-rose-500/60 shrink-0"
           >
             End
           </button>
         )}
-      </div>
-
-      <div role="radiogroup" aria-label="Video layout" className="mb-2.5 inline-flex items-center gap-0.5 rounded-xl border border-slate-800 bg-slate-950/60 p-1 shadow-inner">
-        {(['rail', 'focus', 'off'] as const).map((option) => (
-          <button
-            key={option}
-            type="button"
-            role="radio"
-            aria-checked={mode === option}
-            onClick={() => selectMode(option)}
-            className={modeButtonClass(mode === option)}
-          >
-            {option[0].toUpperCase() + option.slice(1)}
-          </button>
-        ))}
       </div>
 
       {message && (
@@ -529,9 +535,9 @@ export default function AvSessionPanel({
               </div>
               <AudioPlaybackBanner room={av.room} />
               {mode === 'rail' && (
-                <div data-testid="av-tiles-rail" className="flex gap-2 overflow-x-auto pb-1">
+                <div data-testid="av-tiles-rail" className="flex gap-2.5 overflow-x-auto pb-1.5">
                   {tiles.map((participant) => (
-                    <div key={participant.identity} className="min-w-0 shrink-0 basis-40">
+                    <div key={participant.identity} className="min-w-0 shrink-0 basis-44 sm:basis-48">
                       <ParticipantTile
                         participant={participant}
                         isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
@@ -543,7 +549,7 @@ export default function AvSessionPanel({
                 </div>
               )}
               {mode === 'focus' && focusTile && (
-                <div className="flex flex-col gap-2">
+                <div className="flex flex-col gap-2.5">
                   <div data-testid="av-focus-primary" data-participant={focusTile.identity}>
                     <ParticipantTile
                       participant={focusTile}
@@ -556,7 +562,7 @@ export default function AvSessionPanel({
                   {secondaryTiles.length > 0 && (
                     <div className="flex gap-2 overflow-x-auto pb-1">
                       {secondaryTiles.map((participant) => (
-                        <div key={participant.identity} className="min-w-0 shrink-0 basis-28">
+                        <div key={participant.identity} className="min-w-0 shrink-0 basis-32">
                           <ParticipantTile
                             participant={participant}
                             isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
@@ -585,9 +591,9 @@ export default function AvSessionPanel({
                   ))}
               </div>
               {mode === 'rail' && (
-                <div data-testid="av-tiles-rail" className="flex gap-2 overflow-x-auto pb-1">
+                <div data-testid="av-tiles-rail" className="flex gap-2.5 overflow-x-auto pb-1.5">
                   {tiles.map((participant) => (
-                    <div key={participant.identity} className="min-w-0 shrink-0 basis-40">
+                    <div key={participant.identity} className="min-w-0 shrink-0 basis-44 sm:basis-48">
                       <ParticipantTile
                         participant={participant}
                         isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
@@ -630,6 +636,10 @@ export default function AvSessionPanel({
           )}
         </>
       )}
+
+      <div className="mt-2.5 pt-2 border-t border-slate-800/80">
+        <CallControls av={av} />
+      </div>
 
       {((av.devices.microphone?.length ?? 0) > 1 || (av.devices.camera?.length ?? 0) > 1 || (av.devices.speaker?.length ?? 0) > 1) && (
         <div className="mt-2.5 flex flex-col gap-1.5 border-t border-slate-700/80 pt-2.5">
