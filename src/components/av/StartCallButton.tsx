@@ -18,9 +18,22 @@ export default function StartCallButton({ onStart }: { readonly onStart: () => v
       type="button"
       data-testid="av-start-call"
       onClick={onStart}
-      className="fixed left-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)] z-[1400] rounded-full border border-slate-700/80 bg-slate-900/95 px-3 py-1.5 text-[0.6875rem] font-medium text-slate-200 shadow-lg shadow-slate-900/30 transition-colors hover:bg-slate-800 sm:bottom-16 sm:left-14 sm:top-auto"
+      className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1 text-xs font-medium text-emerald-300 shadow-sm transition-all hover:border-emerald-500/60 hover:bg-emerald-500/25 active:scale-95"
     >
-      Join call
+      <svg
+        className="h-3.5 w-3.5 text-emerald-400 shrink-0"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        strokeWidth={2}
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
+        />
+      </svg>
+      <span>Start call</span>
     </button>
   );
 }

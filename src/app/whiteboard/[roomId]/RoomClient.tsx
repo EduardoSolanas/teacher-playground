@@ -581,13 +581,18 @@ function RoomContent({ roomId }: { roomId: string }) {
         onNavigate={handleBackToRooms}
         rosterExpanded={!presenceCollapsed}
         center={
-          <RoomTitleMenu
-            name={roomName}
-            canManage={isRoomOwner}
-            onRename={handleRenameRoom}
-            onSaveAs={handleSaveAs}
-            onOpenLibrary={handleOpenLibrary}
-          />
+          <div className="flex items-center gap-2 min-w-0">
+            <RoomTitleMenu
+              name={roomName}
+              canManage={isRoomOwner}
+              onRename={handleRenameRoom}
+              onSaveAs={handleSaveAs}
+              onOpenLibrary={handleOpenLibrary}
+            />
+            {avAllowed && !avEnabled && (
+              <StartCallButton onStart={() => setCallWanted(true)} />
+            )}
+          </div>
         }
       />
       <div className={`${ROOM_CANVAS_CLASS} ${roomCanvasTopClass(guestHost)}`} data-testid="whiteboard-canvas-area">
@@ -648,16 +653,14 @@ function RoomContent({ roomId }: { roomId: string }) {
           {moderationError}
         </div>
       )}
-      {avAllowed && (avEnabled ? (
+      {avAllowed && avEnabled && (
         <AvSessionPanel
           av={av}
           localIdentity={localPeerId}
           users={users}
           onEndCall={() => setCallWanted(false)}
         />
-      ) : (
-        <StartCallButton onStart={() => setCallWanted(true)} />
-      ))}
+      )}
       {shouldOverlayConnectingScreen({ boardEverShown, isSynced }) && <LoadingScreen />}
       {/* Stacked above the mobile tool bar; centred on its own row from sm: up. */}
       <ClearBoardModal
