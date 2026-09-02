@@ -30,6 +30,7 @@ export default function BackToRoomsLink({
   return (
     <Link
       href="/whiteboard"
+      prefetch={false}
       data-testid="whiteboard-back-to-rooms"
       onClick={(event) => {
         if (!onNavigate) return;

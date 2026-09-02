@@ -188,6 +188,7 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
       cancelled = true;
       leave();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- renaming updates participant name directly to avoid tearing down the call
   }, [enabled, roomId, identity, leave]);
 
   useEffect(() => {
