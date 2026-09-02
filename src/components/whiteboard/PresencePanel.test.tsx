@@ -22,7 +22,7 @@ function renderPanel(
   options: {
     avPeerStates?: ReadonlyMap<
       string,
-      { micMuted: boolean; camOn: boolean; quality?: ParticipantState['quality'] }
+      { micMuted: boolean; micPresent: boolean; camOn: boolean; quality?: ParticipantState['quality'] }
     >;
     localPeerId?: string;
     isLocalHost?: boolean;
@@ -225,14 +225,14 @@ describe('PresencePanel A/V roster state', () => {
       ],
       {
         avPeerStates: new Map([
-          ['peer-2', { micMuted: true, camOn: false }],
+          ['peer-2', { micMuted: true, micPresent: true, camOn: false }],
         ]),
       },
     );
 
     expect(screen.queryByTestId('whiteboard-user-av-peer-1')).toBeNull();
-    expect(screen.getByTestId('whiteboard-user-av-peer-2').textContent).toContain('Mic off');
-    expect(screen.getByTestId('whiteboard-user-av-peer-2').textContent).toContain('Camera off');
+    expect(screen.getByRole('img', { name: 'Bob microphone is muted' })).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'Bob camera is off' })).toBeTruthy();
   });
 
   it('shows an accessible poor connection indicator only for poor or lost participants', () => {
@@ -246,11 +246,11 @@ describe('PresencePanel A/V roster state', () => {
       ],
       {
         avPeerStates: new Map([
-          ['peer-poor', { micMuted: false, camOn: true, quality: 'poor' }],
-          ['peer-lost', { micMuted: false, camOn: true, quality: 'lost' }],
-          ['peer-good', { micMuted: false, camOn: true, quality: 'good' }],
-          ['peer-excellent', { micMuted: false, camOn: true, quality: 'excellent' }],
-          ['peer-unknown', { micMuted: false, camOn: true, quality: 'unknown' }],
+          ['peer-poor', { micMuted: false, micPresent: true, camOn: true, quality: 'poor' }],
+          ['peer-lost', { micMuted: false, micPresent: true, camOn: true, quality: 'lost' }],
+          ['peer-good', { micMuted: false, micPresent: true, camOn: true, quality: 'good' }],
+          ['peer-excellent', { micMuted: false, micPresent: true, camOn: true, quality: 'excellent' }],
+          ['peer-unknown', { micMuted: false, micPresent: true, camOn: true, quality: 'unknown' }],
         ]),
       },
     );
@@ -277,7 +277,7 @@ describe('PresencePanel A/V roster state', () => {
         localPeerId: 'peer-owner',
         isLocalHost: true,
         avPeerStates: new Map([
-          ['peer-student', { micMuted: false, camOn: true }],
+          ['peer-student', { micMuted: false, micPresent: true, camOn: true }],
         ]),
         onMutePeer,
       },
@@ -300,7 +300,7 @@ describe('PresencePanel A/V roster state', () => {
         localPeerId: 'peer-student',
         isLocalHost: false,
         avPeerStates: new Map([
-          ['peer-owner', { micMuted: false, camOn: true }],
+          ['peer-owner', { micMuted: false, micPresent: true, camOn: true }],
         ]),
       },
     );
@@ -779,5 +779,125 @@ describe('PresencePanel collapsed state', () => {
     const button = screen.getByTestId('whiteboard-presence-toggle');
     fireEvent.click(button);
     expect(onToggle).toHaveBeenCalled();
+  });
+});
+
+describe('PresencePanel microphone icons', () => {
+  it('renders no microphone icon when participant has no microphone', () => {
+    renderPanel(
+      [makeUser({ peerId: 'peer-1', userName: 'Alice' })],
+      {
+        avPeerStates: new Map([
+          ['peer-1', { micMuted: false, micPresent: false, camOn: true }],
+        ]),
+      },
+    );
+
+    expect(screen.getByRole('img', { name: 'Alice has no microphone' })).toBeTruthy();
+    expect(screen.queryByRole('img', { name: 'Alice microphone is muted' })).toBeNull();
+    expect(screen.queryByRole('img', { name: 'Alice is talking' })).toBeNull();
+    expect(screen.queryByRole('img', { name: 'Alice microphone is live' })).toBeNull();
+  });
+
+  it('renders muted microphone icon when participant is muted', () => {
+    renderPanel(
+      [makeUser({ peerId: 'peer-1', userName: 'Alice' })],
+      {
+        avPeerStates: new Map([
+          ['peer-1', { micMuted: true, micPresent: true, camOn: true }],
+        ]),
+      },
+    );
+
+    expect(screen.getByRole('img', { name: 'Alice microphone is muted' })).toBeTruthy();
+    expect(screen.queryByRole('img', { name: 'Alice has no microphone' })).toBeNull();
+    expect(screen.queryByRole('img', { name: 'Alice is talking' })).toBeNull();
+    expect(screen.queryByRole('img', { name: 'Alice microphone is live' })).toBeNull();
+  });
+
+  it('says a participant is muted once, not twice', () => {
+    /*
+     * The icon replaced the badge; it did not join it.
+     *
+     * Both were rendering for the same peer, so a muted child carried a
+     * crossed-out mic AND the word "Muted" beside it, in a row that is
+     * already carrying a name, a hand, a camera and sometimes a connection
+     * warning. The icon is the whole point of the change -- the row should
+     * stop reciting.
+     */
+    renderPanel(
+      [makeUser({ peerId: 'peer-1', userName: 'Alice' })],
+      {
+        avPeerStates: new Map([
+          ['peer-1', { micMuted: true, micPresent: true, camOn: true }],
+        ]),
+      },
+    );
+
+    expect(screen.getByRole('img', { name: 'Alice microphone is muted' })).toBeTruthy();
+    expect(screen.queryByText('Muted')).toBeNull();
+  });
+
+  it('renders speaking microphone icon when participant is speaking', () => {
+    renderPanel(
+      [makeUser({ peerId: 'peer-1', userName: 'Alice' })],
+      {
+        avPeerStates: new Map([
+          ['peer-1', { micMuted: false, micPresent: true, camOn: true }],
+        ]),
+        speakingPeerIds: new Set(['peer-1']),
+      },
+    );
+
+    expect(screen.getByRole('img', { name: 'Alice is talking' })).toBeTruthy();
+    expect(screen.queryByRole('img', { name: 'Alice has no microphone' })).toBeNull();
+    expect(screen.queryByRole('img', { name: 'Alice microphone is muted' })).toBeNull();
+    expect(screen.queryByRole('img', { name: 'Alice microphone is live' })).toBeNull();
+  });
+
+  it('renders plain microphone icon when participant is unmuted and not speaking', () => {
+    renderPanel(
+      [makeUser({ peerId: 'peer-1', userName: 'Alice' })],
+      {
+        avPeerStates: new Map([
+          ['peer-1', { micMuted: false, micPresent: true, camOn: true }],
+        ]),
+      },
+    );
+
+    expect(screen.getByRole('img', { name: 'Alice microphone is live' })).toBeTruthy();
+    expect(screen.queryByRole('img', { name: 'Alice has no microphone' })).toBeNull();
+    expect(screen.queryByRole('img', { name: 'Alice microphone is muted' })).toBeNull();
+    expect(screen.queryByRole('img', { name: 'Alice is talking' })).toBeNull();
+  });
+});
+
+describe('PresencePanel camera icons', () => {
+  it('renders camera on icon when camera is on', () => {
+    renderPanel(
+      [makeUser({ peerId: 'peer-1', userName: 'Alice' })],
+      {
+        avPeerStates: new Map([
+          ['peer-1', { micMuted: false, micPresent: true, camOn: true }],
+        ]),
+      },
+    );
+
+    expect(screen.getByRole('img', { name: 'Alice camera is on' })).toBeTruthy();
+    expect(screen.queryByRole('img', { name: 'Alice camera is off' })).toBeNull();
+  });
+
+  it('renders camera off icon when camera is off', () => {
+    renderPanel(
+      [makeUser({ peerId: 'peer-1', userName: 'Alice' })],
+      {
+        avPeerStates: new Map([
+          ['peer-1', { micMuted: false, micPresent: true, camOn: false }],
+        ]),
+      },
+    );
+
+    expect(screen.getByRole('img', { name: 'Alice camera is off' })).toBeTruthy();
+    expect(screen.queryByRole('img', { name: 'Alice camera is on' })).toBeNull();
   });
 });

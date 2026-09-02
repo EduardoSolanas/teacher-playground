@@ -26,6 +26,7 @@ export interface AvError {
 export interface ParticipantState {
   readonly identity: string;
   readonly micMuted: boolean;
+  readonly micPresent: boolean;
   readonly camOn: boolean;
   readonly isSpeaking: boolean;
   readonly quality?: 'excellent' | 'good' | 'poor' | 'lost' | 'unknown';
@@ -166,6 +167,7 @@ export function createAvSession(provider: AvProvider): AvSession {
     const entry: ParticipantState = {
       identity: '__local__',
       micMuted: local.micMuted,
+      micPresent: true,
       camOn: local.camOn,
       isSpeaking: localSpeaking,
       quality: 'unknown',

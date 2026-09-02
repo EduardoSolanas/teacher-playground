@@ -84,7 +84,7 @@ export function mapAvPeerStateByPeerId(
   participants: readonly ParticipantState[],
   users: readonly WhiteboardUser[],
   localPeerId: string,
-): ReadonlyMap<string, { micMuted: boolean; camOn: boolean; quality?: ParticipantState['quality'] }> {
+): ReadonlyMap<string, { micMuted: boolean; micPresent: boolean; camOn: boolean; quality?: ParticipantState['quality'] }> {
   return new Map(
     participants.flatMap((participant) => {
       const peerId = participant.identity === '__local__'
@@ -93,6 +93,7 @@ export function mapAvPeerStateByPeerId(
       return peerId
         ? [[peerId, {
           micMuted: participant.micMuted,
+          micPresent: participant.micPresent,
           camOn: participant.camOn,
           quality: participant.quality,
         }] as const]
@@ -636,7 +637,6 @@ function RoomContent({ roomId }: { roomId: string }) {
           if (!targetIdentity) return;
           void av.requestMute(targetIdentity, kind);
         }}
-        mutedPeerIds={mapAvPeerIds(av.participants, users, localPeerId, (participant) => participant.micMuted)}
         speakingPeerIds={mapAvPeerIds(av.participants, users, localPeerId, (participant) => participant.isSpeaking)}
       />
       {moderationError && (

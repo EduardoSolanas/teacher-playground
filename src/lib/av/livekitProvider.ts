@@ -50,6 +50,7 @@ function participantState(participant: Participant): ParticipantState {
   return {
     identity: participant.identity,
     micMuted: !participant.isMicrophoneEnabled,
+    micPresent: participant.getTrackPublication(Track.Source.Microphone) !== undefined,
     camOn: participant.isCameraEnabled,
     isSpeaking: participant.isSpeaking,
     quality: mapConnectionQuality(participant.connectionQuality),

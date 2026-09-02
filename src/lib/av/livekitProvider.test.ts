@@ -107,7 +107,7 @@ vi.mock('livekit-client', () => {
 });
 
 import { LiveKitProvider } from './livekitProvider';
-import type { AvProviderEvents } from './avSession';
+import type { AvProviderEvents, ParticipantState } from './avSession';
 
 describe('LiveKitProvider speaking state', () => {
   beforeEach(() => {
@@ -122,6 +122,8 @@ describe('LiveKitProvider speaking state', () => {
     livekit.remoteParticipant.connectionQuality = 'excellent';
     livekit.localParticipant.on.mockReset();
     livekit.remoteParticipant.on.mockReset();
+    livekit.localParticipant.getTrackPublication.mockReset();
+    livekit.remoteParticipant.getTrackPublication.mockReset();
   });
 
   it('ignores peer mute-request data messages', async () => {
@@ -153,12 +155,14 @@ describe('LiveKitProvider speaking state', () => {
       handlers.set(event, handler);
       return livekit.room;
     });
+    livekit.remoteParticipant.getTrackPublication.mockReturnValue({ track: {} });
     livekit.room.remoteParticipants.set(livekit.remoteParticipant.identity, livekit.remoteParticipant);
 
     const provider = new LiveKitProvider();
     const seen: Array<{
       identity: string;
       micMuted: boolean;
+      micPresent: boolean;
       camOn: boolean;
       isSpeaking: boolean;
       quality?: string;
@@ -180,6 +184,7 @@ describe('LiveKitProvider speaking state', () => {
     expect(seen).toContainEqual({
       identity: 'peer-2',
       micMuted: false,
+      micPresent: true,
       camOn: true,
       isSpeaking: true,
       quality: 'excellent',
@@ -191,6 +196,7 @@ describe('LiveKitProvider speaking state', () => {
     expect(seen).toContainEqual({
       identity: 'peer-2',
       micMuted: false,
+      micPresent: true,
       camOn: true,
       isSpeaking: false,
       quality: 'excellent',
@@ -208,12 +214,14 @@ describe('LiveKitProvider speaking state', () => {
       participantHandlers.set(event, handler);
       return livekit.remoteParticipant;
     });
+    livekit.remoteParticipant.getTrackPublication.mockReturnValue({ track: {} });
     livekit.room.remoteParticipants.set(livekit.remoteParticipant.identity, livekit.remoteParticipant);
 
     const provider = new LiveKitProvider();
     const seen: Array<{
       identity: string;
       micMuted: boolean;
+      micPresent: boolean;
       camOn: boolean;
       isSpeaking: boolean;
       quality?: string;
@@ -237,9 +245,62 @@ describe('LiveKitProvider speaking state', () => {
     expect(seen).toContainEqual({
       identity: 'peer-2',
       micMuted: false,
+      micPresent: true,
       camOn: true,
       isSpeaking: false,
       quality: 'poor',
+    });
+  });
+
+  it('sets micPresent to true when participant has microphone publication', async () => {
+    const handlers = new Map<string, (...args: unknown[]) => void>();
+    livekit.roomOn.mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
+      handlers.set(event, handler);
+      return livekit.room;
+    });
+    livekit.remoteParticipant.getTrackPublication.mockReturnValue({ track: {} });
+    livekit.room.remoteParticipants.set(livekit.remoteParticipant.identity, livekit.remoteParticipant);
+
+    const provider = new LiveKitProvider();
+    const seen: ParticipantState[] = [];
+    const events: AvProviderEvents = {
+      onParticipant: (participant) => {
+        seen.push(participant);
+      },
+    };
+
+    provider.onEvents(events);
+    await provider.connect('token', 'wss://livekit.test');
+
+    expect(seen[seen.length - 1]).toMatchObject({
+      identity: 'peer-2',
+      micPresent: true,
+    });
+  });
+
+  it('sets micPresent to false when participant has no microphone publication', async () => {
+    const handlers = new Map<string, (...args: unknown[]) => void>();
+    livekit.roomOn.mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
+      handlers.set(event, handler);
+      return livekit.room;
+    });
+    livekit.remoteParticipant.getTrackPublication.mockReturnValue(undefined);
+    livekit.room.remoteParticipants.set(livekit.remoteParticipant.identity, livekit.remoteParticipant);
+
+    const provider = new LiveKitProvider();
+    const seen: ParticipantState[] = [];
+    const events: AvProviderEvents = {
+      onParticipant: (participant) => {
+        seen.push(participant);
+      },
+    };
+
+    provider.onEvents(events);
+    await provider.connect('token', 'wss://livekit.test');
+
+    expect(seen[seen.length - 1]).toMatchObject({
+      identity: 'peer-2',
+      micPresent: false,
     });
   });
 });

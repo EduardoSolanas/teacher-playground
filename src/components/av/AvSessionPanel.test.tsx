@@ -74,8 +74,8 @@ describe('AvSessionPanel', () => {
   it('defaults to rail mode and offers accessible rail, focus and off controls', () => {
     const av = makeAv({
       participants: [
-        { identity: 'me', micMuted: false, camOn: true, isSpeaking: false },
-        { identity: 'peer-1', micMuted: false, camOn: true, isSpeaking: false },
+        { identity: 'me', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
+        { identity: 'peer-1', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
       ],
     });
     render(<AvSessionPanel av={av} localIdentity="me" />);
@@ -90,8 +90,8 @@ describe('AvSessionPanel', () => {
   it('turns tiles off without ending the call controls, and can return to rail', () => {
     const av = makeAv({
       participants: [
-        { identity: 'me', micMuted: false, camOn: true, isSpeaking: false },
-        { identity: 'peer-1', micMuted: false, camOn: true, isSpeaking: false },
+        { identity: 'me', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
+        { identity: 'peer-1', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
       ],
     });
     render(<AvSessionPanel av={av} localIdentity="me" />);
@@ -109,8 +109,8 @@ describe('AvSessionPanel', () => {
   it('keeps remote microphone audio attached in off mode without any visible tiles', () => {
     const av = makeAv({
       participants: [
-        { identity: 'me', micMuted: false, camOn: true, isSpeaking: false },
-        { identity: 'peer-1', micMuted: false, camOn: true, isSpeaking: false },
+        { identity: 'me', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
+        { identity: 'peer-1', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
       ],
     });
     render(<AvSessionPanel av={av} localIdentity="me" />);
@@ -135,9 +135,9 @@ describe('AvSessionPanel', () => {
   it('focuses the active speaker when nobody is pinned, then pins a tile into focus mode', () => {
     const av = makeAv({
       participants: [
-        { identity: 'me', micMuted: false, camOn: true, isSpeaking: false },
-        { identity: 'peer-1', micMuted: false, camOn: true, isSpeaking: true },
-        { identity: 'peer-2', micMuted: false, camOn: true, isSpeaking: false },
+        { identity: 'me', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
+        { identity: 'peer-1', micMuted: false, micPresent: true, camOn: true, isSpeaking: true },
+        { identity: 'peer-2', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
       ],
     });
     render(<AvSessionPanel av={av} localIdentity="me" />);
@@ -154,8 +154,8 @@ describe('AvSessionPanel', () => {
   it('falls back to the first tile in focus mode when nobody is speaking', () => {
     const av = makeAv({
       participants: [
-        { identity: 'me', micMuted: false, camOn: true, isSpeaking: false },
-        { identity: 'peer-1', micMuted: false, camOn: true, isSpeaking: false },
+        { identity: 'me', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
+        { identity: 'peer-1', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
       ],
     });
     render(<AvSessionPanel av={av} localIdentity="me" />);
@@ -336,8 +336,8 @@ describe('AvSessionPanel', () => {
   it('offers a fullscreen control on every face', () => {
     const av = makeAv({
       participants: [
-        { identity: 'me', micMuted: false, camOn: true, isSpeaking: false },
-        { identity: 'peer-1', micMuted: false, camOn: true, isSpeaking: false },
+        { identity: 'me', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
+        { identity: 'peer-1', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
       ],
     });
     render(<AvSessionPanel av={av} localIdentity="me" />);
@@ -355,7 +355,7 @@ describe('AvSessionPanel', () => {
 
   it('shows "Camera off" placeholder when camOn is false', () => {
     const av = makeAv({
-      participants: [{ identity: 'me', micMuted: false, camOn: false, isSpeaking: false }],
+      participants: [{ identity: 'me', micMuted: false, micPresent: true, camOn: false, isSpeaking: false }],
       local: { micMuted: false, camOn: false },
     });
     render(<AvSessionPanel av={av} localIdentity="me" />);
@@ -366,7 +366,7 @@ describe('AvSessionPanel', () => {
 
   it('renders remote participant tiles from the roster', () => {
     const av = makeAv({
-      participants: [{ identity: 'peer-1', micMuted: true, camOn: false, isSpeaking: false }],
+      participants: [{ identity: 'peer-1', micMuted: true, micPresent: true, camOn: false, isSpeaking: false }],
       local: { micMuted: false, camOn: true },
     });
     render(<AvSessionPanel av={av} localIdentity="me" />);

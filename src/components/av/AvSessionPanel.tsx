@@ -223,7 +223,7 @@ export default function AvSessionPanel({
   const tiles = useMemo(
     () => (av.participants.length > 0
       ? av.participants
-      : [{ identity: localIdentity, micMuted: av.local.micMuted, camOn: av.local.camOn, isSpeaking: false }]),
+      : [{ identity: localIdentity, micMuted: av.local.micMuted, micPresent: true, camOn: av.local.camOn, isSpeaking: false }]),
     [av.local.camOn, av.local.micMuted, av.participants, localIdentity],
   );
   const [open, setOpen] = useState(!collapsed);

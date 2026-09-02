@@ -48,8 +48,8 @@ describe('mapAvPeerIds', () => {
     expect(
       mapAvPeerIds(
         [
-          { identity: '__local__', micMuted: false, camOn: true, isSpeaking: true },
-          { identity: 'peer-2', micMuted: true, camOn: false, isSpeaking: false },
+          { identity: '__local__', micMuted: false, micPresent: true, camOn: true, isSpeaking: true },
+          { identity: 'peer-2', micMuted: true, micPresent: true, camOn: false, isSpeaking: false },
         ],
         [
           makeUser({ peerId: 'peer-local' }),
@@ -65,8 +65,8 @@ describe('mapAvPeerIds', () => {
     expect(
       mapAvPeerIds(
         [
-          { identity: 'acct-student', micMuted: true, camOn: false, isSpeaking: true },
-          { identity: 'acct-stale', micMuted: false, camOn: true, isSpeaking: true },
+          { identity: 'acct-student', micMuted: true, micPresent: true, camOn: false, isSpeaking: true },
+          { identity: 'acct-stale', micMuted: false, micPresent: true, camOn: true, isSpeaking: true },
         ],
         [
           makeUser({ peerId: 'peer-owner', accountId: 'acct-owner', userName: 'Teacher', isHost: true }),
@@ -84,8 +84,8 @@ describe('mapAvPeerStateByPeerId', () => {
     expect(
       mapAvPeerStateByPeerId(
         [
-          { identity: '__local__', micMuted: false, camOn: true, isSpeaking: true },
-          { identity: 'peer-2', micMuted: true, camOn: false, isSpeaking: false },
+          { identity: '__local__', micMuted: false, micPresent: true, camOn: true, isSpeaking: true },
+          { identity: 'peer-2', micMuted: true, micPresent: true, camOn: false, isSpeaking: false },
         ],
         [
           makeUser({ peerId: 'peer-local' }),
@@ -94,8 +94,8 @@ describe('mapAvPeerStateByPeerId', () => {
         'peer-local',
       ),
     ).toEqual(new Map([
-      ['peer-local', { micMuted: false, camOn: true }],
-      ['peer-2', { micMuted: true, camOn: false }],
+      ['peer-local', { micMuted: false, micPresent: true, camOn: true }],
+      ['peer-2', { micMuted: true, micPresent: true, camOn: false }],
     ]));
   });
 
@@ -103,8 +103,8 @@ describe('mapAvPeerStateByPeerId', () => {
     expect(
       mapAvPeerStateByPeerId(
         [
-          { identity: 'acct-student', micMuted: true, camOn: false, isSpeaking: true, quality: 'poor' },
-          { identity: 'acct-stale', micMuted: false, camOn: true, isSpeaking: false, quality: 'good' },
+          { identity: 'acct-student', micMuted: true, micPresent: true, camOn: false, isSpeaking: true, quality: 'poor' },
+          { identity: 'acct-stale', micMuted: false, micPresent: true, camOn: true, isSpeaking: false, quality: 'good' },
         ],
         [
           makeUser({ peerId: 'peer-owner', accountId: 'acct-owner', userName: 'Teacher', isHost: true }),
@@ -113,7 +113,7 @@ describe('mapAvPeerStateByPeerId', () => {
         'peer-owner',
       ),
     ).toEqual(new Map([
-      ['peer-student', { micMuted: true, camOn: false, quality: 'poor' }],
+      ['peer-student', { micMuted: true, micPresent: true, camOn: false, quality: 'poor' }],
     ]));
   });
 
@@ -121,7 +121,7 @@ describe('mapAvPeerStateByPeerId', () => {
     expect(
       mapAvPeerStateByPeerId(
         [
-          { identity: 'acct-student', micMuted: false, camOn: true, isSpeaking: false, quality: 'poor' },
+          { identity: 'acct-student', micMuted: false, micPresent: true, camOn: true, isSpeaking: false, quality: 'poor' },
         ],
         [
           makeUser({ peerId: 'peer-owner', accountId: 'acct-owner', userName: 'Teacher', isHost: true }),
@@ -130,7 +130,7 @@ describe('mapAvPeerStateByPeerId', () => {
         'peer-owner',
       ),
     ).toEqual(new Map([
-      ['peer-student', { micMuted: false, camOn: true, quality: 'poor' }],
+      ['peer-student', { micMuted: false, micPresent: true, camOn: true, quality: 'poor' }],
     ]));
   });
 });

@@ -24,14 +24,12 @@ interface PresencePanelProps {
   onKick: (peerId: string, accountId?: string | null) => void;
   onSuspend: (peerId: string, accountId?: string | null) => void;
   onRaiseHand?: (raised: boolean) => void;
-  /** Peer ids whose microphone is currently muted in the voice session. */
-  mutedPeerIds?: ReadonlySet<string>;
   /** Peer ids currently speaking in the voice session. */
   speakingPeerIds?: ReadonlySet<string>;
   /** A/V participant state keyed by whiteboard peer id. */
   avPeerStates?: ReadonlyMap<
     string,
-    { micMuted: boolean; camOn: boolean; quality?: 'excellent' | 'good' | 'poor' | 'lost' | 'unknown' }
+    { micMuted: boolean; micPresent: boolean; camOn: boolean; quality?: 'excellent' | 'good' | 'poor' | 'lost' | 'unknown' }
   >;
   /** Owner-only row controls for muting remote published tracks. */
   onMutePeer?: (peerId: string, kind: 'audio' | 'video') => void;
@@ -108,6 +106,106 @@ function UsersIcon({ className }: { className?: string }) {
   );
 }
 
+function MicIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <line x1="12" y1="19" x2="12" y2="23" />
+      <line x1="8" y1="23" x2="16" y2="23" />
+    </svg>
+  );
+}
+
+function MicOffIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <line x1="1" y1="1" x2="23" y2="23" />
+      <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+      <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
+      <line x1="12" y1="19" x2="12" y2="23" />
+      <line x1="8" y1="23" x2="16" y2="23" />
+    </svg>
+  );
+}
+
+function MicSpeakingIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <line x1="12" y1="19" x2="12" y2="23" />
+      <line x1="8" y1="23" x2="16" y2="23" />
+      <path d="M21 12c0 1.66-.67 3.26-1.88 4.44" />
+      <path d="M3 12c0-1.66.67-3.26 1.88-4.44" />
+    </svg>
+  );
+}
+
+function CameraIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+      <circle cx="12" cy="13" r="4" />
+    </svg>
+  );
+}
+
+function CameraOffIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <line x1="1" y1="1" x2="23" y2="23" />
+      <path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+      <circle cx="12" cy="13" r="4" />
+    </svg>
+  );
+}
+
 function UserAvatar({ user, ring }: { user: WhiteboardUser; ring?: boolean }) {
   return (
     <div className="flex h-6 w-6 flex-shrink-0 items-center justify-center">
@@ -139,7 +237,6 @@ export default function PresencePanel({
   onKick,
   onSuspend,
   onRaiseHand,
-  mutedPeerIds,
   speakingPeerIds,
   avPeerStates,
   onMutePeer,
@@ -562,21 +659,50 @@ export default function PresencePanel({
                           Hand raised
                         </span>
                       )}
-                      {mutedPeerIds?.has(user.peerId) && (
-                        <span
-                          data-testid={`whiteboard-user-muted-${user.peerId}`}
-                          className="text-[0.625rem] font-semibold uppercase tracking-wide text-amber-600"
-                        >
-                          Muted
-                        </span>
-                      )}
                       {avState && (
-                        <span
+                        <div
                           data-testid={`whiteboard-user-av-${user.peerId}`}
-                          className="text-[0.625rem] font-semibold uppercase tracking-wide text-slate-500"
+                          className="flex items-center gap-1.5"
                         >
-                          {avState.micMuted ? 'Mic off' : 'Mic on'} · {avState.camOn ? 'Camera on' : 'Camera off'}
-                        </span>
+                          {(() => {
+                            // Precedence: no mic > speaking > muted > plain live
+                            if (!avState.micPresent) {
+                              return (
+                                <div role="img" aria-label={`${user.userName} has no microphone`}>
+                                  <MicOffIcon className="h-3.5 w-3.5 text-slate-500" />
+                                </div>
+                              );
+                            }
+                            if (isSpeaking) {
+                              return (
+                                <div role="img" aria-label={`${user.userName} is talking`}>
+                                  <MicSpeakingIcon className="h-3.5 w-3.5 text-slate-500" />
+                                </div>
+                              );
+                            }
+                            if (avState.micMuted) {
+                              return (
+                                <div role="img" aria-label={`${user.userName} microphone is muted`}>
+                                  <MicOffIcon className="h-3.5 w-3.5 text-slate-500" />
+                                </div>
+                              );
+                            }
+                            return (
+                              <div role="img" aria-label={`${user.userName} microphone is live`}>
+                                <MicIcon className="h-3.5 w-3.5 text-slate-500" />
+                              </div>
+                            );
+                          })()}
+                          {avState.camOn ? (
+                            <div role="img" aria-label={`${user.userName} camera is on`}>
+                              <CameraIcon className="h-3.5 w-3.5 text-slate-500" />
+                            </div>
+                          ) : (
+                            <div role="img" aria-label={`${user.userName} camera is off`}>
+                              <CameraOffIcon className="h-3.5 w-3.5 text-slate-500" />
+                            </div>
+                          )}
+                        </div>
                       )}
                       {showQualityIssue && (
                         <span
