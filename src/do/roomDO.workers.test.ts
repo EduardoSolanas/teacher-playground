@@ -12,6 +12,7 @@ import { ROOM_SETTINGS_KEYS } from '../lib/whiteboard/requestSchemas';
 import { MAX_BODY_BYTES } from '../lib/worker/requestGuard';
 import { issueGuestPin } from '../lib/whiteboard/guestPin';
 import { decodePresenceMessage } from '../lib/whiteboard/presenceMessage';
+import { ACTIVE_WINDOW_MS } from '../lib/whiteboard/presence';
 import { encodeUpdateFrame } from '../lib/whiteboard/serverSync';
 import {
   accessFetch,
@@ -230,6 +231,31 @@ describe('Worker routing into RoomDO', () => {
     await createRoom('present');
     const res = await authenticatedFetch('/api/whiteboard/room/present/presence', session);
     expect(res.status).toBe(200);
+  });
+
+  it('deletes rows outside the active window on a presence request', async () => {
+    const roomId = 'presence-sweep';
+    await createRoom(roomId);
+    await joinPresence(session, roomId, 'sweep-peer');
+
+    const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+    // Age the row past the window the readers already filter on. Nothing else
+    // deletes it, so if the request does not sweep, it stays for the life of
+    // the room.
+    await runInDurableObject(stub, (instance: RoomDO) => {
+      instance.db.prepare(
+        `UPDATE room_presence SET last_seen = ? WHERE room_id = ?`,
+      ).run(Date.now() - ACTIVE_WINDOW_MS - 60_000, roomId);
+    });
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, session)).status).toBe(200);
+
+    const remaining = await runInDurableObject(stub, (instance: RoomDO) => (
+      instance.db.prepare(
+        `SELECT COUNT(*) AS count FROM room_presence WHERE room_id = ?`,
+      ).get(roomId) as { count: number }
+    ));
+    expect(remaining.count).toBe(0);
   });
 
   it('rejects unknown paths', async () => {

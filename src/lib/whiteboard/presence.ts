@@ -18,7 +18,20 @@ export function activePeerIds(db: RoomDatabase, roomId: string): Set<string> {
   return new Set(rows.map((row) => row.peer_id));
 }
 
-export function sweepExpiredPresence(db: RoomDatabase, roomId: string, cutoff: number): void {
+/**
+ * Deletes the rows every reader already filters out.
+ *
+ * This used to run inside `readActiveUsers`, which meant three sweeps per
+ * heartbeat per peer. Pulling it out made the reads cheaper and left nothing
+ * calling it: rosters stayed correct — every reader compares `last_seen`
+ * against the same window — while the table grew for the life of the room.
+ * A room's own presence requests are what drive it now, once each.
+ */
+export function sweepExpiredPresence(
+  db: RoomDatabase,
+  roomId: string,
+  cutoff: number = Date.now() - ACTIVE_WINDOW_MS,
+): void {
   /*
    * Sweep this room, not every room.
    *

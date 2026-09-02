@@ -39,7 +39,7 @@ import {
 } from '../lib/whiteboard/handlers/presence';
 import { activePeerIds } from '../lib/whiteboard/presence';
 import { orphanKeys, referencedFileIds, type StoredFile } from '../lib/whiteboard/orphanFiles';
-import { presenceSignature } from '../lib/whiteboard/presence';
+import { presenceSignature, sweepExpiredPresence } from '../lib/whiteboard/presence';
 import { internalErrorResponse, redactForLog } from '../lib/http/safeError';
 import { encodePresenceMessage } from '../lib/whiteboard/presenceMessage';
 import { getFrameMessageType, isRelayableFrame } from '../lib/whiteboard/relayPolicy';
@@ -137,6 +137,12 @@ function logBoardSnapshot(entry: {
 
 /**
  * Structured log when a rate-limited signaling frame is shed.
+ *
+ * This is the line that shows §1's budget being hit in production. It is a
+ * different event from `internal_error`, so a tail filtered to that one will
+ * not show it:
+ *
+ *   npx wrangler tail teacher-playground --format json --search frame_shed
  */
 function logFrameShed(entry: {
   roomId: string;
@@ -249,6 +255,8 @@ export class RoomDO extends DurableObject {
     max: SIGNALING_MAX_MESSAGES_PER_WINDOW,
   });
   private readonly ceilingBreachesPerAccount = new Map<string, { count: number; windowStart: number }>();
+  /** Last presence signature broadcast for a room; see the presence route. */
+  private readonly lastPresenceSignature = new Map<string, string>();
 
 
   /** Injectable hook; defaults to {@link removeLiveKitParticipant}. */
@@ -399,17 +407,19 @@ export class RoomDO extends DurableObject {
         ? stringField(body, 'peerId')
         : null;
 
+      // One sweep per presence request, before anything reads the roster.
+      // The reads themselves no longer sweep, so this is the only thing that
+      // deletes a departed peer's row.
+      if (section === 'presence') {
+        sweepExpiredPresence(this.db, roomId);
+      }
+
       // Handlers read the body themselves, so hand them one that still has it.
       const forwarded = new Request(request.url, {
         method,
         headers: request.headers,
         body: bodyText,
       });
-      // Taken before the mutation so the broadcast below can tell a real change
-      // from a heartbeat that only moved a timestamp.
-      const signatureBefore = section === 'presence' && method === 'POST'
-        ? presenceSignature(this.db, roomId)
-        : null;
       const response = await this.route(forwarded, url, roomId);
 
       if (response.ok && accountId && joiningPeerId) {
@@ -438,8 +448,17 @@ export class RoomDO extends DurableObject {
          * each peer rebuild a payload for every other peer several times a
          * second — more work for the room than the poll it replaces, and more
          * frames competing with the strokes.
+         *
+         * Compared against the last signature this object broadcast rather than
+         * against one taken again before the mutation: the before/after pair
+         * read the whole roster twice on every heartbeat from every peer, which
+         * was the most expensive thing this route did. A signature this object
+         * has never seen — first request, or a restart — counts as changed, and
+         * one extra broadcast is the whole cost of being wrong.
          */
-        if (presenceSignature(this.db, roomId) !== signatureBefore) {
+        const signature = presenceSignature(this.db, roomId);
+        if (this.lastPresenceSignature.get(roomId) !== signature) {
+          this.lastPresenceSignature.set(roomId, signature);
           this.broadcastPresence(roomId);
         }
       }
@@ -1230,22 +1249,43 @@ export class RoomDO extends DurableObject {
 
   /** Broadcasts presence updates to all connected sockets in this room. */
   private broadcastPresence(roomId: string): void {
+    /*
+     * Two different failures used to wear one catch.
+     *
+     * A socket that has gone away throws on read or on send, and that is
+     * ordinary -- every room does it, all day, and logging it would bury the
+     * log. A payload that cannot be built is a database fault that costs the
+     * whole room its roster, and it was invisible. Only the second is worth
+     * saying, and it is said once, not once per recipient.
+     */
     for (const socket of this.ctx.getWebSockets()) {
+      let attachment: SocketIdentity | null = null;
       try {
-        // Reading the attachment can throw on a socket that is already gone,
-        // and one of those must not end the loop for everybody else.
-        const attachment = socket.deserializeAttachment() as SocketIdentity | null;
-        if (!attachment?.roomId || attachment.roomId !== roomId) continue;
+        attachment = socket.deserializeAttachment() as SocketIdentity | null;
+      } catch {
+        // Already gone: nothing to send to, and nothing worth reporting.
+        continue;
+      }
+      if (!attachment?.roomId || attachment.roomId !== roomId) continue;
 
-        /*
-         * Redacted per recipient, never once for the room.
-         *
-         * The payload carries the waiting queue and account ids only for an
-         * owner. Building it once and fanning it out would put the names of
-         * children waiting to be let in onto every student's connection.
-         */
-        const payload = presencePayloadForAccount(this.db, roomId, attachment.accountId);
-        const frame = encodePresenceMessage(payload);
+      /*
+       * Redacted per recipient, never once for the room.
+       *
+       * The payload carries the waiting queue and account ids only for an
+       * owner. Building it once and fanning it out would put the names of
+       * children waiting to be let in onto every student's connection.
+       */
+      let frame: Uint8Array;
+      try {
+        frame = encodePresenceMessage(
+          presencePayloadForAccount(this.db, roomId, attachment.accountId),
+        );
+      } catch (err) {
+        logInternalRoomError('broadcastPresence', err, roomId);
+        return;
+      }
+
+      try {
         socket.send(frame);
       } catch {
         // A presence update is not worth dropping a lesson's connection over:
@@ -1680,20 +1720,9 @@ export class RoomDO extends DurableObject {
         messagesInWindow: rateCheckResult.messagesInWindow,
         frameType: messageType,
       });
-      if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
-        const role = getGrantRole(this.db, attachment.roomId, attachment.accountId);
-        if (canWriteBoard(role)) {
-          const bytes = raw instanceof ArrayBuffer
-            ? new Uint8Array(raw)
-            : new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
-          try {
-            const doc = await this.getRoomDoc(attachment.roomId);
-            handleSyncFrame(doc, bytes, ws);
-          } catch {
-            // Apply errors ignored
-          }
-        }
-      }
+      // Nothing to apply: only awareness reaches this branch, and awareness is
+      // the one frame the server holds no state for. A sync frame is never
+      // shed, precisely because losing one is permanent.
       return;
     }
 
@@ -1863,6 +1892,12 @@ export class RoomDO extends DurableObject {
         this.broadcastFollow({ active: false }, ws);
       }
       if (attachment?.roomId) this.sweepDepartedCursors(attachment.roomId);
+      // The breach counter outlives nothing: an account with no socket left
+      // cannot breach again, and the entry would otherwise sit in the map for
+      // as long as the object lives.
+      if (attachment?.accountId && !this.hasOpenSocketForAccount(attachment.accountId, ws)) {
+        this.ceilingBreachesPerAccount.delete(attachment.accountId);
+      }
     } catch {
       // A socket with no attachment leaves nothing to sweep by.
     }
