@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as encoding from 'lib0/encoding';
-import { isRelayableFrame } from './relayPolicy';
+import { isRelayableFrame, getFrameMessageType } from './relayPolicy';
 import { PRESENCE_MESSAGE_TYPE } from './presenceMessage';
 import { FOLLOW_MESSAGE_TYPE } from './followMessage';
 import { MESSAGE_SYNC } from './serverSync';
@@ -66,3 +66,34 @@ describe('isRelayableFrame', () => {
     expect(isRelayableFrame(bytes)).toBe(false);
   });
 });
+
+describe('getFrameMessageType', () => {
+  it('reads message type 0 for sync frame', () => {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MESSAGE_SYNC);
+    encoding.writeVarString(encoder, 'sync');
+    expect(getFrameMessageType(encoding.toUint8Array(encoder))).toBe(0);
+  });
+
+  it('reads message type 1 for awareness frame', () => {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, 1);
+    encoding.writeVarString(encoder, 'awareness');
+    expect(getFrameMessageType(encoding.toUint8Array(encoder))).toBe(1);
+  });
+
+  it('reads message type 101 for follow frame', () => {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, FOLLOW_MESSAGE_TYPE);
+    expect(getFrameMessageType(encoding.toUint8Array(encoder))).toBe(101);
+  });
+
+  it('returns null for empty Uint8Array', () => {
+    expect(getFrameMessageType(new Uint8Array())).toBeNull();
+  });
+
+  it('returns null for truncated/malformed buffer', () => {
+    expect(getFrameMessageType(new Uint8Array([255]))).toBeNull();
+  });
+});
+

@@ -152,6 +152,11 @@ export function createCollaboration(
     }));
   });
 
+  provider.on('connection-close', (event: unknown) => {
+    changeCallbacks.forEach((cb) => cb('connection-close', event));
+  });
+
+
   elementsArray.observeDeep(() => {
     const elements = getElementsFromArray(elementsArray);
     changeCallbacks.forEach((cb) => cb('elements', elements));

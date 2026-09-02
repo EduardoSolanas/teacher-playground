@@ -5,8 +5,9 @@ import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
-import { getElementsFromArray, replaceSharedElements } from '../lib/whiteboard/yjsDoc';
+import { addElementToArray, getElementsFromArray, replaceSharedElements } from '../lib/whiteboard/yjsDoc';
 import { getIdentityObject, type IdentityDO } from './IdentityDO';
+
 import { RoomDO } from './RoomDO';
 import { ROOM_SETTINGS_KEYS } from '../lib/whiteboard/requestSchemas';
 import { MAX_BODY_BYTES } from '../lib/worker/requestGuard';
@@ -78,6 +79,28 @@ async function joinEditorPeer(editor: LocalAuthSession, roomId: string): Promise
   expect(joined.status).toBe(200);
   return joined.peerId;
 }
+
+async function grantEditor(
+  owner: LocalAuthSession,
+  editor: LocalAuthSession,
+  roomId: string,
+) {
+  expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, editor, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ userName: 'Editor' }),
+  })).status).toBe(201);
+  expect((await authenticatedFetch(
+    `/api/whiteboard/room/${roomId}/requests/${editor.accountId}`,
+    owner,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'approve', role: 'peer' }),
+    },
+  )).status).toBe(200);
+}
+
 
 async function writeRoom(
   roomId: string,
@@ -472,4 +495,150 @@ describe('server-side y-websocket sync', () => {
     joiner.close();
   });
 
+  it('relays and persists all 100 sync updates pushed in a single rate window', async () => {
+    const roomId = 'burst-sync-room';
+    const editor = await bootstrapLocalSession('burst-sync-editor');
+    expect((await createRoom(roomId)).status).toBe(200);
+    await grantEditor(session, editor, roomId);
+
+    const sender = await openSocketAs(session, roomId);
+    const receiver = await openSocketAs(editor, roomId);
+
+    const receivedUpdates: ArrayBuffer[] = [];
+    receiver.addEventListener('message', (event: MessageEvent) => {
+      if (event.data instanceof ArrayBuffer) {
+        receivedUpdates.push(event.data);
+      }
+    });
+
+    const clientDoc = new Y.Doc();
+    const elementsArr = clientDoc.getArray<Record<string, unknown>>('elements');
+
+    clientDoc.on('update', (update: Uint8Array) => {
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, 0);
+      syncProtocol.writeUpdate(encoder, update);
+      sender.send(encoding.toUint8Array(encoder));
+    });
+
+    // Push 100 distinct sync frames through one socket inside a single rate window
+    for (let i = 0; i < 100; i++) {
+      addElementToArray(elementsArr as any, {
+        id: `burst-elem-${i}`,
+        type: 'rectangle',
+        x: i * 10,
+        y: i * 10,
+      } as any);
+    }
+
+    // Assert (b): second peer socket received all 100 updates
+    await expect.poll(
+      () => receivedUpdates.length,
+      { timeout: 5000, interval: 50 },
+    ).toBe(100);
+
+    const receiverDoc = new Y.Doc();
+    for (const frame of receivedUpdates) {
+      applyFrame(receiverDoc, frame);
+    }
+    const receiverElements = getElementsFromArray(receiverDoc.getArray('elements'));
+    expect(receiverElements).toHaveLength(100);
+
+    // Assert (a): server's Y.Doc contains every update
+    await expect.poll(
+      async () => {
+        const stored = await storedBoard(roomId);
+        return stored?.length;
+      },
+      { timeout: 5000, interval: 100 },
+    ).toBe(100);
+
+    sender.close();
+    receiver.close();
+  });
+
+  it('does not close socket on awareness flood and preserves interleaved sync updates', async () => {
+    const roomId = 'awareness-flood-sync-room';
+    const editor = await bootstrapLocalSession('awareness-flood-editor');
+    expect((await createRoom(roomId)).status).toBe(200);
+    await grantEditor(session, editor, roomId);
+
+    const sender = await openSocketAs(session, roomId);
+    const receiver = await openSocketAs(editor, roomId);
+
+    const receivedUpdates: ArrayBuffer[] = [];
+    receiver.addEventListener('message', (event: MessageEvent) => {
+      if (event.data instanceof ArrayBuffer) {
+        receivedUpdates.push(event.data);
+      }
+    });
+
+    function makeAwarenessFrame(i: number): Uint8Array {
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, 1);
+      encoding.writeVarString(encoder, JSON.stringify({ x: i, y: i }));
+      return encoding.toUint8Array(encoder);
+    }
+
+    function makeSyncFrame(elem: BoardElement): Uint8Array {
+      const doc = new Y.Doc();
+      const arr = doc.getArray<Record<string, unknown>>('elements');
+      addElementToArray(arr as any, elem as any);
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, 0);
+      syncProtocol.writeUpdate(encoder, Y.encodeStateAsUpdate(doc));
+      return encoding.toUint8Array(encoder);
+    }
+
+
+    const expectedSyncIds = ['sync-1', 'sync-2', 'sync-3', 'sync-4', 'sync-5'];
+
+    // Send 150 awareness frames interleaved with 5 sync frames (total 155 messages > 120 budget)
+    for (let i = 0; i < 150; i++) {
+      sender.send(makeAwarenessFrame(i));
+      if (i % 30 === 0) {
+        const syncIndex = i / 30;
+        sender.send(makeSyncFrame({
+          id: expectedSyncIds[syncIndex],
+          type: 'rectangle',
+          x: syncIndex * 10,
+          y: syncIndex * 20,
+        }));
+      }
+    }
+
+    // Socket must remain open despite flood
+    expect(sender.readyState).toBe(WebSocket.OPEN);
+
+    // Receiver must receive all 5 sync updates
+    const receiverDoc = new Y.Doc();
+    await expect.poll(
+      () => {
+        for (const frame of receivedUpdates) {
+          try {
+            const decoder = decoding.createDecoder(new Uint8Array(frame));
+            if (decoding.readVarUint(decoder) === 0) {
+              syncProtocol.readSyncMessage(decoder, encoding.createEncoder(), receiverDoc, undefined);
+            }
+          } catch {}
+        }
+        const elements = getElementsFromArray(receiverDoc.getArray('elements'));
+        return elements.map((e: any) => e.id);
+      },
+      { timeout: 5000, interval: 50 },
+    ).toEqual(expect.arrayContaining(expectedSyncIds));
+
+    // Server Y.Doc must have stored all 5 sync elements
+    await expect.poll(
+      async () => {
+        const stored = await storedBoard(roomId);
+        return stored?.map((e: any) => e.id);
+      },
+      { timeout: 5000, interval: 100 },
+    ).toEqual(expect.arrayContaining(expectedSyncIds));
+
+    sender.close();
+    receiver.close();
+  });
 });
+

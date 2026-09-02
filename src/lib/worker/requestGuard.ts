@@ -202,8 +202,19 @@ export const SIGNALING_MAX_SOCKETS_PER_ACCOUNT = 4;
 /** Max concurrent signaling sockets per room object. */
 export const SIGNALING_MAX_SOCKETS_PER_ROOM = 32;
 
-/** Max signaling messages per account within {@link SIGNALING_RATE_WINDOW_MS}. */
-export const SIGNALING_MAX_MESSAGES_PER_WINDOW = 60;
+/**
+ * Max signaling messages per account within {@link SIGNALING_RATE_WINDOW_MS}.
+ *
+ * Steady-state cost of one drawing host:
+ * - Stroke commits: ~20/s (strokeCommitIntervalMs)
+ * - Cursor publishes: ~20/s (CURSOR_PUBLISH_INTERVAL_MS = 50ms)
+ * - Sync replies, follow frames, paste / undo / image bursts: spiky bursts
+ *
+ * ~40/s steady rate against a 60/s cap left only 20 frames of headroom. 120 messages
+ * per 1000ms window provides safe headroom for drawing hosts and multi-peer sync.
+ */
+export const SIGNALING_MAX_MESSAGES_PER_WINDOW = 120;
+
 
 /** Sliding window for per-account signaling message rate limits. */
 export const SIGNALING_RATE_WINDOW_MS = 1000;

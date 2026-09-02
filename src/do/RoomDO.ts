@@ -41,7 +41,7 @@ import { activePeerIds } from '../lib/whiteboard/presence';
 import { orphanKeys, referencedFileIds, type StoredFile } from '../lib/whiteboard/orphanFiles';
 import { presenceSignature } from '../lib/whiteboard/presence';
 import { encodePresenceMessage } from '../lib/whiteboard/presenceMessage';
-import { isRelayableFrame } from '../lib/whiteboard/relayPolicy';
+import { getFrameMessageType, isRelayableFrame } from '../lib/whiteboard/relayPolicy';
 import {
   handleWaitingGet,
   handleWaitingPost,
@@ -70,7 +70,7 @@ import {
   SIGNALING_RATE_WINDOW_MS,
 } from '../lib/worker/requestGuard';
 import { SIGNALING_ALLOWED_TOPIC } from '../lib/worker/signalingPolicy';
-import { decideSignalingAction } from '../lib/worker/signalingBudget';
+import { decideSignalingAction, SIGNALING_ABUSE_CEILING } from '../lib/worker/signalingBudget';
 import { createRateLimiter } from '../lib/http/rateLimit';
 import { logSocketClose } from '../lib/security/authEvents';
 import * as Y from 'yjs';
@@ -133,6 +133,23 @@ function logBoardSnapshot(entry: {
     // Logging must never break a flush.
   }
 }
+
+/**
+ * Structured log when a rate-limited signaling frame is shed.
+ */
+function logFrameShed(entry: {
+  roomId: string;
+  accountId: string;
+  messagesInWindow: number;
+  frameType?: number | null;
+}): void {
+  try {
+    console.warn(JSON.stringify({ event: 'frame_shed', ...entry }));
+  } catch {
+    // Logging must never break messaging.
+  }
+}
+
 
 function forbidden(message = 'Forbidden'): Response {
   return Response.json(
@@ -207,11 +224,9 @@ export class RoomDO extends DurableObject {
   private readonly signalingMessageRate = createRateLimiter({
     windowMs: SIGNALING_RATE_WINDOW_MS,
     max: SIGNALING_MAX_MESSAGES_PER_WINDOW,
-    // Refused frames still count here: telling a burst of drawing apart from a
-    // client flooding the room needs to know what it sent, not what got
-    // through. Only this limiter opts in — see createRateLimiter.
-    countRejected: true,
   });
+  private readonly ceilingBreachesPerAccount = new Map<string, { count: number; windowStart: number }>();
+
 
   /** Injectable hook; defaults to {@link removeLiveKitParticipant}. */
   evictLiveKitParticipant: (
@@ -1590,11 +1605,67 @@ export class RoomDO extends DurableObject {
       return;
     }
 
+    const messageType = raw instanceof ArrayBuffer
+      ? getFrameMessageType(new Uint8Array(raw))
+      : ArrayBuffer.isView(raw)
+        ? getFrameMessageType(new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength))
+        : null;
+
     const rateCheckResult = this.signalingMessageRate.take(attachment.accountId);
-    const action = decideSignalingAction({ messagesInWindow: rateCheckResult.messagesInWindow });
+    const currentWindow = Math.floor(Date.now() / SIGNALING_RATE_WINDOW_MS);
+    let consecutiveCeilingBreaches = 0;
+
+    if (rateCheckResult.messagesInWindow >= SIGNALING_ABUSE_CEILING) {
+      const prev = this.ceilingBreachesPerAccount.get(attachment.accountId);
+      if (prev && prev.windowStart === currentWindow) {
+        consecutiveCeilingBreaches = prev.count;
+      } else if (prev && prev.windowStart === currentWindow - 1 && prev.count > 0) {
+        consecutiveCeilingBreaches = prev.count + 1;
+        this.ceilingBreachesPerAccount.set(attachment.accountId, {
+          count: consecutiveCeilingBreaches,
+          windowStart: currentWindow,
+        });
+      } else {
+        consecutiveCeilingBreaches = 1;
+        this.ceilingBreachesPerAccount.set(attachment.accountId, {
+          count: 1,
+          windowStart: currentWindow,
+        });
+      }
+    } else {
+      const prev = this.ceilingBreachesPerAccount.get(attachment.accountId);
+      if (prev && prev.windowStart < currentWindow - 1) {
+        this.ceilingBreachesPerAccount.delete(attachment.accountId);
+      }
+    }
+
+    const action = decideSignalingAction({
+      messagesInWindow: rateCheckResult.messagesInWindow,
+      messageType,
+      consecutiveCeilingBreaches,
+    });
 
     if (action === 'drop') {
-      // Drop the frame silently; keep the socket open
+      logFrameShed({
+        roomId: attachment.roomId,
+        accountId: attachment.accountId,
+        messagesInWindow: rateCheckResult.messagesInWindow,
+        frameType: messageType,
+      });
+      if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
+        const role = getGrantRole(this.db, attachment.roomId, attachment.accountId);
+        if (canWriteBoard(role)) {
+          const bytes = raw instanceof ArrayBuffer
+            ? new Uint8Array(raw)
+            : new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+          try {
+            const doc = await this.getRoomDoc(attachment.roomId);
+            handleSyncFrame(doc, bytes, ws);
+          } catch {
+            // Apply errors ignored
+          }
+        }
+      }
       return;
     }
 
@@ -1615,6 +1686,7 @@ export class RoomDO extends DurableObject {
       }
       return;
     }
+
 
     // action === 'relay'; continue with normal processing
 

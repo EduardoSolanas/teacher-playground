@@ -318,6 +318,12 @@ export function useCollaboration(
     }
 
     collaboration.onChange((type, data) => {
+      if (type === 'connection-close') {
+        const code = (data as CloseEvent | { code?: number } | undefined)?.code;
+        if (code === 1008 || code === 1009) {
+          setConnectionLost(true);
+        }
+      }
       if (type === 'status') {
         const nextStatus = String(data?.status || 'connecting');
         setStatus(nextStatus);
@@ -337,6 +343,7 @@ export function useCollaboration(
         setUsers((prev) => mergeCursorPresence(prev, all));
       }
     });
+
 
     return () => {
       destroyCollaboration();

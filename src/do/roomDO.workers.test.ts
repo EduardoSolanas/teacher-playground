@@ -793,7 +793,14 @@ describe('signaling message rate limit', () => {
     });
   }
 
-  it('closes with 1008 when a granted owner far exceeds the abuse ceiling', async () => {
+  function awarenessFrame(peerId: string): Uint8Array {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, 1);
+    encoding.writeVarString(encoder, JSON.stringify({ peerId, x: 10, y: 20 }));
+    return encoding.toUint8Array(encoder);
+  }
+
+  it('closes with 1008 when a granted owner exceeds the abuse ceiling in consecutive windows', async () => {
     const owner = await bootstrapLocalSession('rate-limit-owner');
     const roomId = 'rate-limit-room';
 
@@ -802,12 +809,45 @@ describe('signaling message rate limit', () => {
     const ws = await connectGranted(owner, roomId);
     const closed = closeSignal(ws);
 
-    // Send 180+ messages to hit the abuse ceiling (3x * 60)
-    for (let i = 0; i < 181; i += 1) {
+    // Send 361 messages in window 1 (exceeds ceiling of 360, breach 1)
+    for (let i = 0; i < 361; i += 1) {
+      ws.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
+    }
+
+    // Wait for window 1 to pass
+    await new Promise((r) => setTimeout(r, 1100));
+
+    // Send 361 messages in window 2 (consecutive ceiling breach 2 -> close)
+    for (let i = 0; i < 361; i += 1) {
       ws.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
     }
 
     expect(await closed).toBe(1008);
+  });
+
+  it('does not close socket on a single window over the abuse ceiling', async () => {
+    const owner = await bootstrapLocalSession('single-ceiling-owner');
+    const roomId = 'single-ceiling-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const ws = await connectGranted(owner, roomId);
+    const didNotClose = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(true), 500);
+      ws.addEventListener('close', () => {
+        clearTimeout(timer);
+        resolve(false);
+      }, { once: true });
+    });
+
+    // Send 361 messages in a single window
+    for (let i = 0; i < 361; i += 1) {
+      ws.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
+    }
+
+    expect(await didNotClose).toBe(true);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
   });
 
   it('still relays a peer under the rate limit while the abuser is closed', async () => {
@@ -822,8 +862,13 @@ describe('signaling message rate limit', () => {
     const survivor = await connectGranted(editor, roomId);
 
     const abuserClosed = closeSignal(abuser);
-    // Send 181+ messages to hit the abuse ceiling (3x * 60) and close
-    for (let i = 0; i < 181; i += 1) {
+    // Send 361 messages in window 1
+    for (let i = 0; i < 361; i += 1) {
+      abuser.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
+    }
+    await new Promise((r) => setTimeout(r, 1100));
+    // Send 361 messages in window 2 -> closes
+    for (let i = 0; i < 361; i += 1) {
       abuser.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
     }
     expect(await abuserClosed).toBe(1008);
@@ -849,8 +894,8 @@ describe('signaling message rate limit', () => {
       }, { once: true });
     });
 
-    // Send 61 messages to exceed the budget (60) but stay well under ceiling (180)
-    for (let i = 0; i < 61; i += 1) {
+    // Send 121 messages to exceed the budget (120) but stay well under ceiling (360)
+    for (let i = 0; i < 121; i += 1) {
       ws.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
     }
 
@@ -859,24 +904,7 @@ describe('signaling message rate limit', () => {
     ws.close();
   });
 
-  it('closes with 1008 when a peer far exceeds the abuse ceiling', async () => {
-    const owner = await bootstrapLocalSession('abuse-ceiling-owner');
-    const roomId = 'abuse-ceiling-room';
-
-    expect((await writeRoom(roomId, owner)).status).toBe(200);
-
-    const ws = await connectGranted(owner, roomId);
-    const closed = closeSignal(ws);
-
-    // Send 180+ messages to hit the abuse ceiling (3x * 60)
-    for (let i = 0; i < 181; i += 1) {
-      ws.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
-    }
-
-    expect(await closed).toBe(1008);
-  });
-
-  it('drops frames from over-budget peer that do not reach other peers', async () => {
+  it('drops awareness frames from over-budget peer that do not reach other peers', async () => {
     const owner = await bootstrapLocalSession('shed-frames-owner');
     const editor = await bootstrapLocalSession('shed-frames-editor');
     const roomId = 'shed-frames-room';
@@ -887,16 +915,16 @@ describe('signaling message rate limit', () => {
     const sender = await connectGranted(owner, roomId);
     const receiver = await connectGranted(editor, roomId);
 
-    // Exceed the budget by 1
-    for (let i = 0; i < 61; i += 1) {
+    // Exceed the budget (120) by 1
+    for (let i = 0; i < 121; i += 1) {
       sender.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
     }
 
-    // A publish from sender at this point should be dropped (not relayed to receiver)
+    // An awareness frame from sender at this point should be dropped (not relayed to receiver)
     let received = false;
     receiver.addEventListener('message', () => { received = true; }, { once: true });
 
-    sender.send(JSON.stringify({ type: 'publish', topic: 'room', data: 'dropped' }));
+    sender.send(awarenessFrame('shed-peer').buffer as ArrayBuffer);
     await new Promise((r) => setTimeout(r, 200));
     expect(received).toBe(false);
 
@@ -906,7 +934,7 @@ describe('signaling message rate limit', () => {
     receiver.close();
   });
 
-  it('allows a frame through again after the rate window passes', async () => {
+  it('allows an awareness frame through again after the rate window passes', async () => {
     const owner = await bootstrapLocalSession('window-pass-owner');
     const editor = await bootstrapLocalSession('window-pass-editor');
     const roomId = 'window-pass-room';
@@ -918,28 +946,32 @@ describe('signaling message rate limit', () => {
     const receiver = await connectGranted(editor, roomId);
 
     // Exceed the budget by 1
-    for (let i = 0; i < 61; i += 1) {
+    for (let i = 0; i < 121; i += 1) {
       sender.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
     }
 
-    // A publish is dropped due to being over budget
+    // An awareness frame is dropped due to being over budget
     let received = false;
     receiver.addEventListener('message', () => { received = true; }, { once: true });
-    sender.send(JSON.stringify({ type: 'publish', topic: 'room', data: 'dropped' }));
+    sender.send(awarenessFrame('shed-peer').buffer as ArrayBuffer);
     await new Promise((r) => setTimeout(r, 200));
     expect(received).toBe(false);
 
     // Wait for the rate window to pass (SIGNALING_RATE_WINDOW_MS = 1000ms)
     await new Promise((r) => setTimeout(r, 1100));
 
-    // Now a new publish should get through (window reset)
-    const received2 = nextMessage(receiver);
-    sender.send(JSON.stringify({ type: 'publish', topic: 'room', data: 'ok' }));
-    expect(JSON.parse(await received2)).toMatchObject({ type: 'publish', topic: 'room', data: 'ok' });
+    // Now a new awareness frame should get through (window reset)
+    let receivedFrame: ArrayBuffer | null = null;
+    receiver.addEventListener('message', (event: MessageEvent) => {
+      if (event.data instanceof ArrayBuffer) receivedFrame = event.data;
+    }, { once: true });
+    sender.send(awarenessFrame('shed-peer').buffer as ArrayBuffer);
+    await expect.poll(() => receivedFrame != null, { timeout: 3000, interval: 50 }).toBe(true);
 
     sender.close();
     receiver.close();
   });
+
 });
 
 describe('signaling message size limit', () => {

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const statusListeners: Array<(event: { status?: string; connected?: boolean }) => void> = [];
 const syncedListeners: Array<(event: boolean | { synced: boolean }) => void> = [];
+const closeListeners: Array<(event: unknown) => void> = [];
 
 vi.mock('./yWebsocketProvider', () => ({
   createYWebsocketProvider: (doc: Y.Doc) => {
@@ -18,6 +19,7 @@ vi.mock('./yWebsocketProvider', () => ({
       on: (eventName: string, callback: (...args: unknown[]) => void) => {
         if (eventName === 'status') statusListeners.push(callback as (event: { status?: string; connected?: boolean }) => void);
         if (eventName === 'synced') syncedListeners.push(callback as (event: boolean | { synced: boolean }) => void);
+        if (eventName === 'connection-close') closeListeners.push(callback);
       },
     };
     return { provider, status: 'connecting', synced: false };
@@ -30,6 +32,7 @@ import { createCollaboration } from './collaboration';
 afterEach(() => {
   statusListeners.length = 0;
   syncedListeners.length = 0;
+  closeListeners.length = 0;
   vi.clearAllMocks();
 });
 
@@ -63,7 +66,21 @@ describe('createCollaboration y-websocket status', () => {
     expect(statuses.at(-1)).toMatchObject({ status: 'synced', connected: true, synced: true });
     collab.destroy();
   });
+
+  it('forwards y-websocket connection-close events with code', () => {
+    const collab = createCollaboration('close-room');
+    const closeEvents: unknown[] = [];
+    collab.onChange((type, data) => {
+      if (type === 'connection-close') closeEvents.push(data);
+    });
+
+    closeListeners.forEach((listener) => listener({ code: 1008 }));
+
+    expect(closeEvents).toEqual([{ code: 1008 }]);
+    collab.destroy();
+  });
 });
+
 
 describe('createCollaboration omitted peerId (SEC-006)', () => {
   afterEach(() => {
