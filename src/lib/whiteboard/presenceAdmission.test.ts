@@ -14,4 +14,11 @@ describe('admissionFromPresenceStatus', () => {
   it('treats 2xx as a successful presence write', () => {
     expect(admissionFromPresenceStatus(200)).toBe('ok');
   });
+
+  it('treats 5xx server errors as error', () => {
+    expect(admissionFromPresenceStatus(500)).toBe('error');
+    expect(admissionFromPresenceStatus(502)).toBe('error');
+    expect(admissionFromPresenceStatus(503)).toBe('error');
+  });
 });
+

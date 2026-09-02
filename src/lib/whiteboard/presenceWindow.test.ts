@@ -65,7 +65,7 @@ describe('the presence active window', () => {
   it('sweeps the stale row away rather than reading past it for ever', () => {
     seedPeer('gone', Date.now() - (ACTIVE_WINDOW_MS + MARGIN_MS));
     expect(rowCount()).toBe(1);
-    readActiveUsers(db, ROOM);
+    readActiveUsers(db, ROOM, { sweep: true });
     expect(rowCount()).toBe(0);
   });
 
@@ -87,7 +87,7 @@ describe('the presence active window', () => {
     ).run('OTHERRM', 'theirs', 'user-theirs', '#112233', stale, stale, 'acc-theirs');
     seedPeer('gone', stale);
 
-    readActiveUsers(db, ROOM);
+    readActiveUsers(db, ROOM, { sweep: true });
 
     expect(rowCount()).toBe(1);
     const remaining = db.prepare(

@@ -99,6 +99,7 @@ export function useCollaboration(
    * read it, so it lives out here rather than inside either effect.
    */
   const disconnectedSinceRef = useRef<number | null>(null);
+  const consecutivePresenceErrorsRef = useRef(0);
   const [connectionLost, setConnectionLost] = useState(false);
   const [accessStatus, setAccessStatus] = useState<RoomAccessStatus | null>(null);
   const [grantRole, setGrantRole] = useState<GrantedPublicRole | null>(null);
@@ -684,7 +685,17 @@ export function useCollaboration(
           return;
         }
 
+        if (!cancelled && presenceAdmission === 'error') {
+          presenceDelay = POLL_BASE_MS;
+          consecutivePresenceErrorsRef.current += 1;
+          if (consecutivePresenceErrorsRef.current >= 3) {
+            setConnectionLost(true);
+          }
+          return;
+        }
+
         if (!cancelled && presenceAdmission === 'ok') {
+          consecutivePresenceErrorsRef.current = 0;
           const data = await res.json();
           applyPresencePayload(data);
         }

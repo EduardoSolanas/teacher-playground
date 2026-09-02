@@ -18,8 +18,7 @@ export function activePeerIds(db: RoomDatabase, roomId: string): Set<string> {
   return new Set(rows.map((row) => row.peer_id));
 }
 
-export function readActiveUsers(db: RoomDatabase, roomId: string) {
-  const cutoff = Date.now() - ACTIVE_WINDOW_MS;
+export function sweepExpiredPresence(db: RoomDatabase, roomId: string, cutoff: number): void {
   /*
    * Sweep this room, not every room.
    *
@@ -33,6 +32,13 @@ export function readActiveUsers(db: RoomDatabase, roomId: string) {
   db.prepare(
     `DELETE FROM room_presence WHERE room_id = ? AND last_seen < ?`,
   ).run(roomId, cutoff);
+}
+
+export function readActiveUsers(db: RoomDatabase, roomId: string, options?: { sweep?: boolean }) {
+  const cutoff = Date.now() - ACTIVE_WINDOW_MS;
+  if (options?.sweep === true) {
+    sweepExpiredPresence(db, roomId, cutoff);
+  }
 
   const allowFirstUserHost = getRoomAllowFirstUserHost(db, roomId);
 
@@ -109,14 +115,23 @@ export function readWaitingPeers(db: RoomDatabase, roomId: string) {
  * hand is up, who is waiting, and which peer is host. A last_seen tick alone
  * leaves it unchanged, which is the point.
  */
-export function presenceSignature(db: RoomDatabase, roomId: string): string {
-  const active = readActiveUsers(db, roomId)
+export function presenceSignatureFromRoster(
+  activeUsers: ReadonlyArray<{ peerId: string; handRaised?: boolean; isHost?: boolean }>,
+  waitingPeers: ReadonlyArray<{ peerId: string }>,
+): string {
+  const active = activeUsers
     .map((user) => `${user.peerId}:${user.handRaised ? 1 : 0}:${user.isHost ? 1 : 0}`)
     .sort()
     .join(',');
-  const waiting = readWaitingPeers(db, roomId)
+  const waiting = waitingPeers
     .map((peer) => peer.peerId)
     .sort()
     .join(',');
   return `${active}|${waiting}`;
+}
+
+export function presenceSignature(db: RoomDatabase, roomId: string): string {
+  const active = readActiveUsers(db, roomId);
+  const waiting = readWaitingPeers(db, roomId);
+  return presenceSignatureFromRoster(active, waiting);
 }

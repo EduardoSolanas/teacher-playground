@@ -40,6 +40,7 @@ import {
 import { activePeerIds } from '../lib/whiteboard/presence';
 import { orphanKeys, referencedFileIds, type StoredFile } from '../lib/whiteboard/orphanFiles';
 import { presenceSignature } from '../lib/whiteboard/presence';
+import { internalErrorResponse } from '../lib/http/safeError';
 import { encodePresenceMessage } from '../lib/whiteboard/presenceMessage';
 import { getFrameMessageType, isRelayableFrame } from '../lib/whiteboard/relayPolicy';
 import {
@@ -288,154 +289,158 @@ export class RoomDO extends DurableObject {
   }
 
   async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
+    try {
+      const url = new URL(request.url);
 
-    if (url.pathname === '/signaling') {
-      return this.handleSignalingUpgrade(request, url);
-    }
+      if (url.pathname === '/signaling') {
+        return this.handleSignalingUpgrade(request, url);
+      }
 
-    const roomId = url.searchParams.get('roomId');
-    if (!roomId) {
-      return Response.json({ error: 'Missing roomId' }, { status: 400 });
-    }
+      const roomId = url.searchParams.get('roomId');
+      if (!roomId) {
+        return Response.json({ error: 'Missing roomId' }, { status: 400 });
+      }
 
-    const segments = url.pathname.split('/').filter(Boolean);
-    const section = segments[1] ?? '';
-    const method = request.method;
+      const segments = url.pathname.split('/').filter(Boolean);
+      const section = segments[1] ?? '';
+      const method = request.method;
 
-    // Guest-verify is the one route that runs without accountId (early branch before auth checks)
-    if (section === 'guest-verify' && method === 'POST') {
-      // Tombstone check for guest-verify: return generic 403 instead of 410
-      // to avoid room-enumeration oracle on unauthenticated path
+      // Guest-verify is the one route that runs without accountId (early branch before auth checks)
+      if (section === 'guest-verify' && method === 'POST') {
+        // Tombstone check for guest-verify: return generic 403 instead of 410
+        // to avoid room-enumeration oracle on unauthenticated path
+        if (!assertNotTombstoned(createSqlTombstoneStore(this.db), roomId).ok) {
+          return forbidden();
+        }
+
+        const bodyText = await request.text();
+        const body = parseJsonObject(bodyText);
+        const pin = stringField(body, 'pin');
+
+        if (!pin) {
+          // Missing PIN is a failure - return generic 403
+          return forbidden();
+        }
+
+        const result = verifyGuestPin(this.db, roomId, pin, Date.now());
+
+        if (result.ok) {
+          return Response.json({ ok: true }, { status: 200 });
+        }
+
+        // All failures (wrong PIN, guest-disabled, expired, locked out, missing room, tombstoned) return identical 403
+        return forbidden();
+      }
+
+      // For all other sections: accountId check FIRST (before tombstone check)
+      const accountId = url.searchParams.get('accountId');
+      if (!accountId) return unauthorized('Account required');
+
+      // Then tombstone check for authenticated requests
       if (!assertNotTombstoned(createSqlTombstoneStore(this.db), roomId).ok) {
-        return forbidden();
+        return tombstonedJsonResponse();
       }
 
-      const bodyText = await request.text();
+      // Subroutes must not persist into a room that was never created. POST on
+      // the room root is the create path and is allowed to insert the rooms row.
+      // GET /access on a missing room must still return `{ status: 'none' }` so
+      // the Worker can apply create quotas without enumerating rooms.
+      if (
+        section !== ''
+        && !(section === 'access' && (method === 'GET' || method === 'HEAD'))
+        && !roomExists(this.db, roomId)
+      ) {
+        return Response.json({ error: 'Not found' }, { status: 404 });
+      }
+
+      // Guest flag from Worker stamp (Task 8)
+      const guest = url.searchParams.get('guest') === '1';
+
+      // Grant role only — no board, queue, or request PII. Discriminators that
+      // share a route (kick vs heartbeat) are read from a bounded JSON object
+      // after this identity is known. Scene and settings are separate paths.
+      const role = getGrantRole(this.db, roomId, accountId);
+      const hasBody = method !== 'GET' && method !== 'HEAD';
+      const bodyText = hasBody ? await request.text() : null;
       const body = parseJsonObject(bodyText);
-      const pin = stringField(body, 'pin');
 
-      if (!pin) {
-        // Missing PIN is a failure - return generic 403
-        return forbidden();
+      const denied = this.authorize(url, roomId, section, method, body, accountId, role, guest);
+      if (denied) return denied;
+
+      if (section !== 'erasure') {
+        const now = Date.now();
+        purgeExpiredGrants(this.db, roomId, now);
+        purgeExpiredRoomLifecycle(this.db, roomId, now);
       }
 
-      const result = verifyGuestPin(this.db, roomId, pin, Date.now());
+      const joiningPeerId = section === 'presence' && method === 'POST' && stringField(body, 'action') == null
+        ? stringField(body, 'peerId')
+        : null;
 
-      if (result.ok) {
-        return Response.json({ ok: true }, { status: 200 });
+      // Handlers read the body themselves, so hand them one that still has it.
+      const forwarded = new Request(request.url, {
+        method,
+        headers: request.headers,
+        body: bodyText,
+      });
+      // Taken before the mutation so the broadcast below can tell a real change
+      // from a heartbeat that only moved a timestamp.
+      const signatureBefore = section === 'presence' && method === 'POST'
+        ? presenceSignature(this.db, roomId)
+        : null;
+      const response = await this.route(forwarded, url, roomId);
+
+      if (response.ok && accountId && joiningPeerId) {
+        bindPeerAccount(this.db, roomId, joiningPeerId, accountId);
       }
 
-      // All failures (wrong PIN, guest-disabled, expired, locked out, missing room, tombstoned) return identical 403
-      return forbidden();
-    }
-
-    // For all other sections: accountId check FIRST (before tombstone check)
-    const accountId = url.searchParams.get('accountId');
-    if (!accountId) return unauthorized('Account required');
-
-    // Then tombstone check for authenticated requests
-    if (!assertNotTombstoned(createSqlTombstoneStore(this.db), roomId).ok) {
-      return tombstonedJsonResponse();
-    }
-
-    // Subroutes must not persist into a room that was never created. POST on
-    // the room root is the create path and is allowed to insert the rooms row.
-    // GET /access on a missing room must still return `{ status: 'none' }` so
-    // the Worker can apply create quotas without enumerating rooms.
-    if (
-      section !== ''
-      && !(section === 'access' && (method === 'GET' || method === 'HEAD'))
-      && !roomExists(this.db, roomId)
-    ) {
-      return Response.json({ error: 'Not found' }, { status: 404 });
-    }
-
-    // Guest flag from Worker stamp (Task 8)
-    const guest = url.searchParams.get('guest') === '1';
-
-    // Grant role only — no board, queue, or request PII. Discriminators that
-    // share a route (kick vs heartbeat) are read from a bounded JSON object
-    // after this identity is known. Scene and settings are separate paths.
-    const role = getGrantRole(this.db, roomId, accountId);
-    const hasBody = method !== 'GET' && method !== 'HEAD';
-    const bodyText = hasBody ? await request.text() : null;
-    const body = parseJsonObject(bodyText);
-
-    const denied = this.authorize(url, roomId, section, method, body, accountId, role, guest);
-    if (denied) return denied;
-
-    if (section !== 'erasure') {
-      const now = Date.now();
-      purgeExpiredGrants(this.db, roomId, now);
-      purgeExpiredRoomLifecycle(this.db, roomId, now);
-    }
-
-    const joiningPeerId = section === 'presence' && method === 'POST' && stringField(body, 'action') == null
-      ? stringField(body, 'peerId')
-      : null;
-
-    // Handlers read the body themselves, so hand them one that still has it.
-    const forwarded = new Request(request.url, {
-      method,
-      headers: request.headers,
-      body: bodyText,
-    });
-    // Taken before the mutation so the broadcast below can tell a real change
-    // from a heartbeat that only moved a timestamp.
-    const signatureBefore = section === 'presence' && method === 'POST'
-      ? presenceSignature(this.db, roomId)
-      : null;
-    const response = await this.route(forwarded, url, roomId);
-
-    if (response.ok && accountId && joiningPeerId) {
-      bindPeerAccount(this.db, roomId, joiningPeerId, accountId);
-    }
-
-    if (response.ok && section === 'presence' && method === 'POST') {
-      const action = stringField(body, 'action');
-      if (action === 'kick' || action === 'suspend') {
-        const payload = await response.clone().json() as {
-          kickedPeer?: { accountId?: string };
-          suspendedPeer?: { accountId?: string };
-        };
-        const targetAccountId = payload.kickedPeer?.accountId ?? payload.suspendedPeer?.accountId;
-        if (targetAccountId) {
-          incrementGrantVersion(this.db, roomId);
-          this.closeAccountSockets(targetAccountId, roomId);
-          this.restampRoomSockets(roomId);
+      if (response.ok && section === 'presence' && method === 'POST') {
+        const action = stringField(body, 'action');
+        if (action === 'kick' || action === 'suspend') {
+          const payload = await response.clone().json() as {
+            kickedPeer?: { accountId?: string };
+            suspendedPeer?: { accountId?: string };
+          };
+          const targetAccountId = payload.kickedPeer?.accountId ?? payload.suspendedPeer?.accountId;
+          if (targetAccountId) {
+            incrementGrantVersion(this.db, roomId);
+            this.closeAccountSockets(targetAccountId, roomId);
+            this.restampRoomSockets(roomId);
+          }
+        }
+        /*
+         * Only when something actually changed.
+         *
+         * This route carries the 2s heartbeat as well as real mutations, and a
+         * heartbeat moves nothing but a timestamp. Broadcasting on every one had
+         * each peer rebuild a payload for every other peer several times a
+         * second — more work for the room than the poll it replaces, and more
+         * frames competing with the strokes.
+         */
+        if (presenceSignature(this.db, roomId) !== signatureBefore) {
+          this.broadcastPresence(roomId);
         }
       }
-      /*
-       * Only when something actually changed.
-       *
-       * This route carries the 2s heartbeat as well as real mutations, and a
-       * heartbeat moves nothing but a timestamp. Broadcasting on every one had
-       * each peer rebuild a payload for every other peer several times a
-       * second — more work for the room than the poll it replaces, and more
-       * frames competing with the strokes.
-       */
-      if (presenceSignature(this.db, roomId) !== signatureBefore) {
+
+      if (response.ok && section === 'presence' && method === 'DELETE') {
+        // Broadcast presence after leaving
         this.broadcastPresence(roomId);
       }
-    }
 
-    if (response.ok && section === 'presence' && method === 'DELETE') {
-      // Broadcast presence after leaving
-      this.broadcastPresence(roomId);
-    }
+      if (response.ok && section === 'waiting' && method === 'POST') {
+        // Broadcast presence after approve/reject
+        this.broadcastPresence(roomId);
+      }
 
-    if (response.ok && section === 'waiting' && method === 'POST') {
-      // Broadcast presence after approve/reject
-      this.broadcastPresence(roomId);
-    }
+      if (response.ok && section === 'waiting' && method === 'DELETE') {
+        // Broadcast presence after deleting from waiting
+        this.broadcastPresence(roomId);
+      }
 
-    if (response.ok && section === 'waiting' && method === 'DELETE') {
-      // Broadcast presence after deleting from waiting
-      this.broadcastPresence(roomId);
+      return response;
+    } catch (e) {
+      return internalErrorResponse(e, 'RoomDO.fetch');
     }
-
-    return response;
   }
 
   /**

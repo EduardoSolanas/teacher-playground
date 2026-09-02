@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { applySchema } from './roomDb';
-import { readActiveUsers } from './presence';
+import {
+  ACTIVE_WINDOW_MS,
+  presenceSignature,
+  presenceSignatureFromRoster,
+  readActiveUsers,
+  readWaitingPeers,
+} from './presence';
 import { getRoomAllowFirstUserHost, setRoomAllowFirstUserHost } from './roomSchema';
 import { insertOwner } from './membership';
 
@@ -125,3 +131,51 @@ describe('first-user host fallback is an opt-in room setting', () => {
     expect(getRoomAllowFirstUserHost(legacy, ROOM)).toBe(false);
   });
 });
+
+describe('presence query optimizations', () => {
+  it('produces the same signature from in-memory roster as presenceSignature does from db', () => {
+    seedRoom(null, 1);
+    seedPeer('alice', 1);
+    seedPeer('bob', 2);
+    db.prepare(
+      `INSERT INTO waiting_peers (room_id, peer_id, user_name, color, requested_at, account_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(ROOM, 'charlie', 'Charlie', '#ff0000', 3, 'acc-charlie');
+
+    const active = readActiveUsers(db, ROOM);
+    const waiting = readWaitingPeers(db, ROOM);
+    const fromRoster = presenceSignatureFromRoster(active, waiting);
+    const fromDb = presenceSignature(db, ROOM);
+
+    expect(fromRoster).toBe(fromDb);
+    expect(fromRoster).toContain('alice:0:1');
+    expect(fromRoster).toContain('bob:0:0');
+    expect(fromRoster).toContain('|charlie');
+  });
+
+  it('filters out expired rows on readActiveUsers without deleting them from db unless requested', () => {
+    seedRoom(null);
+    const now = Date.now();
+    seedPeer('active-peer', now);
+    const expiredLastSeen = now - ACTIVE_WINDOW_MS - 5000;
+    db.prepare(
+      `INSERT INTO room_presence (room_id, peer_id, user_name, color, first_seen, last_seen, account_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(ROOM, 'expired-peer', 'Expired', '#333333', expiredLastSeen, expiredLastSeen, null);
+
+    const active = readActiveUsers(db, ROOM);
+    expect(active.map((u) => u.peerId)).toEqual(['active-peer']);
+
+    const inDbBeforeSweep = db.prepare(
+      `SELECT peer_id FROM room_presence WHERE room_id = ? AND peer_id = ?`,
+    ).get(ROOM, 'expired-peer');
+    expect(inDbBeforeSweep).toBeDefined();
+
+    readActiveUsers(db, ROOM, { sweep: true });
+    const inDbAfterSweep = db.prepare(
+      `SELECT peer_id FROM room_presence WHERE room_id = ? AND peer_id = ?`,
+    ).get(ROOM, 'expired-peer');
+    expect(inDbAfterSweep).toBeUndefined();
+  });
+});
+
