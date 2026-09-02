@@ -464,7 +464,7 @@ export default function AvSessionPanel({
   // but it still needs a width, which the parked classes were supplying.
   const placement = position
     ? 'w-[min(26.25rem,calc(100vw-1rem))]'
-    : 'left-2 right-14 top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)] w-auto sm:bottom-16 sm:left-14 sm:right-auto sm:top-auto sm:w-[min(26.25rem,calc(100vw-18.75rem))]';
+    : 'left-2 right-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)] w-auto sm:bottom-16 sm:left-14 sm:right-auto sm:top-auto sm:w-[min(26.25rem,calc(100vw-18.75rem))]';
   const focusTile = pinnedIdentity
     ? tiles.find((participant) => participant.identity === pinnedIdentity) ?? null
     : tiles.find((participant) => participant.isSpeaking) ?? tiles[0] ?? null;

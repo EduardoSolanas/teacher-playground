@@ -37,11 +37,11 @@ export default function CallControls({ av }: { readonly av: UseAvSessionResult }
         </span>
       </div>
 
-      <div data-testid="av-call-buttons" className="grid grid-cols-3 gap-1.5 w-full">
+      <div data-testid="av-call-buttons" className="grid grid-cols-3 gap-1 sm:gap-1.5 w-full">
         <button
           type="button"
           data-testid="av-toggle-mic"
-          className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-[0.6875rem] font-medium whitespace-nowrap transition-all shadow-sm disabled:cursor-not-allowed disabled:opacity-40 ${
+          className={`inline-flex items-center justify-center gap-1 sm:gap-1.5 rounded-lg px-1 sm:px-2 py-1.5 text-[0.625rem] sm:text-[0.6875rem] font-medium whitespace-nowrap transition-all shadow-sm disabled:cursor-not-allowed disabled:opacity-40 ${
             av.local.micMuted
               ? 'border border-rose-500/40 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25'
               : 'border border-slate-700/80 bg-slate-800/90 text-slate-200 hover:border-slate-600 hover:bg-slate-700/90 hover:text-white'
@@ -65,7 +65,7 @@ export default function CallControls({ av }: { readonly av: UseAvSessionResult }
         <button
           type="button"
           data-testid="av-toggle-cam"
-          className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-[0.6875rem] font-medium whitespace-nowrap transition-all shadow-sm disabled:cursor-not-allowed disabled:opacity-40 ${
+          className={`inline-flex items-center justify-center gap-1 sm:gap-1.5 rounded-lg px-1 sm:px-2 py-1.5 text-[0.625rem] sm:text-[0.6875rem] font-medium whitespace-nowrap transition-all shadow-sm disabled:cursor-not-allowed disabled:opacity-40 ${
             !av.local.camOn
               ? 'border border-slate-700/80 bg-slate-800/60 text-slate-400 hover:bg-slate-700/80 hover:text-slate-200'
               : 'border border-slate-700/80 bg-slate-800/90 text-slate-200 hover:border-slate-600 hover:bg-slate-700/90 hover:text-white'
@@ -83,7 +83,7 @@ export default function CallControls({ av }: { readonly av: UseAvSessionResult }
         <button
           type="button"
           data-testid="av-toggle-screen"
-          className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-[0.6875rem] font-medium whitespace-nowrap transition-all shadow-sm disabled:cursor-not-allowed disabled:opacity-40 ${
+          className={`inline-flex items-center justify-center gap-1 sm:gap-1.5 rounded-lg px-1 sm:px-2 py-1.5 text-[0.625rem] sm:text-[0.6875rem] font-medium whitespace-nowrap transition-all shadow-sm disabled:cursor-not-allowed disabled:opacity-40 ${
             av.local.isScreenSharing
               ? 'border border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
               : 'border border-slate-700/80 bg-slate-800/90 text-slate-200 hover:border-slate-600 hover:bg-slate-700/90 hover:text-white'

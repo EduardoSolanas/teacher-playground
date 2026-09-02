@@ -198,15 +198,14 @@ describe('AvSessionPanel', () => {
     expect(screen.getByTestId('av-panel-open')).toBeTruthy();
   });
 
-  it('stops short of the presence handle', () => {
-    // The handle is `right-2 w-11`, pinned half way down the right edge. A
-    // panel running to `right-2` sits on top of it, and the roster becomes
-    // unreachable on the one screen size where it overlaps.
+  it('takes the full available width on mobile', () => {
+    // On mobile screens, the call panel takes the full horizontal width with clean margins
+    // so video tiles and action buttons have ample space and do not cramp.
     const av = makeAv();
     render(<AvSessionPanel av={av} localIdentity="me" />);
     const panel = screen.getByTestId('av-session-panel');
-    expect(panel.className).toContain('right-14');
-    expect(panel.className).not.toContain(' right-2');
+    expect(panel.className).toContain('left-2');
+    expect(panel.className).toContain('right-2');
   });
 
   it('names the microphones rather than reciting their ids', () => {
