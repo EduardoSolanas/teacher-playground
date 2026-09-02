@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { Room, Track, RemoteParticipant } from 'livekit-client';
 
 import AvSessionPanel from './AvSessionPanel';
 import type { UseAvSessionResult } from '@/hooks/useAvSession';
-
 import type { DeviceKind, AvDevice } from '@/lib/av/avSession';
 
 const mic = (deviceId: string, label = `Microphone ${deviceId}`) => ({ deviceId, label });
@@ -13,15 +13,41 @@ type AvOverrides = Partial<Omit<UseAvSessionResult, 'devices'>> & {
   devices?: Partial<Record<DeviceKind, AvDevice[]>>;
 };
 
+function addTrackPublication(
+  participant: any,
+  source: Track.Source,
+  trackSid = `track-${source}-1`,
+  overrides: Record<string, any> = {},
+) {
+  const mockTrack = {
+    attach: vi.fn((el: HTMLMediaElement) => el),
+    detach: vi.fn((el: HTMLMediaElement) => el),
+  };
+  const pub = {
+    track: mockTrack,
+    trackSid,
+    source,
+    isMuted: false,
+    isSubscribed: true,
+    ...overrides,
+  };
+  participant.trackPublications.set(trackSid, pub);
+  if (source === Track.Source.Camera || source === Track.Source.ScreenShare) {
+    participant.videoTrackPublications.set(trackSid, pub);
+  } else if (source === Track.Source.Microphone) {
+    participant.audioTrackPublications.set(trackSid, pub);
+  }
+  return pub;
+}
+
 function makeAv(overrides: AvOverrides = {}): UseAvSessionResult {
-  const attachTrack = vi.fn();
-  const detachTrack = vi.fn();
-  const { devices, local, ...rest } = overrides;
+  const { devices, local, room, ...rest } = overrides;
+  const realRoom = room === undefined ? new Room() : room;
   return {
     status: 'joined',
     error: null,
     unavailableReason: null,
-    room: null,
+    room: realRoom,
     participants: [],
     local: { micMuted: false, camOn: true, isScreenSharing: false, ...local },
     devices: { microphone: [mic('mic-1')], camera: [cam('cam-1')], speaker: [], ...devices },
@@ -30,19 +56,19 @@ function makeAv(overrides: AvOverrides = {}): UseAvSessionResult {
     toggleScreenShare: vi.fn().mockResolvedValue(undefined),
     selectDevice: vi.fn(),
     requestMute: vi.fn(),
-    attachTrack,
-    detachTrack,
     leave: vi.fn(),
     ...rest,
   };
 }
 
 describe('AvSessionPanel', () => {
-  it('renders a local tile', () => {
-    const av = makeAv({ local: { micMuted: false, camOn: true } });
+  it('renders a local tile with VideoTrack when camera is on', () => {
+    const room = new Room();
+    addTrackPublication(room.localParticipant, Track.Source.Camera);
+    const av = makeAv({ room, local: { micMuted: false, camOn: true } });
     render(<AvSessionPanel av={av} localIdentity="me" />);
     expect(screen.getByTestId('av-tile-me')).toBeTruthy();
-    expect(av.attachTrack).toHaveBeenCalledWith('me', 'camera', expect.any(HTMLVideoElement));
+    expect(screen.getByTestId('av-video-track-me')).toBeTruthy();
   });
 
   it('ends the call when asked, without leaving the room', () => {
@@ -115,7 +141,7 @@ describe('AvSessionPanel', () => {
     expect(screen.getByTestId('av-tile-peer-1')).toBeTruthy();
   });
 
-  it('keeps remote microphone audio attached in off mode without any visible tiles', () => {
+  it('handles audio exclusively through RoomAudioRenderer with no manual audio elements', () => {
     const av = makeAv({
       participants: [
         { identity: 'me', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
@@ -124,22 +150,19 @@ describe('AvSessionPanel', () => {
     });
     render(<AvSessionPanel av={av} localIdentity="me" />);
 
-    const remoteAudio = screen.getByTestId('av-remote-audio-peer-1');
-    expect(av.attachTrack).toHaveBeenCalledWith('peer-1', 'microphone', remoteAudio);
+    expect(screen.getByTestId('av-room-audio-renderer')).toBeTruthy();
+    // §3.7: Assert that no manual <audio> elements are rendered
+    expect(document.querySelectorAll('audio')).toHaveLength(0);
 
     fireEvent.click(screen.getByRole('radio', { name: 'Off' }));
 
     expect(screen.queryByTestId('av-tile-me')).toBeNull();
     expect(screen.queryByTestId('av-tile-peer-1')).toBeNull();
     expect(screen.getByTestId('av-call-controls')).toBeTruthy();
-    expect(screen.getByTestId('av-remote-audio-peer-1')).toBeTruthy();
-    expect(av.detachTrack).not.toHaveBeenCalledWith('peer-1', 'microphone', remoteAudio);
-    expect(av.attachTrack).toHaveBeenCalledWith(
-      'peer-1',
-      'microphone',
-      screen.getByTestId('av-remote-audio-peer-1'),
-    );
+    expect(screen.getByTestId('av-room-audio-renderer')).toBeTruthy();
+    expect(document.querySelectorAll('audio')).toHaveLength(0);
   });
+
 
   it('focuses the active speaker when nobody is pinned, then pins a tile into focus mode', () => {
     const av = makeAv({
@@ -382,8 +405,9 @@ describe('AvSessionPanel', () => {
     render(<AvSessionPanel av={av} localIdentity="me" />);
     const tile = screen.getByTestId('av-tile-me');
     expect(tile.textContent).toContain('Camera off');
-    expect(tile.querySelector('video')?.className).toContain('hidden');
+    expect(tile.querySelector('video')).toBeNull();
   });
+
 
   it('renders remote participant tiles from the roster', () => {
     const av = makeAv({
@@ -544,7 +568,13 @@ describe('AvSessionPanel', () => {
   });
 
   it('offers a Picture-in-Picture control on video tiles', () => {
+    const room = new Room();
+    addTrackPublication(room.localParticipant, Track.Source.Camera);
+    const remote = new RemoteParticipant(room.engine.client, 'peer-1', 'peer-1');
+    addTrackPublication(remote, Track.Source.Camera, 'track-remote-cam');
+    room.remoteParticipants.set('peer-1', remote);
     const av = makeAv({
+      room,
       participants: [
         { identity: 'me', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
         { identity: 'peer-1', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
@@ -557,7 +587,9 @@ describe('AvSessionPanel', () => {
   });
 
   it('requests Picture-in-Picture on video element when PiP button is clicked', async () => {
-    const av = makeAv({ local: { micMuted: false, camOn: true } });
+    const room = new Room();
+    addTrackPublication(room.localParticipant, Track.Source.Camera);
+    const av = makeAv({ room, local: { micMuted: false, camOn: true } });
     render(<AvSessionPanel av={av} localIdentity="me" />);
 
     const video = screen.getByTestId('av-tile-me').querySelector('video');
@@ -570,6 +602,40 @@ describe('AvSessionPanel', () => {
     fireEvent.click(screen.getByTestId('av-pip-me'));
     expect(requestPip).toHaveBeenCalledTimes(1);
   });
+
+  it('falls back to camera when screen share publication is inactive or unsubscribed', () => {
+    const room = new Room();
+    const remote = new RemoteParticipant(room.engine.client, 'peer-1', 'peer-1');
+    addTrackPublication(remote, Track.Source.Camera, 'pub-cam-1');
+    const screenPub = addTrackPublication(remote, Track.Source.ScreenShare, 'pub-screen-1', {
+      isSubscribed: false,
+      track: undefined,
+    });
+    room.remoteParticipants.set('peer-1', remote);
+
+
+    const av = makeAv({
+      room,
+      participants: [
+        { identity: 'peer-1', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
+      ],
+    });
+
+    const { rerender } = render(<AvSessionPanel av={av} localIdentity="me" />);
+
+    // Inactive screen share should NOT show screen badge and should render camera track instead
+    expect(screen.queryByTestId('av-screenshare-badge-peer-1')).toBeNull();
+    const videoTrack = screen.getByTestId('av-video-track-peer-1');
+    expect(videoTrack).toBeTruthy();
+
+    // Now make screen share live and subscribed
+    screenPub.isSubscribed = true;
+    screenPub.track = { attach: vi.fn(), detach: vi.fn() };
+    rerender(<AvSessionPanel av={makeAv({ room, participants: av.participants })} localIdentity="me" />);
+
+    expect(screen.getByTestId('av-screenshare-badge-peer-1')).toBeTruthy();
+  });
+
 
   it('renders audio playback unlock button when browser blocks autoplay', () => {
     const mockTrack = {

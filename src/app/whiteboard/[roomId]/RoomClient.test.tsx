@@ -210,4 +210,20 @@ describe('shouldPeerEnterCall', () => {
   it('returns false when av is not allowed for the peer', () => {
     expect(shouldPeerEnterCall({ callActive: true, hasHost: true, avAllowed: false })).toBe(false);
   });
+
+  it('derives hasHost correctly from active users list', () => {
+    const usersWithHost = [
+      makeUser({ peerId: 'p1', isHost: false }),
+      makeUser({ peerId: 'p2', isHost: true }),
+    ];
+    const usersWithoutHost = [
+      makeUser({ peerId: 'p1', isHost: false }),
+      makeUser({ peerId: 'p3', isHost: false }),
+    ];
+    expect(usersWithHost.some((u) => u.isHost)).toBe(true);
+    expect(usersWithoutHost.some((u) => u.isHost)).toBe(false);
+    expect(shouldPeerEnterCall({ callActive: true, hasHost: usersWithHost.some((u) => u.isHost), avAllowed: true })).toBe(true);
+    expect(shouldPeerEnterCall({ callActive: true, hasHost: usersWithoutHost.some((u) => u.isHost), avAllowed: true })).toBe(false);
+  });
 });
+

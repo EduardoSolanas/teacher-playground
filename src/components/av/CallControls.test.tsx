@@ -28,8 +28,6 @@ function makeAv(overrides: AvOverrides = {}): UseAvSessionResult {
     toggleScreenShare: vi.fn().mockResolvedValue(undefined),
     selectDevice: vi.fn(),
     requestMute: vi.fn(),
-    attachTrack: vi.fn(),
-    detachTrack: vi.fn(),
     leave: vi.fn(),
     ...rest,
   };

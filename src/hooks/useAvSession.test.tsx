@@ -208,4 +208,74 @@ describe('useAvSession', () => {
     toggleScreen.mockRestore();
     connect.mockRestore();
   });
+
+  it('maintains memoized object and callback identity across parent re-renders when state is unchanged', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ token: 'tok', url: 'wss://lk.test' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const connect = vi.spyOn(LiveKitProvider.prototype, 'connect').mockResolvedValue();
+    const disconnect = vi.spyOn(LiveKitProvider.prototype, 'disconnect').mockImplementation(() => {});
+
+    const { result, rerender } = renderHook(
+      (props: typeof options & { enabled: boolean; count?: number }) => useAvSession(props),
+      { initialProps: { ...options, enabled: true, count: 0 } },
+    );
+    await waitFor(() => expect(result.current.status).toBe('joined'));
+
+    const initialResult = result.current;
+    const initialToggleMic = result.current.toggleMicrophone;
+    const initialToggleCam = result.current.toggleCamera;
+    const initialLeave = result.current.leave;
+
+    // Rerender with changed unrelated prop
+    rerender({ ...options, enabled: true, count: 1 });
+
+    expect(result.current).toBe(initialResult);
+    expect(result.current.toggleMicrophone).toBe(initialToggleMic);
+    expect(result.current.toggleCamera).toBe(initialToggleCam);
+    expect(result.current.leave).toBe(initialLeave);
+
+    disconnect.mockRestore();
+    connect.mockRestore();
+  });
+
+  it('updates participant name without reconnecting or leaving when displayName changes', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ token: 'tok', url: 'wss://lk.test' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const connect = vi.spyOn(LiveKitProvider.prototype, 'connect').mockResolvedValue();
+    const disconnect = vi.spyOn(LiveKitProvider.prototype, 'disconnect').mockImplementation(() => {});
+
+    const { result, rerender } = renderHook(
+      ({ displayName }: { displayName: string }) => useAvSession({ ...options, displayName, enabled: true }),
+      { initialProps: { displayName: 'Teacher' } },
+    );
+    await waitFor(() => expect(result.current.status).toBe('joined'));
+    expect(tokenRequests()).toHaveLength(1);
+
+    const room = result.current.room;
+    expect(room).not.toBeNull();
+    const setNameSpy = vi.fn().mockResolvedValue(undefined);
+    if (room?.localParticipant) {
+      room.localParticipant.setName = setNameSpy;
+    }
+
+    // Change display name
+    rerender({ displayName: 'Teacher Updated' });
+
+    // Should NOT have made a new token request or disconnected
+    expect(tokenRequests()).toHaveLength(1);
+    expect(disconnect).not.toHaveBeenCalled();
+    await waitFor(() => expect(setNameSpy).toHaveBeenCalledWith('Teacher Updated'));
+
+    disconnect.mockRestore();
+    connect.mockRestore();
+  });
 });
+

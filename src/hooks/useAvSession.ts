@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import type { Room } from 'livekit-client';
@@ -29,8 +29,8 @@ export interface UseAvSessionResult {
   readonly status: AvSessionStatus;
   readonly error: AvError | null;
   readonly local: { micMuted: boolean; camOn: boolean; isScreenSharing?: boolean };
-  readonly participants: ParticipantState[];
-  readonly devices: Record<DeviceKind, AvDevice[]>;
+  readonly participants: readonly ParticipantState[];
+  readonly devices: Readonly<Record<DeviceKind, readonly AvDevice[]>>;
   readonly unavailableReason: 'unconfigured' | 'forbidden' | 'waiting' | null;
   readonly room: Room | null;
   readonly toggleMicrophone: () => void;
@@ -38,18 +38,10 @@ export interface UseAvSessionResult {
   readonly toggleScreenShare: () => Promise<void>;
   readonly selectDevice: (kind: DeviceKind, deviceId: string) => Promise<void>;
   readonly requestMute: (identity: string, kind?: 'audio' | 'video') => Promise<void>;
-  readonly attachTrack: (
-    identity: string,
-    kind: 'camera' | 'microphone',
-    element: HTMLMediaElement,
-  ) => void;
-  readonly detachTrack: (
-    identity: string,
-    kind: 'camera' | 'microphone',
-    element: HTMLMediaElement,
-  ) => void;
   readonly leave: () => void;
 }
+
+
 
 interface TokenResponse {
   token?: string;
@@ -75,6 +67,7 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
   const sessionRef = useRef<AvSession | null>(null);
   const providerRef = useRef<LiveKitProvider | null>(null);
   const [session, setSession] = useState<AvSession | null>(null);
+  const [room, setRoom] = useState<Room | null>(null);
   const [startupError, setStartupError] = useState<AvError | null>(null);
   const [unavailableReason, setUnavailableReason] = useState<
     'unconfigured' | 'forbidden' | 'waiting' | null
@@ -94,6 +87,7 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
     sessionRef.current?.leave();
     sessionRef.current = null;
     setSession(null);
+    setRoom(null);
     providerRef.current = null;
     setStartupError(null);
     setUnavailableReason(null);
@@ -131,6 +125,7 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
       }
       if (!response.ok) {
         setSession(null);
+        setRoom(null);
         setStartupError({ kind: 'unknown', message: `Token request failed (${response.status})` });
         return;
       }
@@ -146,6 +141,7 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
       providerRef.current = provider;
       sessionRef.current = session;
       setSession(session);
+      setRoom(provider.getRoom());
       setStartupError(null);
       setUnavailableReason(null);
 
@@ -175,6 +171,7 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
     void start().catch((error: unknown) => {
       if (cancelled) return;
       setSession(null);
+      setRoom(null);
       sessionRef.current = null;
       providerRef.current = null;
       setStartupError({
@@ -191,7 +188,13 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
       cancelled = true;
       leave();
     };
-  }, [enabled, roomId, identity, displayName, leave]);
+  }, [enabled, roomId, identity, leave]);
+
+  useEffect(() => {
+    if (room && displayName) {
+      void room.localParticipant?.setName(displayName).catch(() => {});
+    }
+  }, [room, displayName]);
 
   useEffect(() => {
     const onPageHide = () => leave();
@@ -199,39 +202,65 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
     return () => window.removeEventListener('pagehide', onPageHide);
   }, [leave]);
 
-  return {
-    status: state.status,
-    error: state.error,
-    local: { ...state.local },
-    participants: [...state.participants],
-    devices: {
-      microphone: [...state.devices.microphone],
-      camera: [...state.devices.camera],
-      speaker: [...(state.devices.speaker ?? [])],
-    },
-    unavailableReason,
-    room: (sessionRef.current?.getRoom?.() as Room | null) ?? null,
-    toggleMicrophone: () => {
-      sessionRef.current?.toggleMicrophone();
-    },
-    toggleCamera: () => {
-      sessionRef.current?.toggleCamera();
-    },
-    toggleScreenShare: async () => {
-      await sessionRef.current?.toggleScreenShare();
-    },
-    selectDevice: async (kind, deviceId) => {
-      await sessionRef.current?.selectDevice(kind, deviceId);
-    },
-    requestMute: async (target, kind = 'audio') => {
+  const toggleMicrophone = useCallback(() => {
+    sessionRef.current?.toggleMicrophone();
+  }, []);
+
+  const toggleCamera = useCallback(() => {
+    sessionRef.current?.toggleCamera();
+  }, []);
+
+  const toggleScreenShare = useCallback(async () => {
+    await sessionRef.current?.toggleScreenShare();
+  }, []);
+
+  const selectDevice = useCallback(async (kind: DeviceKind, deviceId: string) => {
+    await sessionRef.current?.selectDevice(kind, deviceId);
+  }, []);
+
+  const requestMute = useCallback(
+    async (target: string, kind: 'audio' | 'video' = 'audio') => {
       await ajaxFetch(`/api/av/mute?${new URLSearchParams({ roomId }).toString()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(kind === 'audio' ? { target } : { target, kind }),
       });
     },
-    attachTrack: (id, kind, el) => sessionRef.current?.attachTrack(id, kind, el),
-    detachTrack: (id, kind, el) => sessionRef.current?.detachTrack(id, kind, el),
-    leave,
-  };
+    [roomId],
+  );
+
+  return useMemo<UseAvSessionResult>(
+    () => ({
+      status: state.status,
+      error: state.error,
+      local: state.local,
+      participants: state.participants,
+      devices: state.devices,
+      unavailableReason,
+      room,
+      toggleMicrophone,
+      toggleCamera,
+      toggleScreenShare,
+      selectDevice,
+      requestMute,
+      leave,
+    }),
+    [
+      state.status,
+      state.error,
+      state.local,
+      state.participants,
+      state.devices,
+      unavailableReason,
+      room,
+      toggleMicrophone,
+      toggleCamera,
+      toggleScreenShare,
+      selectDevice,
+      requestMute,
+      leave,
+    ],
+  );
 }
+
+

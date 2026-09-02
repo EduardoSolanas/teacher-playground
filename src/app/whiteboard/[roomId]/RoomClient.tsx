@@ -272,6 +272,8 @@ function RoomContent({ roomId }: { roomId: string }) {
     }
   }, [isLocalHost, yDoc]);
 
+  const hasHost = users.some((u) => u.isHost);
+
   // Non-host peers follow the room call state: when host starts a call, all peers enter.
   // When host ends the call or leaves the room, peers exit the call.
   useEffect(() => {
@@ -279,7 +281,6 @@ function RoomContent({ roomId }: { roomId: string }) {
     const callMap = yDoc.getMap('call');
     const syncCall = () => {
       const callActive = Boolean(callMap.get('active'));
-      const hasHost = users.some((u) => u.isHost);
       setCallWanted(shouldPeerEnterCall({ callActive, hasHost, avAllowed }));
     };
     callMap.observe(syncCall);
@@ -287,12 +288,22 @@ function RoomContent({ roomId }: { roomId: string }) {
     return () => {
       callMap.unobserve(syncCall);
     };
-  }, [yDoc, isLocalHost, users, avAllowed]);
+  }, [yDoc, isLocalHost, hasHost, avAllowed]);
+
+  // When host unmounts or leaves the room, clear the active call state from the doc
+  useEffect(() => {
+    return () => {
+      if (isLocalHost && yDoc) {
+        yDoc.getMap('call').set('active', false);
+      }
+    };
+  }, [isLocalHost, yDoc]);
 
   // A hidden tab stops its heartbeat unless somebody in it is on a call.
   useEffect(() => {
     callLiveRef.current = av.status === 'joined';
   }, [av.status]);
+
 
   // Losing the right to a call ends any wish for one, so admission does not
   // drop somebody straight back into a call they left before being kicked.
@@ -524,13 +535,17 @@ function RoomContent({ roomId }: { roomId: string }) {
   const handleBackToRooms = useCallback(() => {
     clearSession();
     av.leave();
+    if (isLocalHost && yDoc) {
+      yDoc.getMap('call').set('active', false);
+    }
     if (isWaiting) {
       void leaveWaitingRoom();
     } else if (userName) {
       void leaveRoom();
     }
     router.push('/whiteboard');
-  }, [av, clearSession, isWaiting, leaveRoom, leaveWaitingRoom, router, userName]);
+  }, [av, clearSession, isLocalHost, isWaiting, leaveRoom, leaveWaitingRoom, router, userName, yDoc]);
+
 
   // Calculate this user's position in the waiting queue
   const waitingPosition = isWaiting
