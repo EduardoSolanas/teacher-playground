@@ -710,5 +710,40 @@ describe('AvSessionPanel', () => {
     expect(screen.getByTestId('av-hand-raised-peer-bob')).toBeTruthy();
     expect(screen.getByTestId('av-hand-raised-peer-bob').textContent).toContain('Hand raised');
   });
+
+  it('expands a single participant tile to full width in rail mode', () => {
+    const av = makeAv({
+      participants: [
+        { identity: 'me', micMuted: false, micPresent: true, camOn: false, isSpeaking: false },
+      ],
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    const tile = screen.getByTestId('av-tile-me');
+    expect(tile.parentElement?.className).toContain('w-full');
+    expect(tile.parentElement?.className).not.toContain('basis-44');
+  });
+
+
+
+  it('keeps multi-participant tiles in a scrollable rail', () => {
+    const av = makeAv({
+      participants: [
+        { identity: 'me', micMuted: false, micPresent: true, camOn: false, isSpeaking: false },
+        { identity: 'peer-alice', micMuted: false, micPresent: true, camOn: false, isSpeaking: false },
+      ],
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    const meTile = screen.getByTestId('av-tile-me');
+    expect(meTile.parentElement?.className).toContain('basis-44');
+  });
+
+  it('constrains max-height for responsive vertical scrolling', () => {
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    const panel = screen.getByTestId('av-session-panel');
+    expect(panel.className).toContain('max-h-');
+    expect(panel.className).toContain('overflow-y-auto');
+  });
 });
+
 

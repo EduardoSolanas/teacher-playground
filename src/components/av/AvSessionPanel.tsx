@@ -524,7 +524,7 @@ export default function AvSessionPanel({
        * layer) and the raised-hand cue (1300). The library and the shortcuts
        * sheet (10001) stay above -- those take the screen over on purpose.
        */
-      className={`fixed z-[1400] rounded-2xl border border-slate-700/70 bg-slate-900/95 backdrop-blur-xl p-3 shadow-2xl shadow-slate-950/60 ${placement}`}
+      className={`fixed z-[1400] rounded-2xl border border-slate-700/70 bg-slate-900/95 backdrop-blur-xl p-3 shadow-2xl shadow-slate-950/60 max-h-[calc(100dvh-max(1rem,env(safe-area-inset-top))-max(1rem,env(safe-area-inset-bottom)))] overflow-y-auto ${placement}`}
       style={position ? { left: position.x, top: position.y } : undefined}
     >
       <div className="mb-2.5 flex items-center justify-between gap-2 px-0.5">
@@ -612,7 +612,10 @@ export default function AvSessionPanel({
               {mode === 'rail' && (
                 <div data-testid="av-tiles-rail" className="flex gap-2.5 overflow-x-auto pb-1.5">
                   {tiles.map((participant) => (
-                    <div key={participant.identity} className="min-w-0 shrink-0 basis-44 sm:basis-48">
+                    <div
+                      key={participant.identity}
+                      className={`min-w-0 ${tiles.length === 1 ? 'w-full' : 'shrink-0 basis-44 sm:basis-48'}`}
+                    >
                       <ParticipantTile
                         participant={participant}
                         isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
@@ -674,7 +677,10 @@ export default function AvSessionPanel({
               {mode === 'rail' && (
                 <div data-testid="av-tiles-rail" className="flex gap-2.5 overflow-x-auto pb-1.5">
                   {tiles.map((participant) => (
-                    <div key={participant.identity} className="min-w-0 shrink-0 basis-44 sm:basis-48">
+                    <div
+                      key={participant.identity}
+                      className={`min-w-0 ${tiles.length === 1 ? 'w-full' : 'shrink-0 basis-44 sm:basis-48'}`}
+                    >
                       <ParticipantTile
                         participant={participant}
                         isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
