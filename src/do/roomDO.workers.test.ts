@@ -104,6 +104,57 @@ beforeEach(async () => {
   session = await bootstrapLocalSession(`room-worker-test-${crypto.randomUUID()}`);
 });
 
+/*
+ * LiveKit configuration is ambient, so a test that cares must say so.
+ *
+ * wrangler loads .dev.vars, and a developer who has ever run a call locally
+ * has real LIVEKIT_* values in it. That made two tests in this file disagree
+ * with reality in opposite directions: the "unset" case asserted 503 and got
+ * a token, while the "mints a token" case only ever passed because those
+ * secrets happened to be lying around -- it would fail on CI, which has no
+ * .dev.vars at all.
+ *
+ * Worse, they shared one mutable env object. The fix for the first was to
+ * strip the keys, which is a leak waiting to reach the second: one stray
+ * interleaving and the token case sees an unconfigured room. That failure was
+ * observed once and did not reproduce, which is the signature of exactly this.
+ *
+ * So neither test reads ambient state now. Each declares the world it needs,
+ * and the original values go back afterwards whatever happens -- including
+ * the absence of a value, which restores as an absence rather than as
+ * undefined sitting where a key used to be.
+ */
+const LIVEKIT_ENV_KEYS = ['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET'] as const;
+
+const LIVEKIT_TEST_ENV: Record<(typeof LIVEKIT_ENV_KEYS)[number], string> = {
+  LIVEKIT_URL: 'wss://livekit.invalid',
+  LIVEKIT_API_KEY: 'test_api_key',
+  LIVEKIT_API_SECRET: 'test_api_secret_long_enough_to_sign',
+};
+
+async function withLiveKitConfigured(
+  configured: boolean,
+  run: () => Promise<void>,
+): Promise<void> {
+  const mutableEnv = env as unknown as Record<string, unknown>;
+  const saved = new Map<string, unknown>(
+    LIVEKIT_ENV_KEYS.map((key) => [key, mutableEnv[key]]),
+  );
+  for (const key of LIVEKIT_ENV_KEYS) {
+    if (configured) mutableEnv[key] = LIVEKIT_TEST_ENV[key];
+    else delete mutableEnv[key];
+  }
+  try {
+    await run();
+  } finally {
+    for (const key of LIVEKIT_ENV_KEYS) {
+      const value = saved.get(key);
+      if (value === undefined) delete mutableEnv[key];
+      else mutableEnv[key] = value;
+    }
+  }
+}
+
 async function createRoom(roomId: string, body: Record<string, unknown> = {}) {
   return writeRoom(roomId, session, body);
 }
@@ -1710,14 +1761,16 @@ describe('A/V mute endpoint', () => {
     expect((await writeRoom(roomId, owner)).status).toBe(200);
     await grantEditor(owner, editor, roomId);
 
-    const tokenRes = await authenticatedFetch(`/api/whiteboard/room/${roomId}/av`, editor, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({}),
+    await withLiveKitConfigured(true, async () => {
+      const tokenRes = await authenticatedFetch(`/api/whiteboard/room/${roomId}/av`, editor, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      expect(tokenRes.status).toBe(200);
+      const tokenData = await tokenRes.json() as { token?: string };
+      expect(tokenData.token).toBeDefined();
     });
-    expect(tokenRes.status).toBe(200);
-    const tokenData = await tokenRes.json() as { token?: string };
-    expect(tokenData.token).toBeDefined();
   });
 });
 
@@ -3424,30 +3477,13 @@ describe('A/V token route (/api/av/token)', () => {
     });
     expect(denied.status).toBe(403);
 
-    /*
-     * The absence has to be arranged, not assumed.
-     *
-     * A developer with LiveKit credentials in .dev.vars runs this suite with
-     * the bindings present, so a test that merely hopes they are unset asserts
-     * the opposite of its name on their machine and passes only in CI. Strip
-     * them for the room this case uses, and put them back.
-     */
-    const liveKitKeys = ['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET'] as const;
-    const saved = new Map<string, unknown>();
-    const mutableEnv = env as unknown as Record<string, unknown>;
-    for (const key of liveKitKeys) {
-      if (key in mutableEnv) saved.set(key, mutableEnv[key]);
-      delete mutableEnv[key];
-    }
-    try {
+    await withLiveKitConfigured(false, async () => {
       const unconfigured = await authenticatedFetch('/api/av/token?roomId=av-room-core', owner, {
         method: 'POST',
       });
       expect(unconfigured.status).toBe(503);
       expect(await unconfigured.json()).toMatchObject({ reason: 'unconfigured' });
-    } finally {
-      for (const [key, value] of saved) mutableEnv[key] = value;
-    }
+    });
   });
 
   it('refuses waiting peers even after they have a presence row queued', async () => {
