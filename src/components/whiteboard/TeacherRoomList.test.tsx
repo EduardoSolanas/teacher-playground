@@ -12,7 +12,16 @@ import TeacherRoomList, {
 const UNNAMED_CREATED_AT = 1_700_000_000_000;
 const UNNAMED_UTC_STAMP = new Date(UNNAMED_CREATED_AT).toISOString().replace('T', ' ').slice(0, 16);
 
+const ajaxFetch = vi.fn();
+vi.mock('@/lib/http/ajaxFetch', () => ({
+  ajaxFetch: (...args: unknown[]) => ajaxFetch(...args),
+}));
+
 describe('TeacherRoomList', () => {
+  beforeEach(() => {
+    ajaxFetch.mockReset();
+    ajaxFetch.mockImplementation(() => new Promise(() => {}));
+  });
   // A room falls back to its own code, not its creation time. The code is what
   // a teacher reads out or recognises; a UTC stamp names every room the same
   // shape and tells you nothing about which room it is.
@@ -318,6 +327,36 @@ describe('TeacherRoomList', () => {
       expect(printed).toBe('https://join.example.com/whiteboard/room-alpha');
       expect(printed).not.toContain(window.location.origin);
       expect(printed).not.toContain(`${window.location.host}/whiteboard/room-alpha`);
+    });
+  });
+
+  describe('PIN actions row layout', () => {
+    it('places Turn off guest join and New PIN on the right in the same horizontal actions group', async () => {
+      ajaxFetch.mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            guestAccess: true,
+            guestPin: '968373',
+            guestPinExpiresAt: 1000,
+          }),
+      });
+
+      render(
+        <TeacherRoomList rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]} onOpen={vi.fn()} />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId('whiteboard-room-pin-new-room-alpha')).toBeTruthy();
+        expect(screen.getByTestId('whiteboard-room-guest-off-room-alpha')).toBeTruthy();
+      });
+
+      const newPinBtn = screen.getByTestId('whiteboard-room-pin-new-room-alpha');
+      const offBtn = screen.getByTestId('whiteboard-room-guest-off-room-alpha');
+
+      expect(newPinBtn.parentElement?.className).toContain('room-pin-actions');
+      expect(offBtn.parentElement).toBe(newPinBtn.parentElement);
+      expect(offBtn.compareDocumentPosition(newPinBtn)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     });
   });
 });

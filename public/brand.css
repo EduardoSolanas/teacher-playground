@@ -397,7 +397,9 @@ text-transform:uppercase;color:var(--mut)}
    mistake this line must not invite. The note is pushed onto its own line by
    taking the full basis. */
 .room-share-value{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin:0;min-width:0;flex:1}
-.room-share-value .room-pin-note{flex:1 0 100%}
+.room-share-value .room-pin-note{font-size:.8rem;color:var(--mut);white-space:nowrap}
+.room-share-value .room-pin-block{flex:1 0 100%;font-size:.8rem;color:var(--mut);margin-top:.125rem}
+.room-pin-actions{display:flex;align-items:center;gap:.5rem;margin-left:auto;flex-shrink:0}
 /* The copy control is a hairline square that sits with the value rather than
    under it; at 2.75rem it keeps the touch target the rest of the app uses. */
 .room-share-value .copy-icon-btn{height:2.25rem;width:2.25rem}

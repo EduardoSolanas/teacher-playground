@@ -714,6 +714,11 @@ export default function TeacherRoomList({
                                     {formatGuestPin(roomSettings.guestPin)}
                                   </span>
                                   <CopyButton value={roomSettings.guestPin} label="class PIN" />
+                                  {expiryLabel && !previousPin && (
+                                    <span className="room-pin-note">
+                                      Stops working {expiryLabel}
+                                    </span>
+                                  )}
                                 </>
                               ) : (
                                 <span className="room-pin-note">
@@ -721,75 +726,49 @@ export default function TeacherRoomList({
                                 </span>
                               )}
 
-                              {/*
-                                * Offered in every state, including while a PIN is
-                                * live: a teacher who has finished with a student,
-                                * or who has watched the digits travel further than
-                                * they meant, needs to cut off whoever holds the
-                                * old one without first going and finding a panel.
-                                */}
-                              <button
-                                type="button"
-                                data-testid={`whiteboard-room-pin-new-${room.roomId}`}
-                                disabled={pinBusy}
-                                onClick={() => {
-                                  void patchGuestSettings(
-                                    room.roomId,
-                                    pinState === 'off'
-                                      ? { guestAccess: true }
-                                      : { guestAccess: true, rotateGuestPin: true },
-                                  );
-                                }}
-                                className="btn-outline btn-small"
-                              >
-                                {pinBusy
-                                  ? 'Working…'
-                                  : pinState === 'off' ? 'Create PIN' : 'New PIN'}
-                              </button>
-
-                              {/*
-                                * On the PIN line and pushed to its far end.
-                                * Everything here is about one thing -- the six
-                                * digits that let a student in -- so the switch
-                                * that stops them working belongs beside them
-                                * rather than adrift at the foot of the card.
-                                * The distance across the line is what keeps it
-                                * away from the controls that hand access out.
-                                */}
-                              {roomSettings?.guestAccess && (
+                              <div className="room-pin-actions">
+                                {roomSettings?.guestAccess && (
+                                  <button
+                                    type="button"
+                                    data-testid={`whiteboard-room-guest-off-${room.roomId}`}
+                                    disabled={pinBusy}
+                                    onClick={() => {
+                                      void patchGuestSettings(room.roomId, { guestAccess: false });
+                                    }}
+                                    className="btn-outline btn-small"
+                                  >
+                                    Turn off guest join
+                                  </button>
+                                )}
                                 <button
                                   type="button"
-                                  data-testid={`whiteboard-room-guest-off-${room.roomId}`}
+                                  data-testid={`whiteboard-room-pin-new-${room.roomId}`}
                                   disabled={pinBusy}
                                   onClick={() => {
-                                    void patchGuestSettings(room.roomId, { guestAccess: false });
+                                    void patchGuestSettings(
+                                      room.roomId,
+                                      pinState === 'off'
+                                        ? { guestAccess: true }
+                                        : { guestAccess: true, rotateGuestPin: true },
+                                    );
                                   }}
-                                  className="btn-outline btn-small room-pin-off"
+                                  className="btn-outline btn-small"
                                 >
-                                  Turn off guest join
+                                  {pinBusy
+                                    ? 'Working…'
+                                    : pinState === 'off' ? 'Create PIN' : 'New PIN'}
                                 </button>
-                              )}
+                              </div>
 
                               {previousPin && pinState === 'live' && (
-                                <span className="room-pin-note">
+                                <span className="room-pin-block">
                                   Anyone holding the old PIN is locked out — send this one.
                                 </span>
                               )}
-                              {expiryLabel && !previousPin && (
-                                <span className="room-pin-note">
-                                  Stops working {expiryLabel}
-                                </span>
-                              )}
-                              {/*
-                                * Carried over from the panel this replaced. It
-                                * is the only explanation a teacher gets for a
-                                * student who is typing the right digits and
-                                * still cannot get in.
-                                */}
                               {lockedOut && (
                                 <span
                                   data-testid={`whiteboard-room-lockout-${room.roomId}`}
-                                  className="room-pin-note room-pin-warn"
+                                  className="room-pin-block room-pin-warn"
                                 >
                                   Too many wrong PIN attempts — join is locked. A new PIN unlocks it.
                                 </span>
