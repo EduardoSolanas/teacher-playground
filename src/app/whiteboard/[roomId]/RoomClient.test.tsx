@@ -8,6 +8,8 @@ import {
   mapAvPeerStateByPeerId,
   resolveAvTargetAccountId,
   roomCanvasTopClass,
+  shouldShowStartCall,
+  shouldPeerEnterCall,
 } from './RoomClient';
 
 function makeUser(overrides: Partial<WhiteboardUser> = {}): WhiteboardUser {
@@ -171,5 +173,41 @@ describe('resolveAvTargetAccountId', () => {
         'peer-student',
       ),
     ).toBeNull();
+  });
+});
+
+describe('shouldShowStartCall', () => {
+  it('returns true only for the host when call is allowed and not yet started', () => {
+    expect(shouldShowStartCall({ isHost: true, avAllowed: true, avEnabled: false })).toBe(true);
+  });
+
+  it('returns false for a non-host peer even if admitted and call is allowed', () => {
+    expect(shouldShowStartCall({ isHost: false, avAllowed: true, avEnabled: false })).toBe(false);
+  });
+
+  it('returns false when a call is already active', () => {
+    expect(shouldShowStartCall({ isHost: true, avAllowed: true, avEnabled: true })).toBe(false);
+  });
+
+  it('returns false when av is not allowed', () => {
+    expect(shouldShowStartCall({ isHost: true, avAllowed: false, avEnabled: false })).toBe(false);
+  });
+});
+
+describe('shouldPeerEnterCall', () => {
+  it('returns true when room call is active, host is present, and av is allowed', () => {
+    expect(shouldPeerEnterCall({ callActive: true, hasHost: true, avAllowed: true })).toBe(true);
+  });
+
+  it('returns false when room call is not active', () => {
+    expect(shouldPeerEnterCall({ callActive: false, hasHost: true, avAllowed: true })).toBe(false);
+  });
+
+  it('returns false when no host is present in the room', () => {
+    expect(shouldPeerEnterCall({ callActive: true, hasHost: false, avAllowed: true })).toBe(false);
+  });
+
+  it('returns false when av is not allowed for the peer', () => {
+    expect(shouldPeerEnterCall({ callActive: true, hasHost: true, avAllowed: false })).toBe(false);
   });
 });

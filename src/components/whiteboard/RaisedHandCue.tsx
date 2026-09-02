@@ -87,11 +87,11 @@ export default function RaisedHandCue({
         role="status"
         data-testid="whiteboard-raised-hand-cue"
         data-phasing="out"
-        className="raised-hand-cue absolute left-[38%] top-[36%] flex flex-col items-center"
+        className="raised-hand-cue absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center"
         onAnimationEnd={() => setCue(null)}
       >
-        <RaisedHandIcon className="raised-hand-cue-icon h-28 w-28 sm:h-36 sm:w-36" />
-        <p className="mt-1 rounded-full bg-slate-900/55 px-3 py-0.5 text-sm font-medium text-amber-50">
+        <RaisedHandIcon className="raised-hand-cue-icon h-48 w-48 sm:h-64 sm:w-64" />
+        <p className="mt-3 rounded-full bg-slate-900/75 px-5 py-1.5 text-base sm:text-lg font-semibold text-amber-100 shadow-xl backdrop-blur-sm">
           {cue.name}
         </p>
       </div>

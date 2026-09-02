@@ -111,6 +111,30 @@ export function resolveAvTargetAccountId(
   return users.find((user) => user.peerId === peerId)?.accountId ?? null;
 }
 
+export function shouldShowStartCall({
+  isHost,
+  avAllowed,
+  avEnabled,
+}: {
+  isHost: boolean;
+  avAllowed: boolean;
+  avEnabled: boolean;
+}): boolean {
+  return isHost && avAllowed && !avEnabled;
+}
+
+export function shouldPeerEnterCall({
+  callActive,
+  hasHost,
+  avAllowed,
+}: {
+  callActive: boolean;
+  hasHost: boolean;
+  avAllowed: boolean;
+}): boolean {
+  return Boolean(callActive && hasHost && avAllowed);
+}
+
 function RoomContent({ roomId }: { roomId: string }) {
   const router = useRouter();
   const [userName, setUserName] = useState<string | null>(null);
@@ -233,6 +257,37 @@ function RoomContent({ roomId }: { roomId: string }) {
     enabled: avEnabled,
   });
   const avPeerStates = mapAvPeerStateByPeerId(av.participants, users, localPeerId);
+
+  const handleStartCall = useCallback(() => {
+    setCallWanted(true);
+    if (yDoc) {
+      yDoc.getMap('call').set('active', true);
+    }
+  }, [yDoc]);
+
+  const handleEndCall = useCallback(() => {
+    setCallWanted(false);
+    if (isLocalHost && yDoc) {
+      yDoc.getMap('call').set('active', false);
+    }
+  }, [isLocalHost, yDoc]);
+
+  // Non-host peers follow the room call state: when host starts a call, all peers enter.
+  // When host ends the call or leaves the room, peers exit the call.
+  useEffect(() => {
+    if (isLocalHost || !yDoc) return;
+    const callMap = yDoc.getMap('call');
+    const syncCall = () => {
+      const callActive = Boolean(callMap.get('active'));
+      const hasHost = users.some((u) => u.isHost);
+      setCallWanted(shouldPeerEnterCall({ callActive, hasHost, avAllowed }));
+    };
+    callMap.observe(syncCall);
+    syncCall();
+    return () => {
+      callMap.unobserve(syncCall);
+    };
+  }, [yDoc, isLocalHost, users, avAllowed]);
 
   // A hidden tab stops its heartbeat unless somebody in it is on a call.
   useEffect(() => {
@@ -589,8 +644,8 @@ function RoomContent({ roomId }: { roomId: string }) {
               onSaveAs={handleSaveAs}
               onOpenLibrary={handleOpenLibrary}
             />
-            {avAllowed && !avEnabled && (
-              <StartCallButton onStart={() => setCallWanted(true)} />
+            {shouldShowStartCall({ isHost: isLocalHost, avAllowed, avEnabled }) && (
+              <StartCallButton onStart={handleStartCall} />
             )}
           </div>
         }
@@ -658,7 +713,7 @@ function RoomContent({ roomId }: { roomId: string }) {
           av={av}
           localIdentity={localPeerId}
           users={users}
-          onEndCall={() => setCallWanted(false)}
+          onEndCall={handleEndCall}
         />
       )}
       {shouldOverlayConnectingScreen({ boardEverShown, isSynced }) && <LoadingScreen />}

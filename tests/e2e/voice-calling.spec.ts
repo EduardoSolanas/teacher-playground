@@ -133,14 +133,14 @@ test.describe('video calling panel', () => {
     const roomId = await createRoomWithMaxUsers(hostPage, 'Host', 2);
     await joinRoomApproved(peerPage, hostPage, roomId, 'Peer');
 
+    await expect(peerPage.getByTestId('av-start-call')).toHaveCount(0);
+
     const hostIdentityResponse = waitForAvIdentity(hostPage);
+    const peerIdentityResponse = waitForAvIdentity(peerPage);
     await hostPage.getByTestId('av-start-call').click();
     const hostAccountId = await hostIdentityResponse;
-    await waitForJoinedCall(hostPage);
-
-    const peerIdentityResponse = waitForAvIdentity(peerPage);
-    await peerPage.getByTestId('av-start-call').click();
     const peerAccountId = await peerIdentityResponse;
+    await waitForJoinedCall(hostPage);
     await waitForJoinedCall(peerPage);
 
     await expandPresenceIfCollapsed(hostPage);

@@ -116,7 +116,7 @@ textarea {
 }
 
 .raised-hand-cue-icon {
-  filter: drop-shadow(0 0 1.125rem rgba(253, 230, 138, 0.55));
+  filter: drop-shadow(0 0 2rem rgba(253, 230, 138, 0.7));
 }
 
 :where(a, button, input, textarea, select):focus-visible {

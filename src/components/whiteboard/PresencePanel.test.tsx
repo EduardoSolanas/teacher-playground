@@ -452,13 +452,15 @@ describe('PresencePanel raise hand', () => {
     expect(onRaiseHand).toHaveBeenCalledWith(false);
   });
 
-  it('shows a Hand raised badge for users whose hand is up', () => {
+  it('shows a Hand raised badge for users whose hand is up in trailing container without reflowing name', () => {
     renderPanel([
       makeUser({ peerId: 'peer-local', userName: 'Me', handRaised: false }),
       makeUser({ peerId: 'peer-student', userName: 'Student', handRaised: true }),
     ], { localPeerId: 'peer-local' });
 
-    expect(screen.getByTestId('whiteboard-user-hand-peer-student').textContent).toMatch(/hand raised/i);
+    const handBadge = screen.getByTestId('whiteboard-user-hand-peer-student');
+    expect(handBadge.textContent).toMatch(/hand raised/i);
+    expect(handBadge.parentElement?.className).toContain('ml-auto');
     expect(screen.queryByTestId('whiteboard-user-hand-peer-local')).toBeNull();
   });
 

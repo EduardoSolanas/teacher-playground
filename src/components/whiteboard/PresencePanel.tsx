@@ -649,72 +649,72 @@ export default function PresencePanel({
                         <span className="flex-shrink-0 text-xs font-normal text-slate-400">(you)</span>
                       )}
                     </div>
-                    <div className="flex items-center gap-1.5">
-                      {user.handRaised && (
-                        <span
-                          data-testid={`whiteboard-user-hand-${user.peerId}`}
-                          className="flex items-center gap-1 text-[0.625rem] font-semibold uppercase tracking-wide text-amber-600"
-                        >
-                          <RaisedHandIcon className="h-3.5 w-3.5" tone="ink" />
-                          Hand raised
-                        </span>
-                      )}
-                      {avState && (
-                        <div
-                          data-testid={`whiteboard-user-av-${user.peerId}`}
-                          className="flex items-center gap-1.5"
-                        >
-                          {(() => {
-                            // Precedence: no mic > speaking > muted > plain live
-                            if (!avState.micPresent) {
-                              return (
-                                <div role="img" aria-label={`${user.userName} has no microphone`}>
-                                  <MicOffIcon className="h-3.5 w-3.5 text-slate-500" />
-                                </div>
-                              );
-                            }
-                            if (isSpeaking) {
-                              return (
-                                <div role="img" aria-label={`${user.userName} is talking`}>
-                                  <MicSpeakingIcon className="h-3.5 w-3.5 text-slate-500" />
-                                </div>
-                              );
-                            }
-                            if (avState.micMuted) {
-                              return (
-                                <div role="img" aria-label={`${user.userName} microphone is muted`}>
-                                  <MicOffIcon className="h-3.5 w-3.5 text-slate-500" />
-                                </div>
-                              );
-                            }
+                  </div>
+                  <div className="ml-auto flex items-center gap-1.5 shrink-0">
+                    {user.handRaised && (
+                      <span
+                        data-testid={`whiteboard-user-hand-${user.peerId}`}
+                        className="flex items-center gap-1 text-[0.625rem] font-semibold uppercase tracking-wide text-amber-700 bg-amber-100 border border-amber-300/80 rounded-full px-2 py-0.5 shadow-sm animate-pulse"
+                      >
+                        <RaisedHandIcon className="h-3.5 w-3.5" tone="ink" />
+                        <span>Hand raised</span>
+                      </span>
+                    )}
+                    {avState && (
+                      <div
+                        data-testid={`whiteboard-user-av-${user.peerId}`}
+                        className="flex items-center gap-1.5"
+                      >
+                        {(() => {
+                          // Precedence: no mic > speaking > muted > plain live
+                          if (!avState.micPresent) {
                             return (
-                              <div role="img" aria-label={`${user.userName} microphone is live`}>
-                                <MicIcon className="h-3.5 w-3.5 text-slate-500" />
+                              <div role="img" aria-label={`${user.userName} has no microphone`}>
+                                <MicOffIcon className="h-3.5 w-3.5 text-slate-500" />
                               </div>
                             );
-                          })()}
-                          {avState.camOn ? (
-                            <div role="img" aria-label={`${user.userName} camera is on`}>
-                              <CameraIcon className="h-3.5 w-3.5 text-slate-500" />
+                          }
+                          if (isSpeaking) {
+                            return (
+                              <div role="img" aria-label={`${user.userName} is talking`}>
+                                <MicSpeakingIcon className="h-3.5 w-3.5 text-slate-500" />
+                              </div>
+                            );
+                          }
+                          if (avState.micMuted) {
+                            return (
+                              <div role="img" aria-label={`${user.userName} microphone is muted`}>
+                                <MicOffIcon className="h-3.5 w-3.5 text-slate-500" />
+                              </div>
+                            );
+                          }
+                          return (
+                            <div role="img" aria-label={`${user.userName} microphone is live`}>
+                              <MicIcon className="h-3.5 w-3.5 text-slate-500" />
                             </div>
-                          ) : (
-                            <div role="img" aria-label={`${user.userName} camera is off`}>
-                              <CameraOffIcon className="h-3.5 w-3.5 text-slate-500" />
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {showQualityIssue && (
-                        <span
-                          data-testid={`whiteboard-user-connection-quality-${user.peerId}`}
-                          role="img"
-                          aria-label={`${user.userName} connection is ${avState.quality}`}
-                          className="text-[0.625rem] font-semibold uppercase tracking-wide text-amber-700"
-                        >
-                          {avState.quality === 'lost' ? 'Connection lost' : 'Poor connection'}
-                        </span>
-                      )}
-                    </div>
+                          );
+                        })()}
+                        {avState.camOn ? (
+                          <div role="img" aria-label={`${user.userName} camera is on`}>
+                            <CameraIcon className="h-3.5 w-3.5 text-slate-500" />
+                          </div>
+                        ) : (
+                          <div role="img" aria-label={`${user.userName} camera is off`}>
+                            <CameraOffIcon className="h-3.5 w-3.5 text-slate-500" />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {showQualityIssue && (
+                      <span
+                        data-testid={`whiteboard-user-connection-quality-${user.peerId}`}
+                        role="img"
+                        aria-label={`${user.userName} connection is ${avState.quality}`}
+                        className="text-[0.625rem] font-semibold uppercase tracking-wide text-amber-700"
+                      >
+                        {avState.quality === 'lost' ? 'Connection lost' : 'Poor connection'}
+                      </span>
+                    )}
                   </div>
                   {canMuteAv && (
                     <div className="flex items-center gap-1">

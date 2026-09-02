@@ -57,4 +57,30 @@ describe('RaisedHandCue', () => {
     );
     expect(screen.queryByTestId('whiteboard-raised-hand-cue')).toBeNull();
   });
+
+  it('renders a large, screen-centered cue with prominent icon and attendee name', () => {
+    const host = makeUser({ peerId: 'host', userName: 'Host', isHost: true });
+    const student = makeUser({ peerId: 'ada', userName: 'Ada', handRaised: false });
+    const { rerender } = render(
+      <RaisedHandCue users={[host, student]} localPeerId="host" isLocalHost />,
+    );
+
+    rerender(
+      <RaisedHandCue
+        users={[host, { ...student, handRaised: true }]}
+        localPeerId="host"
+        isLocalHost
+      />,
+    );
+
+    const cue = screen.getByTestId('whiteboard-raised-hand-cue');
+    expect(cue.className).toContain('left-1/2');
+    expect(cue.className).toContain('top-1/2');
+    expect(cue.className).toContain('-translate-x-1/2');
+    expect(cue.className).toContain('-translate-y-1/2');
+
+    const icon = cue.querySelector('svg');
+    expect(icon?.getAttribute('class')).toContain('h-48');
+    expect(icon?.getAttribute('class')).toContain('sm:h-64');
+  });
 });
