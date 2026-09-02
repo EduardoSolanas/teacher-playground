@@ -26,7 +26,11 @@ export function supportEmail(): string {
  * help, not a table of accelerators -- so this is the only one left, and it
  * offers an address.
  */
-export default function SupportButton() {
+export default function SupportButton({
+  rosterExpanded = false,
+}: {
+  readonly rosterExpanded?: boolean;
+} = {}) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -52,7 +56,12 @@ export default function SupportButton() {
   return (
     <div
       ref={rootRef}
-      className="fixed bottom-[max(0.75rem,env(safe-area-inset-bottom))] right-[max(0.75rem,env(safe-area-inset-right))] z-[1400]"
+      data-testid="whiteboard-support-container"
+      className={`fixed bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-[1050] transition-all duration-150 ${
+        rosterExpanded
+          ? 'max-sm:hidden sm:right-[calc(13.75rem+max(0.75rem,env(safe-area-inset-right)))]'
+          : 'right-[max(0.75rem,env(safe-area-inset-right))]'
+      }`}
     >
       {open && (
         <div

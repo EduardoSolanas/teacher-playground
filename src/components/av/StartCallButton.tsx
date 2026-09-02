@@ -18,7 +18,7 @@ export default function StartCallButton({ onStart }: { readonly onStart: () => v
       type="button"
       data-testid="av-start-call"
       onClick={onStart}
-      className="fixed left-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+3.5rem)] z-[1400] rounded-full border border-slate-700/80 bg-slate-900/95 px-3 py-1.5 text-[0.6875rem] font-medium text-slate-200 shadow-lg shadow-slate-900/30 transition-colors hover:bg-slate-800 sm:bottom-16 sm:left-14 sm:top-auto"
+      className="fixed left-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)] z-[1400] rounded-full border border-slate-700/80 bg-slate-900/95 px-3 py-1.5 text-[0.6875rem] font-medium text-slate-200 shadow-lg shadow-slate-900/30 transition-colors hover:bg-slate-800 sm:bottom-16 sm:left-14 sm:top-auto"
     >
       Join call
     </button>

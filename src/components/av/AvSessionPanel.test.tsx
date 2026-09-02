@@ -342,6 +342,19 @@ describe('AvSessionPanel', () => {
     expect(screen.getByTestId('av-panel-open').style.left).toBe(moved);
   });
 
+  it('positions the panel and collapsed pill below the Excalidraw toolbar on mobile by default', () => {
+    const av = makeAv();
+    const { unmount } = render(<AvSessionPanel av={av} localIdentity="me" />);
+    const panel = screen.getByTestId('av-session-panel');
+    expect(panel.className).toContain('top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)]');
+    unmount();
+
+    render(<AvSessionPanel av={av} localIdentity="me" collapsed />);
+    const openBtn = screen.getByTestId('av-panel-open');
+    expect(openBtn.className).toContain('top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)]');
+  });
+
+
   it('offers a fullscreen control on every face', () => {
     const av = makeAv({
       participants: [

@@ -464,7 +464,7 @@ export default function AvSessionPanel({
   // but it still needs a width, which the parked classes were supplying.
   const placement = position
     ? 'w-[min(26.25rem,calc(100vw-1rem))]'
-    : 'left-2 right-14 top-[calc(max(0.5rem,env(safe-area-inset-top))+3.5rem)] w-auto sm:bottom-16 sm:left-14 sm:right-auto sm:top-auto sm:w-[min(26.25rem,calc(100vw-18.75rem))]';
+    : 'left-2 right-14 top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)] w-auto sm:bottom-16 sm:left-14 sm:right-auto sm:top-auto sm:w-[min(26.25rem,calc(100vw-18.75rem))]';
   const focusTile = pinnedIdentity
     ? tiles.find((participant) => participant.identity === pinnedIdentity) ?? null
     : tiles.find((participant) => participant.isSpeaking) ?? tiles[0] ?? null;
@@ -505,7 +505,7 @@ export default function AvSessionPanel({
         className={`fixed z-[1400] rounded-full border border-slate-700/80 bg-slate-900/95 px-3 py-1.5 text-[0.6875rem] font-medium text-slate-200 shadow-lg shadow-slate-900/30 ${
           position
             ? ''
-            : 'left-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+3.5rem)] sm:bottom-16 sm:left-14 sm:top-auto'
+            : 'left-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)] sm:bottom-16 sm:left-14 sm:top-auto'
         }`}
         style={position ? { left: position.x, top: position.y } : undefined}
       >

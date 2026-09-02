@@ -64,4 +64,23 @@ describe('SupportButton', () => {
     render(<SupportButton />);
     expect(screen.queryByTestId('whiteboard-support-btn')).toBeNull();
   });
+
+  it('sits below presence and modal sheets with a controlled z-index', () => {
+    render(<SupportButton />);
+    const container = screen.getByTestId('whiteboard-support-container');
+    expect(container.className).toContain('z-[1050]');
+  });
+
+  it('hides on mobile when roster is expanded and shifts left on desktop', () => {
+    const { rerender } = render(<SupportButton rosterExpanded={false} />);
+    let container = screen.getByTestId('whiteboard-support-container');
+    expect(container.className).toContain('right-[max(0.75rem,env(safe-area-inset-right))]');
+    expect(container.className).not.toContain('max-sm:hidden');
+
+    rerender(<SupportButton rosterExpanded={true} />);
+    container = screen.getByTestId('whiteboard-support-container');
+    expect(container.className).toContain('max-sm:hidden');
+    expect(container.className).toContain('sm:right-[calc(13.75rem+max(0.75rem,env(safe-area-inset-right)))]');
+  });
 });
+

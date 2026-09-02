@@ -616,7 +616,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         />
       </div>
       {connectionLost && <ConnectionLostNotice />}
-      <SupportButton />
+      <SupportButton rosterExpanded={!presenceCollapsed} />
       <RaisedHandCue users={users} localPeerId={localPeerId} isLocalHost={isLocalHost} />
       <PresencePanel
         users={users}
