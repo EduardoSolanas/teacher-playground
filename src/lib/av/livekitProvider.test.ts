@@ -7,6 +7,7 @@ const livekit = vi.hoisted(() => {
   const publishData = vi.fn();
   const setMicrophoneEnabled = vi.fn(async () => {});
   const setCameraEnabled = vi.fn(async () => {});
+  const setScreenShareEnabled = vi.fn(async () => {});
   const switchActiveDevice = vi.fn(async () => {});
   const getLocalDevices = vi.fn(async () => []);
 
@@ -14,9 +15,11 @@ const livekit = vi.hoisted(() => {
     identity: 'local-peer',
     isMicrophoneEnabled: true,
     isCameraEnabled: true,
+    isScreenShareEnabled: false,
     isSpeaking: false,
     setMicrophoneEnabled,
     setCameraEnabled,
+    setScreenShareEnabled,
     publishData,
     on: vi.fn(),
     getTrackPublication: vi.fn(),
@@ -48,6 +51,7 @@ const livekit = vi.hoisted(() => {
     publishData,
     setMicrophoneEnabled,
     setCameraEnabled,
+    setScreenShareEnabled,
     switchActiveDevice,
     getLocalDevices,
     localParticipant,
@@ -302,5 +306,18 @@ describe('LiveKitProvider speaking state', () => {
       identity: 'peer-2',
       micPresent: false,
     });
+  });
+
+  it('exposes the underlying Room instance via getRoom()', () => {
+    const provider = new LiveKitProvider();
+    expect(provider.getRoom()).toBeDefined();
+    expect((provider.getRoom() as { connect: unknown }).connect).toBe(livekit.roomConnect);
+  });
+
+  it('toggles screen share on the local participant', async () => {
+    const provider = new LiveKitProvider();
+    await provider.connect('token', 'wss://livekit.test');
+    await provider.toggleScreenShare();
+    expect(livekit.setScreenShareEnabled).toHaveBeenCalledWith(true);
   });
 });

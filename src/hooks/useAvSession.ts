@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
+import type { Room } from 'livekit-client';
 import {
   createAvSession,
   type AvDevice,
@@ -27,12 +28,14 @@ export interface UseAvSessionOptions {
 export interface UseAvSessionResult {
   readonly status: AvSessionStatus;
   readonly error: AvError | null;
-  readonly local: { micMuted: boolean; camOn: boolean };
+  readonly local: { micMuted: boolean; camOn: boolean; isScreenSharing?: boolean };
   readonly participants: ParticipantState[];
   readonly devices: Record<DeviceKind, AvDevice[]>;
   readonly unavailableReason: 'unconfigured' | 'forbidden' | 'waiting' | null;
+  readonly room: Room | null;
   readonly toggleMicrophone: () => void;
   readonly toggleCamera: () => void;
+  readonly toggleScreenShare: () => Promise<void>;
   readonly selectDevice: (kind: DeviceKind, deviceId: string) => Promise<void>;
   readonly requestMute: (identity: string, kind?: 'audio' | 'video') => Promise<void>;
   readonly attachTrack: (
@@ -58,9 +61,9 @@ interface TokenResponse {
 const EMPTY_SNAPSHOT: AvSessionSnapshot = {
   status: 'idle',
   error: null,
-  local: { micMuted: false, camOn: false },
+  local: { micMuted: false, camOn: false, isScreenSharing: false },
   participants: [],
-  devices: { microphone: [], camera: [] },
+  devices: { microphone: [], camera: [], speaker: [] },
 };
 
 /**
@@ -204,13 +207,18 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
     devices: {
       microphone: [...state.devices.microphone],
       camera: [...state.devices.camera],
+      speaker: [...(state.devices.speaker ?? [])],
     },
     unavailableReason,
+    room: (sessionRef.current?.getRoom?.() as Room | null) ?? null,
     toggleMicrophone: () => {
       sessionRef.current?.toggleMicrophone();
     },
     toggleCamera: () => {
       sessionRef.current?.toggleCamera();
+    },
+    toggleScreenShare: async () => {
+      await sessionRef.current?.toggleScreenShare();
     },
     selectDevice: async (kind, deviceId) => {
       await sessionRef.current?.selectDevice(kind, deviceId);

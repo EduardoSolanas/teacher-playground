@@ -4,25 +4,34 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import CallControls from './CallControls';
 import type { UseAvSessionResult } from '@/hooks/useAvSession';
 
+import type { DeviceKind, AvDevice } from '@/lib/av/avSession';
+
 const mic = (deviceId: string, label = `Microphone ${deviceId}`) => ({ deviceId, label });
 const cam = (deviceId: string, label = `Camera ${deviceId}`) => ({ deviceId, label });
 
-function makeAv(overrides: Partial<UseAvSessionResult> = {}): UseAvSessionResult {
+type AvOverrides = Partial<Omit<UseAvSessionResult, 'devices'>> & {
+  devices?: Partial<Record<DeviceKind, AvDevice[]>>;
+};
+
+function makeAv(overrides: AvOverrides = {}): UseAvSessionResult {
+  const { devices, local, ...rest } = overrides;
   return {
     status: 'joined',
     error: null,
     unavailableReason: null,
+    room: null,
     participants: [],
-    local: { micMuted: false, camOn: true },
-    devices: { microphone: [mic('mic-1')], camera: [cam('cam-1')] },
+    local: { micMuted: false, camOn: true, isScreenSharing: false, ...local },
+    devices: { microphone: [mic('mic-1')], camera: [cam('cam-1')], speaker: [], ...devices },
     toggleMicrophone: vi.fn(),
     toggleCamera: vi.fn(),
+    toggleScreenShare: vi.fn().mockResolvedValue(undefined),
     selectDevice: vi.fn(),
     requestMute: vi.fn(),
     attachTrack: vi.fn(),
     detachTrack: vi.fn(),
     leave: vi.fn(),
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -40,14 +49,24 @@ describe('CallControls', () => {
   it('names the action rather than the state', () => {
     // A button that reads "Mute" mutes: the label is what pressing it does,
     // which is the only reading that survives someone glancing at it mid-lesson.
-    const live = makeAv({ local: { micMuted: false, camOn: true } });
+    const live = makeAv({ local: { micMuted: false, camOn: true, isScreenSharing: false } });
     const { rerender } = render(<CallControls av={live} />);
     expect(screen.getByTestId('av-toggle-mic').textContent).toBe('Mute');
     expect(screen.getByTestId('av-toggle-cam').textContent).toBe('Camera off');
+    expect(screen.getByTestId('av-toggle-screen').textContent).toBe('Share screen');
 
-    rerender(<CallControls av={makeAv({ local: { micMuted: true, camOn: false } })} />);
+    rerender(<CallControls av={makeAv({ local: { micMuted: true, camOn: false, isScreenSharing: true } })} />);
     expect(screen.getByTestId('av-toggle-mic').textContent).toBe('Unmute');
     expect(screen.getByTestId('av-toggle-cam').textContent).toBe('Camera on');
+    expect(screen.getByTestId('av-toggle-screen').textContent).toBe('Stop sharing');
+  });
+
+  it('calls toggleScreenShare when screen share button is clicked', () => {
+    const av = makeAv();
+    render(<CallControls av={av} />);
+
+    fireEvent.click(screen.getByTestId('av-toggle-screen'));
+    expect(av.toggleScreenShare).toHaveBeenCalledTimes(1);
   });
 
   it('says where the call has got to', () => {

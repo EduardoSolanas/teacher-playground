@@ -58,6 +58,7 @@ function participantState(participant: Participant): ParticipantState {
 }
 
 function mediaKind(kind: DeviceKind): MediaDeviceKind {
+  if (kind === 'speaker') return 'audiooutput';
   return kind === 'microphone' ? 'audioinput' : 'videoinput';
 }
 
@@ -118,6 +119,16 @@ export class LiveKitProvider implements AvProvider {
     });
   }
 
+  async toggleScreenShare(): Promise<void> {
+    const isSharing = this.room.localParticipant.isScreenShareEnabled;
+    try {
+      await this.room.localParticipant.setScreenShareEnabled(!isSharing);
+      this.events.onLocalScreenShare?.(!isSharing);
+    } catch (error: unknown) {
+      this.events.onError?.(mapProviderError(error));
+    }
+  }
+
   async selectDevice(kind: DeviceKind, deviceId: string): Promise<void> {
     await this.room.switchActiveDevice(mediaKind(kind), deviceId);
   }
@@ -151,6 +162,10 @@ export class LiveKitProvider implements AvProvider {
   onEvents(events: AvProviderEvents): void {
     this.events = events;
     this.ensureWired();
+  }
+
+  getRoom(): Room {
+    return this.room;
   }
 
   private ensureWired(): void {
@@ -252,6 +267,7 @@ export class LiveKitProvider implements AvProvider {
   private refreshDevices(): void {
     void this.listDevices('microphone', 'audioinput');
     void this.listDevices('camera', 'videoinput');
+    void this.listDevices('speaker', 'audiooutput');
   }
 
   private async listDevices(kind: DeviceKind, media: MediaDeviceKind): Promise<void> {

@@ -160,4 +160,52 @@ describe('useAvSession', () => {
     connect.mockRestore();
     onEvents.mockRestore();
   });
+
+  it('exposes the underlying room object when joined and null when idle', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ token: 'token-1', url: 'wss://livekit.test' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    const connect = vi.spyOn(LiveKitProvider.prototype, 'connect').mockResolvedValue();
+    const disconnect = vi.spyOn(LiveKitProvider.prototype, 'disconnect').mockImplementation(() => {});
+
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) => useAvSession({ ...options, enabled }),
+      { initialProps: { enabled: false } },
+    );
+
+    expect(result.current.room).toBeNull();
+
+    rerender({ enabled: true });
+    await waitFor(() => expect(result.current.status).toBe('joined'));
+    expect(result.current.room).not.toBeNull();
+
+    rerender({ enabled: false });
+    await waitFor(() => expect(result.current.room).toBeNull());
+
+    disconnect.mockRestore();
+    connect.mockRestore();
+  });
+
+  it('calls toggleScreenShare on the underlying session', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ token: 'tok', url: 'wss://lk.test' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const connect = vi.spyOn(LiveKitProvider.prototype, 'connect').mockResolvedValue();
+    const toggleScreen = vi.spyOn(LiveKitProvider.prototype, 'toggleScreenShare').mockResolvedValue();
+
+    const { result } = renderHook(() => useAvSession({ ...options, enabled: true }));
+    await waitFor(() => expect(result.current.status).toBe('joined'));
+
+    await result.current.toggleScreenShare();
+    expect(toggleScreen).toHaveBeenCalledTimes(1);
+
+    toggleScreen.mockRestore();
+    connect.mockRestore();
+  });
 });

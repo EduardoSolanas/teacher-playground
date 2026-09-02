@@ -4,27 +4,36 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import AvSessionPanel from './AvSessionPanel';
 import type { UseAvSessionResult } from '@/hooks/useAvSession';
 
+import type { DeviceKind, AvDevice } from '@/lib/av/avSession';
+
 const mic = (deviceId: string, label = `Microphone ${deviceId}`) => ({ deviceId, label });
 const cam = (deviceId: string, label = `Camera ${deviceId}`) => ({ deviceId, label });
 
-function makeAv(overrides: Partial<UseAvSessionResult> = {}): UseAvSessionResult {
+type AvOverrides = Partial<Omit<UseAvSessionResult, 'devices'>> & {
+  devices?: Partial<Record<DeviceKind, AvDevice[]>>;
+};
+
+function makeAv(overrides: AvOverrides = {}): UseAvSessionResult {
   const attachTrack = vi.fn();
   const detachTrack = vi.fn();
+  const { devices, local, ...rest } = overrides;
   return {
     status: 'joined',
     error: null,
     unavailableReason: null,
+    room: null,
     participants: [],
-    local: { micMuted: false, camOn: true },
-    devices: { microphone: [mic('mic-1')], camera: [cam('cam-1')] },
+    local: { micMuted: false, camOn: true, isScreenSharing: false, ...local },
+    devices: { microphone: [mic('mic-1')], camera: [cam('cam-1')], speaker: [], ...devices },
     toggleMicrophone: vi.fn(),
     toggleCamera: vi.fn(),
+    toggleScreenShare: vi.fn().mockResolvedValue(undefined),
     selectDevice: vi.fn(),
     requestMute: vi.fn(),
     attachTrack,
     detachTrack,
     leave: vi.fn(),
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -375,14 +384,282 @@ describe('AvSessionPanel', () => {
   });
 
   it('shows a camera device picker when more than one camera is available', () => {
-    const av = makeAv({ devices: { microphone: [mic('mic-1')], camera: [cam('cam-1'), cam('cam-2')] } });
+    const av = makeAv({
+      devices: {
+        microphone: [mic('mic-1')],
+        camera: [cam('cam-1'), cam('cam-2')],
+        speaker: [],
+      },
+    });
     render(<AvSessionPanel av={av} localIdentity="me" />);
     expect(screen.getByTestId('av-device-cam')).toBeTruthy();
   });
 
   it('does not show a camera device picker with a single camera', () => {
-    const av = makeAv({ devices: { microphone: [mic('mic-1')], camera: [cam('cam-1')] } });
+    const av = makeAv({
+      devices: {
+        microphone: [mic('mic-1')],
+        camera: [cam('cam-1')],
+        speaker: [],
+      },
+    });
     render(<AvSessionPanel av={av} localIdentity="me" />);
     expect(screen.queryByTestId('av-device-cam')).toBeNull();
+  });
+
+  it('shows a speaker device picker when more than one speaker is available', () => {
+    const spk = (deviceId: string, label = `Speaker ${deviceId}`) => ({ deviceId, label });
+    const av = makeAv({
+      devices: {
+        microphone: [mic('mic-1')],
+        camera: [cam('cam-1')],
+        speaker: [spk('spk-1'), spk('spk-2')],
+      },
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    expect(screen.getByTestId('av-device-speaker')).toBeTruthy();
+  });
+
+  it('renders LiveKit RoomAudioRenderer and VideoTrack when room is present', () => {
+    const mockTrack = {
+      attach: vi.fn((el: HTMLMediaElement) => el),
+      detach: vi.fn((el: HTMLMediaElement) => el),
+    };
+    const mockPublication = {
+      track: mockTrack,
+      trackSid: 'track-cam-1',
+      source: 'camera',
+      isMuted: false,
+    };
+    const mockMicPublication = {
+      track: mockTrack,
+      trackSid: 'track-mic-1',
+      source: 'microphone',
+      isMuted: false,
+    };
+    const localParticipant = {
+      identity: 'me',
+      isCameraEnabled: true,
+      isMicrophoneEnabled: true,
+      trackPublications: new Map([['track-cam-1', mockPublication], ['track-mic-1', mockMicPublication]]),
+      videoTrackPublications: new Map([['track-cam-1', mockPublication]]),
+      audioTrackPublications: new Map([['track-mic-1', mockMicPublication]]),
+      getTrackPublication: vi.fn((source: string) => (source === 'camera' ? mockPublication : mockMicPublication)),
+      on: vi.fn().mockReturnThis(),
+      off: vi.fn().mockReturnThis(),
+      addListener: vi.fn().mockReturnThis(),
+      removeListener: vi.fn().mockReturnThis(),
+      emit: vi.fn(),
+    };
+    const remoteParticipant = {
+      identity: 'peer-1',
+      isCameraEnabled: true,
+      isMicrophoneEnabled: true,
+      trackPublications: new Map([['track-cam-1', mockPublication], ['track-mic-1', mockMicPublication]]),
+      videoTrackPublications: new Map([['track-cam-1', mockPublication]]),
+      audioTrackPublications: new Map([['track-mic-1', mockMicPublication]]),
+      getTrackPublication: vi.fn((source: string) => (source === 'camera' ? mockPublication : mockMicPublication)),
+      on: vi.fn().mockReturnThis(),
+      off: vi.fn().mockReturnThis(),
+      addListener: vi.fn().mockReturnThis(),
+      removeListener: vi.fn().mockReturnThis(),
+      emit: vi.fn(),
+    };
+    const mockRoom = {
+      name: 'room-1',
+      state: 'connected',
+      localParticipant,
+      remoteParticipants: new Map([['peer-1', remoteParticipant]]),
+      participants: new Map([['me', localParticipant], ['peer-1', remoteParticipant]]),
+      disconnect: vi.fn(),
+      on: vi.fn().mockReturnThis(),
+      off: vi.fn().mockReturnThis(),
+      addListener: vi.fn().mockReturnThis(),
+      removeListener: vi.fn().mockReturnThis(),
+      emit: vi.fn(),
+    };
+
+    const av = makeAv({
+      room: mockRoom as unknown as UseAvSessionResult['room'],
+      participants: [
+        { identity: 'me', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
+        { identity: 'peer-1', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
+      ],
+      local: { micMuted: false, camOn: true },
+    });
+
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    expect(screen.getByTestId('av-livekit-room')).toBeTruthy();
+    expect(screen.getByTestId('av-room-audio-renderer')).toBeTruthy();
+    expect(screen.getByTestId('av-video-track-me')).toBeTruthy();
+    expect(screen.getByTestId('av-video-track-peer-1')).toBeTruthy();
+    expect(screen.getByTestId('av-video-track-me').className).toContain('-scale-x-100');
+    expect(screen.getByTestId('av-video-track-peer-1').className).not.toContain('-scale-x-100');
+  });
+
+  it('highlights the speaking participant tile with an active speaker ring', () => {
+    const av = makeAv({
+      participants: [
+        { identity: 'me', micMuted: false, micPresent: true, camOn: true, isSpeaking: true },
+        { identity: 'peer-1', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
+      ],
+      local: { micMuted: false, camOn: true },
+    });
+
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    const speakingTile = screen.getByTestId('av-tile-me');
+    const silentTile = screen.getByTestId('av-tile-peer-1');
+
+    expect(speakingTile.className).toContain('ring-2 ring-emerald-400');
+    expect(silentTile.className).not.toContain('ring-2 ring-emerald-400');
+  });
+
+  it('displays connection quality warning when quality is poor or lost', () => {
+    const av = makeAv({
+      participants: [
+        { identity: 'peer-poor', micMuted: false, micPresent: true, camOn: true, isSpeaking: false, quality: 'poor' },
+        { identity: 'peer-lost', micMuted: false, micPresent: true, camOn: true, isSpeaking: false, quality: 'lost' },
+        { identity: 'peer-good', micMuted: false, micPresent: true, camOn: true, isSpeaking: false, quality: 'excellent' },
+      ],
+    });
+
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    expect(screen.getByTestId('av-quality-peer-poor')).toBeTruthy();
+    expect(screen.getByTestId('av-quality-peer-poor').textContent).toContain('Poor');
+    expect(screen.getByTestId('av-quality-peer-lost')).toBeTruthy();
+    expect(screen.getByTestId('av-quality-peer-lost').textContent).toContain('Lost');
+    expect(screen.queryByTestId('av-quality-peer-good')).toBeNull();
+  });
+
+  it('offers a Picture-in-Picture control on video tiles', () => {
+    const av = makeAv({
+      participants: [
+        { identity: 'me', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
+        { identity: 'peer-1', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
+      ],
+    });
+
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    expect(screen.getByTestId('av-pip-me')).toBeTruthy();
+    expect(screen.getByTestId('av-pip-peer-1')).toBeTruthy();
+  });
+
+  it('requests Picture-in-Picture on video element when PiP button is clicked', async () => {
+    const av = makeAv({ local: { micMuted: false, camOn: true } });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+
+    const video = screen.getByTestId('av-tile-me').querySelector('video');
+    expect(video).toBeTruthy();
+    const requestPip = vi.fn().mockResolvedValue({} as PictureInPictureWindow);
+    if (video) {
+      (video as unknown as { requestPictureInPicture: unknown }).requestPictureInPicture = requestPip;
+    }
+
+    fireEvent.click(screen.getByTestId('av-pip-me'));
+    expect(requestPip).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders audio playback unlock button when browser blocks autoplay', () => {
+    const mockTrack = {
+      attach: vi.fn((el: HTMLMediaElement) => el),
+      detach: vi.fn((el: HTMLMediaElement) => el),
+    };
+    const mockPublication = {
+      track: mockTrack,
+      trackSid: 'track-cam-1',
+      source: 'camera',
+      isMuted: false,
+    };
+    const localParticipant = {
+      identity: 'me',
+      isCameraEnabled: true,
+      isMicrophoneEnabled: true,
+      trackPublications: new Map([['track-cam-1', mockPublication]]),
+      videoTrackPublications: new Map([['track-cam-1', mockPublication]]),
+      audioTrackPublications: new Map(),
+      getTrackPublication: vi.fn(() => mockPublication),
+      on: vi.fn().mockReturnThis(),
+      off: vi.fn().mockReturnThis(),
+      addListener: vi.fn().mockReturnThis(),
+      removeListener: vi.fn().mockReturnThis(),
+      emit: vi.fn(),
+    };
+    const mockRoom = {
+      name: 'room-1',
+      state: 'connected',
+      canPlaybackAudio: false,
+      startAudio: vi.fn().mockResolvedValue(undefined),
+      localParticipant,
+      remoteParticipants: new Map(),
+      participants: new Map([['me', localParticipant]]),
+      disconnect: vi.fn(),
+      on: vi.fn().mockReturnThis(),
+      off: vi.fn().mockReturnThis(),
+      addListener: vi.fn().mockReturnThis(),
+      removeListener: vi.fn().mockReturnThis(),
+      emit: vi.fn(),
+    };
+
+    const av = makeAv({
+      room: mockRoom as unknown as UseAvSessionResult['room'],
+      local: { micMuted: false, camOn: true },
+    });
+
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    const unlockBtn = screen.getByTestId('av-audio-unlock');
+    expect(unlockBtn).toBeTruthy();
+    expect(unlockBtn.textContent).toContain('Audio blocked');
+    fireEvent.click(unlockBtn);
+    expect(mockRoom.startAudio).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders unmirrored VideoTrack when local participant shares screen', () => {
+    const mockTrack = {
+      attach: vi.fn((el: HTMLMediaElement) => el),
+      detach: vi.fn((el: HTMLMediaElement) => el),
+    };
+    const mockScreenPublication = {
+      track: mockTrack,
+      trackSid: 'track-screen-1',
+      source: 'screen_share',
+      isMuted: false,
+    };
+    const localParticipant = {
+      identity: 'me',
+      isCameraEnabled: false,
+      isMicrophoneEnabled: true,
+      trackPublications: new Map([['track-screen-1', mockScreenPublication]]),
+      videoTrackPublications: new Map([['track-screen-1', mockScreenPublication]]),
+      audioTrackPublications: new Map(),
+      getTrackPublication: vi.fn((source: string) => (source === 'screen_share' ? mockScreenPublication : undefined)),
+      on: vi.fn().mockReturnThis(),
+      off: vi.fn().mockReturnThis(),
+      addListener: vi.fn().mockReturnThis(),
+      removeListener: vi.fn().mockReturnThis(),
+      emit: vi.fn(),
+    };
+    const mockRoom = {
+      name: 'room-1',
+      state: 'connected',
+      localParticipant,
+      remoteParticipants: new Map(),
+      participants: new Map([['me', localParticipant]]),
+      disconnect: vi.fn(),
+      on: vi.fn().mockReturnThis(),
+      off: vi.fn().mockReturnThis(),
+      addListener: vi.fn().mockReturnThis(),
+      removeListener: vi.fn().mockReturnThis(),
+      emit: vi.fn(),
+    };
+
+    const av = makeAv({
+      room: mockRoom as unknown as UseAvSessionResult['room'],
+      local: { micMuted: false, camOn: false, isScreenSharing: true },
+    });
+
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    const videoTrack = screen.getByTestId('av-video-track-me');
+    expect(videoTrack).toBeTruthy();
+    expect(videoTrack.className).not.toContain('-scale-x-100');
   });
 });

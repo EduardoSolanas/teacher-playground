@@ -35,9 +35,10 @@ export interface ParticipantState {
 export interface LocalState {
   micMuted: boolean;
   camOn: boolean;
+  isScreenSharing: boolean;
 }
 
-export type DeviceKind = 'microphone' | 'camera';
+export type DeviceKind = 'microphone' | 'camera' | 'speaker';
 
 /**
  * A device, with the name its owner would recognise.
@@ -56,6 +57,7 @@ export interface AvProviderEvents {
   onParticipantRemoved?: (identity: string) => void;
   onLocalMic?: (muted: boolean) => void;
   onLocalCamera?: (on: boolean) => void;
+  onLocalScreenShare?: (on: boolean) => void;
   onLocalSpeaking?: (speaking: boolean) => void;
   onDisconnected?: () => void;
   onError?: (error: AvError) => void;
@@ -67,6 +69,7 @@ export interface AvProvider {
   disconnect(): void;
   setMicrophone(muted: boolean): void;
   setCamera(on: boolean): void;
+  toggleScreenShare?(): Promise<void>;
   selectDevice(kind: DeviceKind, deviceId: string): Promise<void>;
   onEvents(events: AvProviderEvents): void;
   attachTrack?(
@@ -79,6 +82,7 @@ export interface AvProvider {
     kind: 'camera' | 'microphone',
     element: HTMLMediaElement,
   ): void;
+  getRoom?(): unknown | null;
 }
 
 export interface AvSessionSnapshot {
@@ -103,6 +107,7 @@ export interface AvSession {
   leave(): void;
   toggleMicrophone(): void;
   toggleCamera(): void;
+  toggleScreenShare(): Promise<void>;
   selectDevice(kind: DeviceKind, deviceId: string): Promise<void>;
   attachTrack(
     identity: string,
@@ -114,6 +119,7 @@ export interface AvSession {
     kind: 'camera' | 'microphone',
     element: HTMLMediaElement,
   ): void;
+  getRoom?(): unknown | null;
   /** True when the provider is configured and a join is in flight or joined. */
   readonly isActive: boolean;
 }
@@ -135,10 +141,10 @@ export function createAvSession(provider: AvProvider): AvSession {
   let error: AvError | null = null;
   // The camera is off until a join publishes it and the provider says so.
   // Seeding it on makes every label lie for as long as the join takes.
-  let local: LocalState = { micMuted: false, camOn: false };
+  let local: LocalState = { micMuted: false, camOn: false, isScreenSharing: false };
   let localSpeaking = false;
   const participants: ParticipantState[] = [];
-  const devices: Record<DeviceKind, AvDevice[]> = { microphone: [], camera: [] };
+  const devices: Record<DeviceKind, AvDevice[]> = { microphone: [], camera: [], speaker: [] };
   const listeners = new Set<AvSessionListener>();
   let snapshot: AvSessionSnapshot;
 
@@ -151,6 +157,7 @@ export function createAvSession(provider: AvProvider): AvSession {
       devices: {
         microphone: [...devices.microphone],
         camera: [...devices.camera],
+        speaker: [...devices.speaker],
       },
     };
   }
@@ -202,6 +209,10 @@ export function createAvSession(provider: AvProvider): AvSession {
       updateLocalParticipant();
       emitChange();
     },
+    onLocalScreenShare(on) {
+      local.isScreenSharing = on;
+      emitChange();
+    },
     onLocalSpeaking(speaking) {
       localSpeaking = speaking;
       updateLocalParticipant();
@@ -210,7 +221,7 @@ export function createAvSession(provider: AvProvider): AvSession {
     onDisconnected() {
       status = 'idle';
       clearParticipants();
-      local = { micMuted: false, camOn: false };
+      local = { micMuted: false, camOn: false, isScreenSharing: false };
       localSpeaking = false;
       emitChange();
     },
@@ -254,10 +265,11 @@ export function createAvSession(provider: AvProvider): AvSession {
     status = 'idle';
     error = null;
     clearParticipants();
-    local = { micMuted: false, camOn: false };
+    local = { micMuted: false, camOn: false, isScreenSharing: false };
     localSpeaking = false;
     devices.microphone = [];
     devices.camera = [];
+    devices.speaker = [];
     emitChange();
   }
 
@@ -285,6 +297,19 @@ export function createAvSession(provider: AvProvider): AvSession {
     }
     updateLocalParticipant();
     emitChange();
+  }
+
+  async function toggleScreenShare(): Promise<void> {
+    if (status !== 'joined') return;
+    if (provider.toggleScreenShare) {
+      try {
+        await provider.toggleScreenShare();
+      } catch (err) {
+        error = mapProviderError(err);
+        status = 'error';
+      }
+      emitChange();
+    }
   }
 
   async function selectDevice(kind: DeviceKind, deviceId: string): Promise<void> {
@@ -351,8 +376,10 @@ export function createAvSession(provider: AvProvider): AvSession {
     leave,
     toggleMicrophone,
     toggleCamera,
+    toggleScreenShare,
     selectDevice,
     attachTrack,
     detachTrack,
+    getRoom: () => provider.getRoom?.() ?? null,
   };
 }

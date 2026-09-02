@@ -31,6 +31,7 @@ dist/
 # Playwright and ad-hoc test output
 test-results/
 playwright-report/
+.playwright-mcp/
 e2e-results.txt
 test-output.txt
 test-results.txt

@@ -26,6 +26,7 @@
     "test:e2e:ui": "node scripts/run-e2e.mjs --ui"
   },
   "dependencies": {
+    "@livekit/components-react": "^2.9.24",
     "@tailwindcss/postcss": "^4.1.18",
     "@teacher-playground/excalidraw": "https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.11/package.tgz",
     "better-sqlite3": "^12.10.0",

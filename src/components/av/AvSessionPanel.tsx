@@ -1,6 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { LiveKitRoom, RoomAudioRenderer, VideoTrack, useAudioPlayback } from '@livekit/components-react';
+import type { Room } from 'livekit-client';
+import { Track } from 'livekit-client';
 
 import CallControls from './CallControls';
 import type { UseAvSessionResult } from '@/hooks/useAvSession';
@@ -17,9 +20,9 @@ interface AvSessionPanelProps {
   /**
    * Hang up, without leaving the room.
    *
-  * The board carries on either way, so this is not the Leave in the bottom
-  * bar. Absent where the call is not something the caller can end.
-  */
+   * The board carries on either way, so this is not the Leave in the bottom
+   * bar. Absent where the call is not something the caller can end.
+   */
   readonly onEndCall?: () => void;
 }
 
@@ -65,8 +68,23 @@ function errorCopy(av: UseAvSessionResult): string | null {
  * a numbered fallback has to stand in -- "Microphone 2" is still something a
  * person can choose between, and the bare id never was.
  */
-function deviceLabel(device: AvDevice, index: number, kind: 'Microphone' | 'Camera'): string {
+function deviceLabel(device: AvDevice, index: number, kind: 'Microphone' | 'Camera' | 'Speaker'): string {
   return device.label.trim() || `${kind} ${index + 1}`;
+}
+
+function AudioPlaybackBanner({ room }: { readonly room: Room }) {
+  const { canPlayAudio, startAudio } = useAudioPlayback(room);
+  if (canPlayAudio) return null;
+  return (
+    <button
+      type="button"
+      data-testid="av-audio-unlock"
+      onClick={() => void startAudio()}
+      className="mb-2 w-full rounded border border-amber-500/40 bg-amber-500/20 px-2 py-1 text-center text-[0.6875rem] font-medium text-amber-200 transition-colors hover:bg-amber-500/30"
+    >
+      🔊 Audio blocked by browser. Click to enable sound.
+    </button>
+  );
 }
 
 function ParticipantTile({
@@ -109,7 +127,22 @@ function ParticipantTile({
     void request().catch(() => undefined);
   };
 
+  const togglePictureInPicture = () => {
+    const tile = tileRef.current;
+    const video = tile?.querySelector('video');
+    if (!video) return;
+    if (document.pictureInPictureElement === video) {
+      const exit = document.exitPictureInPicture?.bind(document);
+      if (exit) void exit().catch(() => undefined);
+      return;
+    }
+    const request = video.requestPictureInPicture?.bind(video);
+    if (!request) return;
+    void request().catch(() => undefined);
+  };
+
   useEffect(() => {
+    if (av.room) return;
     const video = videoRef.current;
     if (!video) return;
     av.attachTrack(participant.identity, 'camera', video);
@@ -118,36 +151,79 @@ function ParticipantTile({
     };
   }, [av, participant.identity, participant.camOn]);
 
+  const participantObj = av.room
+    ? isLocal || participant.identity === '__local__'
+      ? av.room.localParticipant
+      : av.room.remoteParticipants.get(participant.identity)
+    : null;
+  const videoPublication = participantObj?.getTrackPublication(Track.Source.ScreenShare) ?? participantObj?.getTrackPublication(Track.Source.Camera);
+  const trackRef = participantObj && videoPublication
+    ? { participant: participantObj, publication: videoPublication, source: videoPublication.source }
+    : null;
+  const isScreenShare = videoPublication?.source === Track.Source.ScreenShare;
+  const shouldMirror = isLocal && !isScreenShare;
+
   return (
     <div
       ref={tileRef}
       data-testid={`av-tile-${participant.identity}`}
-      className="group relative aspect-video overflow-hidden rounded-lg bg-slate-800 [&:fullscreen]:aspect-auto [&:fullscreen]:h-screen [&:fullscreen]:w-screen [&:fullscreen]:rounded-none [&:fullscreen_video]:object-contain"
+      className={`group relative aspect-video overflow-hidden rounded-lg bg-slate-800 transition-shadow [&:fullscreen]:aspect-auto [&:fullscreen]:h-screen [&:fullscreen]:w-screen [&:fullscreen]:rounded-none [&:fullscreen_video]:object-contain ${
+        participant.isSpeaking ? 'ring-2 ring-emerald-400 ring-offset-1 ring-offset-slate-900 shadow-md shadow-emerald-500/20' : ''
+      }`}
     >
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted={isLocal}
-        className={`h-full w-full object-cover ${participant.camOn ? '' : 'hidden'}`}
-      />
-      {!participant.camOn && (
+      {av.room && trackRef && (participant.camOn || isScreenShare) ? (
+        <VideoTrack
+          trackRef={trackRef}
+          data-testid={`av-video-track-${participant.identity}`}
+          className={`h-full w-full object-cover ${shouldMirror ? '-scale-x-100' : ''}`}
+        />
+      ) : (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted={isLocal}
+          className={`h-full w-full object-cover ${shouldMirror ? '-scale-x-100' : ''} ${participant.camOn ? '' : 'hidden'}`}
+        />
+      )}
+      {!participant.camOn && !isScreenShare && (
         <div className="flex h-full w-full items-center justify-center text-sm text-slate-300">
           Camera off
         </div>
       )}
-      <button
-        type="button"
-        data-testid={`av-fullscreen-${participant.identity}`}
-        onClick={toggleFullscreen}
-        title="Fullscreen"
-        aria-label={`Fullscreen ${isLocal ? 'your camera' : participant.identity}`}
-        className="absolute right-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[0.6875rem] text-white transition-colors hover:bg-black/80"
-      >
-        {/* A glyph rather than a word: the tile is small and the corner is all
-            the room there is. */}
-        ⛶
-      </button>
+      {(participant.quality === 'poor' || participant.quality === 'lost') && (
+        <div
+          data-testid={`av-quality-${participant.identity}`}
+          className={`absolute left-1 top-1 z-10 flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.625rem] font-medium text-white shadow ${
+            participant.quality === 'lost' ? 'bg-rose-600/90' : 'bg-amber-600/90'
+          }`}
+        >
+          <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />
+          {participant.quality === 'lost' ? 'Lost connection' : 'Poor connection'}
+        </div>
+      )}
+      <div className="absolute right-1 top-1 flex items-center gap-1">
+        <button
+          type="button"
+          data-testid={`av-pip-${participant.identity}`}
+          onClick={togglePictureInPicture}
+          title="Picture in Picture"
+          aria-label={`Picture in picture ${isLocal ? 'your camera' : participant.identity}`}
+          className="rounded bg-black/60 px-1.5 py-0.5 text-[0.6875rem] text-white transition-colors hover:bg-black/80"
+        >
+          ⧉
+        </button>
+        <button
+          type="button"
+          data-testid={`av-fullscreen-${participant.identity}`}
+          onClick={toggleFullscreen}
+          title="Fullscreen"
+          aria-label={`Fullscreen ${isLocal ? 'your camera' : participant.identity}`}
+          className="rounded bg-black/60 px-1.5 py-0.5 text-[0.6875rem] text-white transition-colors hover:bg-black/80"
+        >
+          ⛶
+        </button>
+      </div>
       <div className="absolute bottom-1 left-1 right-1 flex items-center justify-between gap-1">
         <span className="truncate rounded bg-black/60 px-1.5 py-0.5 text-[0.6875rem] text-white">
           {isLocal ? 'You' : participant.identity}
@@ -436,63 +512,122 @@ export default function AvSessionPanel({
         */}
       {av.unavailableReason === null && (
         <>
-          <div aria-hidden className="absolute">
-            {tiles
-              .filter((participant) => participant.identity !== localIdentity && participant.identity !== '__local__')
-              .map((participant) => (
-                <RemoteParticipantAudio
-                  key={participant.identity}
-                  participant={participant}
-                  av={av}
-                />
-              ))}
-          </div>
-          {mode === 'rail' && (
-            <div data-testid="av-tiles-rail" className="flex gap-2 overflow-x-auto pb-1">
-              {tiles.map((participant) => (
-                <div key={participant.identity} className="min-w-0 shrink-0 basis-40">
-                  <ParticipantTile
-                    participant={participant}
-                    isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
-                    av={av}
-                    onFocus={() => focusParticipant(participant.identity)}
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-          {mode === 'focus' && focusTile && (
-            <div className="flex flex-col gap-2">
-              <div data-testid="av-focus-primary" data-participant={focusTile.identity}>
-                <ParticipantTile
-                  participant={focusTile}
-                  isLocal={focusTile.identity === localIdentity || focusTile.identity === '__local__'}
-                  av={av}
-                  onFocus={() => focusParticipant(focusTile.identity)}
-                  pinned={pinnedIdentity === focusTile.identity}
-                />
+          {av.room ? (
+            <LiveKitRoom
+              room={av.room}
+              serverUrl={undefined}
+              token={undefined}
+              connect={false}
+              data-testid="av-livekit-room"
+            >
+              <div data-testid="av-room-audio-renderer" aria-hidden className="absolute">
+                <RoomAudioRenderer />
               </div>
-              {secondaryTiles.length > 0 && (
-                <div className="flex gap-2 overflow-x-auto pb-1">
-                  {secondaryTiles.map((participant) => (
-                    <div key={participant.identity} className="min-w-0 shrink-0 basis-28">
+              <AudioPlaybackBanner room={av.room} />
+              {mode === 'rail' && (
+                <div data-testid="av-tiles-rail" className="flex gap-2 overflow-x-auto pb-1">
+                  {tiles.map((participant) => (
+                    <div key={participant.identity} className="min-w-0 shrink-0 basis-40">
                       <ParticipantTile
                         participant={participant}
                         isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
                         av={av}
                         onFocus={() => focusParticipant(participant.identity)}
-                        pinned={pinnedIdentity === participant.identity}
                       />
                     </div>
                   ))}
                 </div>
               )}
-            </div>
+              {mode === 'focus' && focusTile && (
+                <div className="flex flex-col gap-2">
+                  <div data-testid="av-focus-primary" data-participant={focusTile.identity}>
+                    <ParticipantTile
+                      participant={focusTile}
+                      isLocal={focusTile.identity === localIdentity || focusTile.identity === '__local__'}
+                      av={av}
+                      onFocus={() => focusParticipant(focusTile.identity)}
+                      pinned={pinnedIdentity === focusTile.identity}
+                    />
+                  </div>
+                  {secondaryTiles.length > 0 && (
+                    <div className="flex gap-2 overflow-x-auto pb-1">
+                      {secondaryTiles.map((participant) => (
+                        <div key={participant.identity} className="min-w-0 shrink-0 basis-28">
+                          <ParticipantTile
+                            participant={participant}
+                            isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
+                            av={av}
+                            onFocus={() => focusParticipant(participant.identity)}
+                            pinned={pinnedIdentity === participant.identity}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </LiveKitRoom>
+          ) : (
+            <>
+              <div aria-hidden className="absolute">
+                {tiles
+                  .filter((participant) => participant.identity !== localIdentity && participant.identity !== '__local__')
+                  .map((participant) => (
+                    <RemoteParticipantAudio
+                      key={participant.identity}
+                      participant={participant}
+                      av={av}
+                    />
+                  ))}
+              </div>
+              {mode === 'rail' && (
+                <div data-testid="av-tiles-rail" className="flex gap-2 overflow-x-auto pb-1">
+                  {tiles.map((participant) => (
+                    <div key={participant.identity} className="min-w-0 shrink-0 basis-40">
+                      <ParticipantTile
+                        participant={participant}
+                        isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
+                        av={av}
+                        onFocus={() => focusParticipant(participant.identity)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+              {mode === 'focus' && focusTile && (
+                <div className="flex flex-col gap-2">
+                  <div data-testid="av-focus-primary" data-participant={focusTile.identity}>
+                    <ParticipantTile
+                      participant={focusTile}
+                      isLocal={focusTile.identity === localIdentity || focusTile.identity === '__local__'}
+                      av={av}
+                      onFocus={() => focusParticipant(focusTile.identity)}
+                      pinned={pinnedIdentity === focusTile.identity}
+                    />
+                  </div>
+                  {secondaryTiles.length > 0 && (
+                    <div className="flex gap-2 overflow-x-auto pb-1">
+                      {secondaryTiles.map((participant) => (
+                        <div key={participant.identity} className="min-w-0 shrink-0 basis-28">
+                          <ParticipantTile
+                            participant={participant}
+                            isLocal={participant.identity === localIdentity || participant.identity === '__local__'}
+                            av={av}
+                            onFocus={() => focusParticipant(participant.identity)}
+                            pinned={pinnedIdentity === participant.identity}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
           )}
         </>
       )}
 
-      {(av.devices.microphone.length > 1 || av.devices.camera.length > 1) && (
+      {((av.devices.microphone?.length ?? 0) > 1 || (av.devices.camera?.length ?? 0) > 1 || (av.devices.speaker?.length ?? 0) > 1) && (
         <div className="mt-2 flex flex-col gap-1 border-t border-slate-700 pt-2">
           {av.devices.microphone.length > 1 && (
             <label className="flex items-center gap-2 text-[0.6875rem] text-slate-300">
@@ -529,6 +664,26 @@ export default function AvSessionPanel({
                 {av.devices.camera.map((device, index) => (
                   <option key={device.deviceId} value={device.deviceId}>
                     {deviceLabel(device, index, 'Camera')}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {(av.devices.speaker?.length ?? 0) > 1 && (
+            <label className="flex items-center gap-2 text-[0.6875rem] text-slate-300">
+              Speaker
+              <select
+                data-testid="av-device-speaker"
+                className="min-w-0 flex-1 truncate rounded border border-slate-600 bg-slate-800 px-1 py-0.5"
+                onChange={(event) => void av.selectDevice('speaker', event.target.value)}
+                defaultValue=""
+              >
+                <option value="" disabled>
+                  Select speaker
+                </option>
+                {av.devices.speaker.map((device, index) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {deviceLabel(device, index, 'Speaker')}
                   </option>
                 ))}
               </select>

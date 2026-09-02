@@ -46,6 +46,15 @@ export default function CallControls({ av }: { readonly av: UseAvSessionResult }
       >
         {av.local.camOn ? 'Camera off' : 'Camera on'}
       </button>
+      <button
+        type="button"
+        data-testid="av-toggle-screen"
+        className="rounded-md border border-slate-600 px-2 py-1 text-[0.6875rem] text-slate-200 transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+        onClick={() => void av.toggleScreenShare()}
+        disabled={inert}
+      >
+        {av.local.isScreenSharing ? 'Stop sharing' : 'Share screen'}
+      </button>
     </div>
   );
 }
