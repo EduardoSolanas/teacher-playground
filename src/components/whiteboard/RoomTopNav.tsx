@@ -34,7 +34,7 @@ export default function RoomTopNav({
     <nav
       aria-label="Room navigation"
       data-testid="whiteboard-room-top-nav"
-      className="fixed inset-x-0 top-0 z-[1100] flex h-[calc(3rem+env(safe-area-inset-top))] items-center justify-between border-b border-slate-700/80 bg-slate-900/95 pt-[env(safe-area-inset-top)] text-slate-200 shadow-lg shadow-slate-950/20 backdrop-blur-md"
+      className="fixed inset-x-0 top-0 z-[1300] flex h-[calc(3rem+env(safe-area-inset-top))] items-center justify-between border-b border-slate-700/80 bg-slate-900/95 pt-[env(safe-area-inset-top)] text-slate-200 shadow-lg shadow-slate-950/20 backdrop-blur-md"
     >
       <BackToRoomsLink embedded onNavigate={onNavigate} />
       {center && (

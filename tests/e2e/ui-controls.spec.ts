@@ -68,6 +68,27 @@ test.describe('Room chrome', () => {
     }, { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 });
     expect(hit).toBe(true);
   });
+
+  test('the profile menu items are on top of the participants panel when opened', async ({ page }) => {
+    await joinRoom(page, 'ChromeHost2');
+    await waitForExcalidrawApi(page);
+    await expect(page.locator('#whiteboard-presence-panel')).toBeVisible({ timeout: 15000 });
+
+    const profile = page.getByTestId('whiteboard-profile-btn');
+    await profile.click();
+
+    const changeNameBtn = page.getByTestId('whiteboard-profile-edit-name');
+    await expect(changeNameBtn).toBeVisible();
+
+    const box = await changeNameBtn.boundingBox();
+    expect(box).not.toBeNull();
+
+    const hit = await page.evaluate(({ x, y }) => {
+      const element = document.elementFromPoint(x, y);
+      return element?.closest('[data-testid="whiteboard-profile-edit-name"]') !== null;
+    }, { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 });
+    expect(hit).toBe(true);
+  });
 });
 
 test.describe('Clear Board Modal', () => {

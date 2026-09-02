@@ -96,4 +96,10 @@ describe('RoomTopNav', () => {
     expect(screen.getByTestId('whiteboard-profile-btn').parentElement?.parentElement?.className)
       .toContain('pr-[max(0.5rem,env(safe-area-inset-right))]');
   });
+
+  it('sits above the presence panel (z-1300) so dropdown menus are not occluded', () => {
+    render(<RoomTopNav displayName="eduardo" onDisplayNameChange={() => undefined} rosterExpanded={false} />);
+    const nav = screen.getByTestId('whiteboard-room-top-nav');
+    expect(nav.className).toContain('z-[1300]');
+  });
 });
