@@ -72,6 +72,12 @@ function deviceLabel(device: AvDevice, index: number, kind: 'Microphone' | 'Came
   return device.label.trim() || `${kind} ${index + 1}`;
 }
 
+function modeButtonClass(active: boolean): string {
+  return active
+    ? 'rounded-lg bg-slate-800 px-3 py-1 text-[0.6875rem] font-semibold text-white shadow-sm border border-slate-700/80 transition-all'
+    : 'rounded-lg px-3 py-1 text-[0.6875rem] font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 transition-all';
+}
+
 function AudioPlaybackBanner({ room }: { readonly room: Room }) {
   const { canPlayAudio, startAudio } = useAudioPlayback(room);
   if (canPlayAudio) return null;
@@ -80,9 +86,9 @@ function AudioPlaybackBanner({ room }: { readonly room: Room }) {
       type="button"
       data-testid="av-audio-unlock"
       onClick={() => void startAudio()}
-      className="mb-2 w-full rounded border border-amber-500/40 bg-amber-500/20 px-2 py-1 text-center text-[0.6875rem] font-medium text-amber-200 transition-colors hover:bg-amber-500/30"
+      className="mb-2.5 flex w-full items-center justify-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/20 px-3 py-1.5 text-center text-[0.6875rem] font-semibold text-amber-200 shadow-sm transition-all hover:bg-amber-500/30"
     >
-      🔊 Audio blocked by browser. Click to enable sound.
+      <span className="animate-bounce">🔊</span> Audio blocked by browser. Click to enable sound.
     </button>
   );
 }
@@ -167,8 +173,8 @@ function ParticipantTile({
     <div
       ref={tileRef}
       data-testid={`av-tile-${participant.identity}`}
-      className={`group relative aspect-video overflow-hidden rounded-lg bg-slate-800 transition-shadow [&:fullscreen]:aspect-auto [&:fullscreen]:h-screen [&:fullscreen]:w-screen [&:fullscreen]:rounded-none [&:fullscreen_video]:object-contain ${
-        participant.isSpeaking ? 'ring-2 ring-emerald-400 ring-offset-1 ring-offset-slate-900 shadow-md shadow-emerald-500/20' : ''
+      className={`group relative aspect-video overflow-hidden rounded-xl border border-slate-700/60 bg-slate-950/80 shadow-md transition-all [&:fullscreen]:aspect-auto [&:fullscreen]:h-screen [&:fullscreen]:w-screen [&:fullscreen]:rounded-none [&:fullscreen_video]:object-contain ${
+        participant.isSpeaking ? 'ring-2 ring-emerald-400 ring-offset-2 ring-offset-slate-900 shadow-lg shadow-emerald-500/20' : ''
       }`}
     >
       {av.room && trackRef && (participant.camOn || isScreenShare) ? (
@@ -187,14 +193,19 @@ function ParticipantTile({
         />
       )}
       {!participant.camOn && !isScreenShare && (
-        <div className="flex h-full w-full items-center justify-center text-sm text-slate-300">
-          Camera off
+        <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-gradient-to-b from-slate-800/90 to-slate-950/95 p-2 text-slate-300">
+          <div className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-600/60 bg-slate-700/60 text-xs font-bold text-slate-200 shadow-inner">
+            {(isLocal ? 'You' : participant.identity).slice(0, 2).toUpperCase()}
+          </div>
+          <span className="text-[0.6875rem] font-medium text-slate-400">
+            Camera off
+          </span>
         </div>
       )}
       {(participant.quality === 'poor' || participant.quality === 'lost') && (
         <div
           data-testid={`av-quality-${participant.identity}`}
-          className={`absolute left-1 top-1 z-10 flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.625rem] font-medium text-white shadow ${
+          className={`absolute left-1.5 top-1.5 z-10 flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[0.625rem] font-medium text-white shadow-md backdrop-blur-sm ${
             participant.quality === 'lost' ? 'bg-rose-600/90' : 'bg-amber-600/90'
           }`}
         >
@@ -202,14 +213,14 @@ function ParticipantTile({
           {participant.quality === 'lost' ? 'Lost connection' : 'Poor connection'}
         </div>
       )}
-      <div className="absolute right-1 top-1 flex items-center gap-1">
+      <div className="absolute right-1.5 top-1.5 flex items-center gap-1 opacity-90 transition-opacity group-hover:opacity-100">
         <button
           type="button"
           data-testid={`av-pip-${participant.identity}`}
           onClick={togglePictureInPicture}
           title="Picture in Picture"
           aria-label={`Picture in picture ${isLocal ? 'your camera' : participant.identity}`}
-          className="rounded bg-black/60 px-1.5 py-0.5 text-[0.6875rem] text-white transition-colors hover:bg-black/80"
+          className="rounded-md border border-white/10 bg-slate-950/70 p-1 text-[0.6875rem] text-slate-200 backdrop-blur-md transition-all hover:bg-slate-800 hover:text-white shadow-sm"
         >
           ⧉
         </button>
@@ -219,13 +230,13 @@ function ParticipantTile({
           onClick={toggleFullscreen}
           title="Fullscreen"
           aria-label={`Fullscreen ${isLocal ? 'your camera' : participant.identity}`}
-          className="rounded bg-black/60 px-1.5 py-0.5 text-[0.6875rem] text-white transition-colors hover:bg-black/80"
+          className="rounded-md border border-white/10 bg-slate-950/70 p-1 text-[0.6875rem] text-slate-200 backdrop-blur-md transition-all hover:bg-slate-800 hover:text-white shadow-sm"
         >
           ⛶
         </button>
       </div>
-      <div className="absolute bottom-1 left-1 right-1 flex items-center justify-between gap-1">
-        <span className="truncate rounded bg-black/60 px-1.5 py-0.5 text-[0.6875rem] text-white">
+      <div className="absolute bottom-1.5 left-1.5 right-1.5 flex items-center justify-between gap-1">
+        <span className="truncate rounded-md border border-white/10 bg-slate-950/75 px-2 py-0.5 text-[0.6875rem] font-medium text-slate-200 backdrop-blur-md shadow-sm">
           {isLocal ? 'You' : participant.identity}
           {participant.micMuted ? ' · muted' : ''}
         </span>
@@ -234,8 +245,10 @@ function ParticipantTile({
             type="button"
             onClick={onFocus}
             aria-label={`Focus ${isLocal ? 'you' : participant.identity}`}
-            className={`rounded px-1.5 py-0.5 text-[0.6875rem] text-white transition-colors ${
-              pinned ? 'bg-sky-600/80 hover:bg-sky-500' : 'bg-black/60 hover:bg-black/80'
+            className={`rounded-md px-2 py-0.5 text-[0.6875rem] font-medium transition-all shadow-sm ${
+              pinned
+                ? 'bg-sky-500 text-white shadow-sky-500/30 font-semibold'
+                : 'border border-white/10 bg-slate-950/75 text-slate-200 backdrop-blur-md hover:bg-slate-800 hover:text-white'
             }`}
           >
             {pinned ? 'Pinned' : 'Focus'}
@@ -273,12 +286,6 @@ function RemoteParticipantAudio({
       className="absolute h-px w-px overflow-hidden whitespace-nowrap border-0 p-0 [-webkit-clip-path:inset(50%)] [clip-path:inset(50%)] [clip:rect(0,0,0,0)]"
     />
   );
-}
-
-function modeButtonClass(selected: boolean): string {
-  return `rounded-md px-2 py-1 text-[0.6875rem] font-medium transition-colors ${
-    selected ? 'bg-slate-200 text-slate-900' : 'bg-slate-800 text-slate-200 hover:bg-slate-700'
-  }`;
 }
 
 /**
@@ -442,16 +449,16 @@ export default function AvSessionPanel({
        * layer) and the raised-hand cue (1300). The library and the shortcuts
        * sheet (10001) stay above -- those take the screen over on purpose.
        */
-      className={`fixed z-[1400] rounded-xl border border-slate-700/80 bg-slate-900/95 p-2 shadow-xl shadow-slate-900/30 ${placement}`}
+      className={`fixed z-[1400] rounded-2xl border border-slate-700/70 bg-slate-900/95 backdrop-blur-xl p-3 shadow-2xl shadow-slate-950/60 ${placement}`}
       style={position ? { left: position.x, top: position.y } : undefined}
     >
-      <div className="mb-2 flex items-center justify-between gap-2 px-1">
+      <div className="mb-2.5 flex items-center justify-between gap-2 px-0.5">
         <button
           type="button"
           data-testid="av-panel-collapse"
           onClick={() => setOpen(false)}
           aria-label="Hide the call"
-          className="rounded-md px-1.5 py-1 text-[0.6875rem] font-medium uppercase tracking-wide text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200"
+          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[0.6875rem] font-medium uppercase tracking-wider text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200"
         >
           Hide
         </button>
@@ -465,9 +472,9 @@ export default function AvSessionPanel({
           onPointerDown={startDrag}
           role="presentation"
           title="Drag to move"
-          className="flex flex-1 cursor-move touch-none items-center justify-center self-stretch text-slate-500"
+          className="flex flex-1 cursor-move touch-none items-center justify-center self-stretch px-2 text-slate-500 hover:text-slate-400"
         >
-          <span aria-hidden className="text-[0.75rem] leading-none tracking-[0.2em]">⠿</span>
+          <span aria-hidden className="inline-flex items-center gap-0.5 rounded-full bg-slate-800/80 px-2 py-0.5 text-[0.6875rem] text-slate-400">⠿</span>
         </div>
         <CallControls av={av} />
         {onEndCall && (
@@ -476,14 +483,14 @@ export default function AvSessionPanel({
             data-testid="av-end-call"
             onClick={onEndCall}
             title="Leave the call"
-            className="rounded-md border border-rose-500/60 px-2 py-1 text-[0.6875rem] text-rose-200 transition-colors hover:bg-rose-500/20"
+            className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 text-[0.6875rem] font-medium text-rose-300 transition-all shadow-sm hover:bg-rose-500/25 hover:border-rose-500/60"
           >
             End
           </button>
         )}
       </div>
 
-      <div role="radiogroup" aria-label="Video layout" className="mb-2 flex items-center gap-1 px-1">
+      <div role="radiogroup" aria-label="Video layout" className="mb-2.5 inline-flex items-center gap-0.5 rounded-xl border border-slate-800 bg-slate-950/60 p-1 shadow-inner">
         {(['rail', 'focus', 'off'] as const).map((option) => (
           <button
             key={option}
@@ -499,9 +506,12 @@ export default function AvSessionPanel({
       </div>
 
       {message && (
-        <p data-testid="av-status-message" className="px-1 pb-2 text-[0.75rem] text-amber-200">
-          {message}
-        </p>
+        <div data-testid="av-status-message" className="mb-2.5 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-amber-200 shadow-sm leading-relaxed">
+          <svg className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+          <span>{message}</span>
+        </div>
       )}
 
       {/*
@@ -622,13 +632,13 @@ export default function AvSessionPanel({
       )}
 
       {((av.devices.microphone?.length ?? 0) > 1 || (av.devices.camera?.length ?? 0) > 1 || (av.devices.speaker?.length ?? 0) > 1) && (
-        <div className="mt-2 flex flex-col gap-1 border-t border-slate-700 pt-2">
+        <div className="mt-2.5 flex flex-col gap-1.5 border-t border-slate-700/80 pt-2.5">
           {av.devices.microphone.length > 1 && (
-            <label className="flex items-center gap-2 text-[0.6875rem] text-slate-300">
-              Mic
+            <label className="flex items-center gap-2 text-xs text-slate-300">
+              <span className="w-14 shrink-0 text-[0.6875rem] font-semibold uppercase tracking-wider text-slate-400">Mic</span>
               <select
                 data-testid="av-device-mic"
-                className="min-w-0 flex-1 truncate rounded border border-slate-600 bg-slate-800 px-1 py-0.5"
+                className="min-w-0 flex-1 truncate rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-1 text-xs text-slate-200 shadow-sm transition-colors hover:border-slate-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer"
                 onChange={(event) => void av.selectDevice('microphone', event.target.value)}
                 defaultValue=""
               >
@@ -644,11 +654,11 @@ export default function AvSessionPanel({
             </label>
           )}
           {av.devices.camera.length > 1 && (
-            <label className="flex items-center gap-2 text-[0.6875rem] text-slate-300">
-              Cam
+            <label className="flex items-center gap-2 text-xs text-slate-300">
+              <span className="w-14 shrink-0 text-[0.6875rem] font-semibold uppercase tracking-wider text-slate-400">Cam</span>
               <select
                 data-testid="av-device-cam"
-                className="min-w-0 flex-1 truncate rounded border border-slate-600 bg-slate-800 px-1 py-0.5"
+                className="min-w-0 flex-1 truncate rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-1 text-xs text-slate-200 shadow-sm transition-colors hover:border-slate-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer"
                 onChange={(event) => void av.selectDevice('camera', event.target.value)}
                 defaultValue=""
               >
@@ -664,11 +674,11 @@ export default function AvSessionPanel({
             </label>
           )}
           {(av.devices.speaker?.length ?? 0) > 1 && (
-            <label className="flex items-center gap-2 text-[0.6875rem] text-slate-300">
-              Speaker
+            <label className="flex items-center gap-2 text-xs text-slate-300">
+              <span className="w-14 shrink-0 text-[0.6875rem] font-semibold uppercase tracking-wider text-slate-400">Speaker</span>
               <select
                 data-testid="av-device-speaker"
-                className="min-w-0 flex-1 truncate rounded border border-slate-600 bg-slate-800 px-1 py-0.5"
+                className="min-w-0 flex-1 truncate rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-1 text-xs text-slate-200 shadow-sm transition-colors hover:border-slate-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer"
                 onChange={(event) => void av.selectDevice('speaker', event.target.value)}
                 defaultValue=""
               >
