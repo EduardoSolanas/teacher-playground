@@ -150,11 +150,11 @@ test.describe('video calling panel', () => {
     const peerRow = hostPage.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: 'Peer' }).first();
 
     await expect(hostRow).toContainText('Host');
-    await expect(hostRow).toContainText('Mic on');
-    await expect(hostRow).toContainText('Camera on');
+    await expect(hostRow.getByRole('img', { name: /Host microphone is live|Host is talking/ })).toBeVisible({ timeout: 15000 });
+    await expect(hostRow.getByRole('img', { name: 'Host camera is on' })).toBeVisible({ timeout: 15000 });
     await expect(peerRow).toContainText('Peer');
-    await expect(peerRow).toContainText('Mic on');
-    await expect(peerRow).toContainText('Camera on');
+    await expect(peerRow.getByRole('img', { name: /Peer microphone is live|Peer is talking/ })).toBeVisible({ timeout: 15000 });
+    await expect(peerRow.getByRole('img', { name: 'Peer camera is on' })).toBeVisible({ timeout: 15000 });
     await expect(peerRow.getByRole('button', { name: 'Mute Peer microphone' })).toBeVisible({ timeout: 15000 });
     await expect(peerRow.getByRole('button', { name: 'Mute Peer camera' })).toBeVisible({ timeout: 15000 });
 

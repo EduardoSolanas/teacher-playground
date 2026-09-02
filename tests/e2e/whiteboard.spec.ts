@@ -1247,15 +1247,16 @@ test.describe('Edge Cases', () => {
     await selectTool(penIcon, 'freedraw');
     await dragOnCanvas(page, { x: 100, y: 100 }, { x: 200, y: 200 });
 
-    const state = await getStoreState(page);
-    expect(state.elements?.length).toBeGreaterThanOrEqual(1);
+    await expect
+      .poll(async () => (await getStoreState(page)).elements?.length ?? 0, { timeout: 10000 })
+      .toBeGreaterThanOrEqual(1);
 
     // Now wait for provider to connect — element should sync
     await waitForProviderConnected(page);
-    await page.waitForTimeout(2000);
 
-    const stateAfter = await getStoreState(page);
-    expect(stateAfter.elements?.length).toBeGreaterThanOrEqual(1);
+    await expect
+      .poll(async () => (await getStoreState(page)).elements?.length ?? 0, { timeout: 10000 })
+      .toBeGreaterThanOrEqual(1);
   });
 
   test('undo/redo works after Yjs sync', async ({ page, browser }) => {
