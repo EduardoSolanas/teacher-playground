@@ -136,6 +136,9 @@ describe('useCollaboration syncDegraded', () => {
     });
 
     expect(result.current.syncDegraded).toBe(true);
+    // A close the client reconnects from is not a lost connection, and the
+    // degraded notice only renders while the connection is not declared lost.
+    expect(result.current.connectionLost).toBe(false);
   });
 
   it('resets syncDegraded to false when presence succeeds (200 ok) and socket is connected', async () => {

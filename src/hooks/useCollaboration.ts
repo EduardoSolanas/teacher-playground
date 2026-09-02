@@ -322,8 +322,18 @@ export function useCollaboration(
     collaboration.onChange((type, data) => {
       if (type === 'connection-close') {
         const code = (data as CloseEvent | { code?: number } | undefined)?.code;
+        /*
+         * Degraded, not lost.
+         *
+         * A rate-limit (1008) or oversized-frame (1009) close is one the client
+         * reconnects from on its own, so `connectionLost` -- which means the
+         * fallbacks have given up and the notice offers a reload -- is the
+         * wrong thing to raise. Raising both also hid the degraded notice
+         * behind the lost one, which renders only while the connection is not
+         * declared lost: the case the notice exists for was the one case it
+         * could never show.
+         */
         if (code === 1008 || code === 1009) {
-          setConnectionLost(true);
           setSyncDegraded(true);
         }
       }

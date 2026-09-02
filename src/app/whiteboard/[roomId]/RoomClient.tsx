@@ -703,7 +703,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         />
       </div>
       {connectionLost && <ConnectionLostNotice />}
-      {syncDegraded && !connectionLost && <SyncDegradedNotice />}
+      {shouldShowSyncDegradedNotice({ syncDegraded, connectionLost }) && <SyncDegradedNotice />}
       <SupportButton rosterExpanded={!presenceCollapsed} />
       <RaisedHandCue users={users} localPeerId={localPeerId} isLocalHost={isLocalHost} />
       <PresencePanel
