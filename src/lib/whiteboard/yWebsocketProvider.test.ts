@@ -39,7 +39,7 @@ vi.mock('y-websocket', () => ({
   WebsocketProvider: websocketCtor,
 }));
 
-import { createYWebsocketProvider, destroyProvider } from './yWebsocketProvider';
+import { createYWebsocketProvider, destroyProvider, type WhiteboardProvider } from './yWebsocketProvider';
 import { PRESENCE_MESSAGE_TYPE, encodePresenceMessage } from './presenceMessage';
 
 afterEach(() => {
@@ -192,7 +192,7 @@ describe('createYWebsocketProvider', () => {
       const doc = new Y.Doc();
       const entry = createYWebsocketProvider(doc, 'presence-room', onPresence);
 
-      const provider = entry.provider as any;
+      const provider: WhiteboardProvider = entry.provider;
       expect(provider.messageHandlers).toBeDefined();
 
       // Build the presence frame exactly as encodePresenceMessage does
@@ -207,7 +207,9 @@ describe('createYWebsocketProvider', () => {
       // Now dispatch to the handler as y-websocket does: (encoder, decoder, provider, emitSynced, messageType)
       // The decoder now points at the body (type varint already consumed)
       const encoder = encoding.createEncoder();
-      provider.messageHandlers[PRESENCE_MESSAGE_TYPE](encoder, decoder, provider, true, messageType);
+      const handler = provider.messageHandlers?.[PRESENCE_MESSAGE_TYPE];
+      expect(handler).toBeDefined();
+      handler?.(encoder, decoder);
 
       expect(onPresence).toHaveBeenCalledWith(presencePayload);
 

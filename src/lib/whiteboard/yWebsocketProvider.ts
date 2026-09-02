@@ -10,21 +10,26 @@ import {
   type FollowMessage,
 } from './followMessage';
 
-type ProviderLike = {
+export interface WhiteboardProvider {
   connected?: boolean;
+  wsconnected?: boolean;
   shouldConnect?: boolean;
   synced?: boolean;
   doc?: Y.Doc;
   /** Ephemeral peer state (cursors). Absent on the server stub. */
   awareness?: Awareness;
+  ws?: WebSocket | null;
+  messageHandlers?: Array<((encoder: unknown, decoder: any) => void) | undefined>;
   connect: () => void;
+  disconnect?: () => void;
   destroy: () => void;
   sendFollowMessage?: (message: FollowMessage) => boolean;
   on: (eventName: string, callback: (...args: any[]) => void) => void;
-};
+  off?: (eventName: string, callback: (...args: any[]) => void) => void;
+}
 
-type ProviderEntry = {
-  provider: ProviderLike;
+export type ProviderEntry = {
+  provider: WhiteboardProvider;
   status: string;
   synced: boolean;
   sendFollowMessage: (message: FollowMessage) => boolean;
@@ -39,14 +44,17 @@ let providerCache: Map<string, ProviderEntry> = new Map();
  * now, and a provider that omitted it would make the cursor API silently do
  * nothing off the browser -- present in the type, absent in practice.
  */
-function createServerProvider(doc: Y.Doc): ProviderLike {
+function createServerProvider(doc: Y.Doc): WhiteboardProvider {
   return {
     connected: false,
+    wsconnected: false,
     shouldConnect: false,
     awareness: new Awareness(doc),
     connect: () => {},
+    disconnect: () => {},
     destroy: () => {},
     on: () => {},
+    off: () => {},
   };
 }
 
@@ -102,9 +110,9 @@ export function createYWebsocketProvider(
     providerCache.delete(cacheKey);
   }
 
-  const provider: ProviderLike = typeof window === 'undefined'
+  const provider: WhiteboardProvider = typeof window === 'undefined'
     ? createServerProvider(doc)
-    : new SignalingWebsocketProvider(doc, roomId) as unknown as ProviderLike;
+    : (new SignalingWebsocketProvider(doc, roomId) as unknown as WhiteboardProvider);
 
   // Kept from the doc-identity fix: the server stub has no `doc` of its own,
   // and cache validity is checked against it above.
@@ -116,7 +124,7 @@ export function createYWebsocketProvider(
     synced: false,
     sendFollowMessage: (message) => {
       if (typeof window === 'undefined') return false;
-      const ws = (provider as any).ws as WebSocket | null | undefined;
+      const ws = provider.ws;
       if (!ws || ws.readyState !== WebSocket.OPEN) return false;
       ws.send(encodeFollowMessage(message) as unknown as ArrayBuffer);
       return true;
@@ -131,17 +139,16 @@ export function createYWebsocketProvider(
   provider.on('synced', (event: boolean | { synced: boolean }) => {
     const synced = typeof event === 'boolean' ? event : event.synced;
     entry.synced = synced;
-    (provider as ProviderLike).synced = synced;
+    provider.synced = synced;
     if (synced) entry.status = 'synced';
   });
 
   // Register presence message handler
   if (onPresence && typeof window !== 'undefined') {
-    const wsProvider = provider as any;
-    if (wsProvider.messageHandlers && Array.isArray(wsProvider.messageHandlers)) {
+    if (provider.messageHandlers && Array.isArray(provider.messageHandlers)) {
       // y-websocket invokes handlers as handler(encoder, decoder, provider, emitSynced, messageType),
       // having already consumed the message type varint. Read the body from the decoder, not a whole frame.
-      wsProvider.messageHandlers[PRESENCE_MESSAGE_TYPE] = (_encoder: unknown, decoder: any) => {
+      provider.messageHandlers[PRESENCE_MESSAGE_TYPE] = (_encoder: unknown, decoder: any) => {
         const payload = readPresenceBody(decoder);
         if (payload !== null) {
           onPresence(payload);
@@ -151,9 +158,8 @@ export function createYWebsocketProvider(
   }
 
   if (onFollow && typeof window !== 'undefined') {
-    const wsProvider = provider as any;
-    if (wsProvider.messageHandlers && Array.isArray(wsProvider.messageHandlers)) {
-      wsProvider.messageHandlers[FOLLOW_MESSAGE_TYPE] = (_encoder: unknown, decoder: any) => {
+    if (provider.messageHandlers && Array.isArray(provider.messageHandlers)) {
+      provider.messageHandlers[FOLLOW_MESSAGE_TYPE] = (_encoder: unknown, decoder: any) => {
         const payload = decodeFollowMessagePayload(decoder);
         if (payload) onFollow(payload);
       };

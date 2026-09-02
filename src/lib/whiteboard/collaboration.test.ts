@@ -79,6 +79,61 @@ describe('createCollaboration y-websocket status', () => {
     expect(closeEvents).toEqual([{ code: 1008 }]);
     collab.destroy();
   });
+
+  it('reports connecting status initially when disconnected and shouldConnect is true', () => {
+    const collab = createCollaboration('initial-connecting-room');
+    const statuses: Array<{ status?: string; connected?: boolean; synced?: boolean }> = [];
+    collab.onChange((type, data) => {
+      if (type === 'status') statuses.push(data);
+    });
+
+    expect(statuses[0]).toEqual({ status: 'connecting', connected: false });
+    collab.destroy();
+  });
+
+  it('reports disconnected status when disconnected and shouldConnect is false', () => {
+    const collab = createCollaboration('shouldconnect-room');
+    const statuses: Array<{ status?: string; connected?: boolean; synced?: boolean }> = [];
+    collab.onChange((type, data) => {
+      if (type === 'status') statuses.push(data);
+    });
+
+    if (collab.provider) {
+      collab.provider.shouldConnect = false;
+    }
+    statusListeners.forEach((listener) => listener({ status: 'disconnected' }));
+
+    expect(statuses.at(-1)).toMatchObject({ status: 'disconnected', connected: false });
+    collab.destroy();
+  });
+
+  it('triggers reconnect on interval when shouldConnect is true and disconnected', () => {
+    vi.useFakeTimers();
+    try {
+      const collab = createCollaboration('reconnect-active-room');
+      expect(collab.provider.connect).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(5_000);
+      expect(collab.provider.connect).toHaveBeenCalled();
+      collab.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not trigger reconnect when shouldConnect is false', () => {
+    vi.useFakeTimers();
+    try {
+      const collab = createCollaboration('reconnect-guard-room');
+      if (collab.provider) {
+        collab.provider.shouldConnect = false;
+      }
+      vi.advanceTimersByTime(10_000);
+      expect(collab.provider.connect).not.toHaveBeenCalled();
+      collab.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 

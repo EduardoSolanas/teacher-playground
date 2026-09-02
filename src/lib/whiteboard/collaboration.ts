@@ -11,6 +11,7 @@ import {
   destroyProvider,
   type FollowCallback,
   type PresenceCallback,
+  type WhiteboardProvider,
 } from './yWebsocketProvider';
 import type { FollowMessage } from './followMessage';
 import {
@@ -26,12 +27,12 @@ import type { CanvasElement, WhiteboardUser, RemoteCursor } from '@/types/whiteb
 
 type ChangeCallback = (type: string, data: any) => void;
 
-function isProviderConnected(provider: ReturnType<typeof createYWebsocketProvider>['provider']) {
+function isProviderConnected(provider: WhiteboardProvider | null | undefined) {
   return isYjsProviderConnected(provider);
 }
 
-function readProviderStatus(provider: ReturnType<typeof createYWebsocketProvider>['provider']) {
-  const shouldConnect = (provider as any).shouldConnect !== false;
+function readProviderStatus(provider: WhiteboardProvider) {
+  const shouldConnect = provider.shouldConnect !== false;
   const connected = isProviderConnected(provider);
   return {
     status: connected ? 'connected' : shouldConnect ? 'connecting' : 'disconnected',
@@ -67,7 +68,7 @@ export function createCollaboration(
   let lastCursorButton: 'up' | 'down' = 'up';
   const changeCallbacks: ChangeCallback[] = [];
   const reconnectInterval = setInterval(() => {
-    if ((provider as any).shouldConnect !== false && !isProviderConnected(provider)) {
+    if (provider.shouldConnect !== false && !isProviderConnected(provider)) {
       provider.connect();
       changeCallbacks.forEach((cb) => cb('status', readProviderStatus(provider)));
     }
@@ -136,7 +137,7 @@ export function createCollaboration(
 
   provider.on('status', (event: { status?: string; connected?: boolean }) => {
     const connected = event.status === 'connected' || event.connected === true;
-    const shouldConnect = (provider as any).shouldConnect !== false;
+    const shouldConnect = provider.shouldConnect !== false;
     changeCallbacks.forEach((cb) => cb('status', {
       status: connected ? 'connected' : shouldConnect ? 'connecting' : 'disconnected',
       connected,

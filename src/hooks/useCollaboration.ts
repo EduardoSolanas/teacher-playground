@@ -816,7 +816,7 @@ export function useCollaboration(
     onConnectionChange();
 
     if (collaborationRef.current) {
-      (collaborationRef.current.provider as any).on?.('status', onConnectionChange);
+      collaborationRef.current.provider?.on?.('status', onConnectionChange);
     }
 
     // Browsers throttle background-tab timers to roughly once a minute, so a
@@ -846,7 +846,7 @@ export function useCollaboration(
       cancelled = true;
       stopPolling();
       if (collaborationRef.current) {
-        (collaborationRef.current.provider as any).off?.('status', onConnectionChange);
+        collaborationRef.current.provider?.off?.('status', onConnectionChange);
       }
       document.removeEventListener('visibilitychange', onVisible);
     };
