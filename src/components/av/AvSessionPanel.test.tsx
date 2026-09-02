@@ -489,7 +489,6 @@ describe('AvSessionPanel', () => {
     });
 
     render(<AvSessionPanel av={av} localIdentity="me" />);
-    expect(screen.getByTestId('av-livekit-room')).toBeTruthy();
     expect(screen.getByTestId('av-room-audio-renderer')).toBeTruthy();
     expect(screen.getByTestId('av-video-track-me')).toBeTruthy();
     expect(screen.getByTestId('av-video-track-peer-1')).toBeTruthy();

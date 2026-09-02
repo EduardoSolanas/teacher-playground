@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { LiveKitRoom, RoomAudioRenderer, VideoTrack, useAudioPlayback } from '@livekit/components-react';
+import { RoomContext, RoomAudioRenderer, VideoTrack, useAudioPlayback } from '@livekit/components-react';
 import type { Room } from 'livekit-client';
 import { Track } from 'livekit-client';
 
@@ -513,15 +513,9 @@ export default function AvSessionPanel({
       {av.unavailableReason === null && (
         <>
           {av.room ? (
-            <LiveKitRoom
-              room={av.room}
-              serverUrl={undefined}
-              token={undefined}
-              connect={false}
-              data-testid="av-livekit-room"
-            >
+            <RoomContext.Provider value={av.room}>
               <div data-testid="av-room-audio-renderer" aria-hidden className="absolute">
-                <RoomAudioRenderer />
+                <RoomAudioRenderer room={av.room} />
               </div>
               <AudioPlaybackBanner room={av.room} />
               {mode === 'rail' && (
@@ -566,7 +560,7 @@ export default function AvSessionPanel({
                   )}
                 </div>
               )}
-            </LiveKitRoom>
+            </RoomContext.Provider>
           ) : (
             <>
               <div aria-hidden className="absolute">
