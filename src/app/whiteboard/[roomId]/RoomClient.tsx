@@ -22,6 +22,7 @@ import RoomTopNav from '@/components/whiteboard/RoomTopNav';
 import AvSessionPanel from '@/components/av/AvSessionPanel';
 import StartCallButton from '@/components/av/StartCallButton';
 import ConnectionLostNotice from '@/components/whiteboard/ConnectionLostNotice';
+import SyncDegradedNotice from '@/components/whiteboard/SyncDegradedNotice';
 import RoomTitleMenu from '@/components/whiteboard/RoomTitleMenu';
 import { saveBlob } from '@/lib/whiteboard/saveBlob';
 import { boardFileName, buildExcalidrawContainer } from '@/lib/whiteboard/boardExport';
@@ -135,6 +136,16 @@ export function shouldPeerEnterCall({
   return Boolean(callActive && hasHost && avAllowed);
 }
 
+export function shouldShowSyncDegradedNotice({
+  syncDegraded,
+  connectionLost,
+}: {
+  syncDegraded: boolean;
+  connectionLost: boolean;
+}): boolean {
+  return syncDegraded && !connectionLost;
+}
+
 function RoomContent({ roomId }: { roomId: string }) {
   const router = useRouter();
   const [userName, setUserName] = useState<string | null>(null);
@@ -178,6 +189,7 @@ function RoomContent({ roomId }: { roomId: string }) {
     error,
     status,
     connectionLost,
+    syncDegraded,
     roomName,
     setRoomName,
     maxUsers,
@@ -691,6 +703,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         />
       </div>
       {connectionLost && <ConnectionLostNotice />}
+      {syncDegraded && !connectionLost && <SyncDegradedNotice />}
       <SupportButton rosterExpanded={!presenceCollapsed} />
       <RaisedHandCue users={users} localPeerId={localPeerId} isLocalHost={isLocalHost} />
       <PresencePanel

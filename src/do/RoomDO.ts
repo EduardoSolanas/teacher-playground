@@ -40,7 +40,7 @@ import {
 import { activePeerIds } from '../lib/whiteboard/presence';
 import { orphanKeys, referencedFileIds, type StoredFile } from '../lib/whiteboard/orphanFiles';
 import { presenceSignature } from '../lib/whiteboard/presence';
-import { internalErrorResponse } from '../lib/http/safeError';
+import { internalErrorResponse, redactForLog } from '../lib/http/safeError';
 import { encodePresenceMessage } from '../lib/whiteboard/presenceMessage';
 import { getFrameMessageType, isRelayableFrame } from '../lib/whiteboard/relayPolicy';
 import {
@@ -148,6 +148,28 @@ function logFrameShed(entry: {
     console.warn(JSON.stringify({ event: 'frame_shed', ...entry }));
   } catch {
     // Logging must never break messaging.
+  }
+}
+
+/**
+ * Structured log for internal errors caught in background tasks or message handlers.
+ * Ensures sensitive data (emails, tokens, boards) is redacted before output.
+ */
+function logInternalRoomError(op: string, error: unknown, roomId?: string): void {
+  try {
+    const name = error instanceof Error ? error.name : 'Error';
+    const raw = error instanceof Error ? error.message : String(error);
+    console.error(
+      JSON.stringify({
+        event: 'internal_error',
+        op,
+        ...(roomId ? { roomId } : {}),
+        name,
+        message: redactForLog(raw),
+      }),
+    );
+  } catch {
+    // Logging must never throw.
   }
 }
 
@@ -1178,7 +1200,8 @@ export class RoomDO extends DurableObject {
         ).run(JSON.stringify(elements), Date.now(), roomId);
         await this.ctx.storage.delete(`ydoc-projection:${roomId}`);
         this.projectionDirtyRooms.delete(roomId);
-      } catch {
+      } catch (err) {
+        logInternalRoomError('flushProjection', err, roomId);
         // The Yjs snapshot above is the durable copy and it is already written;
         // the row is a convenience for the read path, not the record.
       }
@@ -1765,7 +1788,8 @@ export class RoomDO extends DurableObject {
           }
         }
         await this.flushIfDue();
-      } catch {
+      } catch (err) {
+        logInternalRoomError('serverDocSync', err, attachment.roomId);
         // A bug in server sync must not break peer relay; it is the fallback path.
       }
 
@@ -1848,7 +1872,8 @@ export class RoomDO extends DurableObject {
     if (this.ctx.getWebSockets().length <= 1) {
       try {
         await this.flushDirtyDocs();
-      } catch {
+      } catch (err) {
+        logInternalRoomError('socketGoneFlush', err);
         // A failed flush must not throw out of handleSocketGone.
       }
     }

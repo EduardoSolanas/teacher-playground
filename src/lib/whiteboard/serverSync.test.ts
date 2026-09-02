@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
@@ -183,6 +183,37 @@ describe('serverSync', () => {
         const replies = handleSyncFrame(serverDoc, random);
         expect(replies).toEqual([]);
       }).not.toThrow();
+    });
+
+    it('logs structured internal error with redaction when sync frame handling throws', () => {
+      const serverDoc = new Y.Doc();
+      const consoleErrors: string[] = [];
+      const spy = vi.spyOn(console, 'error').mockImplementation((msg: string) => {
+        consoleErrors.push(msg);
+      });
+
+      try {
+        // Build a sync frame with MESSAGE_SYNC (0) followed by corrupted/throwing sync payload
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, MESSAGE_SYNC);
+        encoding.writeVarUint(encoder, 0); // sync step 1 message type
+        encoding.writeVarString(encoder, 'corrupted-user@example.com-payload');
+        const badSyncFrame = encoding.toUint8Array(encoder);
+
+        const replies = handleSyncFrame(serverDoc, badSyncFrame);
+        expect(replies).toEqual([]);
+        expect(consoleErrors.length).toBe(1);
+
+        const parsed = JSON.parse(consoleErrors[0]);
+        expect(parsed).toMatchObject({
+          event: 'internal_error',
+          op: 'handleSyncFrame',
+        });
+        expect(parsed.message).not.toContain('user@example.com');
+        expect(parsed.name).toBeDefined();
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('applies the update under the origin it was given', () => {

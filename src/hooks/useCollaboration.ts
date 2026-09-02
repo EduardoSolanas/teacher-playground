@@ -101,6 +101,7 @@ export function useCollaboration(
   const disconnectedSinceRef = useRef<number | null>(null);
   const consecutivePresenceErrorsRef = useRef(0);
   const [connectionLost, setConnectionLost] = useState(false);
+  const [syncDegraded, setSyncDegraded] = useState(false);
   const [accessStatus, setAccessStatus] = useState<RoomAccessStatus | null>(null);
   const [grantRole, setGrantRole] = useState<GrantedPublicRole | null>(null);
   const [collaborationEpoch, setCollaborationEpoch] = useState(0);
@@ -323,6 +324,7 @@ export function useCollaboration(
         const code = (data as CloseEvent | { code?: number } | undefined)?.code;
         if (code === 1008 || code === 1009) {
           setConnectionLost(true);
+          setSyncDegraded(true);
         }
       }
       if (type === 'status') {
@@ -686,6 +688,7 @@ export function useCollaboration(
         }
 
         if (!cancelled && presenceAdmission === 'error') {
+          setSyncDegraded(true);
           presenceDelay = POLL_BASE_MS;
           consecutivePresenceErrorsRef.current += 1;
           if (consecutivePresenceErrorsRef.current >= 3) {
@@ -696,6 +699,10 @@ export function useCollaboration(
 
         if (!cancelled && presenceAdmission === 'ok') {
           consecutivePresenceErrorsRef.current = 0;
+          const collab = collaborationRef.current;
+          if (isYjsProviderConnected(collab?.provider)) {
+            setSyncDegraded(false);
+          }
           const data = await res.json();
           applyPresencePayload(data);
         }
@@ -780,6 +787,9 @@ export function useCollaboration(
       if (socketConnected) {
         disconnectedSinceRef.current = null;
         setConnectionLost(false);
+        if (consecutivePresenceErrorsRef.current === 0) {
+          setSyncDegraded(false);
+        }
       } else if (disconnectedSinceRef.current === null) {
         disconnectedSinceRef.current = Date.now();
       }
@@ -877,6 +887,9 @@ export function useCollaboration(
     try {
       const res = await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`);
       if (!res.ok) return;
+      if (isYjsProviderConnected(collaborationRef.current?.provider)) {
+        setSyncDegraded(false);
+      }
       const data = await res.json();
       if (Array.isArray(data.users)) {
         setUsers(data.users as WhiteboardUser[]);
@@ -1021,6 +1034,8 @@ export function useCollaboration(
     setRoomName,
     /** The socket has been down long enough that the fallbacks have stopped. */
     connectionLost,
+    /** Synchronization is degraded (e.g. heartbeat errors or rate limit close). */
+    syncDegraded,
     users,
     cursors,
     error,

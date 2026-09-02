@@ -10,6 +10,7 @@ import {
   roomCanvasTopClass,
   shouldShowStartCall,
   shouldPeerEnterCall,
+  shouldShowSyncDegradedNotice,
 } from './RoomClient';
 
 function makeUser(overrides: Partial<WhiteboardUser> = {}): WhiteboardUser {
@@ -224,6 +225,20 @@ describe('shouldPeerEnterCall', () => {
     expect(usersWithoutHost.some((u) => u.isHost)).toBe(false);
     expect(shouldPeerEnterCall({ callActive: true, hasHost: usersWithHost.some((u) => u.isHost), avAllowed: true })).toBe(true);
     expect(shouldPeerEnterCall({ callActive: true, hasHost: usersWithoutHost.some((u) => u.isHost), avAllowed: true })).toBe(false);
+  });
+});
+
+describe('shouldShowSyncDegradedNotice', () => {
+  it('returns true when sync is degraded and connection is not lost', () => {
+    expect(shouldShowSyncDegradedNotice({ syncDegraded: true, connectionLost: false })).toBe(true);
+  });
+
+  it('returns false when connection is lost even if sync is degraded (connection lost notice takes precedence)', () => {
+    expect(shouldShowSyncDegradedNotice({ syncDegraded: true, connectionLost: true })).toBe(false);
+  });
+
+  it('returns false when sync is healthy', () => {
+    expect(shouldShowSyncDegradedNotice({ syncDegraded: false, connectionLost: false })).toBe(false);
   });
 });
 
