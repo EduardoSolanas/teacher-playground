@@ -19,7 +19,7 @@ export default function CallControls({ av }: { readonly av: UseAvSessionResult }
   const inert = av.status !== 'joined';
 
   return (
-    <div data-testid="av-call-controls" className="flex items-center gap-1.5 w-full">
+    <div data-testid="av-call-controls" className="flex flex-wrap items-center justify-center gap-1.5 w-full">
       <span
         data-testid="av-call-status"
         className="hidden items-center gap-1.5 rounded-lg border border-slate-700/70 bg-slate-800/80 px-2.5 py-1.5 text-[0.6875rem] font-medium text-slate-300 sm:inline-flex shrink-0"
