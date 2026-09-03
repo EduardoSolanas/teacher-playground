@@ -65,6 +65,7 @@ import {
 } from '../lib/av/livekitRoomService';
 import {
   MAX_BODY_BYTES,
+  MAX_WS_FRAME_BYTES,
   SIGNALING_MAX_MESSAGES_PER_WINDOW,
   SIGNALING_MAX_SOCKETS_PER_ACCOUNT,
   SIGNALING_MAX_SOCKETS_PER_ROOM,
@@ -293,6 +294,8 @@ export class RoomDO extends DurableObject {
 
   /** Test-only override for the per-room socket cap; production always uses 32. */
   static signalingMaxSocketsPerRoomForTests: number | null = null;
+  /** Test-only override for {@link MAX_WS_FRAME_BYTES}; production uses the constant. */
+  static maxWebSocketFrameBytesForTests: number | null = null;
 
   /** Server-side Yjs documents per room, created lazily. */
   private readonly docs = new Map<string, Y.Doc>();
@@ -1671,13 +1674,23 @@ export class RoomDO extends DurableObject {
     const payloadBytes = typeof raw === 'string'
       ? new TextEncoder().encode(raw).byteLength
       : raw.byteLength;
-    if (payloadBytes > MAX_BODY_BYTES) {
+    const frameCap = RoomDO.maxWebSocketFrameBytesForTests ?? MAX_WS_FRAME_BYTES;
+    if (payloadBytes > frameCap) {
       try {
         logSocketClose({
           code: 1009,
           accountId: attachment.accountId,
           roomId: attachment.roomId,
         });
+        // The close alone never said how big the frame was, so the cap looked
+        // like a mystery disconnect for as long as it was set too low.
+        console.warn(JSON.stringify({
+          event: 'frame_oversized',
+          roomId: attachment.roomId,
+          accountId: attachment.accountId,
+          bytes: payloadBytes,
+          cap: frameCap,
+        }));
       } catch {
         // Logging must not block the close.
       }

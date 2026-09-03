@@ -196,6 +196,26 @@ export const ROOM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
  */
 export const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
+/**
+ * Max bytes in one signaling WebSocket frame.
+ *
+ * Separate from {@link MAX_BODY_BYTES}, and it has to be: that one bounds an
+ * HTTP body, which is one JSON scene, and the two were shared. A y-protocol
+ * sync step 2 is not a scene -- it carries the client's entire document,
+ * Yjs encoding, history and tombstones included, and it is sent on every
+ * connect. So a room whose document passed 4 MiB was closed with 1009 the
+ * moment it tried to sync, reconnected, sent the same frame, and was closed
+ * again, for as long as anyone had it open. 509 of those closes were logged in
+ * a single production session on one room; the board simply stopped syncing
+ * and no amount of reloading fixed it, because reloading is what triggered it.
+ *
+ * 32 MiB is chosen to sit far above any document a lesson produces while still
+ * bounding what one frame can push into a Durable Object. It is a ceiling
+ * against abuse, not a working limit: a document approaching it is a bug
+ * somewhere else, and the log line that reports the close says how big it was.
+ */
+export const MAX_WS_FRAME_BYTES = 32 * 1024 * 1024;
+
 /** Max concurrent signaling sockets per account on one room object. */
 export const SIGNALING_MAX_SOCKETS_PER_ACCOUNT = 4;
 

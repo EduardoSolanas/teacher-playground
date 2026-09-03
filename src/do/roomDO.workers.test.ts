@@ -1,4 +1,4 @@
-import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject, SELF } from 'cloudflare:test';
 import * as Y from 'yjs';
@@ -1064,7 +1064,20 @@ describe('signaling message size limit', () => {
     });
   }
 
-  it('closes with 1009 when a granted owner sends a binary frame over MAX_BODY_BYTES', async () => {
+  /*
+   * The frame cap is lowered rather than the frame raised.
+   *
+   * What is under test is the boundary, and pushing 32 MiB through a socket to
+   * find it would cost more than the rest of this file put together.
+   */
+  const TEST_FRAME_CAP = 4096;
+
+  afterEach(() => {
+    RoomDO.maxWebSocketFrameBytesForTests = null;
+  });
+
+  it('closes with 1009 when a granted owner sends a binary frame over the frame cap', async () => {
+    RoomDO.maxWebSocketFrameBytesForTests = TEST_FRAME_CAP;
     const owner = await bootstrapLocalSession('oversized-binary-owner');
     const roomId = 'oversized-binary-room';
 
@@ -1073,13 +1086,14 @@ describe('signaling message size limit', () => {
     const ws = await connectGranted(owner, roomId);
     const closed = closeSignal(ws);
 
-    const oversized = new Uint8Array(MAX_BODY_BYTES + 1);
+    const oversized = new Uint8Array(TEST_FRAME_CAP + 1);
     ws.send(oversized.buffer);
 
     expect(await closed).toBe(1009);
   });
 
-  it('closes with 1009 when a granted owner sends a string frame over MAX_BODY_BYTES', async () => {
+  it('closes with 1009 when a granted owner sends a string frame over the frame cap', async () => {
+    RoomDO.maxWebSocketFrameBytesForTests = TEST_FRAME_CAP;
     const owner = await bootstrapLocalSession('oversized-string-owner');
     const roomId = 'oversized-string-room';
 
@@ -1088,9 +1102,40 @@ describe('signaling message size limit', () => {
     const ws = await connectGranted(owner, roomId);
     const closed = closeSignal(ws);
 
-    ws.send('x'.repeat(MAX_BODY_BYTES + 1));
+    ws.send('x'.repeat(TEST_FRAME_CAP + 1));
 
     expect(await closed).toBe(1009);
+  });
+
+  /*
+   * The frame that was killing real lessons.
+   *
+   * MAX_BODY_BYTES caps an HTTP body -- one JSON scene -- and it was being
+   * applied to WebSocket frames as well. A y-protocol sync step 2 carries the
+   * client's whole document, history and tombstones included, so every room
+   * whose document passed 4 MiB was closed with 1009 the moment it tried to
+   * sync, reconnected, and was closed again: 509 of those were logged in one
+   * production session. A document larger than a scene is not oversized, it is
+   * a class that has been drawing.
+   */
+  it('does not close a frame larger than the HTTP body cap', async () => {
+    const owner = await bootstrapLocalSession('big-sync-owner');
+    const roomId = 'big-sync-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const ws = await connectGranted(owner, roomId);
+    let closeCode: number | null = null;
+    ws.addEventListener('close', (event: CloseEvent) => { closeCode = event.code; }, { once: true });
+
+    // On-protocol sync frame, one byte past what an HTTP body may carry.
+    const big = new Uint8Array(MAX_BODY_BYTES + 1);
+    ws.send(big.buffer);
+    await new Promise((r) => setTimeout(r, 500));
+
+    expect(closeCode).toBeNull();
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
   });
 
   it('still relays a 1-byte binary frame to other granted peers', async () => {
