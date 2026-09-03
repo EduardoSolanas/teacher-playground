@@ -81,6 +81,14 @@ import { encodeUpdateFrame, handleSyncFrame } from '../lib/whiteboard/serverSync
 import { replaceSharedElements, getElementsFromArray, pruneTombstonedElements } from '../lib/whiteboard/yjsDoc';
 import { snapshotElements } from '../lib/whiteboard/sceneSnapshot';
 import { snapshotBudgetState } from '../lib/whiteboard/snapshotBudget';
+import {
+  SNAPSHOT_CHUNK_BYTES,
+  chunkSnapshot,
+  joinSnapshotChunks,
+  legacySnapshotKey,
+  snapshotChunkKey,
+  snapshotMetaKey,
+} from '../lib/whiteboard/snapshotChunks';
 import { libraryFileIds, libraryStorageKey, storedLibraryItems } from '../lib/whiteboard/roomLibrary';
 import {
   FOLLOW_MESSAGE_TYPE,
@@ -296,6 +304,8 @@ export class RoomDO extends DurableObject {
   static signalingMaxSocketsPerRoomForTests: number | null = null;
   /** Test-only override for {@link MAX_WS_FRAME_BYTES}; production uses the constant. */
   static maxWebSocketFrameBytesForTests: number | null = null;
+  /** Test-only override for {@link SNAPSHOT_CHUNK_BYTES}; production uses the constant. */
+  static snapshotChunkBytesForTests: number | null = null;
 
   /** Server-side Yjs documents per room, created lazily. */
   private readonly docs = new Map<string, Y.Doc>();
@@ -953,13 +963,77 @@ export class RoomDO extends DurableObject {
 
   // --- y-document persistence ---
 
+  /**
+   * Reads a board snapshot, from chunks or from the pre-chunking single key.
+   *
+   * The legacy key is only consulted when there is no chunk metadata, so a
+   * board written before chunking opens exactly once from the old shape and is
+   * written back in the new one.
+   */
+  private async readSnapshot(roomId: string): Promise<Uint8Array | undefined> {
+    const chunkCount = await this.ctx.storage.get(snapshotMetaKey(roomId)) as number | undefined;
+    if (typeof chunkCount !== 'number' || chunkCount < 1) {
+      return await this.ctx.storage.get(legacySnapshotKey(roomId)) as Uint8Array | undefined;
+    }
+
+    const keys = Array.from({ length: chunkCount }, (_, index) => snapshotChunkKey(roomId, index));
+    const stored = await this.ctx.storage.get(keys) as Map<string, Uint8Array>;
+    const joined = joinSnapshotChunks(keys.map((key) => stored.get(key)));
+    if (!joined) {
+      /*
+       * Chunk metadata with a chunk missing under it.
+       *
+       * Applying what did arrive would produce a corrupt document rather than
+       * a smaller one, so the board opens from the seed path instead and the
+       * next flush rewrites the whole snapshot. Loud, because losing a lesson's
+       * board silently is the failure this whole file is trying to end.
+       */
+      logBoardSnapshot({ roomId, bytes: 0, outcome: 'chunks_missing' });
+      return undefined;
+    }
+    return joined;
+  }
+
+  /** Writes a board snapshot across as many values as it needs. */
+  private async writeSnapshot(roomId: string, snapshot: Uint8Array): Promise<void> {
+    const chunkBytes = RoomDO.snapshotChunkBytesForTests ?? SNAPSHOT_CHUNK_BYTES;
+    const chunks = chunkSnapshot(snapshot, chunkBytes);
+
+    const entries: Record<string, unknown> = { [snapshotMetaKey(roomId)]: chunks.length };
+    chunks.forEach((chunk, index) => {
+      entries[snapshotChunkKey(roomId, index)] = chunk;
+    });
+    await this.ctx.storage.put(entries);
+
+    /*
+     * Trailing chunks from a larger previous snapshot, and the pre-chunking
+     * key. Both are dead the moment the metadata above lands, and a stale
+     * chunk left under a shorter snapshot would be read back as part of the
+     * board the next time it grew past this length.
+     */
+    await this.deleteSnapshotChunks(roomId, chunks.length);
+    await this.ctx.storage.delete(legacySnapshotKey(roomId));
+  }
+
+  /** Deletes a room's snapshot chunks, optionally keeping the first `keep` of them. */
+  private async deleteSnapshotChunks(roomId: string, keep = 0): Promise<void> {
+    const prefix = `${snapshotChunkKey(roomId, 0).slice(0, -1)}`;
+    const stored = await this.ctx.storage.list({ prefix });
+    const doomed: string[] = [];
+    for (const key of stored.keys()) {
+      const index = Number(key.slice(prefix.length));
+      if (!Number.isInteger(index) || index >= keep) doomed.push(key);
+    }
+    if (doomed.length > 0) await this.ctx.storage.delete(doomed);
+  }
+
   /** Loads or creates the server document for a room. Rehydrates from storage if available. */
   private async getRoomDoc(roomId: string): Promise<Y.Doc> {
     let doc = this.docs.get(roomId);
     if (doc) return doc;
 
     doc = new Y.Doc();
-    const storedSnapshot = await this.ctx.storage.get(`ydoc:${roomId}`) as Uint8Array | undefined;
+    const storedSnapshot = await this.readSnapshot(roomId);
     if (storedSnapshot) {
       Y.applyUpdate(doc, storedSnapshot);
     } else {
@@ -1139,10 +1213,12 @@ export class RoomDO extends DurableObject {
      * belonged to with nothing left pointing at it.
      */
     await this.ctx.storage.delete([
-      `ydoc:${roomId}`,
+      legacySnapshotKey(roomId),
+      snapshotMetaKey(roomId),
       `ydoc-projection:${roomId}`,
       libraryStorageKey(roomId),
     ]);
+    await this.deleteSnapshotChunks(roomId);
   }
 
   /** Rehydrates projection retry markers that survived a Durable Object eviction. */
@@ -1193,8 +1269,8 @@ export class RoomDO extends DurableObject {
       }
 
       try {
+        await this.writeSnapshot(roomId, snapshot);
         await this.ctx.storage.put({
-          [`ydoc:${roomId}`]: snapshot,
           [`ydoc-projection:${roomId}`]: true,
         });
         if (!roomExists(this.db, roomId)) {

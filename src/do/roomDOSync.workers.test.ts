@@ -15,6 +15,12 @@ import { issueGuestPin } from '../lib/whiteboard/guestPin';
 import { decodePresenceMessage } from '../lib/whiteboard/presenceMessage';
 import { encodeUpdateFrame } from '../lib/whiteboard/serverSync';
 import {
+  joinSnapshotChunks,
+  legacySnapshotKey,
+  snapshotChunkKey,
+  snapshotMetaKey,
+} from '../lib/whiteboard/snapshotChunks';
+import {
   accessFetch,
   authenticatedFetch,
   bootstrapLocalSession,
@@ -206,9 +212,18 @@ describe('server-side y-websocket sync', () => {
 
   /** The board as the DO wrote it into its own storage. */
   async function storedBoard(roomId: string): Promise<unknown[] | null> {
-    const stored = await runInDurableObject(roomStub(roomId), (instance: RoomDO) => (
-      (instance as unknown as { ctx: DurableObjectState }).ctx.storage.get(`ydoc:${roomId}`)
-    ));
+    // The board is stored across as many values as it needs; reading it back
+    // has to rejoin them, exactly as the object does.
+    const stored = await runInDurableObject(roomStub(roomId), async (instance: RoomDO) => {
+      const storage = (instance as unknown as { ctx: DurableObjectState }).ctx.storage;
+      const count = await storage.get(snapshotMetaKey(roomId)) as number | undefined;
+      if (typeof count !== 'number' || count < 1) {
+        return await storage.get(legacySnapshotKey(roomId));
+      }
+      const keys = Array.from({ length: count }, (_, index) => snapshotChunkKey(roomId, index));
+      const chunks = await storage.get(keys) as Map<string, Uint8Array>;
+      return joinSnapshotChunks(keys.map((key) => chunks.get(key))) ?? undefined;
+    });
     if (!stored) return null;
     const bytes = stored instanceof Uint8Array ? stored : new Uint8Array(stored as ArrayBuffer);
     const doc = new Y.Doc();
@@ -286,6 +301,72 @@ describe('server-side y-websocket sync', () => {
     await writeBoardAndClose(roomId, board);
 
     expect(await storedBoard(roomId)).toEqual(board);
+  });
+
+  /*
+   * The ceiling that made a board silently stop saving.
+   *
+   * One storage value holds 2 MB, and the whole snapshot used to go into one.
+   * Past that the write throws, the room stays dirty and retries forever, and
+   * from the outside an unsaveable board is indistinguishable from a safe one.
+   * The chunk size is lowered here rather than a 2 MB board built, because what
+   * is under test is spanning values, not the number itself.
+   */
+  it('rebuilds a board that spans several storage values', async () => {
+    RoomDO.snapshotChunkBytesForTests = 64;
+    try {
+      const roomId = 'chunked-sync-room';
+      await writeBoardAndClose(roomId, board);
+
+      const chunkCount = await runInDurableObject(roomStub(roomId), async (instance: RoomDO) => (
+        await (instance as unknown as { ctx: DurableObjectState }).ctx.storage
+          .get(snapshotMetaKey(roomId)) as number | undefined
+      ));
+      expect(chunkCount).toBeGreaterThan(1);
+      expect(await storedBoard(roomId)).toEqual(board);
+
+      await evictDurableObject(roomStub(roomId));
+
+      const joiner = await connect(roomId);
+      joiner.send(syncStepOneFrame());
+      expect(boardFromReply(await nextBinaryMessage(joiner))).toEqual(board);
+      joiner.close();
+    } finally {
+      RoomDO.snapshotChunkBytesForTests = null;
+    }
+  });
+
+  it('leaves no stale chunk behind when a board shrinks', async () => {
+    RoomDO.snapshotChunkBytesForTests = 64;
+    try {
+      const roomId = 'shrinking-sync-room';
+      await writeBoardAndClose(roomId, board);
+      const before = await runInDurableObject(roomStub(roomId), async (instance: RoomDO) => (
+        await (instance as unknown as { ctx: DurableObjectState }).ctx.storage
+          .get(snapshotMetaKey(roomId)) as number | undefined
+      ));
+
+      // A chunk left over from a longer snapshot would be read back as part of
+      // the board the next time it grew to that length again.
+      RoomDO.snapshotChunkBytesForTests = 1_000_000;
+      await writeBoardAndClose(roomId, board);
+
+      const remaining = await runInDurableObject(roomStub(roomId), async (instance: RoomDO) => {
+        const storage = (instance as unknown as { ctx: DurableObjectState }).ctx.storage;
+        const listed = await storage.list({ prefix: `ydoc-chunk:${roomId}:` });
+        return listed.size;
+      });
+      expect(before).toBeGreaterThan(1);
+      expect(remaining).toBe(1);
+      // Still readable: a leftover chunk would corrupt this, not shorten it.
+      // The second write appends rather than replaces, so the board is longer
+      // than `board` here -- what matters is that it rejoins and decodes.
+      const stored = await storedBoard(roomId);
+      expect(stored).not.toBeNull();
+      expect(stored!.length).toBeGreaterThanOrEqual(board.length);
+    } finally {
+      RoomDO.snapshotChunkBytesForTests = null;
+    }
   });
 
   it('rebuilds the board from storage after the object is evicted', async () => {

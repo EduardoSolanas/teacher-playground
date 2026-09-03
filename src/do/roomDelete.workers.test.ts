@@ -121,12 +121,14 @@ async function assertBoardStateDeleted(roomId: string): Promise<void> {
     expect(
       instance.db.prepare(`SELECT 1 FROM room_tombstones WHERE room_id = ?`).get(roomId),
     ).toBeDefined();
-    expect(
-      await (instance as unknown as { ctx: DurableObjectState }).ctx.storage.get(`ydoc:${roomId}`),
-    ).toBeUndefined();
-    expect(
-      await (instance as unknown as { ctx: DurableObjectState }).ctx.storage.get(`ydoc-projection:${roomId}`),
-    ).toBeUndefined();
+    const storage = (instance as unknown as { ctx: DurableObjectState }).ctx.storage;
+    // The board spans as many values as it needs, so "deleted" means the
+    // metadata, every chunk, and the pre-chunking key are all gone. A chunk
+    // left behind is a fragment of a deleted lesson's board.
+    expect(await storage.get(`ydoc:${roomId}`)).toBeUndefined();
+    expect(await storage.get(`ydoc-meta:${roomId}`)).toBeUndefined();
+    expect((await storage.list({ prefix: `ydoc-chunk:${roomId}:` })).size).toBe(0);
+    expect(await storage.get(`ydoc-projection:${roomId}`)).toBeUndefined();
   });
 }
 
@@ -477,8 +479,9 @@ describe('idle room board purge', () => {
     ws.close();
     await closed;
     await runInDurableObject(roomStub(roomId), async (instance: RoomDO) => {
+      // Written as chunks now, so the board's presence is its metadata.
       expect(
-        await (instance as unknown as { ctx: DurableObjectState }).ctx.storage.get(`ydoc:${roomId}`),
+        await (instance as unknown as { ctx: DurableObjectState }).ctx.storage.get(`ydoc-meta:${roomId}`),
       ).toBeDefined();
       instance.db.prepare(`UPDATE rooms SET updated_at = ? WHERE room_id = ?`)
         .run(Date.now() - ROOM_IDLE_TTL_MS - 60_000, roomId);

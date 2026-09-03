@@ -3,14 +3,14 @@
  *
  * `RoomDO` is declared in `new_sqlite_classes` (wrangler.toml), so it is a
  * SQLite-backed Durable Object: one stored key and its value may total 2 MB,
- * with 10 GB per object. The older 128 KiB figure belongs to the key-value
- * backend and does not apply here.
+ * with 10 GB per object.
  *
- * A board that outgrew the ceiling would not fail loudly — the write throws,
- * the room stays dirty, and it retries on every flush forever, so a board that
- * has silently stopped being saved looks exactly like one that is safe. A
- * measured board is ~44 KB, so the warning is there to make the approach
- * visible long before the cliff, not because the cliff is close.
+ * The board no longer occupies one value -- `snapshotChunks.ts` splits it --
+ * so this is no longer a cliff the next byte falls off. It stayed because the
+ * number is still worth knowing: a board at this weight has grown far past the
+ * ~44 KB a measured one occupies, and the excess is edit history rather than
+ * anything a teacher drew. Treat a warning here as a question about why the
+ * document is growing, not as an imminent write failure.
  */
 export const DO_VALUE_LIMIT_BYTES = 2_000_000;
 
