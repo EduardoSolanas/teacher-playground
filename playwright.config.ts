@@ -27,7 +27,23 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  workers: process.env.CI ? 1 : 4,
+  /*
+   * Four was more than a developer machine can actually run.
+   *
+   * Measured, not guessed: at four workers the suite went green 1 run in 10,
+   * and the failures were the multi-peer sync cases -- a late joiner given 15s
+   * to receive three elements, missing it. Run serially the same suite is
+   * 26/27, and every case that failed in parallel passes on its own. Four
+   * Chromium instances, a wrangler dev server and workerd on one box do not
+   * leave enough CPU for a sync deadline to mean what it says, so the suite was
+   * reporting the machine's load as the product's flakiness.
+   *
+   * Two keeps the parallelism worth having and leaves the deadlines honest.
+   * `E2E_WORKERS` overrides it on a machine with cores to spare.
+   */
+  workers: process.env.E2E_WORKERS
+    ? Number(process.env.E2E_WORKERS)
+    : process.env.CI ? 1 : 2,
   reporter: "html",
   use: {
     ...devices["Desktop Chrome"],

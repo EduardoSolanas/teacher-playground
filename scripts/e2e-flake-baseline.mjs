@@ -12,7 +12,7 @@
  *   node scripts/e2e-flake-baseline.mjs --spec=voice-calling.spec.ts
  *
  * The first run builds; the rest reuse it. Results land in
- * `test-results/flake-baseline/`, one JSON per run plus `summary.json`.
+ * `flake-baseline/`, one JSON per run plus `summary.json`.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
@@ -25,7 +25,12 @@ function arg(name, fallback) {
 
 const runs = Number(arg('runs', '10'));
 const spec = arg('spec', 'whiteboard.spec.ts');
-const outDir = resolve('test-results/flake-baseline');
+/*
+ * Not under test-results/: Playwright empties that directory at the start of
+ * every run, so reports written there vanish as the next run begins and only
+ * the last one survives to be looked at afterwards.
+ */
+const outDir = resolve('flake-baseline');
 
 if (!Number.isInteger(runs) || runs < 1) {
   console.error(`--runs must be a positive integer, got ${arg('runs', '10')}`);
