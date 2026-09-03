@@ -253,6 +253,22 @@ export class RoomDO extends DurableObject {
   private readonly signalingMessageRate = createRateLimiter({
     windowMs: SIGNALING_RATE_WINDOW_MS,
     max: SIGNALING_MAX_MESSAGES_PER_WINDOW,
+    /*
+     * Refused frames still count, and this limiter cannot work without it.
+     *
+     * Everything downstream reads `messagesInWindow` as "how much did this
+     * account actually send": over the budget sheds a cursor frame, far over
+     * it for two windows running closes the socket. With refusals uncounted
+     * the window saturates at exactly `max` and stops -- 120 > 120 is false,
+     * so nothing was ever shed and the ceiling could never be reached. The
+     * budget was inert, which is the one state it must never be in.
+     *
+     * It was removed once on the theory that a client over budget could never
+     * drain its bucket. That is true, and it is not a problem here: sync
+     * frames are never shed, so a client stays live and correct while over
+     * budget, and only its cursor updates thin out.
+     */
+    countRejected: true,
   });
   private readonly ceilingBreachesPerAccount = new Map<string, { count: number; windowStart: number }>();
   /** Last presence signature broadcast for a room; see the presence route. */
