@@ -1212,6 +1212,70 @@ test.describe('Multi-Peer Sync', () => {
    * with a fraction of its points is not the shape that was drawn, and a peer
    * showing a different shape is the same lesson broken more quietly.
    */
+  /*
+   * The same shape of failure, at a size every run can afford.
+   *
+   * Three hundred samples is a few seconds of drawing rather than a minute, so
+   * this one stays in the ordinary suite and catches a stroke that syncs
+   * truncated -- or not at all -- without adding a minute to every local run.
+   * The heavy case below is the same assertions on the size that actually broke
+   * a room.
+   */
+  test('a long curve and a line reach a late peer whole', async ({ page, browser }) => {
+    test.setTimeout(180_000);
+
+    await cleanContextAndJoin(page, 'CurveAlice');
+    const roomUrl = page.url();
+
+    await selectTool(page.getByTestId('toolbar-freedraw'), 'freedraw');
+    await dispatchLongStroke(page, 300, { radius: 140, turns: 4 });
+
+    // Settle before reading: the last samples are still being committed, and a
+    // count taken mid-stroke would be compared against a larger one later.
+    await expect
+      .poll(async () => Math.max(0, ...(await getFreedrawPointCounts(page))), { timeout: 30000 })
+      .toBeGreaterThan(200);
+    const authorPoints = (await getFreedrawPointCounts(page)).slice().sort((a, b) => a - b);
+
+    await selectTool(page.getByTestId('toolbar-line'), 'line');
+    await dragOnCanvas(page, { x: 120, y: 520 }, { x: 900, y: 560 });
+    await waitForSync(page, 2, 20000);
+
+    const bobContext = await newAuthenticatedContext(browser);
+    const bobPage = await bobContext.newPage();
+    try {
+      await bobContext.addInitScript(() => {
+        localStorage.removeItem('whiteboard_username');
+        localStorage.removeItem('whiteboard_user_color');
+      });
+      await bobPage.goto(roomUrl);
+      await bobPage.getByTestId('whiteboard-username-input').fill('CurveBob');
+      await bobPage.getByTestId('whiteboard-join-room-btn').click();
+      await approveWaitingPeerIfPresent(page);
+      await expect(bobPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+
+      await waitForProviderConnected(bobPage);
+      await waitForSync(bobPage, 2, 30000);
+
+      // Whole, not truncated: the same point count the peer that drew it has.
+      await expect
+        .poll(
+          async () => (await getFreedrawPointCounts(bobPage)).slice().sort((a, b) => a - b),
+          { timeout: 30000 },
+        )
+        .toEqual(authorPoints);
+
+      // And the same board, so the line came across beside the curve.
+      expect(await getExcalidrawSceneIds(bobPage)).toEqual(await getExcalidrawSceneIds(page));
+
+      await expect
+        .poll(async () => (await getCollabState(bobPage)).status, { timeout: 10000 })
+        .toMatch(/connected|synced/);
+    } finally {
+      await bobContext.close();
+    }
+  });
+
   test('a very long spiral, ten short strokes and a line reach a late peer whole', async ({ page, browser }) => {
     test.setTimeout(420_000);
 
