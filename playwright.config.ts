@@ -40,10 +40,16 @@ export default defineConfig({
    *
    * Two keeps the parallelism worth having and leaves the deadlines honest.
    * `E2E_WORKERS` overrides it on a machine with cores to spare.
+   *
+   * CI is tested first and is not overridable: one worker there is not a
+   * performance choice but a correctness one -- IdentityDO is a singleton, and
+   * several workers minting Access subjects at once queue session issue past
+   * the bootstrap abort. An override that could reach that setting would be a
+   * way to break it from a workflow file.
    */
-  workers: process.env.E2E_WORKERS
-    ? Number(process.env.E2E_WORKERS)
-    : process.env.CI ? 1 : 2,
+  workers: process.env.CI
+    ? 1
+    : Number(process.env.E2E_WORKERS ?? 2),
   reporter: "html",
   use: {
     ...devices["Desktop Chrome"],
