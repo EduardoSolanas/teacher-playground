@@ -303,12 +303,21 @@ async function dragOnCanvas(page: Page, from: { x: number; y: number }, to: { x:
  * stroke rather than its length -- which is how a room's document reached the
  * size that used to close its socket on every sync.
  *
- * The curve is a sine so the points cannot be collapsed to a straight line by
- * any simplification along the way: if the far peer receives a stroke with
- * markedly fewer points than the near one drew, the shape it shows is not the
- * shape that was drawn.
+ * The path is an Archimedean spiral, for two reasons. It cannot be collapsed
+ * to a straight line by any simplification along the way, so a peer receiving
+ * markedly fewer points is showing a different shape from the one drawn. And it
+ * winds rather than travels, so thousands of samples still land on the canvas
+ * instead of running off the right-hand edge the way a sine would.
  */
-async function dispatchLongStroke(page: Page, samples: number) {
+interface StrokeOptions {
+  /** Offset from the canvas centre, so several strokes are distinct elements. */
+  readonly offsetX?: number;
+  readonly offsetY?: number;
+  readonly radius?: number;
+  readonly turns?: number;
+}
+
+async function dispatchLongStroke(page: Page, samples: number, options: StrokeOptions = {}) {
   const canvas = page.getByTestId('whiteboard-canvas-area');
   await expect(canvas).toBeVisible();
   const box = await canvas.boundingBox();
@@ -322,7 +331,7 @@ async function dispatchLongStroke(page: Page, samples: number) {
   await page.waitForTimeout(250);
 
   await page.evaluate(
-    async ({ originX, originY, width, samples }) => {
+    async ({ centreX, centreY, maxRadius, turns, samples }) => {
       const canvas = document.querySelector('canvas.excalidraw__canvas.interactive');
       if (!canvas) throw new Error('Excalidraw interactive canvas not found');
 
@@ -343,10 +352,15 @@ async function dispatchLongStroke(page: Page, samples: number) {
       const nextFrame = () =>
         new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
-      const pointAt = (i: number) => ({
-        x: originX + (width * i) / samples,
-        y: originY + Math.sin((i / samples) * Math.PI * 6) * 90,
-      });
+      const pointAt = (i: number) => {
+        const progress = i / samples;
+        const angle = progress * Math.PI * 2 * turns;
+        const radius = 12 + (maxRadius - 12) * progress;
+        return {
+          x: centreX + Math.cos(angle) * radius,
+          y: centreY + Math.sin(angle) * radius,
+        };
+      };
 
       const start = pointAt(0);
       canvas.dispatchEvent(event('pointerdown', start.x, start.y, 1));
@@ -362,9 +376,10 @@ async function dispatchLongStroke(page: Page, samples: number) {
       window.dispatchEvent(event('pointerup', end.x, end.y, 0));
     },
     {
-      originX: box!.x + 80,
-      originY: box!.y + 300,
-      width: 900,
+      centreX: box!.x + box!.width / 2 + (options.offsetX ?? 0),
+      centreY: box!.y + box!.height / 2 + (options.offsetY ?? 0),
+      maxRadius: options.radius ?? Math.min(box!.width, box!.height) / 2 - 40,
+      turns: options.turns ?? 12,
       samples,
     },
   );
@@ -1197,25 +1212,47 @@ test.describe('Multi-Peer Sync', () => {
    * with a fraction of its points is not the shape that was drawn, and a peer
    * showing a different shape is the same lesson broken more quietly.
    */
-  test('a very long curve and a line reach a late peer whole', async ({ page, browser }) => {
-    test.setTimeout(180_000);
+  test('a very long spiral, ten short strokes and a line reach a late peer whole', async ({ page, browser }) => {
+    test.setTimeout(420_000);
 
     await cleanContextAndJoin(page, 'LongAlice');
     const roomUrl = page.url();
 
     await selectTool(page.getByTestId('toolbar-freedraw'), 'freedraw');
-    await dispatchLongStroke(page, 300);
+    await dispatchLongStroke(page, 3000);
 
     // Settle before reading: the last samples are still being committed, and a
     // count taken mid-stroke would be compared against a larger one later.
     await expect
-      .poll(async () => (await getFreedrawPointCounts(page))[0] ?? 0, { timeout: 30000 })
-      .toBeGreaterThan(200);
-    const [authorPoints] = await getFreedrawPointCounts(page);
+      .poll(async () => Math.max(0, ...(await getFreedrawPointCounts(page))), { timeout: 60000 })
+      .toBeGreaterThan(2000);
+
+    /*
+     * And then the rest of a lesson.
+     *
+     * One enormous stroke is the pathological case; a real board is that plus
+     * dozens of small marks, and the small ones are where a peer quietly ends
+     * up short. Ten of them, spread so none merges into another, each its own
+     * element to lose.
+     */
+    for (let i = 0; i < 10; i += 1) {
+      const angle = (i / 10) * Math.PI * 2;
+      await dispatchLongStroke(page, 100, {
+        offsetX: Math.cos(angle) * 180,
+        offsetY: Math.sin(angle) * 120,
+        radius: 26,
+        turns: 2,
+      });
+    }
+
+    await expect
+      .poll(async () => (await getFreedrawPointCounts(page)).length, { timeout: 60000 })
+      .toBe(11);
+    const authorPoints = (await getFreedrawPointCounts(page)).slice().sort((a, b) => a - b);
 
     await selectTool(page.getByTestId('toolbar-line'), 'line');
     await dragOnCanvas(page, { x: 120, y: 520 }, { x: 900, y: 560 });
-    await waitForSync(page, 2, 20000);
+    await waitForSync(page, 12, 30000);
 
     const bobContext = await newAuthenticatedContext(browser);
     const bobPage = await bobContext.newPage();
@@ -1231,14 +1268,19 @@ test.describe('Multi-Peer Sync', () => {
       await expect(bobPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
 
       await waitForProviderConnected(bobPage);
-      await waitForSync(bobPage, 2, 30000);
+      await waitForSync(bobPage, 12, 60000);
 
-      // Whole, not truncated: same point count as the peer that drew it.
+      // Whole, not truncated: every stroke with the point count it was drawn
+      // with. Sorted because the two peers need not hold them in one order,
+      // and the question here is the shapes, not their arrangement.
       await expect
-        .poll(async () => (await getFreedrawPointCounts(bobPage))[0] ?? 0, { timeout: 30000 })
-        .toBe(authorPoints);
+        .poll(
+          async () => (await getFreedrawPointCounts(bobPage)).slice().sort((a, b) => a - b),
+          { timeout: 60000 },
+        )
+        .toEqual(authorPoints);
 
-      // And the same board, so the line came across beside the curve.
+      // And the same board, so the line came across beside the strokes.
       expect(await getExcalidrawSceneIds(bobPage)).toEqual(await getExcalidrawSceneIds(page));
 
       // The socket that carried it is still up. An oversized frame closes it
