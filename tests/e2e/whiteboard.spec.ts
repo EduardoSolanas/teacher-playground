@@ -293,6 +293,94 @@ async function dragOnCanvas(page: Page, from: { x: number; y: number }, to: { x:
   }
 }
 
+/**
+ * One continuous stroke, held down for hundreds of samples.
+ *
+ * `dispatchDrag` spreads ten moves over ten frames, which is a flick. What
+ * breaks a whiteboard is the other thing: a teacher drawing a single unbroken
+ * curve across a diagram for several seconds. Every sample re-publishes the
+ * element's whole point array, so the document grows with the square of the
+ * stroke rather than its length -- which is how a room's document reached the
+ * size that used to close its socket on every sync.
+ *
+ * The curve is a sine so the points cannot be collapsed to a straight line by
+ * any simplification along the way: if the far peer receives a stroke with
+ * markedly fewer points than the near one drew, the shape it shows is not the
+ * shape that was drawn.
+ */
+async function dispatchLongStroke(page: Page, samples: number) {
+  const canvas = page.getByTestId('whiteboard-canvas-area');
+  await expect(canvas).toBeVisible();
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+
+  await page.locator('canvas.excalidraw__canvas.interactive').first().waitFor({
+    state: 'attached',
+    timeout: 15000,
+  });
+  await page.waitForFunction(() => !!(window as any).__debugExcalidrawApi, { timeout: 15000 });
+  await page.waitForTimeout(250);
+
+  await page.evaluate(
+    async ({ originX, originY, width, samples }) => {
+      const canvas = document.querySelector('canvas.excalidraw__canvas.interactive');
+      if (!canvas) throw new Error('Excalidraw interactive canvas not found');
+
+      const event = (type: string, x: number, y: number, buttons: number) =>
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          clientX: x,
+          clientY: y,
+          pointerId: 1,
+          pointerType: 'mouse',
+          isPrimary: true,
+          button: 0,
+          buttons,
+        });
+
+      const nextFrame = () =>
+        new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+      const pointAt = (i: number) => ({
+        x: originX + (width * i) / samples,
+        y: originY + Math.sin((i / samples) * Math.PI * 6) * 90,
+      });
+
+      const start = pointAt(0);
+      canvas.dispatchEvent(event('pointerdown', start.x, start.y, 1));
+      for (let i = 1; i <= samples; i += 1) {
+        // One per frame, as Excalidraw's own throttling expects: batched into a
+        // single tick they collapse into one point and the stroke is not long.
+        await nextFrame();
+        const point = pointAt(i);
+        canvas.dispatchEvent(event('pointermove', point.x, point.y, 1));
+      }
+      await nextFrame();
+      const end = pointAt(samples);
+      window.dispatchEvent(event('pointerup', end.x, end.y, 0));
+    },
+    {
+      originX: box!.x + 80,
+      originY: box!.y + 300,
+      width: 900,
+      samples,
+    },
+  );
+
+  await page.waitForTimeout(300);
+}
+
+/** Freedraw elements on the board, with how many points each carries. */
+async function getFreedrawPointCounts(page: Page): Promise<number[]> {
+  return page.evaluate(() => ((window as any).__debugExcalidrawApi?.getSceneElements?.() ?? [])
+    .filter((element: { type: string; isDeleted?: boolean }) => (
+      element.type === 'freedraw' && element.isDeleted !== true
+    ))
+    .map((element: { points?: unknown[] }) => element.points?.length ?? 0));
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 test.describe('Room Connection Lifecycle', () => {
@@ -1088,6 +1176,77 @@ test.describe('Multi-Peer Sync', () => {
 
       const bobState = await getStoreState(bobPage);
       expect(bobState.elements?.length).toBeGreaterThanOrEqual(3);
+    } finally {
+      await bobContext.close();
+    }
+  });
+
+  /*
+   * The drawing that used to kill the room.
+   *
+   * A single unbroken curve, held for hundreds of samples, is what a teacher
+   * draws over a diagram -- and it is the worst case this whiteboard has.
+   * Every sample republishes the element's entire point array, so the document
+   * grows with the square of the stroke rather than its length. That is how one
+   * room's document passed 4 MiB, at which point every sync frame it sent was
+   * refused as oversized and the socket closed, over and over, for as long as
+   * anyone had the board open.
+   *
+   * So this asserts the two things that failure took away. The late peer must
+   * receive the stroke, and it must receive all of it: a curve that arrives
+   * with a fraction of its points is not the shape that was drawn, and a peer
+   * showing a different shape is the same lesson broken more quietly.
+   */
+  test('a very long curve and a line reach a late peer whole', async ({ page, browser }) => {
+    test.setTimeout(180_000);
+
+    await cleanContextAndJoin(page, 'LongAlice');
+    const roomUrl = page.url();
+
+    await selectTool(page.getByTestId('toolbar-freedraw'), 'freedraw');
+    await dispatchLongStroke(page, 300);
+
+    // Settle before reading: the last samples are still being committed, and a
+    // count taken mid-stroke would be compared against a larger one later.
+    await expect
+      .poll(async () => (await getFreedrawPointCounts(page))[0] ?? 0, { timeout: 30000 })
+      .toBeGreaterThan(200);
+    const [authorPoints] = await getFreedrawPointCounts(page);
+
+    await selectTool(page.getByTestId('toolbar-line'), 'line');
+    await dragOnCanvas(page, { x: 120, y: 520 }, { x: 900, y: 560 });
+    await waitForSync(page, 2, 20000);
+
+    const bobContext = await newAuthenticatedContext(browser);
+    const bobPage = await bobContext.newPage();
+    try {
+      await bobContext.addInitScript(() => {
+        localStorage.removeItem('whiteboard_username');
+        localStorage.removeItem('whiteboard_user_color');
+      });
+      await bobPage.goto(roomUrl);
+      await bobPage.getByTestId('whiteboard-username-input').fill('LongBob');
+      await bobPage.getByTestId('whiteboard-join-room-btn').click();
+      await approveWaitingPeerIfPresent(page);
+      await expect(bobPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+
+      await waitForProviderConnected(bobPage);
+      await waitForSync(bobPage, 2, 30000);
+
+      // Whole, not truncated: same point count as the peer that drew it.
+      await expect
+        .poll(async () => (await getFreedrawPointCounts(bobPage))[0] ?? 0, { timeout: 30000 })
+        .toBe(authorPoints);
+
+      // And the same board, so the line came across beside the curve.
+      expect(await getExcalidrawSceneIds(bobPage)).toEqual(await getExcalidrawSceneIds(page));
+
+      // The socket that carried it is still up. An oversized frame closes it
+      // with 1009, and a peer that reconnects into a loop still passes every
+      // assertion above on the elements it received before the close.
+      await expect
+        .poll(async () => (await getCollabState(bobPage)).status, { timeout: 10000 })
+        .toMatch(/connected|synced/);
     } finally {
       await bobContext.close();
     }
