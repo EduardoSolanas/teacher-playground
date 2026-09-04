@@ -5,6 +5,7 @@ import {
   getElementsFromArray,
   replaceSharedElements,
   pruneTombstonedElements,
+  addElementToArray,
 } from './yjsDoc';
 
 function idsOf(doc: Y.Doc): string[] {
@@ -415,5 +416,78 @@ describe('pruneTombstonedElements', () => {
 
     const remaining = getElementsFromArray(elementsArray);
     expect(remaining).toHaveLength(18);
+  });
+});
+
+describe('addElementToArray', () => {
+  it('preserves strokeWidth of 0 instead of replacing with default 2', () => {
+    const { elementsArray } = createWhiteboardDoc('stroke-width-zero');
+
+    const rectangle = {
+      id: 'rect-1',
+      type: 'rectangle' as const,
+      x: 10,
+      y: 10,
+      width: 100,
+      height: 50,
+      fill: 'transparent',
+      stroke: '#000000',
+      strokeWidth: 0,
+    } as any;
+
+    addElementToArray(elementsArray, rectangle);
+
+    const elements = getElementsFromArray(elementsArray);
+    expect(elements).toHaveLength(1);
+    expect((elements[0] as any).strokeWidth).toBe(0);
+  });
+
+  it('preserves borderRadius of 0 instead of replacing with default 4', () => {
+    const { elementsArray } = createWhiteboardDoc('border-radius-zero');
+
+    const stickyNote = {
+      id: 'sticky-1',
+      type: 'stickyNote' as const,
+      x: 20,
+      y: 30,
+      width: 120,
+      height: 120,
+      content: 'Test note',
+      backgroundColor: '#fff9c4',
+      borderColor: '#000000',
+      borderRadius: 0,
+    } as any;
+
+    addElementToArray(elementsArray, stickyNote);
+
+    const elements = getElementsFromArray(elementsArray);
+    expect(elements).toHaveLength(1);
+    expect((elements[0] as any).borderRadius).toBe(0);
+  });
+
+  it('preserves underline: true on text elements', () => {
+    const { elementsArray } = createWhiteboardDoc('underline-text');
+
+    const textElement = {
+      id: 'text-1',
+      type: 'text' as const,
+      x: 50,
+      y: 50,
+      width: 200,
+      height: 100,
+      text: 'Underlined text',
+      color: '#000000',
+      fontSize: 16,
+      fontFamily: 'sans-serif',
+      bold: false,
+      italic: false,
+      underline: true,
+    } as any;
+
+    addElementToArray(elementsArray, textElement);
+
+    const elements = getElementsFromArray(elementsArray);
+    expect(elements).toHaveLength(1);
+    expect((elements[0] as any).underline).toBe(true);
   });
 });

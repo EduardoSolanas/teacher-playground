@@ -26,23 +26,30 @@ export function addElementToArray(
   const encoded = encodePoints(points);
   yMap.set('points', encoded || JSON.stringify(points));
 
-  yMap.set('color', (element as any).color || '');
-  yMap.set('strokeWidth', (element as any).strokeWidth || 2);
-  yMap.set('x', (element as any).x || 0);
-  yMap.set('y', (element as any).y || 0);
-  yMap.set('width', (element as any).width || 0);
-  yMap.set('height', (element as any).height || 0);
-  yMap.set('text', (element as any).text || '');
-  yMap.set('fontSize', (element as any).fontSize || 16);
-  yMap.set('fontFamily', (element as any).fontFamily || 'sans-serif');
-  yMap.set('bold', (element as any).bold || false);
-  yMap.set('italic', (element as any).italic || false);
-  yMap.set('fill', (element as any).fill || 'transparent');
-  yMap.set('stroke', (element as any).stroke || '#000000');
-  yMap.set('content', (element as any).content || '');
-  yMap.set('backgroundColor', (element as any).backgroundColor || '#fff9c4');
-  yMap.set('borderColor', (element as any).borderColor || '#000000');
-  yMap.set('borderRadius', (element as any).borderRadius || 4);
+  /*
+   * `??`, not `||`: these are defaults for a *missing* field, and `||` also
+   * swallowed legitimate falsy values. A rectangle drawn with strokeWidth 0
+   * came back as 2, and a sticky note with square corners came back rounded.
+   * The default values below are unchanged — only when they apply is.
+   */
+  yMap.set('color', (element as any).color ?? '');
+  yMap.set('strokeWidth', (element as any).strokeWidth ?? 2);
+  yMap.set('x', (element as any).x ?? 0);
+  yMap.set('y', (element as any).y ?? 0);
+  yMap.set('width', (element as any).width ?? 0);
+  yMap.set('height', (element as any).height ?? 0);
+  yMap.set('text', (element as any).text ?? '');
+  yMap.set('fontSize', (element as any).fontSize ?? 16);
+  yMap.set('fontFamily', (element as any).fontFamily ?? 'sans-serif');
+  yMap.set('bold', (element as any).bold ?? false);
+  yMap.set('italic', (element as any).italic ?? false);
+  yMap.set('underline', (element as any).underline ?? false);
+  yMap.set('fill', (element as any).fill ?? 'transparent');
+  yMap.set('stroke', (element as any).stroke ?? '#000000');
+  yMap.set('content', (element as any).content ?? '');
+  yMap.set('backgroundColor', (element as any).backgroundColor ?? '#fff9c4');
+  yMap.set('borderColor', (element as any).borderColor ?? '#000000');
+  yMap.set('borderRadius', (element as any).borderRadius ?? 4);
   if ((element as { rotation?: number }).rotation != null) {
     yMap.set('rotation', (element as { rotation?: number }).rotation);
   }
