@@ -68,16 +68,19 @@ export default function UserNamePrompt({
       <form onSubmit={handleSubmit} className="modal-card">
         <h2 className="modal-title">Join room</h2>
         <p className="modal-text">Room: {roomId}</p>
-        <input
-          ref={inputRef}
-          data-testid="whiteboard-username-input"
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Enter your name"
-          autoFocus
-          className="field-input"
-        />
+        <label className="field-block">
+          <span className="app-label">Your name</span>
+          <input
+            ref={inputRef}
+            data-testid="whiteboard-username-input"
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Enter your name"
+            autoFocus
+            className="field-input"
+          />
+        </label>
         <button
           data-testid="whiteboard-join-room-btn"
           type="submit"
