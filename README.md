@@ -9,28 +9,62 @@ room, and optional **LiveKit** video/voice for admitted participants.
 - One Durable Object per room (`RoomDO`) for board state + signaling
 - LiveKit SFU for A/V (server-issued short-lived JWTs)
 
+### Three hostnames, one Worker
+
+All three route to the same Worker; the surface is chosen from the `Host`
+header in code, not by separate deployments (`wrangler.toml`, `[vars]`).
+
+| Var | Hostname | Surface | Cloudflare Access |
+|---|---|---|---|
+| `TEACHER_HOSTNAME` | `app-playground.sen-tutor.co.uk` | Teacher app | **Protected** — exact hostname only |
+| `GUEST_HOSTNAME` | `join-playground.sen-tutor.co.uk` | Guest join | Must **not** be covered |
+| `MARKETING_HOSTNAME` | `playground.sen-tutor.co.uk` | Public landing page | Must **not** be covered |
+
+A `*.sen-tutor.co.uk` wildcard Access application would cover all three: it
+breaks guest join and puts a login in front of the marketing site. If
+`TEACHER_HOSTNAME` or `GUEST_HOSTNAME` is unset, every request is treated as
+teacher-host and the guest surface does not exist — it never defaults to guest.
+
 ## Collaboration and signaling
 
 Board state is a Yjs document synced over a WebSocket to `RoomDO`. Three
 constraints are load-bearing and have each been broken at least once.
 
-**The Worker is a blind relay.** `RoomDO` forwards raw bytes between sockets and
-keeps no server-side Y.Doc, so nothing holds authoritative state. Whoever
-connects first sends sync step 1 into an empty room, and nobody ever asks a
-later joiner for its baseline. The provider therefore re-issues sync step 1 on
-an interval (`RESYNC_INTERVAL_MS` in `yWebsocketProvider.ts`). Without it a
-peer's updates arrive with a causal gap, Yjs parks them in `pendingStructs`,
-and their cursors and elements silently never appear on the other side — the
-socket looks perfectly healthy the whole time.
+**The server holds the board.** `RoomDO` relays raw bytes between sockets *and*
+keeps its own Y.Doc per room (`getRoomDoc`), rehydrated from a stored snapshot
+or seeded from the SQL `elements` row so a board created before snapshots
+existed does not open empty. `handleSyncFrame` (`serverSync.ts`) applies each
+sync frame to that document and answers a peer's sync step 1 with both the diff
+it is missing *and* the server's own step 1 — without that second frame the
+server would only ever hand boards out and never take one in. An empty room is
+therefore no longer whatever the first peer happened to have.
 
-**Signaling is capped at 60 messages/second per account**
-(`SIGNALING_MAX_MESSAGES_PER_WINDOW`); the Worker closes the socket with 1008
-above that. Every Yjs write is one message, so anything driven by pointer
-movement must be throttled. Cursors go through `cursorPublishDelay`
+The provider still re-issues sync step 1 on an interval (`RESYNC_INTERVAL_MS`
+in `yWebsocketProvider.ts`). Do not remove it because the server is now
+authoritative: it is the recovery path for a peer whose updates arrived with a
+causal gap, which Yjs parks in `pendingStructs` so that its cursors and
+elements silently never appear on the other side while the socket looks
+perfectly healthy. Removing it needs a convergence test, not this paragraph.
+
+**Signaling is budgeted at 120 messages/second per account**
+(`SIGNALING_MAX_MESSAGES_PER_WINDOW` in `requestGuard.ts`, mirrored as
+`SIGNALING_BUDGET` in `signalingBudget.ts`). Going over the budget does not
+close the socket. `decideSignalingAction` sheds *awareness* frames
+(`messageType === 1`, i.e. cursors) and never sheds sync frames, because
+y-websocket does not retransmit a dropped delta over an open socket and the
+drawing would be lost for good. The Worker closes with 1008 only on sustained
+abuse: at or above the ceiling of 360 messages/window (`SIGNALING_ABUSE_CEILING`,
+3x the budget) across two consecutive windows. A single transient spike sheds
+cursors and stays connected.
+
+Every Yjs write is still one message, so anything driven by pointer movement
+must be throttled. Cursors go through `cursorPublishDelay`
 (`cursorPublishRate.ts`) in *both* writers — the room pointer handler and
 Excalidraw's `onPointerUpdate`. Publishing on every `pointermove` measured 64
-msg/sec and closed the socket four times in two seconds, which the UI shows as
-a board stuck on "Connecting to room…".
+msg/sec; under the earlier 60-message budget that closed the socket four times
+in two seconds, which the UI shows as a board stuck on "Connecting to room…".
+The budget is higher and the shedding is gentler now, but an unthrottled writer
+still spends the whole allowance on cursors.
 
 **Peer ids are minted by presence, not chosen by the client**
 (`peerIdForAccount`; clients may not pick their own — see the "issues a stable
@@ -99,12 +133,17 @@ Waiting-room users never receive an A/V token (API returns **403**).
 ## Scripts
 
 ```bash
-npm test              # Vitest unit tests
-npm run test:workers  # Durable Object / Worker integration tests
-npm run typecheck
+npm test              # Vitest unit tests (jsdom)
+npm run test:workers  # Durable Object / Worker integration tests (real workerd)
+npm run test:e2e      # Playwright against a local Worker + Access issuer
+npm run typecheck     # both tsconfig.json and tsconfig.worker.json
 npm run lint
 npm run build
 npm run deploy        # next build + wrangler deploy
 ```
+
+`npm run test:e2e` must go through `scripts/run-e2e.mjs`: it allocates the
+ports and starts the local Access issuer, and `playwright.config.ts` throws
+without the `E2E_PORT` / `E2E_ACCESS_ISSUER` / `E2E_ACCESS_TOKEN` it sets.
 
 See `DEPLOY.md` for Cloudflare deployment and Access setup.

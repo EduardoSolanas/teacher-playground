@@ -14,13 +14,15 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = false
 preview_urls = false
 
-# Both hostnames route to this same Worker. The Worker decides which surface a
-# request gets from the Host header (guest_implementation.md §5.2), so the
-# split is enforced in code, not by two deployments.
+# All three hostnames below route to this same Worker. The Worker decides which
+# surface a request gets from the Host header (guest_implementation.md §5.2), so
+# the split is enforced in code, not by three deployments.
 #
-# The Cloudflare Access application must cover playground.sen-tutor.co.uk ONLY, as an
-# exact hostname — a *.sen-tutor.co.uk wildcard application would also cover
-# join-playground.sen-tutor.co.uk and break guest join entirely.
+# The Cloudflare Access application must cover app-playground.sen-tutor.co.uk
+# ONLY — the TEACHER_HOSTNAME in [vars] — as an exact hostname. A
+# *.sen-tutor.co.uk wildcard application would also cover
+# join-playground.sen-tutor.co.uk and break guest join entirely, and would put
+# a login in front of the public landing page (see below).
 # Single-label subdomains are deliberate: Cloudflare Universal SSL covers
 # sen-tutor.co.uk and *.sen-tutor.co.uk only. A second-level name such as
 # app.playground.sen-tutor.co.uk gets no certificate and fails the TLS
