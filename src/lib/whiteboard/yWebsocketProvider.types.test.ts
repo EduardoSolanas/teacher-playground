@@ -1,71 +1,89 @@
-// Type-only tests for WhiteboardProvider event narrowing
-// These tests only check that types compile correctly - they don't execute
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import ts from 'typescript';
+
+import { describe, expect, it } from 'vitest';
+
 import type { WhiteboardProvider } from './yWebsocketProvider';
 
-// Prevent these functions from being executed by vitest
-if (false) {
-  // Test: reject misspelled event names (these should cause type errors)
-  function testRejectMisspelledEventNames(provider: WhiteboardProvider) {
-    // @ts-expect-error - 'syncd' is not a valid event name
-    provider.on('syncd', (event: boolean) => {});
+/*
+ * Two layers, because neither catches the other's failure.
+ *
+ * The functions below are never called. They exist so that `npm run typecheck`
+ * fails if the event union stops rejecting a misspelled name or the wrong
+ * payload: an unused `@ts-expect-error` is itself an error, so a type that goes
+ * loose again turns these into compile failures rather than silent passes.
+ *
+ * The runtime test underneath asserts the same thing from the other side, in
+ * the idiom ExcalidrawWrapper.types.test.ts already uses, because a typecheck
+ * that nobody runs proves nothing in the unit suite.
+ */
 
-    // @ts-expect-error - 'statuss' is not a valid event name
-    provider.on('statuss', (event) => {});
-  }
+export function rejectsMisspelledEventNames(provider: WhiteboardProvider) {
+  // @ts-expect-error 'syncd' is not an event this provider emits
+  provider.on('syncd', () => {});
+  // @ts-expect-error 'statuss' is not an event this provider emits
+  provider.on('statuss', () => {});
+}
 
-  // Test: reject wrong payload types for known events
-  function testRejectWrongPayloadTypes(provider: WhiteboardProvider) {
-    // @ts-expect-error - 'synced' event expects boolean | { synced: boolean }
-    provider.on('synced', (event: string) => {});
+export function rejectsWrongPayloadTypes(provider: WhiteboardProvider) {
+  // @ts-expect-error 'synced' carries boolean | { synced: boolean }, never a string
+  provider.on('synced', (event: string) => { void event; });
+  // @ts-expect-error 'status' carries an object, never a boolean
+  provider.on('status', (event: boolean) => { void event; });
+}
 
-    // @ts-expect-error - 'status' event expects { status?: string; connected?: boolean }
-    provider.on('status', (event: boolean) => {});
+export function acceptsTheRealEvents(provider: WhiteboardProvider) {
+  provider.on('status', (event: { status?: string; connected?: boolean }) => { void event; });
+  provider.on('synced', (event: boolean | { synced: boolean }) => { void event; });
+  provider.on('connection-close', (event: unknown) => { void event; });
+}
 
-    // @ts-expect-error - 'connection-close' event exists but wrong payload type
-    provider.on('connection-close', (event: boolean) => {});
-  }
+export function offIsTypedLikeOn(provider: WhiteboardProvider) {
+  const onSynced = (event: boolean | { synced: boolean }) => { void event; };
+  provider.off?.('synced', onSynced);
+  // @ts-expect-error 'syncd' is not an event this provider emits
+  provider.off?.('syncd', onSynced);
+}
 
-  // Test: accept correct event names and payload types (these should NOT cause errors)
-  function testAcceptCorrectTypes(provider: WhiteboardProvider) {
-    // These should all compile without errors
-    provider.on('status', (event: { status?: string; connected?: boolean }) => {});
+const providerPath = join(import.meta.dirname, 'yWebsocketProvider.ts');
 
-    provider.on('synced', (event: boolean | { synced: boolean }) => {});
+function firstParameterTypeOf(methodName: string): ts.TypeNode | undefined {
+  const source = readFileSync(providerPath, 'utf8');
+  const sourceFile = ts.createSourceFile(
+    providerPath,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
 
-    provider.on('connection-close', (event: unknown) => {});
-  }
-
-  // Test: decoder type narrowing in messageHandlers
-  function testDecoderTypeNarrowing(provider: WhiteboardProvider) {
-    // messageHandlers should have callbacks with Decoder type (not any)
-    if (provider.messageHandlers && provider.messageHandlers.length > 0) {
-      const handler = provider.messageHandlers[0];
-      if (handler) {
-        // handler should be a function with (encoder: Encoder, decoder: Decoder) => void
-        // If decoder was `any`, this type would be inferred as `any` instead of Decoder
-        type MessageHandler = typeof handler;
-        type HandlerParams = MessageHandler extends (encoder: infer E, decoder: infer D) => void
-          ? [E, D]
-          : never;
-        type DecoderParam = HandlerParams extends [unknown, infer D] ? D : never;
-        // This should be Decoder, not any
-        const _: DecoderParam = null as any;
+  let found: ts.TypeNode | undefined;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isInterfaceDeclaration(node)
+      && node.name.text === 'WhiteboardProvider'
+    ) {
+      for (const member of node.members) {
+        const name = member.name && ts.isIdentifier(member.name) ? member.name.text : undefined;
+        if (name !== methodName) continue;
+        if (ts.isMethodSignature(member)) found = member.parameters[0]?.type;
       }
     }
-  }
-
-  // Test: off method with same event typing
-  function testOffMethodTyping(provider: WhiteboardProvider) {
-    const callback = (event: boolean | { synced: boolean }) => {};
-
-    // These should compile
-    provider.off?.('synced', callback);
-    provider.off?.('status', (event: { status?: string; connected?: boolean }) => {});
-
-    // @ts-expect-error - off should reject wrong event names
-    provider.off?.('syncd', callback);
-
-    // @ts-expect-error - off should reject wrong payload types
-    provider.off?.('synced', (event: string) => {});
-  }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
 }
+
+describe('WhiteboardProvider event typing', () => {
+  it.each(['on', 'off'])('takes a named event union for %s, not a bare string', (methodName) => {
+    const parameterType = firstParameterTypeOf(methodName);
+
+    expect(parameterType, `${methodName} first parameter type`).toBeDefined();
+    expect(
+      parameterType!.kind,
+      `${methodName} still accepts any string as an event name`,
+    ).not.toBe(ts.SyntaxKind.StringKeyword);
+  });
+});
