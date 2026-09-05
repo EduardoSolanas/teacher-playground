@@ -125,16 +125,20 @@ export function shouldShowStartCall({
   return isHost && avAllowed && !avEnabled;
 }
 
+/*
+ * Deliberately not conditioned on a host being present. The call belongs to the
+ * room: if the teacher refreshes, drops off wifi or closes the tab, the peers
+ * are still talking to each other and must stay connected. Requiring a host
+ * here dropped the whole room the moment the host's presence row went away.
+ */
 export function shouldPeerEnterCall({
   callActive,
-  hasHost,
   avAllowed,
 }: {
   callActive: boolean;
-  hasHost: boolean;
   avAllowed: boolean;
 }): boolean {
-  return Boolean(callActive && hasHost && avAllowed);
+  return Boolean(callActive && avAllowed);
 }
 
 export function shouldShowSyncDegradedNotice({
@@ -291,17 +295,17 @@ function RoomContent({ roomId }: { roomId: string }) {
   // When host ends the call or leaves the room, peers exit the call.
   useEffect(() => {
     if (isLocalHost) return;
-    setCallWanted(shouldPeerEnterCall({ callActive: remoteCallActive, hasHost, avAllowed }));
-  }, [isLocalHost, remoteCallActive, hasHost, avAllowed]);
+    setCallWanted(shouldPeerEnterCall({ callActive: remoteCallActive, avAllowed }));
+  }, [isLocalHost, remoteCallActive, avAllowed]);
 
-  // When host unmounts or leaves the room, clear the active call state from the doc
-  useEffect(() => {
-    return () => {
-      if (isLocalHost) {
-        sendCallMessage({ active: false });
-      }
-    };
-  }, [isLocalHost, sendCallMessage]);
+  /*
+   * There is deliberately no unmount cleanup ending the call. Sending
+   * { active: false } when the host's component unmounts ended the call for the
+   * whole room every time the teacher refreshed the page -- a refresh unmounts
+   * exactly like leaving does, and the two are indistinguishable from here. The
+   * call ends when the host presses end, or when the last socket leaves the
+   * room and RoomDO clears it.
+   */
 
   // A hidden tab stops its heartbeat unless somebody in it is on a call.
   useEffect(() => {

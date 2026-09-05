@@ -196,37 +196,35 @@ describe('shouldShowStartCall', () => {
 });
 
 describe('shouldPeerEnterCall', () => {
-  it('returns true when room call is active, host is present, and av is allowed', () => {
-    expect(shouldPeerEnterCall({ callActive: true, hasHost: true, avAllowed: true })).toBe(true);
+  it('returns true when the room call is active and av is allowed', () => {
+    expect(shouldPeerEnterCall({ callActive: true, avAllowed: true })).toBe(true);
   });
 
-  it('returns false when room call is not active', () => {
-    expect(shouldPeerEnterCall({ callActive: false, hasHost: true, avAllowed: true })).toBe(false);
-  });
-
-  it('returns false when no host is present in the room', () => {
-    expect(shouldPeerEnterCall({ callActive: true, hasHost: false, avAllowed: true })).toBe(false);
+  it('returns false when the room call is not active', () => {
+    expect(shouldPeerEnterCall({ callActive: false, avAllowed: true })).toBe(false);
   });
 
   it('returns false when av is not allowed for the peer', () => {
-    expect(shouldPeerEnterCall({ callActive: true, hasHost: true, avAllowed: false })).toBe(false);
+    expect(shouldPeerEnterCall({ callActive: true, avAllowed: false })).toBe(false);
   });
 
-  it('derives hasHost correctly from active users list', () => {
-    const usersWithHost = [
-      makeUser({ peerId: 'p1', isHost: false }),
-      makeUser({ peerId: 'p2', isHost: true }),
-    ];
+  it('keeps peers in the call when no host is present', () => {
+    /*
+     * The host refreshing the page, dropping off wifi or closing the tab must
+     * not hang up on everyone else -- the peers are talking to each other, and
+     * the call belongs to the room. This used to be gated on a host being
+     * present, which ended the call for the whole room the moment the host's
+     * presence row went away.
+     */
     const usersWithoutHost = [
       makeUser({ peerId: 'p1', isHost: false }),
       makeUser({ peerId: 'p3', isHost: false }),
     ];
-    expect(usersWithHost.some((u) => u.isHost)).toBe(true);
     expect(usersWithoutHost.some((u) => u.isHost)).toBe(false);
-    expect(shouldPeerEnterCall({ callActive: true, hasHost: usersWithHost.some((u) => u.isHost), avAllowed: true })).toBe(true);
-    expect(shouldPeerEnterCall({ callActive: true, hasHost: usersWithoutHost.some((u) => u.isHost), avAllowed: true })).toBe(false);
+    expect(shouldPeerEnterCall({ callActive: true, avAllowed: true })).toBe(true);
   });
 });
+
 
 describe('shouldShowSyncDegradedNotice', () => {
   it('returns true when sync is degraded and connection is not lost', () => {

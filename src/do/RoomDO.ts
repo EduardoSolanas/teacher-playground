@@ -333,7 +333,16 @@ export class RoomDO extends DurableObject {
   private activeFollow: FollowMessage | null = null;
 
   /** Ephemeral call state; owner-only writes, never written to Yjs, SQL, or storage. */
+  /*
+   * The call belongs to the room, not to the host's session. It has to outlive
+   * the host disconnecting, refreshing, or losing the network, so it is written
+   * to durable storage rather than held only in memory: this object accepts
+   * hibernatable sockets, so it can be evicted with peers still connected and
+   * would otherwise wake with the call silently forgotten.
+   */
+  private static readonly ACTIVE_CALL_KEY = 'call:active';
   private activeCall: CallState | null = null;
+  private activeCallLoaded = false;
 
   /**
    * Rooms whose document has changed since it was last written. Flushed at most
@@ -1028,6 +1037,24 @@ export class RoomDO extends DurableObject {
     }
   }
 
+  private async loadActiveCall(): Promise<CallState | null> {
+    if (!this.activeCallLoaded) {
+      this.activeCall = (await this.ctx.storage.get<CallState>(RoomDO.ACTIVE_CALL_KEY)) ?? null;
+      this.activeCallLoaded = true;
+    }
+    return this.activeCall;
+  }
+
+  private async setActiveCall(next: CallState | null): Promise<void> {
+    this.activeCall = next;
+    this.activeCallLoaded = true;
+    if (next) {
+      await this.ctx.storage.put(RoomDO.ACTIVE_CALL_KEY, next);
+    } else {
+      await this.ctx.storage.delete(RoomDO.ACTIVE_CALL_KEY);
+    }
+  }
+
   private hasOpenSocketForAccount(accountId: string, excluding?: WebSocket): boolean {
     return this.ctx.getWebSockets().some((peer) => {
       if (peer === excluding) return false;
@@ -1588,6 +1615,13 @@ export class RoomDO extends DurableObject {
     if (this.activeFollow) {
       try { server.send(encodeFollowMessage(this.activeFollow)); } catch { /* Best effort. */ }
     }
+    // Read through storage, not the in-memory copy: after hibernation this is
+    // the only place the room's call survives, and a peer arriving mid-call
+    // must still be told there is one.
+    const resumedCall = await this.loadActiveCall();
+    if (resumedCall) {
+      try { server.send(encodeCallMessage(resumedCall)); } catch { /* Best effort. */ }
+    }
     if (this.activeCall) {
       try { server.send(encodeCallMessage(this.activeCall)); } catch { /* Best effort. */ }
     }
@@ -2027,7 +2061,7 @@ export class RoomDO extends DurableObject {
         if (decoding.readVarUint(decoder2) === CALL_MESSAGE_TYPE) {
           const callState = decodeCallMessagePayload(decoder2);
           if (!callState || !isOwnerRole(role)) return;
-          this.activeCall = callState.active ? callState : null;
+          await this.setActiveCall(callState.active ? callState : null);
           this.broadcastCall(callState, ws);
           return;
         }
@@ -2156,14 +2190,18 @@ export class RoomDO extends DurableObject {
         this.activeFollow = null;
         this.broadcastFollow({ active: false }, ws);
       }
-      if (
-        attachment?.accountId
-        && this.activeCall
-        && isOwnerRole(getGrantRole(this.db, attachment.roomId, attachment.accountId))
-        && !this.hasOpenSocketForAccount(attachment.accountId, ws)
-      ) {
-        this.activeCall = null;
-        this.broadcastCall({ active: false }, ws);
+      /*
+       * The host leaving does NOT end the call. This used to clear the call
+       * when the owner's last socket closed, which ended it for everyone the
+       * moment the host refreshed the page, dropped off wifi, or closed a
+       * duplicate tab. `follow` above is still cleared that way on purpose --
+       * it is a view the host is driving, and it is meaningless once they are
+       * gone. A call is not: the peers are talking to each other.
+       *
+       * It ends when the host ends it, or when the room empties below.
+       */
+      if (!this.ctx.getWebSockets().some((peer) => peer !== ws)) {
+        await this.setActiveCall(null);
       }
       if (attachment?.roomId) this.sweepDepartedCursors(attachment.roomId);
       // The breach counter outlives nothing: an account with no socket left
