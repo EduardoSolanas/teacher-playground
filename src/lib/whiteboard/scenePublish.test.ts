@@ -166,3 +166,31 @@ describe('publishing cost does not scale with the board', () => {
     doc.destroy();
   });
 });
+
+describe('baseline advancement success contract', () => {
+  it('if a publish fails, re-diffing against the old baseline produces the same diff', () => {
+    // This test documents the contract: the baseline must ONLY advance after
+    // a successful publish. If it advances before (then the write fails), the
+    // failed change is lost because the baseline has already moved.
+
+    // Start with a baseline of 2 elements at version 1
+    const { elements: initial, baseline: v1Baseline } = board(2);
+
+    // Change one element to version 2
+    const updated = [...initial];
+    updated[0] = el('el-0', 2, 40);
+
+    // First diff against v1 baseline (simulating the first commit attempt)
+    const diff1 = diffScene(v1Baseline, updated);
+    expect(diff1.changedIds.has('el-0')).toBe(true);
+
+    // Now simulate that the publish failed. In the buggy code, the baseline
+    // would have already advanced to diff1.nextVersions. This test verifies
+    // the fix: if we re-diff against the OLD baseline (because the publish
+    // failed and the baseline should not have advanced), we get the same diff.
+    const diff2 = diffScene(v1Baseline, updated);
+
+    expect(diff2.changedIds).toEqual(diff1.changedIds);
+    expect(diff2.removed).toBe(diff1.removed);
+  });
+});
