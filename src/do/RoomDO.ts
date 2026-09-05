@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { DODatabase } from '../lib/whiteboard/doDatabase';
-import { applySchema, getGrantVersion, incrementGrantVersion, purgeExpiredRoomsAndTombstones, roomExists } from '../lib/whiteboard/roomSchema';
+import { applySchema, getGrantVersion, incrementGrantVersion, purgeExpiredRoomsAndTombstones, roomExists, getFileBytesTotal, addFileBytes } from '../lib/whiteboard/roomSchema';
+import { MAX_ROOM_FILE_BYTES_TOTAL } from '../lib/whiteboard/boardFileRoutes';
 import {
   assertNotTombstoned,
   createSqlTombstoneStore,
@@ -727,6 +728,8 @@ export class RoomDO extends DurableObject {
       const action = url.pathname.split('/').filter(Boolean)[2] ?? '';
       if (action === 'authorize-write') return canWriteBoard(role) ? null : forbidden();
       if (action === 'authorize-read') return granted ? null : forbidden();
+      // check-quota and add-bytes require write access (called during PUT)
+      if (action === 'check-quota' || action === 'add-bytes') return canWriteBoard(role) ? null : forbidden();
       return forbidden();
     }
 
@@ -891,11 +894,57 @@ export class RoomDO extends DurableObject {
         });
       }
       case 'files': {
-        // Authorization check only; actual R2 operations happen in the Worker.
-        // Paths arrive as /room/files/authorize-write or /room/files/authorize-read.
-        // Both are GET requests; the authorize() matrix checks the path and verifies
-        // the caller can write (for PUT) or read (for GET) the board.
-        return Promise.resolve(Response.json({ ok: true }, { status: 200 }));
+        const action = segments[2] ?? '';
+
+        // Authorization and quota checks for file uploads.
+        if (action === 'authorize-write' || action === 'authorize-read') {
+          // Authorization check only; actual R2 operations happen in the Worker.
+          // Paths arrive as /room/files/authorize-write or /room/files/authorize-read.
+          // Both are GET requests; the authorize() matrix checks the path and verifies
+          // the caller can write (for PUT) or read (for GET) the board.
+          return Promise.resolve(Response.json({ ok: true }, { status: 200 }));
+        }
+
+        if (action === 'check-quota') {
+          if (method === 'POST') {
+            try {
+              const body = await request.json() as { incomingSize?: number };
+              const incomingSize = body.incomingSize ?? 0;
+
+              const currentTotal = getFileBytesTotal(this.db, roomId);
+
+              if (currentTotal + incomingSize > MAX_ROOM_FILE_BYTES_TOTAL) {
+                return Response.json(
+                  { error: 'Aggregate file storage quota exceeded (250 MB limit)' },
+                  { status: 413 },
+                );
+              }
+
+              return Response.json({ ok: true, currentTotal }, { status: 200 });
+            } catch (error) {
+              return Response.json({ error: 'Invalid request' }, { status: 400 });
+            }
+          }
+          return Response.json({ error: 'Method not allowed' }, { status: 405 });
+        }
+
+        if (action === 'add-bytes') {
+          if (method === 'POST') {
+            try {
+              const body = await request.json() as { bytes?: number };
+              const bytes = body.bytes ?? 0;
+
+              addFileBytes(this.db, roomId, bytes);
+
+              return Response.json({ ok: true }, { status: 200 });
+            } catch (error) {
+              return Response.json({ error: 'Invalid request' }, { status: 400 });
+            }
+          }
+          return Response.json({ error: 'Method not allowed' }, { status: 405 });
+        }
+
+        return Promise.resolve(Response.json({ error: 'Not found' }, { status: 404 }));
       }
       case 'requests': {
         const requestId = segments[2];

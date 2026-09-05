@@ -74,6 +74,10 @@ export function applySchema(db: RoomDatabase): void {
     // Lockout lasts 15 minutes.
     db.exec(`ALTER TABLE rooms ADD COLUMN guest_lockout_until INTEGER`);
   }
+  if (!columns.some((column) => column.name === 'file_bytes_total')) {
+    // Aggregate file storage counter for enforcing per-room quota (250 MB limit).
+    db.exec(`ALTER TABLE rooms ADD COLUMN file_bytes_total INTEGER NOT NULL DEFAULT 0`);
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS room_presence (
@@ -281,4 +285,19 @@ export function getGrantVersion(db: RoomDatabase, roomId: string): number {
 export function incrementGrantVersion(db: RoomDatabase, roomId: string): number {
   db.prepare(`UPDATE rooms SET grant_version = grant_version + 1 WHERE room_id = ?`).run(roomId);
   return getGrantVersion(db, roomId);
+}
+
+export function getFileBytesTotal(db: RoomDatabase, roomId: string): number {
+  const row = db
+    .prepare(`SELECT file_bytes_total FROM rooms WHERE room_id = ?`)
+    .get(roomId) as { file_bytes_total: number } | undefined;
+  return row?.file_bytes_total ?? 0;
+}
+
+export function addFileBytes(db: RoomDatabase, roomId: string, bytes: number): void {
+  db.prepare(`UPDATE rooms SET file_bytes_total = file_bytes_total + ? WHERE room_id = ?`).run(bytes, roomId);
+}
+
+export function setFileBytes(db: RoomDatabase, roomId: string, bytes: number): void {
+  db.prepare(`UPDATE rooms SET file_bytes_total = ? WHERE room_id = ?`).run(bytes, roomId);
 }

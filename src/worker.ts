@@ -43,6 +43,7 @@ import {
 } from './lib/worker/requestGuard';
 import {
   MAX_BOARD_FILE_BYTES,
+  MAX_ROOM_FILE_BYTES_TOTAL,
   isValidFileId,
   isAllowedMimeType,
   buildR2ObjectKey,
@@ -1073,6 +1074,22 @@ const worker = {
         );
         if (!authCheck.ok) return authCheck;
 
+        // Check aggregate file quota: get current total and ensure upload won't exceed 250 MB.
+        const quotaCheck = await forward(
+          env,
+          roomId,
+          '/room/files/check-quota',
+          new Request('https://room/room/files/check-quota', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ incomingSize: declaredSize }),
+          }),
+          url,
+          session,
+          guestCaller,
+        );
+        if (!quotaCheck.ok) return quotaCheck;
+
         // Streamed, not buffered: an image is megabytes and reading it into
         // memory first would put the whole file in the isolate's heap.
         const key = buildR2ObjectKey(roomId, fileId);
@@ -1096,6 +1113,27 @@ const worker = {
         if (stored && stored.size > MAX_BOARD_FILE_BYTES) {
           await env.BOARD_FILES.delete(key);
           return withSecurityHeaders(new Response('File too large', { status: 413 }));
+        }
+
+        // Update the aggregate file bytes counter after successful upload.
+        if (stored) {
+          const updateResult = await forward(
+            env,
+            roomId,
+            '/room/files/add-bytes',
+            new Request('https://room/room/files/add-bytes', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ bytes: stored.size }),
+            }),
+            url,
+            session,
+            guestCaller,
+          );
+          if (!updateResult.ok) {
+            // Log the error but don't fail the request - file is already in R2
+            console.error('Failed to update file bytes counter', updateResult.status);
+          }
         }
 
         return withSecurityHeaders(Response.json({ ok: true }, { status: 201 }));
