@@ -96,6 +96,12 @@ import {
   encodeFollowMessage,
   type FollowMessage,
 } from '../lib/whiteboard/followMessage';
+import {
+  CALL_MESSAGE_TYPE,
+  encodeCallMessage,
+  decodeCallMessagePayload,
+  type CallState,
+} from '../lib/whiteboard/callMessage';
 
 /**
  * How often live sockets are re-checked against the identity store. This is the
@@ -312,6 +318,9 @@ export class RoomDO extends DurableObject {
 
   /** Ephemeral teacher guide state; never written to Yjs, SQL, or storage. */
   private activeFollow: FollowMessage | null = null;
+
+  /** Ephemeral call state; owner-only writes, never written to Yjs, SQL, or storage. */
+  private activeCall: CallState | null = null;
 
   /**
    * Rooms whose document has changed since it was last written. Flushed at most
@@ -943,6 +952,20 @@ export class RoomDO extends DurableObject {
     }
   }
 
+  private broadcastCall(state: CallState, exclude?: WebSocket): void {
+    const frame = encodeCallMessage(state);
+    for (const peer of this.ctx.getWebSockets()) {
+      if (peer === exclude) continue;
+      const identity = peer.deserializeAttachment() as SocketIdentity | null;
+      if (!identity?.accountId || !isGrantedRole(getGrantRole(this.db, identity.roomId, identity.accountId))) continue;
+      try {
+        peer.send(frame);
+      } catch {
+        try { peer.close(); } catch { /* Already gone. */ }
+      }
+    }
+  }
+
   private hasOpenSocketForAccount(accountId: string, excluding?: WebSocket): boolean {
     return this.ctx.getWebSockets().some((peer) => {
       if (peer === excluding) return false;
@@ -1503,6 +1526,9 @@ export class RoomDO extends DurableObject {
     if (this.activeFollow) {
       try { server.send(encodeFollowMessage(this.activeFollow)); } catch { /* Best effort. */ }
     }
+    if (this.activeCall) {
+      try { server.send(encodeCallMessage(this.activeCall)); } catch { /* Best effort. */ }
+    }
     // Awaited, not floating: a storage write racing the returned response
     // shows up as "database is locked: SQLITE_BUSY".
     await this.scheduleRevocationCheck();
@@ -1906,6 +1932,19 @@ export class RoomDO extends DurableObject {
         return;
       }
 
+      try {
+        const decoder2 = decoding.createDecoder(bytes);
+        if (decoding.readVarUint(decoder2) === CALL_MESSAGE_TYPE) {
+          const callState = decodeCallMessagePayload(decoder2);
+          if (!callState || !isOwnerRole(role)) return;
+          this.activeCall = callState.active ? callState : null;
+          this.broadcastCall(callState, ws);
+          return;
+        }
+      } catch {
+        return;
+      }
+
       if (!canWriteBoard(role)) {
         try {
           const doc = await this.getRoomDoc(attachment.roomId);
@@ -2026,6 +2065,15 @@ export class RoomDO extends DurableObject {
       ) {
         this.activeFollow = null;
         this.broadcastFollow({ active: false }, ws);
+      }
+      if (
+        attachment?.accountId
+        && this.activeCall
+        && isOwnerRole(getGrantRole(this.db, attachment.roomId, attachment.accountId))
+        && !this.hasOpenSocketForAccount(attachment.accountId, ws)
+      ) {
+        this.activeCall = null;
+        this.broadcastCall({ active: false }, ws);
       }
       if (attachment?.roomId) this.sweepDepartedCursors(attachment.roomId);
       // The breach counter outlives nothing: an account with no socket left

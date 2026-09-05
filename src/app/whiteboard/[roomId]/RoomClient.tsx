@@ -38,6 +38,7 @@ import { roomIdFromWhiteboardPath } from '@/lib/whiteboard/roomPath';
 import { shouldClearUsernameOnEviction } from '@/lib/whiteboard/evictionUi';
 import type { ParticipantState } from '@/lib/av/avSession';
 import type { WhiteboardUser } from '@/types/whiteboard';
+import type { CallState } from '@/lib/whiteboard/callMessage';
 
 const ExcalidrawWrapper = dynamic(
   () => import('@/components/whiteboard/ExcalidrawWrapper'),
@@ -221,7 +222,9 @@ function RoomContent({ roomId }: { roomId: string }) {
     storeViewport,
     hostPeerId,
     guideMessage,
+    remoteCallActive,
     sendFollowMessage,
+    sendCallMessage,
   } = useCollaboration(roomId, callLiveRef);
 
   const handleGuideViewport = useCallback((nextViewport: { x: number; y: number; zoom: number }) => {
@@ -272,44 +275,33 @@ function RoomContent({ roomId }: { roomId: string }) {
 
   const handleStartCall = useCallback(() => {
     setCallWanted(true);
-    if (yDoc) {
-      yDoc.getMap('call').set('active', true);
-    }
-  }, [yDoc]);
+    sendCallMessage({ active: true, hostAccountId: localUser?.accountId ?? '', startedAt: Date.now() });
+  }, [sendCallMessage, localUser?.accountId]);
 
   const handleEndCall = useCallback(() => {
     setCallWanted(false);
-    if (isLocalHost && yDoc) {
-      yDoc.getMap('call').set('active', false);
+    if (isLocalHost) {
+      sendCallMessage({ active: false });
     }
-  }, [isLocalHost, yDoc]);
+  }, [isLocalHost, sendCallMessage]);
 
   const hasHost = users.some((u) => u.isHost);
 
   // Non-host peers follow the room call state: when host starts a call, all peers enter.
   // When host ends the call or leaves the room, peers exit the call.
   useEffect(() => {
-    if (isLocalHost || !yDoc) return;
-    const callMap = yDoc.getMap('call');
-    const syncCall = () => {
-      const callActive = Boolean(callMap.get('active'));
-      setCallWanted(shouldPeerEnterCall({ callActive, hasHost, avAllowed }));
-    };
-    callMap.observe(syncCall);
-    syncCall();
-    return () => {
-      callMap.unobserve(syncCall);
-    };
-  }, [yDoc, isLocalHost, hasHost, avAllowed]);
+    if (isLocalHost) return;
+    setCallWanted(shouldPeerEnterCall({ callActive: remoteCallActive, hasHost, avAllowed }));
+  }, [isLocalHost, remoteCallActive, hasHost, avAllowed]);
 
   // When host unmounts or leaves the room, clear the active call state from the doc
   useEffect(() => {
     return () => {
-      if (isLocalHost && yDoc) {
-        yDoc.getMap('call').set('active', false);
+      if (isLocalHost) {
+        sendCallMessage({ active: false });
       }
     };
-  }, [isLocalHost, yDoc]);
+  }, [isLocalHost, sendCallMessage]);
 
   // A hidden tab stops its heartbeat unless somebody in it is on a call.
   useEffect(() => {

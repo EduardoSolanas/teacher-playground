@@ -6,6 +6,7 @@ import type {
   RemoteCursor,
 } from '@/types/whiteboard';
 import { createCollaboration, type PresencePayload } from '@/lib/whiteboard/collaboration';
+import type { CallCallback } from '@/lib/whiteboard/yWebsocketProvider';
 import {
   shouldStartCollaboration,
   type GrantedPublicRole,
@@ -33,6 +34,7 @@ import { VIEWPORT_SAVE_DEBOUNCE_MS, shouldStoreViewport } from '@/lib/whiteboard
 import { shouldPollPresence } from '@/lib/whiteboard/presencePolling';
 import { cursorPublishDelay } from '@/lib/whiteboard/cursorPublishRate';
 import type { FollowMessage } from '@/lib/whiteboard/followMessage';
+import type { CallState } from '@/lib/whiteboard/callMessage';
 import { moderationTargetBody } from '@/lib/whiteboard/moderationTarget';
 import { DEFAULT_MAX_USERS } from '@/lib/plan/limits';
 import {
@@ -67,6 +69,7 @@ export function useCollaboration(
    * re-running anything here.
    */
   callLiveRef?: { readonly current: boolean },
+  onCall?: CallCallback,
 ) {
   const [isConnected, setIsConnected] = useState(false);
   const [roomLoaded, setRoomLoaded] = useState(false);
@@ -78,6 +81,7 @@ export function useCollaboration(
   const [elements, setElements] = useState<CanvasElement[]>([]);
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const [guideMessage, setGuideMessage] = useState<FollowMessage | null>(null);
+  const [remoteCallActive, setRemoteCallActive] = useState(false);
   const [maxUsers, setMaxUsers] = useState(DEFAULT_MAX_USERS);
   /** What the room is called; null until the room has been read, or unnamed. */
   const [roomName, setRoomName] = useState<string | null>(null);
@@ -152,8 +156,15 @@ export function useCollaboration(
       const handleFollow = (payload: FollowMessage) => {
         setGuideMessage(payload);
       };
+      const handleCall = (state: CallState) => {
+        if (onCall) {
+          onCall(state);
+        } else {
+          setRemoteCallActive(state.active);
+        }
+      };
 
-      collaborationRef.current = createCollaboration(roomId, peerId, handlePresence, handleFollow);
+      collaborationRef.current = createCollaboration(roomId, peerId, handlePresence, handleFollow, handleCall);
       if (pendingUserNameRef.current) {
         collaborationRef.current.setLocalUserName(pendingUserNameRef.current);
       }
@@ -660,6 +671,10 @@ export function useCollaboration(
     collaborationRef.current?.sendFollowMessage(message) ?? false
   ), []);
 
+  const sendCallMessage = useCallback((state: CallState) => (
+    collaborationRef.current?.sendCallMessage(state) ?? false
+  ), []);
+
   useEffect(() => {
     if (!roomLoaded || !hasJoined) return;
 
@@ -1081,7 +1096,9 @@ export function useCollaboration(
     },
     storeViewport,
     guideMessage,
+    remoteCallActive,
     sendFollowMessage,
+    sendCallMessage,
     collaboration: collaborationEpoch >= 0 ? collaborationRef.current : null,
     waitingPeers,
     isWaiting,

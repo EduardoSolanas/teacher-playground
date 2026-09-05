@@ -1,5 +1,6 @@
 import * as decoding from 'lib0/decoding';
 import { FOLLOW_MESSAGE_TYPE } from './followMessage';
+import { CALL_MESSAGE_TYPE } from './callMessage';
 
 /**
  * Determines whether a binary frame should be relayed to peers.

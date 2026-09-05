@@ -9,11 +9,13 @@ import {
 import {
   createYWebsocketProvider,
   destroyProvider,
+  type CallCallback,
   type FollowCallback,
   type PresenceCallback,
   type WhiteboardProvider,
 } from './yWebsocketProvider';
 import type { FollowMessage } from './followMessage';
+import type { CallState } from './callMessage';
 import {
   clearCursor,
   publishCursor,
@@ -51,9 +53,10 @@ export function createCollaboration(
   peerId?: string,
   onPresence?: PresenceCallback,
   onFollow?: FollowCallback,
+  onCall?: CallCallback,
 ) {
   const { doc, elementsArray, viewportMap } = createWhiteboardDoc(roomId);
-  const providerEntry = createYWebsocketProvider(doc, roomId, onPresence, onFollow);
+  const providerEntry = createYWebsocketProvider(doc, roomId, onPresence, onFollow, onCall);
   const { provider, status } = providerEntry;
   // Cursors ride awareness, which the provider owns. Absent on the server,
   // where there is no socket and nothing to announce.
@@ -208,6 +211,7 @@ export function createCollaboration(
     removeElement,
     updateElement,
     sendFollowMessage: (message: FollowMessage) => providerEntry.sendFollowMessage?.(message) ?? false,
+    sendCallMessage: (state: CallState) => providerEntry.sendCallMessage?.(state) ?? false,
     onChange,
     destroy,
   };
