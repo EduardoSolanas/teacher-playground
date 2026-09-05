@@ -43,23 +43,32 @@ Suggested prompt:
 | R02 | P1 | Preserve retryable account-erasure work | Design first, then small implementation slices | Orchestrator design |
 | R03 | P1 | Schedule retention cleanup without connected sockets | Medium, cheaper implementer after reproduction | None |
 | R04 | P1 | Verify and constrain ownership of shared call state | Reproduction first; security design stays with orchestrator | None |
-| R05 | P1 | Stop canceled A/V startup after token-body parsing | Small, cheaper implementer | R09 for real-media test infrastructure if needed |
+| R05 | **DONE** | ~~Stop canceled A/V startup after token-body parsing~~ | Done 2026-09-05 | R09 still owed for real-media assertions |
 | R06 | P2 | Bound limiter storage and align abuse-window semantics | Two separate medium slices | Orchestrator chooses policy |
 | R07 | P2 | Bound aggregate room-file usage | Design first, then small slices | Orchestrator supplies quotas |
 | R08 | P1 | Diagnose the six observed E2E failures, one case at a time | Small per failing case | Baseline first |
 | R09 | P2 | Make real-media validation an explicit gate | Medium, infrastructure plus test slices | Local LiveKit availability |
 | R10 | **DONE** | ~~Complete clear-dialog keyboard behavior~~ | Done 2026-09-05 | None |
 | R11 | **DONE** | ~~Add an accessible label to the name field~~ | Done 2026-09-05 | None |
-| R12 | P2 | Handle unavailable offline storage gracefully | Small, cheaper implementer | None |
-| R13 | P2 | Refresh cached provider callbacks | Small/medium, cheaper implementer after reproduction | None |
-| R14 | P3 | Tighten provider event types | Small, cheaper implementer | R13 if same files change |
+| R12 | **DONE** | ~~Handle unavailable offline storage gracefully~~ | Done 2026-09-05 (partial coverage) | None |
+| R13 | **DONE** | ~~Refresh cached provider callbacks~~ | Done 2026-09-05 | None |
+| R14 | **DONE** | ~~Tighten provider event types~~ | Done 2026-09-05 | None |
 | R15 | **DONE** | ~~Preserve valid zero values in legacy element conversion~~ | Done 2026-09-05 | None |
 | R16 | **DONE** | ~~Correct architecture and hostname documentation~~ | Done 2026-09-05 | None |
 | R17 | P2 | Reconcile security release evidence | Orchestrator / operations | Relevant code tasks and staging access |
 
 Begin with R00 to establish a trustworthy baseline, with R16 as quick context cleanup, then R01. Reproduce R02–R05 before allowing broader cleanup. R10/R11 are good initial tasks for evaluating a cheaper model. Do not give it a whole-file RoomDO or RoomClient refactor.
 
-**Status 2026-09-05.** R10, R11, R15 and R16 are implemented and committed; see
+**Status 2026-09-05 (second batch).** R05, R12, R13 and R14 are also done.
+Unit baseline is now 117 files / 1,252 tests, typecheck and lint clean. Note
+that commit `f810dc7`, made by a concurrent session, swept up the then-uncommitted
+R05 and R14 implementation work alongside its own R00/R08 changes — the code is
+correct and present, but those two tasks are not attributable to a single commit.
+
+Still outstanding across both batches: **R01, R02, R03, R04, R06, R07, R09, R17**,
+plus R00/R08 finishing, plus the E2E pass owed by R10/R11.
+
+**Status 2026-09-05 (first batch).** R10, R11, R15 and R16 are implemented and committed; see
 the completion notes on each card. Unit baseline moved from 114 files / 1,225
 tests to 116 files / 1,237 tests, all passing, with typecheck and lint clean.
 E2E was **not** run for this batch — another session was concurrently editing
@@ -137,6 +146,33 @@ The log also points into `@cloudflare/vitest-pool-workers/dist/worker/lib/cloudf
 **First red:** serve a real token response whose body completes after the hook is disabled/unmounted or switches rooms; assert the old startup never establishes media and never replaces new-room state. Use a controllable real HTTP server, not route fulfillment or mocked fetch. Start with one cancellation path.
 
 **Done:** cancellation is checked after asynchronous boundaries before side effects; abandoned owned sessions are torn down. Test a successful ordinary join as well. Do not log tokens or server URLs with credentials.
+
+**DONE 2026-09-05.** `useAvSession` now re-checks `cancelled` after
+`await response.json()` on both the success path and the 403 path, before any
+`setState` and before the provider is constructed. The pre-existing check after
+`session.join` is unchanged.
+
+Two of this card's requirements were **not** met, and neither is an effort
+problem:
+
+- *"Use a controllable real HTTP server, not route fulfillment or mocked fetch."*
+  Not possible at unit level, and this was measured rather than assumed:
+  `ajaxFetch` passes the relative `input` to `fetch` (it resolves `target` only
+  for its origin check), and Node's fetch rejects a relative URL with
+  "Failed to parse URL" before any HTTP layer exists. A real `http.Server` is
+  reachable from this environment on an **absolute** URL, so the single blocker
+  is `ajaxFetch.ts:16`. nock and msw do not help: there is no request to
+  intercept. **Follow-up worth filing:** make `ajaxFetch` fetch the `target` it
+  already computed — the origin it validates and the origin it requests can
+  currently differ — after which this test can use a real server with no new
+  dependency.
+- *"Current tests patch fetch and provider methods, contrary to the real-object
+  rule."* Half fixed. The two tests covering the actual bug use a real
+  `Response` over a real `ReadableStream` and never construct a provider. The
+  two that need a provider still patch `LiveKitProvider.prototype.connect` /
+  `disconnect`, because a real `connect()` opens a real socket to the media
+  server. That is **R09's** dependency, exactly as this card's dependency column
+  predicted.
 
 ### R06 — Bound limiter memory; separately clarify abuse windows
 
@@ -251,6 +287,29 @@ Not done: the real-browser E2E pass. See the status note under "Priority and ord
 
 **Done:** room startup remains usable and cache failure creates no unhandled rejection; no fallback silently persists board content without opt-in. Keep this separate from cross-room debounce redesign. The hook's one-time load flag/global debounce merit a future reproduction only if simultaneous room instances become supported.
 
+**DONE 2026-09-05, with coverage stated honestly.** `saveBoardState` guards its
+writes, the debounce no longer drops a rejection on the floor, and
+`cleanupStaleRooms` guards storage enumeration so an origin without storage
+cannot take room startup down from `usePersistence`'s mount.
+
+The enumeration guard is deliberately narrow rather than a try/catch around the
+whole sweep: the clears already guard themselves, and a blanket wrap would hide
+a mid-sweep failure and leave the remaining rooms unswept in silence.
+
+**Only the quota path is proven.** It fills jsdom's real 5,000,000-code-unit
+store rather than patching `setItem`. A trap worth recording: filling with one
+chunk size leaves a chunk-sized gap that the small board-state JSON slips into,
+and the first version of this test passed against the *unfixed* code because of
+it. It now packs storage with decreasing chunk sizes and fails without the fix.
+
+**Not proven, left as defensive:** the enumeration guard and the debounce
+backstop. jsdom cannot make the `localStorage` getter throw without patching it,
+which this card forbids. A genuinely storage-less origin is browser-profile
+work and belongs with E2E, not here.
+
+Opt-in behaviour is unchanged and asserted: a storage failure must never begin
+caching board content for a room that did not opt in.
+
 ### R13 — A provider cache hit must not retain obsolete callbacks
 
 **Observed:** `yWebsocketProvider.ts:110-119` returns the cached entry for the same document before registering the newly supplied `onPresence`/`onFollow` callbacks. Existing handlers close over the callbacks from initial creation. Whether current mounting behavior triggers user-visible stale state needs reproduction.
@@ -261,11 +320,39 @@ Not done: the real-browser E2E pass. See the status note under "Priority and ord
 
 **Done:** intended consumers receive messages once, destroyed consumers do not, document identity safety stays intact, and repeated calls do not create duplicate sockets. If multiple consumers are unsupported, document and enforce that contract rather than introducing a general event bus.
 
+**DONE 2026-09-05.** Handler registration moved into one function called from
+both the create path and the cache-hit path.
+
+**Contract chosen: replacement — the latest caller's callbacks win.**
+`messageHandlers[type] = ...` was always a single slot rather than a list, and
+`collaboration.ts:56` is the only call site, so single-consumer was already the
+real contract; it is now explicit instead of accidental. Passing `undefined`
+clears the slot rather than leaving a destroyed consumer wired. No event bus and
+no subscription list were added, per this card. The doc-identity check is
+untouched and its existing tests were not modified.
+
 ### R14 — Narrow the remaining provider event/decoder types
 
 **Observed:** a `WhiteboardProvider` interface already exists, so the old `fix.md` request to create one is obsolete. Its event names and callback arguments remain `string`/`any[]`, and message decoders are `any` (`yWebsocketProvider.ts:32-38`).
 
 **Scope:** only this interface and direct consumer annotations. First add compile-time negative cases for misspelled event names/wrong payloads, following the existing type-test conventions. Use actual installed upstream decoder/event types where available. Run typecheck and behavior suites; do not broadly replace Yjs serialization types or add runtime wrappers solely for typing.
+
+**DONE 2026-09-05.** `on` and `off` take a union of the three events the
+provider actually emits (`status`, `synced`, `connection-close`) with a payload
+type each; `messageHandlers` uses lib0's real `Decoder` and `Encoder` rather
+than `any`. Compile-time only — no runtime wrappers.
+
+The first version of these tests **could not fail**: the compile-time checks sat
+inside `if (false)`, which left vitest with no runtime test in the file and
+failed the suite, and the patch for that was four `expect(true).toBe(true)`
+cases. Replaced with two layers — uncalled but typechecked functions whose
+`@ts-expect-error` directives become TS2578 errors if the union goes loose, and
+a runtime test that reads the interface via the TypeScript compiler API, in the
+idiom `ExcalidrawWrapper.types.test.ts` already uses.
+
+Mutation-verified: widening `on` back to `(eventName: string, callback:
+(...args: any[]) => void)` fails the runtime assertion and produces three TS2578
+errors.
 
 ### R15 — Verify lossless legacy element conversion before type cleanup
 
