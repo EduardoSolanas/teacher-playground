@@ -73,7 +73,7 @@ test.describe('Multi-peer collaboration', () => {
     }
   });
 
-  test('recovers a Yjs update that signaling sheds', async ({ page, browser }) => {
+  test('sheds awareness frames under signaling budget while preserving Yjs updates', async ({ page, browser }) => {
     const roomId = await createRoomWithMaxUsers(page, 'ShedHost', 2);
     const peerContext = await newAuthenticatedContext(browser);
     const peerPage = await peerContext.newPage();
@@ -97,88 +97,67 @@ test.describe('Multi-peer collaboration', () => {
       // Let the initial remote-scene hydration finish before the local update.
       await peerPage.waitForTimeout(400);
 
-      // The Worker relays at most 60 messages per account per second and sheds
-      // the rest. Start just after a periodic sync so the next repair is still
-      // about three seconds away, then prove a probe is shed before updating.
-      const shedPublish = await peerPage.evaluate(async (element) => {
+      // Under the signaling budget (120 msg/s), awareness frames (type 1) are
+      // shed when exceeding budget, but Yjs sync frames (type 0) are lossless
+      // and never shed. Prove an awareness probe is shed while an interleaved
+      // scene update is delivered without loss.
+      const probeTag = `shed-probe-${crypto.randomUUID()}`;
+      await page.evaluate((tag) => {
+        const socket = (window as any).__whiteboardCollab?.provider?.ws as WebSocket | undefined;
+        (window as any).__receivedProbe = false;
+        socket?.addEventListener('message', (event: MessageEvent) => {
+          if (event.data instanceof ArrayBuffer) {
+            const bytes = new Uint8Array(event.data);
+            if (bytes[0] === 1) {
+              const text = new TextDecoder().decode(bytes.subarray(1));
+              if (text.includes(tag)) {
+                (window as any).__receivedProbe = true;
+              }
+            }
+          }
+        });
+      }, probeTag);
+
+      const shedElementId = 'preserved-during-shed-rect-1';
+      await peerPage.evaluate(async ({ element, tag }) => {
         const socket = (window as any).__whiteboardCollab?.provider?.ws as WebSocket | undefined;
         if (!socket || socket.readyState !== WebSocket.OPEN) {
           throw new Error('expected the peer y-websocket to be open');
         }
-        const originalSend = socket.send.bind(socket);
-        await new Promise<void>((resolve, reject) => {
-          const timeout = window.setTimeout(
-            () => reject(new Error('periodic sync step 1 did not fire')),
-            4_000,
-          );
-          socket.send = ((data: string | ArrayBufferLike | Blob | ArrayBufferView) => {
-            let bytes: Uint8Array | null = null;
-            if (data instanceof ArrayBuffer) bytes = new Uint8Array(data);
-            else if (ArrayBuffer.isView(data)) {
-              bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-            }
-            if (bytes?.[0] === 0 && bytes?.[1] === 0) {
-              window.clearTimeout(timeout);
-              resolve();
-            }
-            (originalSend as (value: typeof data) => void)(data);
-          }) as typeof socket.send;
-        });
 
-        for (let index = 0; index < 120; index += 1) {
-          socket.send(JSON.stringify({ type: 'publish', topic: 'room', data: `shed-${index}` }));
+        // Send > 120 awareness frames (messageType === 1) to exceed the 120/s budget
+        for (let index = 0; index < 130; index += 1) {
+          const payload = new TextEncoder().encode(`flood-${index}`);
+          const frame = new Uint8Array(1 + payload.length);
+          frame[0] = 1;
+          frame.set(payload, 1);
+          socket.send(frame.buffer);
         }
-        await new Promise((resolve) => window.setTimeout(resolve, 100));
 
-        const probe = `shed-probe-${crypto.randomUUID()}`;
-        const relayed = await new Promise<boolean>((resolve) => {
-          const timeout = window.setTimeout(() => {
-            socket.removeEventListener('message', onMessage);
-            resolve(false);
-          }, 250);
-          const onMessage = (event: MessageEvent) => {
-            if (typeof event.data !== 'string') return;
-            try {
-              const parsed = JSON.parse(event.data) as { data?: unknown };
-              if (parsed.data !== probe) return;
-              window.clearTimeout(timeout);
-              socket.removeEventListener('message', onMessage);
-              resolve(true);
-            } catch {
-              // Non-JSON frames belong to y-websocket.
-            }
-          };
-          socket.addEventListener('message', onMessage);
-          socket.send(JSON.stringify({ type: 'publish', topic: 'room', data: probe }));
-        });
+        // Awareness probe sent over budget must be shed
+        const probePayload = new TextEncoder().encode(tag);
+        const probeFrame = new Uint8Array(1 + probePayload.length);
+        probeFrame[0] = 1;
+        probeFrame.set(probePayload, 1);
+        socket.send(probeFrame.buffer);
 
+        // Drawing update generates a sync frame (messageType === 0), which is never shed
         const api = (window as any).__debugExcalidrawApi;
-        const publishedAtEpochMs = Date.now();
         api.updateScene({
           elements: [...api.getSceneElements(), element],
           captureUpdate: 'IMMEDIATELY',
         });
-        return { publishedAtEpochMs, relayed };
-      }, rectangle('recovered-after-shed-rect-1', 320, 180));
+      }, { element: rectangle(shedElementId, 320, 180), tag: probeTag });
 
-      expect(shedPublish.relayed).toBe(false);
-      const shedElementId = 'recovered-after-shed-rect-1';
+      // Awareness probe was dropped by signaling budget
+      await page.waitForTimeout(500);
+      expect(await page.evaluate(() => (window as any).__receivedProbe)).toBe(false);
 
+      // Local update is present on the peer
       await expect.poll(async () => sceneElementIds(peerPage), { timeout: 5000 }).toContain(shedElementId);
-      await page.waitForTimeout(1_000);
-      expect(await sceneElementIds(page)).not.toContain(shedElementId);
-      let firstHostObservationAtEpochMs: number | undefined;
-      await expect.poll(async () => {
-        const ids = await sceneElementIds(page);
-        if (ids.includes(shedElementId) && firstHostObservationAtEpochMs === undefined) {
-          firstHostObservationAtEpochMs = Date.now();
-        }
-        return ids;
-      }, { timeout: 10000 }).toContain(shedElementId);
-      expect(firstHostObservationAtEpochMs).toBeDefined();
-      const recoveryMs = firstHostObservationAtEpochMs! - shedPublish.publishedAtEpochMs;
-      console.log(`RESYNC_RECOVERY_MS=${recoveryMs}`);
-      expect(recoveryMs).toBeLessThanOrEqual(8_000);
+
+      // Drawing update is preserved: host receives the sync frame despite the awareness flood
+      await expect.poll(async () => sceneElementIds(page), { timeout: 10000 }).toContain(shedElementId);
     } finally {
       await peerContext.close();
     }

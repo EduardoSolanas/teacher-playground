@@ -1,6 +1,8 @@
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import { Awareness } from 'y-protocols/awareness';
+import { Decoder } from 'lib0/decoding';
+import { Encoder } from 'lib0/encoding';
 import { getSignalingUrls } from './ywebrtcProvider';
 import { PRESENCE_MESSAGE_TYPE, readPresenceBody } from './presenceMessage';
 import {
@@ -9,6 +11,12 @@ import {
   encodeFollowMessage,
   type FollowMessage,
 } from './followMessage';
+
+type WhiteboardProviderEventMap = {
+  status: (event: { status?: string; connected?: boolean }) => void;
+  synced: (event: boolean | { synced: boolean }) => void;
+  'connection-close': (event: unknown) => void;
+};
 
 export interface WhiteboardProvider {
   /*
@@ -27,13 +35,19 @@ export interface WhiteboardProvider {
   /** Ephemeral peer state (cursors). Absent on the server stub. */
   awareness?: Awareness;
   ws?: WebSocket | null;
-  messageHandlers?: Array<((encoder: unknown, decoder: any) => void) | undefined>;
+  messageHandlers?: Array<((encoder: Encoder, decoder: Decoder) => void) | undefined>;
   connect: () => void;
   disconnect?: () => void;
   destroy: () => void;
   sendFollowMessage?: (message: FollowMessage) => boolean;
-  on: (eventName: string, callback: (...args: any[]) => void) => void;
-  off?: (eventName: string, callback: (...args: any[]) => void) => void;
+  on<K extends keyof WhiteboardProviderEventMap>(
+    eventName: K,
+    callback: WhiteboardProviderEventMap[K],
+  ): void;
+  off?<K extends keyof WhiteboardProviderEventMap>(
+    eventName: K,
+    callback: WhiteboardProviderEventMap[K],
+  ): void;
 }
 
 export type ProviderEntry = {

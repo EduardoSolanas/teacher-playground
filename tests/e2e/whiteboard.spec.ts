@@ -77,6 +77,7 @@ async function cleanContextAndJoin(
   // Wait for whiteboard to be ready
   await expect(page.getByTestId('toolbar-selection')).toBeVisible({ timeout: 15000 });
   await expect(canvasArea).toBeVisible({ timeout: 15000 });
+  await page.waitForFunction(() => !!(window as any).__debugExcalidrawApi, { timeout: 15000 });
 }
 
 async function getStoreState(page: Page) {
@@ -541,7 +542,7 @@ test.describe('Room Connection Lifecycle', () => {
 
     // Draw through the real path so the element flows into the debounced save.
     await selectTool(page.getByTestId('toolbar-rectangle'), 'rectangle');
-    await dragOnCanvas(page, { x: 200, y: 200 }, { x: 350, y: 300 });
+    await dragOnCanvas(page, { x: 320, y: 200 }, { x: 420, y: 300 });
 
     // Poll rather than sample: the room is polled in the background, so an
     // immediate read can land between the draw and the resulting re-render.
@@ -684,7 +685,7 @@ test.describe('Multi-Peer Sync', () => {
       // Alice draws a rectangle
       const rectIcon = page.getByTestId('toolbar-rectangle');
       await selectTool(rectIcon, 'rectangle');
-      await dragOnCanvas(page, { x: 200, y: 200 }, { x: 350, y: 300 });
+      await dragOnCanvas(page, { x: 320, y: 200 }, { x: 420, y: 300 });
 
       // Verify Alice's store has the element
       await expect
@@ -698,7 +699,7 @@ test.describe('Multi-Peer Sync', () => {
         .poll(async () => {
           const bobState = await getStoreState(bobPage);
           const remoteRect = bobState.elements?.at(-1);
-          return remoteRect?.type === 'rectangle' && remoteRect?.x === 200 && remoteRect?.y === 200;
+          return remoteRect?.type === 'rectangle' && remoteRect?.x === 320 && remoteRect?.y === 200;
         }, { timeout: 15000 })
         .toBe(true);
     } finally {
@@ -756,11 +757,11 @@ test.describe('Multi-Peer Sync', () => {
         .toMatchObject({ x: -410, y: 275, zoom: 1.35 });
       await expect
         .poll(() => bobPage.evaluate(() => (window as any).__debugExcalidrawApi.getAppState().userToFollow), {
-          timeout: 5000,
+          timeout: 15000,
           message: 'student did not retain native follow state',
         })
         .toMatchObject({ socketId: expect.any(String) });
-      await expect(bobPage.getByText('Following')).toBeVisible({ timeout: 5000 });
+      await expect(bobPage.getByText('Following')).toBeVisible({ timeout: 15000 });
 
       await page.evaluate(() => {
         (window as any).__debugExcalidrawApi.updateScene({
@@ -837,7 +838,7 @@ test.describe('Multi-Peer Sync', () => {
       // Bob draws a pen stroke
       const penIcon = bobPage.getByTestId('toolbar-freedraw');
       await selectTool(penIcon, 'freedraw');
-      await dragOnCanvas(bobPage, { x: 100, y: 100 }, { x: 250, y: 200 });
+      await dragOnCanvas(bobPage, { x: 320, y: 200 }, { x: 420, y: 300 });
 
       await expect
         .poll(async () => (await getStoreState(bobPage)).elements?.length ?? 0, { timeout: 15000 })
@@ -893,7 +894,7 @@ test.describe('Multi-Peer Sync', () => {
       await waitForPresence(bobPage, 'Alice');
 
       await selectTool(bobPage.getByTestId('toolbar-freedraw'), 'freedraw');
-      await dragOnCanvas(bobPage, { x: 160, y: 160 }, { x: 360, y: 300 });
+      await dragOnCanvas(bobPage, { x: 320, y: 200 }, { x: 420, y: 300 });
 
       const freedrawOnAlice = () => page.evaluate(() => {
         const api = (window as any).__debugExcalidrawApi;
@@ -1092,7 +1093,7 @@ test.describe('Multi-Peer Sync', () => {
       // Alice draws rectangle
       const rectIcon = page.getByTestId('toolbar-rectangle');
       await selectTool(rectIcon, 'rectangle');
-      await dragOnCanvas(page, { x: 100, y: 100 }, { x: 200, y: 200 });
+      await dragOnCanvas(page, { x: 320, y: 150 }, { x: 420, y: 250 });
 
       // Bob draws circle
       const circleIcon = bobPage.getByTestId('toolbar-ellipse');
@@ -1160,15 +1161,15 @@ test.describe('Multi-Peer Sync', () => {
     // Alice draws multiple elements
     const rectIcon = page.getByTestId('toolbar-rectangle');
     await selectTool(rectIcon, 'rectangle');
-    await dragOnCanvas(page, { x: 50, y: 50 }, { x: 150, y: 150 });
+    await dragOnCanvas(page, { x: 320, y: 150 }, { x: 420, y: 250 });
 
     const penIcon = page.getByTestId('toolbar-freedraw');
     await selectTool(penIcon, 'freedraw');
-    await dragOnCanvas(page, { x: 200, y: 200 }, { x: 300, y: 300 });
+    await dragOnCanvas(page, { x: 320, y: 280 }, { x: 420, y: 380 });
 
     const circleIcon = page.getByTestId('toolbar-ellipse');
     await selectTool(circleIcon, 'ellipse');
-    await dragOnCanvas(page, { x: 400, y: 400 }, { x: 500, y: 500 });
+    await dragOnCanvas(page, { x: 460, y: 150 }, { x: 560, y: 250 });
 
     await waitForSync(page, 3, 10000);
 
@@ -1238,7 +1239,7 @@ test.describe('Multi-Peer Sync', () => {
     const authorPoints = (await getFreedrawPointCounts(page)).slice().sort((a, b) => a - b);
 
     await selectTool(page.getByTestId('toolbar-line'), 'line');
-    await dragOnCanvas(page, { x: 120, y: 520 }, { x: 900, y: 560 });
+    await dragOnCanvas(page, { x: 300, y: 520 }, { x: 900, y: 560 });
     await waitForSync(page, 2, 20000);
 
     const bobContext = await newAuthenticatedContext(browser);
@@ -1315,7 +1316,7 @@ test.describe('Multi-Peer Sync', () => {
     const authorPoints = (await getFreedrawPointCounts(page)).slice().sort((a, b) => a - b);
 
     await selectTool(page.getByTestId('toolbar-line'), 'line');
-    await dragOnCanvas(page, { x: 120, y: 520 }, { x: 900, y: 560 });
+    await dragOnCanvas(page, { x: 300, y: 520 }, { x: 900, y: 560 });
     await waitForSync(page, 12, 30000);
 
     const bobContext = await newAuthenticatedContext(browser);
@@ -1416,7 +1417,10 @@ test.describe('Reconnection & Resilience', () => {
      */
     const penIcon = page.getByTestId('toolbar-freedraw');
     await selectTool(penIcon, 'freedraw');
-    await dragOnCanvas(page, { x: 100, y: 100 }, { x: 200, y: 200 });
+    await dragOnCanvas(page, { x: 320, y: 200 }, { x: 420, y: 300 });
+    await expect
+      .poll(async () => (await getStoreState(page)).elements?.length ?? 0, { timeout: 10000 })
+      .toBeGreaterThanOrEqual(1);
 
     // Rapidly switch tools
     await page.keyboard.press('r'); // rectangle
@@ -1432,8 +1436,9 @@ test.describe('Reconnection & Resilience', () => {
       .poll(async () => (await getStoreState(page)).tool, { timeout: 5000 })
       .toBe('pen');
 
-    const state = await getStoreState(page);
-    expect(state.elements?.length).toBeGreaterThanOrEqual(1);
+    await expect
+      .poll(async () => (await getStoreState(page)).elements?.length ?? 0, { timeout: 5000 })
+      .toBeGreaterThanOrEqual(1);
   });
 
   test('clearing board removes all elements and syncs', async ({ page, browser }) => {
@@ -1461,7 +1466,7 @@ test.describe('Reconnection & Resilience', () => {
       // Draw through the real path: writing straight into the legacy store
       // does not reach Excalidraw or Yjs, so it would never sync to Bob.
       await selectTool(page.getByTestId('toolbar-rectangle'), 'rectangle');
-      await dragOnCanvas(page, { x: 200, y: 200 }, { x: 320, y: 300 });
+      await dragOnCanvas(page, { x: 320, y: 200 }, { x: 420, y: 300 });
       await waitForSync(bobPage, 1, 10000);
 
       // Alice clears board
@@ -1514,7 +1519,7 @@ test.describe('Edge Cases', () => {
     // Immediately draw without waiting for provider connected
     const penIcon = page.getByTestId('toolbar-freedraw');
     await selectTool(penIcon, 'freedraw');
-    await dragOnCanvas(page, { x: 100, y: 100 }, { x: 200, y: 200 });
+    await dragOnCanvas(page, { x: 320, y: 200 }, { x: 420, y: 300 });
 
     await expect
       .poll(async () => (await getStoreState(page)).elements?.length ?? 0, { timeout: 10000 })

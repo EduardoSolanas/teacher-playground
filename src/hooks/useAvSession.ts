@@ -120,6 +120,9 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
       }
       if (response.status === 403) {
         const body = (await response.json().catch(() => ({}))) as TokenResponse;
+        // Re-checked after the body, not just after the headers: the room can be
+        // left, or A/V switched off, while the body is still arriving.
+        if (cancelled) return;
         setUnavailableReason(body.reason === 'waiting' ? 'waiting' : 'forbidden');
         return;
       }
@@ -131,6 +134,9 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
       }
 
       const body = (await response.json()) as TokenResponse;
+      // Same reason as the 403 branch above, and it matters more here: the next
+      // lines construct a provider and take the microphone.
+      if (cancelled) return;
       if (!body.token || !body.url) {
         setUnavailableReason('unconfigured');
         return;

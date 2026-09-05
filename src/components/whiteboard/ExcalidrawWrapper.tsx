@@ -18,6 +18,7 @@ import '@teacher-playground/excalidraw/index.css';
 import * as Y from 'yjs';
 import {
   excalidrawElementsEqual,
+  mergeApiSnapshotElements,
   serializeExcalidrawElements,
   toExcalidrawToolType,
   isMappedAppTool,
@@ -283,6 +284,8 @@ export default function ExcalidrawWrapper({
   /** Every element id the room has ever shown this peer. */
   const seenRemoteIdsRef = useRef<Set<string>>(new Set());
   const pendingElementsRef = useRef<SharedSceneElement[] | null>(null);
+  /** Elements drawn locally before yDoc and yElementsArray were ready. */
+  const pendingLocalPublishRef = useRef<readonly Record<string, unknown>[] | null>(null);
   /** Scene captured mid-stroke, flushed to React state on pointer up. */
   const deferredElementsRef = useRef<SharedSceneElement[] | null>(null);
   const hasAcceptedInitialSceneRef = useRef(false);
@@ -547,6 +550,19 @@ export default function ExcalidrawWrapper({
 
     const elementsArray = yElementsArray;
 
+    // Flush any local elements drawn before the shared document was ready
+    const pendingLocal = pendingLocalPublishRef.current;
+    if (pendingLocal && pendingLocal.length > 0) {
+      pendingLocalPublishRef.current = null;
+      const existing = getElementsFromArray(elementsArray);
+      const merged = mergeApiSnapshotElements(pendingLocal, existing);
+      replaceSharedElements(yDoc, elementsArray, merged, 'local');
+      lastSyncedElementsRef.current = merged;
+      lastPublishedIdsRef.current = merged
+        .map((element) => (element as { id?: unknown })?.id)
+        .filter((id): id is string => typeof id === 'string');
+    }
+
     // Listen only for element changes. Cursor/awareness updates must not rewrite
     // the Excalidraw scene.
     const handler = (_events: Y.YEvent<Y.Map<unknown>>[], transaction: Y.Transaction) => {
@@ -717,6 +733,7 @@ export default function ExcalidrawWrapper({
       } catch {
         // A malformed stored scene must not stop the board from opening.
       }
+      onElementsChangeRef.current(toCanvasElements(shared));
     }, 100);
 
     // E2E runs against a production build, so the handle is also exposed when
@@ -740,16 +757,6 @@ export default function ExcalidrawWrapper({
         // ignore
       }
     }
-
-    setTimeout(() => {
-      if (apiRef.current && activeToolRef.current) {
-        try {
-          apiRef.current.setActiveTool(toExcalidrawActiveTool(activeToolRef.current));
-        } catch {
-          // ignore
-        }
-      }
-    }, 100);
   }, [adoptVersionBaseline, readSharedElements]);
 
   useEffect(() => {
@@ -803,11 +810,6 @@ export default function ExcalidrawWrapper({
       const payload = serializeExcalidrawElements(candidate.elements);
       const previousIds = lastPublishedIdsRef.current;
 
-      lastSyncedElementsRef.current = serializedElements;
-      lastPublishedIdsRef.current = serializedElements
-        .map((element) => element.id)
-        .filter((id): id is string => typeof id === 'string');
-
       // Excalidraw fires onChange for every pointer sample, so this runs tens of
       // times per second while drawing. Handing the whole scene to React state
       // on each one re-rendered the entire board subtree mid-stroke, and the
@@ -824,7 +826,15 @@ export default function ExcalidrawWrapper({
         onElementsChange(toCanvasElements(serializedElements));
       }
 
-      if (!yDoc || !yElementsArray) return;
+      if (!yDoc || !yElementsArray) {
+        pendingLocalPublishRef.current = serializedElements;
+        return;
+      }
+
+      lastSyncedElementsRef.current = serializedElements;
+      lastPublishedIdsRef.current = serializedElements
+        .map((element) => element.id)
+        .filter((id): id is string => typeof id === 'string');
 
       const shouldRecordLatency = isWhiteboardLatencyProbeEnabled();
       try {

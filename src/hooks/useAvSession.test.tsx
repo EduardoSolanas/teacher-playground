@@ -277,5 +277,178 @@ describe('useAvSession', () => {
     disconnect.mockRestore();
     connect.mockRestore();
   });
+
+  it('does not install session if disabled before response body arrives', async () => {
+    // Set up a fetch that returns a real Response whose body we control
+    let resolveBody: ((value: string) => void) | null = null;
+    const bodyPromise = new Promise<string>((resolve) => {
+      resolveBody = resolve;
+    });
+
+    const responseStream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const body = await bodyPromise;
+        controller.enqueue(new TextEncoder().encode(body));
+        controller.close();
+      },
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(responseStream, {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) => useAvSession({ ...options, enabled }),
+      { initialProps: { enabled: true } },
+    );
+
+    // Token request should be in flight
+    await waitFor(() => expect(tokenRequests()).toHaveLength(1));
+
+    // Disable the hook before body arrives
+    rerender({ enabled: false });
+
+    // Now let the body arrive
+    act(() => {
+      resolveBody?.(JSON.stringify({ token: 'token-1', url: 'wss://lk.test' }));
+    });
+
+    // Wait for the response to process
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Assert: no session or room should be installed
+    expect(result.current.status).toBe('idle');
+    expect(result.current.room).toBeNull();
+  });
+
+  it('does not set unavailableReason from 403 if disabled before response body arrives', async () => {
+    let resolveBody: ((value: string) => void) | null = null;
+    const bodyPromise = new Promise<string>((resolve) => {
+      resolveBody = resolve;
+    });
+
+    const responseStream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const body = await bodyPromise;
+        controller.enqueue(new TextEncoder().encode(body));
+        controller.close();
+      },
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(responseStream, {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) => useAvSession({ ...options, enabled }),
+      { initialProps: { enabled: true } },
+    );
+
+    await waitFor(() => expect(tokenRequests()).toHaveLength(1));
+
+    // Disable before body arrives
+    rerender({ enabled: false });
+
+    // Let the body arrive
+    act(() => {
+      resolveBody?.(JSON.stringify({ reason: 'forbidden' }));
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Assert: unavailableReason should not be set from the stale response
+    expect(result.current.unavailableReason).toBeNull();
+  });
+
+  it('does not overwrite room state from a previous room when new room token arrives late', async () => {
+    const connect = vi.spyOn(LiveKitProvider.prototype, 'connect').mockResolvedValue();
+    const disconnect = vi.spyOn(LiveKitProvider.prototype, 'disconnect').mockImplementation(() => {});
+
+    let resolveBody: ((value: string) => void) | null = null;
+    const bodyPromise = new Promise<string>((resolve) => {
+      resolveBody = resolve;
+    });
+
+    const responseStream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const body = await bodyPromise;
+        controller.enqueue(new TextEncoder().encode(body));
+        controller.close();
+      },
+    });
+
+    // First fetch: room-1 with controllable body
+    fetchMock.mockResolvedValueOnce(
+      new Response(responseStream, {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    // Second fetch: room-2 will return immediately
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ token: 'token-room2', url: 'wss://lk2.test' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ roomId, enabled }: { roomId: string; enabled: boolean }) => useAvSession({ ...options, roomId, enabled }),
+      { initialProps: { roomId: 'room-1', enabled: true } },
+    );
+
+    // Token request for room-1 is in flight
+    await waitFor(() => expect(tokenRequests()).toHaveLength(1));
+    expect(tokenRequests()[0]).toContain('roomId=room-1');
+
+    // Switch to room-2 (which triggers a new fetch that completes immediately)
+    rerender({ roomId: 'room-2', enabled: true });
+    await waitFor(() => expect(tokenRequests()).toHaveLength(2));
+    expect(tokenRequests()[1]).toContain('roomId=room-2');
+
+    // Wait for room-2 to join
+    await waitFor(() => expect(result.current.status).toBe('joined'));
+    const room2 = result.current.room;
+
+    // Now let the room-1 body arrive (stale)
+    act(() => {
+      resolveBody?.(JSON.stringify({ token: 'token-room1', url: 'wss://lk1.test' }));
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Assert: room-2 should still be the current room, not overwritten by room-1
+    expect(result.current.room).toBe(room2);
+
+    disconnect.mockRestore();
+    connect.mockRestore();
+  });
+
+  it('successfully joins a call end-to-end', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ token: 'token-1', url: 'wss://livekit.test' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    const connect = vi.spyOn(LiveKitProvider.prototype, 'connect').mockResolvedValue();
+    const disconnect = vi.spyOn(LiveKitProvider.prototype, 'disconnect').mockImplementation(() => {});
+
+    const { result } = renderHook(() => useAvSession({ ...options, enabled: true }));
+
+    await waitFor(() => expect(result.current.status).toBe('joined'));
+    expect(result.current.room).not.toBeNull();
+    expect(connect).toHaveBeenCalledWith('token-1', 'wss://livekit.test');
+
+    disconnect.mockRestore();
+    connect.mockRestore();
+  });
 });
 
