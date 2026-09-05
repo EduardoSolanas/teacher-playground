@@ -80,7 +80,7 @@ import * as decoding from 'lib0/decoding';
 import { encodeUpdateFrame, handleSyncFrame } from '../lib/whiteboard/serverSync';
 import { replaceSharedElements, getElementsFromArray, pruneTombstonedElements } from '../lib/whiteboard/yjsDoc';
 import { snapshotElements } from '../lib/whiteboard/sceneSnapshot';
-import { snapshotBudgetState } from '../lib/whiteboard/snapshotBudget';
+import { snapshotBudgetState, SNAPSHOT_WARN_BYTES } from '../lib/whiteboard/snapshotBudget';
 import {
   SNAPSHOT_CHUNK_BYTES,
   chunkSnapshot,
@@ -1277,6 +1277,17 @@ export class RoomDO extends DurableObject {
           await this.deleteBoardState(roomId);
           continue;
         }
+
+        /*
+         * Refresh updated_at for admitted activity now that the Yjs snapshot
+         * has been successfully written. This decouples activity tracking from
+         * the projection write, which may fail for oversized boards. Legitimate
+         * changes should always advance the timestamp, independent of whether
+         * the SQL projection succeeds.
+         */
+        this.db.prepare(`UPDATE rooms SET updated_at = ? WHERE room_id = ?`)
+          .run(Date.now(), roomId);
+
         this.dirtyRooms.delete(roomId);
         this.projectionDirtyRooms.add(roomId);
         this.lastFlushAt = Date.now();
@@ -1309,9 +1320,29 @@ export class RoomDO extends DurableObject {
          * reason sceneSnapshot.ts gives.
          */
         const elements = snapshotElements(getElementsFromArray(doc.getArray('elements')));
+        const elementsJson = JSON.stringify(elements);
+        const elementsBytes = new TextEncoder().encode(elementsJson).byteLength;
+
+        /*
+         * If projection would exceed the safe write limit, don't retry forever.
+         * The Yjs snapshot is the durable copy; the SQL row is a convenience for
+         * the read path. An oversized projection cannot be stored, so clear it from
+         * the retry queue and log the condition without retrying.
+         */
+        if (elementsBytes >= SNAPSHOT_WARN_BYTES) {
+          logBoardSnapshot({
+            roomId,
+            bytes: elementsBytes,
+            outcome: 'projection_oversized',
+          });
+          await this.ctx.storage.delete(`ydoc-projection:${roomId}`);
+          this.projectionDirtyRooms.delete(roomId);
+          continue;
+        }
+
         this.db.prepare(
           `UPDATE rooms SET elements = ?, updated_at = ? WHERE room_id = ?`,
-        ).run(JSON.stringify(elements), Date.now(), roomId);
+        ).run(elementsJson, Date.now(), roomId);
         await this.ctx.storage.delete(`ydoc-projection:${roomId}`);
         this.projectionDirtyRooms.delete(roomId);
       } catch (err) {
