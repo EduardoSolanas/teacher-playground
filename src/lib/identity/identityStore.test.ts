@@ -37,6 +37,7 @@ describe('authoritative identity store', () => {
       'account_rooms',
       'accounts',
       'authorization_audit',
+      'pending_erasures',
       'sessions',
     ]);
 

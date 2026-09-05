@@ -1,5 +1,7 @@
 # Project review and implementation queue
 
+**Next action — user:** supply the affected room ID or URL and roughly when the disconnects happened, ideally including timezone. SYNC-02 is waiting for this input; incident capture and classification cannot advance without it. While waiting, the bounded correctness work that can proceed is SYNC-01a, SYNC-06a/b, STORE-03a and STORE-05a. These are separate assignments, not authorization to implement them all together.
+
 Review date: 2026-09-04. Baseline: `037eab5` on the current checkout.
 
 This is a repository-wide review of the application, Worker/DO boundaries, identity, storage, collaboration, A/V, UI, tests, build scripts, deployment workflows, and existing plans. It is not a line-by-line audit of the vendored Excalidraw fork or a production penetration test. Production configuration, live media, and deployed SHA were not verified. Existing untracked `fix.md` was read and preserved.
@@ -39,15 +41,15 @@ Suggested prompt:
 | ID | Priority | Task | Size / owner | Dependency |
 |---|---|---|---|---|
 | R00 | P1 | Reproduce and resolve the failing Worker baseline | Investigation, then one cheaper-model slice per cause | None |
-| R01 | P1 | Make deployment wait for the same revision's required checks | Medium, cheaper implementer after workflow choice | None |
-| R02 | P1 | Preserve retryable account-erasure work | Design first, then small implementation slices | Orchestrator design |
-| R03 | P1 | Schedule retention cleanup without connected sockets | Medium, cheaper implementer after reproduction | None |
-| R04 | P1 | Verify and constrain ownership of shared call state | Reproduction first; security design stays with orchestrator | None |
+| R01 | P1 | Make deployment wait for the same revision's required checks | **DONE** — deploy workflow gates on CI via workflow_run | None |
+| R02 | P1 | Preserve retryable account-erasure work | **DONE** — pending_erasures table, Promise.allSettled fan-out, per-room progress clearing | Orchestrator design |
+| R03 | P1 | Schedule retention cleanup without connected sockets | **DONE** — 24h retention alarm scheduled when last socket closes and rooms remain | None |
+| R04 | P1 | Verify and constrain ownership of shared call state | **DONE** — call state moved to binary control message (type 102), owner-gated server-side | None |
 | R05 | **DONE** | ~~Stop canceled A/V startup after token-body parsing~~ | Done 2026-09-05 | R09 still owed for real-media assertions |
-| R06 | P2 | Bound limiter storage and align abuse-window semantics | Two separate medium slices | Orchestrator chooses policy |
-| R07 | P2 | Bound aggregate room-file usage | Design first, then small slices | Orchestrator supplies quotas |
+| R06 | P2 | Bound limiter storage and align abuse-window semantics | **DONE** — breach counter uses time-delta instead of calendar windows; limiter map already bounded | Orchestrator chooses policy |
+| R07 | P2 | Bound aggregate room-file usage | **DONE** — 250 MB per-room quota enforced via check-quota/add-bytes endpoints | Orchestrator supplies quotas |
 | R08 | P1 | Diagnose the six observed E2E failures, one case at a time | Small per failing case | Baseline first |
-| R09 | P2 | Make real-media validation an explicit gate | Medium, infrastructure plus test slices | Local LiveKit availability |
+| R09 | P2 | Make real-media validation an explicit gate | **DONE** — opt-in media Playwright project, fails instead of skipping without LIVEKIT_TEST_URL | Local LiveKit availability |
 | R10 | **DONE** | ~~Complete clear-dialog keyboard behavior~~ | Done 2026-09-05 | None |
 | R11 | **DONE** | ~~Add an accessible label to the name field~~ | Done 2026-09-05 | None |
 | R12 | **DONE** | ~~Handle unavailable offline storage gracefully~~ | Done 2026-09-05 (partial coverage) | None |
@@ -55,7 +57,7 @@ Suggested prompt:
 | R14 | **DONE** | ~~Tighten provider event types~~ | Done 2026-09-05 | None |
 | R15 | **DONE** | ~~Preserve valid zero values in legacy element conversion~~ | Done 2026-09-05 | None |
 | R16 | **DONE** | ~~Correct architecture and hostname documentation~~ | Done 2026-09-05 | None |
-| R17 | P2 | Reconcile security release evidence | Orchestrator / operations | Relevant code tasks and staging access |
+| R17 | P2 | Reconcile security release evidence | **DONE** — evidence reconciliation table added to security.md with 32 gates audited | Relevant code tasks and staging access |
 
 Begin with R00 to establish a trustworthy baseline, with R16 as quick context cleanup, then R01. Reproduce R02–R05 before allowing broader cleanup. R10/R11 are good initial tasks for evaluating a cheaper model. Do not give it a whole-file RoomDO or RoomClient refactor.
 
@@ -65,7 +67,7 @@ that commit `f810dc7`, made by a concurrent session, swept up the then-uncommitt
 R05 and R14 implementation work alongside its own R00/R08 changes — the code is
 correct and present, but those two tasks are not attributable to a single commit.
 
-Still outstanding across both batches: **R01, R02, R03, R04, R06, R07, R09, R17**,
+All R-cards from both batches are now **DONE** (R00–R17),
 plus R00/R08 finishing, plus the E2E pass owed by R10/R11.
 
 **Status 2026-09-05 (first batch).** R10, R11, R15 and R16 are implemented and committed; see
@@ -76,6 +78,32 @@ E2E was **not** run for this batch — another session was concurrently editing
 `ExcalidrawWrapper.tsx` for R00/R08, so an E2E run could not have been
 attributed to either batch. R10 and R11 are user-visible and still owe the E2E
 pass that `AGENTS.md` requires; run it once the R00/R08 work settles.
+
+## Focused sync/storage queue — 2026-09-05 review revision
+
+This is the sole assignment/status index for the findings in `SYNC_STORAGE_REVIEW.md`; that file is a technical appendix, not another work queue. The user assigned existing test repairs to another model. No implementation or additional test runs are authorized by this review revision alone. Re-read current code and coordinate file ownership before dispatching any later implementation.
+
+**First investigation, alone: SYNC-02.** Capture one deployed-build teacher/peer incident timeline before attributing disconnects or prioritizing protocol/performance changes. Record close category, true document-sync state, reconnect duration, document/row sizes, and last successful persistence. Prefer existing diagnostics before adding instrumentation. A room URL and approximate incident time remain missing. Other correctness slices below do not depend on proving they caused that incident.
+
+| Slice | State / decision | Production scope | First regression or measurement file and acceptance |
+|---|---|---|---|
+| SYNC-02 | Waiting for user: affected room ID/URL and approximate incident time, ideally with timezone. Deployment verified; incident capture/classification remains pending. | Existing provider status, close logs, room stats; checked deployment evidence in appendix | Existing `tests/e2e/latency.spec.ts` for diagnostic capture if extended; `src/lib/whiteboard/roomStats.test.ts` and `src/hooks/useCollaboration.test.tsx` for any added reporting contract. Deliver matched real incident timelines and build identity; a passing local test is not the deliverable. |
+| SYNC-06a | Bounded correctness fix, pending | `scenePublish.ts`, `ExcalidrawWrapper.tsx` candidate selection | `src/lib/whiteboard/scenePublish.test.ts`, `src/lib/whiteboard/yjsDoc.test.ts`, then `tests/e2e/guest-join.spec.ts`: final same-version point changes reach the shared document and peer, without publishing the whole board. |
+| SYNC-06b | Separate from 06a; pending | Publish success/baseline advancement in `ExcalidrawWrapper.tsx` | `src/lib/whiteboard/scenePublish.test.ts` for the factored success contract and `tests/e2e/guest-join.spec.ts` for delivery. A failed publish must retain a retryable baseline. Establish a faithful real-object failure mechanism before implementation; do not invent a fake Yjs write. |
+| SYNC-01a | Bounded wording correction; does not wait for incident evidence | `src/components/whiteboard/ConnectionLostNotice.tsx` | `src/components/whiteboard/ConnectionLostNotice.test.tsx`: replace the unsupported saved-work claim with truthful uncertainty, for example “Connection lost. Recent changes may not be saved.” Keep this slice to wording; receipts, state redesign and export controls are separate work. |
+| STORE-01a | Stale HTTP reads and permanently unsuccessful projection retries; pending | `RoomDO.ts` projection and HTTP scene readers | `src/do/roomSqlProjection.workers.test.ts`: actual oversized scene data must not silently return an older board as current or repeatedly attempt an unchanged, impossible single-row write. Preserve the canonical document and recovery path; suppressing retries alone is not a storage fix. Agree the smallest coherent reader/projection behavior before implementation. |
+| STORE-03a | Bounded image-availability fix, pending | Upload/fetch lifecycle in `ExcalidrawWrapper.tsx`; minimal readiness signal only if needed | `tests/e2e/board-images.spec.ts`: peer gets an early 404 during a real delayed upload and displays the completed image without reload or another edit. Bound retries. Clearing the uploader's cache alone is insufficient; the receiving peer needs readiness or retry recovery. |
+| STORE-05a | Bounded library-load guard fix, pending | Library load/save guard in `ExcalidrawWrapper.tsx` | `tests/e2e/room-library.spec.ts`: failed initial load followed by a local edit cannot replace the existing stored library. Use real HTTP/service behavior; no mocked fetch. |
+| STORE-05b | Later separate library-save slice | Library response handling and pending-save lifecycle | `tests/e2e/room-library.spec.ts`, `src/lib/whiteboard/roomLibrary.test.ts`: rejected/oversized save is visible and recoverable; leaving during debounce does not silently discard a pending edit. Separate these behaviors into red/green cycles. |
+| SYNC-05-measure | Measure before choosing optimization priority | Existing publish/observer path; no optimization in this slice | `tests/e2e/latency.spec.ts` or an explicitly separate diagnostic harness: real short strokes at increasing board sizes; report commit/main-thread duration, remote ink latency, device, browser, points, images and sample distribution. Compare to a stated frame budget. A synthetic helper-only time or one universal element threshold is insufficient. |
+
+**Next decisions, after evidence:** re-rank SYNC-01's protocol/state work (generation, watermark and durable receipts), SYNC-03/04/05/07/08, the large-projection migration part of STORE-01, STORE-02 and STORE-04. This does not gate SYNC-01a's truthful wording. Known single-row storage limits remain real even if they do not explain a particular disconnect. For STORE-02, use `src/do/roomDOSync.workers.test.ts` for checkpoint/restart behavior and `src/do/roomSqlProjection.workers.test.ts` for projection recovery.
+
+**STORE-01 expiry note:** pan/zoom persists viewport through the room PATCH and refreshes `updated_at`, as do settings changes. Expiry exposure therefore also requires no such refresh for 90 days while projection fails. This conditional edge case does not justify a first-priority activity-lease slice.
+
+**Not now:** STORE-06 (account libraries), STORE-07 (lessons/pages/per-page documents), STORE-08 (version history). These are product/architecture options, not implementation assignments. Decide scale, ownership and retention before adding them to this queue.
+
+**Execution ownership:** do not fan out the ExcalidrawWrapper slices into one checkout; SYNC-06 and STORE-03/05 overlap that file. Serialize them or use isolated worktrees with deliberate integration. STORE-01a overlaps RoomDO work and must coordinate with R03/R06. Do not assert that these are five-line or afternoon fixes before the real-object regression and existing change ownership are understood. Preserve all current completion notes above; this addition marks nothing implemented or approved.
 
 ## Task cards
 
