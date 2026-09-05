@@ -286,7 +286,7 @@ export class RoomDO extends DurableObject {
      */
     countRejected: true,
   });
-  private readonly ceilingBreachesPerAccount = new Map<string, { count: number; windowStart: number }>();
+  private readonly ceilingBreachesPerAccount = new Map<string, { count: number; lastBreachTimeMs: number }>();
   /** Last presence signature broadcast for a room; see the presence route. */
   private readonly lastPresenceSignature = new Map<string, string>();
 
@@ -1891,29 +1891,39 @@ export class RoomDO extends DurableObject {
         : null;
 
     const rateCheckResult = this.signalingMessageRate.take(attachment.accountId);
-    const currentWindow = Math.floor(Date.now() / SIGNALING_RATE_WINDOW_MS);
+    const now = Date.now();
     let consecutiveCeilingBreaches = 0;
 
     if (rateCheckResult.messagesInWindow >= SIGNALING_ABUSE_CEILING) {
       const prev = this.ceilingBreachesPerAccount.get(attachment.accountId);
-      if (prev && prev.windowStart === currentWindow) {
-        consecutiveCeilingBreaches = prev.count;
-      } else if (prev && prev.windowStart === currentWindow - 1 && prev.count > 0) {
+      /*
+       * Count as sustained abuse (consecutive breaches) only if:
+       * 1. We have a previous breach AND
+       * 2. The previous breach is within the current rate-limit window
+       *    (i.e., less than SIGNALING_RATE_WINDOW_MS old)
+       *
+       * This ensures a single burst that straddles a calendar-window
+       * boundary is not incorrectly counted as abuse across two windows.
+       * The sliding-window rate limiter already groups messages sent
+       * within windowMs of each other.
+       */
+      if (prev && (now - prev.lastBreachTimeMs < SIGNALING_RATE_WINDOW_MS)) {
         consecutiveCeilingBreaches = prev.count + 1;
-        this.ceilingBreachesPerAccount.set(attachment.accountId, {
-          count: consecutiveCeilingBreaches,
-          windowStart: currentWindow,
-        });
       } else {
         consecutiveCeilingBreaches = 1;
-        this.ceilingBreachesPerAccount.set(attachment.accountId, {
-          count: 1,
-          windowStart: currentWindow,
-        });
       }
+      this.ceilingBreachesPerAccount.set(attachment.accountId, {
+        count: consecutiveCeilingBreaches,
+        lastBreachTimeMs: now,
+      });
     } else {
       const prev = this.ceilingBreachesPerAccount.get(attachment.accountId);
-      if (prev && prev.windowStart < currentWindow - 1) {
+      /*
+       * Clear the breach record only after we've been under the ceiling for
+       * a full rate-limit window. This allows a quick burst at the start of
+       * a new window to be recognized as a new breach, not a continuation.
+       */
+      if (prev && (now - prev.lastBreachTimeMs >= SIGNALING_RATE_WINDOW_MS)) {
         this.ceilingBreachesPerAccount.delete(attachment.accountId);
       }
     }

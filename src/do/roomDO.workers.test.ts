@@ -876,6 +876,70 @@ describe('signaling message rate limit', () => {
     ws.close();
   });
 
+  it('does not close socket when a single burst crosses a calendar window boundary (R06)', async () => {
+    /*
+     * A burst can straddle a calendar-window boundary while still being
+     * a single burst within the sliding-window rate limiter. The breach
+     * counter must not incorrectly count this as sustained abuse across
+     * two consecutive windows.
+     *
+     * The issue: using Math.floor(Date.now()/windowMs) to compute the
+     * "current" calendar window can incorrectly count a single burst that
+     * spans two windows as sustained abuse across two windows.
+     *
+     * Scenario: Send 361 messages over ~100ms, straddling a 1000ms boundary.
+     * This is one burst within the sliding-window rate limiter, but the breach
+     * counter might see it as breaches in two consecutive calendar windows.
+     */
+    const owner = await bootstrapLocalSession('calendar-boundary-burst-owner');
+    const roomId = 'calendar-boundary-burst-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const ws = await connectGranted(owner, roomId);
+    const didNotClose = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(true), 3000);
+      ws.addEventListener('close', () => {
+        clearTimeout(timer);
+        resolve(false);
+      }, { once: true });
+    });
+
+    // Get current time and find the millisecond offset within the current window
+    const startTime = Date.now();
+    const windowMs = 1000;
+    const offsetInWindow = startTime % windowMs;
+
+    // If we're in the first 100ms of a window, wait until we're near the boundary
+    // If we're already near the boundary (>800ms), we can proceed
+    let targetOffset: number;
+    if (offsetInWindow < 100) {
+      // We're early in window; wait until we're late (near boundary)
+      targetOffset = 950;
+    } else if (offsetInWindow > 950) {
+      // We're already near boundary; proceed now
+      targetOffset = offsetInWindow;
+    } else {
+      // We're in the middle; wait until near boundary
+      targetOffset = 950;
+    }
+
+    const waitMs = (targetOffset - offsetInWindow + windowMs) % windowMs;
+    if (waitMs > 10) {
+      await new Promise((r) => setTimeout(r, waitMs - 10));
+    }
+
+    // Now send 361 messages rapidly, straddling the calendar boundary
+    for (let i = 0; i < 361; i += 1) {
+      ws.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
+    }
+
+    // Socket should NOT close because this is a single burst, not sustained abuse
+    expect(await didNotClose).toBe(true);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  });
+
   it('still relays a peer under the rate limit while the abuser is closed', async () => {
     const owner = await bootstrapLocalSession('rate-limit-isolation-owner');
     const editor = await bootstrapLocalSession('rate-limit-isolation-editor');
