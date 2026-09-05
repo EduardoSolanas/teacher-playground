@@ -203,6 +203,15 @@ export function applyIdentitySchema(db: RoomDatabase): void {
       ON account_rooms(account_id, updated_at DESC)
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pending_erasures (
+      account_id TEXT NOT NULL,
+      room_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (account_id, room_id)
+    )
+  `);
+
   const accountColumns = db
     .prepare(`PRAGMA table_info(accounts)`)
     .all() as Array<{ name: string }>;
