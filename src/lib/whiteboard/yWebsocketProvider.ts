@@ -96,6 +96,43 @@ class SignalingWebsocketProvider extends WebsocketProvider {
 export type PresenceCallback = (payload: unknown) => void;
 export type FollowCallback = (payload: FollowMessage) => void;
 
+/**
+ * Registers message handlers on the provider. The handler slot assignments
+ * are single-slot, not additive — only one consumer per message type is supported.
+ * When a later call passes a new callback, it overwrites the previous handler.
+ * If a callback is undefined or null, the handler slot is cleared.
+ */
+function registerMessageHandlers(
+  provider: WhiteboardProvider,
+  onPresence?: PresenceCallback,
+  onFollow?: FollowCallback,
+): void {
+  if (typeof window === 'undefined') return;
+  if (!provider.messageHandlers || !Array.isArray(provider.messageHandlers)) return;
+
+  if (onPresence) {
+    // y-websocket invokes handlers as handler(encoder, decoder, provider, emitSynced, messageType),
+    // having already consumed the message type varint. Read the body from the decoder, not a whole frame.
+    provider.messageHandlers[PRESENCE_MESSAGE_TYPE] = (_encoder: unknown, decoder: any) => {
+      const payload = readPresenceBody(decoder);
+      if (payload !== null) {
+        onPresence(payload);
+      }
+    };
+  } else {
+    provider.messageHandlers[PRESENCE_MESSAGE_TYPE] = undefined;
+  }
+
+  if (onFollow) {
+    provider.messageHandlers[FOLLOW_MESSAGE_TYPE] = (_encoder: unknown, decoder: any) => {
+      const payload = decodeFollowMessagePayload(decoder);
+      if (payload) onFollow(payload);
+    };
+  } else {
+    provider.messageHandlers[FOLLOW_MESSAGE_TYPE] = undefined;
+  }
+}
+
 export function createYWebsocketProvider(
   doc: Y.Doc,
   roomId: string,
@@ -109,6 +146,9 @@ export function createYWebsocketProvider(
     // A stale binding is silent: local edits go into the wrong doc, remote updates
     // land nowhere. The doc identity must be part of cache validity.
     if (cached.provider.doc === doc) {
+      // The cached provider keeps its socket, but not its consumers: a remount
+      // passes fresh callbacks, and the handlers below close over the old ones.
+      registerMessageHandlers(cached.provider, onPresence, onFollow);
       return cached;
     }
     // Doc mismatch: the cached provider is bound to a dead doc. Destroy it and
@@ -150,28 +190,7 @@ export function createYWebsocketProvider(
     if (synced) entry.status = 'synced';
   });
 
-  // Register presence message handler
-  if (onPresence && typeof window !== 'undefined') {
-    if (provider.messageHandlers && Array.isArray(provider.messageHandlers)) {
-      // y-websocket invokes handlers as handler(encoder, decoder, provider, emitSynced, messageType),
-      // having already consumed the message type varint. Read the body from the decoder, not a whole frame.
-      provider.messageHandlers[PRESENCE_MESSAGE_TYPE] = (_encoder: unknown, decoder: any) => {
-        const payload = readPresenceBody(decoder);
-        if (payload !== null) {
-          onPresence(payload);
-        }
-      };
-    }
-  }
-
-  if (onFollow && typeof window !== 'undefined') {
-    if (provider.messageHandlers && Array.isArray(provider.messageHandlers)) {
-      provider.messageHandlers[FOLLOW_MESSAGE_TYPE] = (_encoder: unknown, decoder: any) => {
-        const payload = decodeFollowMessagePayload(decoder);
-        if (payload) onFollow(payload);
-      };
-    }
-  }
+  registerMessageHandlers(provider, onPresence, onFollow);
 
   if (typeof window !== 'undefined' && provider.shouldConnect !== false) {
     provider.connect();

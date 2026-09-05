@@ -41,6 +41,7 @@ vi.mock('y-websocket', () => ({
 
 import { createYWebsocketProvider, destroyProvider, type WhiteboardProvider } from './yWebsocketProvider';
 import { PRESENCE_MESSAGE_TYPE, encodePresenceMessage } from './presenceMessage';
+import { FOLLOW_MESSAGE_TYPE, encodeFollowMessage } from './followMessage';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -214,6 +215,178 @@ describe('createYWebsocketProvider', () => {
       expect(onPresence).toHaveBeenCalledWith(presencePayload);
 
       destroyProvider('presence-room');
+    });
+
+    it('updates the presence handler on cache hit when called with a different callback', () => {
+      vi.stubGlobal('window', {
+        location: {
+          protocol: 'https:',
+          hostname: 'whiteboard.example.com',
+          host: 'whiteboard.example.com',
+        },
+      });
+
+      const presencePayload = {
+        users: [{ peerId: 'peer1', userName: 'User 1', color: '#ff0000' }],
+        hostPeerId: 'peer0',
+      };
+
+      const onPresence1 = vi.fn();
+      const onPresence2 = vi.fn();
+      const doc = new Y.Doc();
+
+      // First call with onPresence1
+      const entry1 = createYWebsocketProvider(doc, 'presence-cache-room', onPresence1);
+      const provider = entry1.provider;
+
+      // Second call with onPresence2 for same room and doc
+      const entry2 = createYWebsocketProvider(doc, 'presence-cache-room', onPresence2);
+
+      // The returned provider should be the same cached instance
+      expect(entry2.provider).toBe(provider);
+
+      // Build the presence frame
+      const frame = encodePresenceMessage(presencePayload);
+      const decoder = decoding.createDecoder(frame);
+      const messageType = decoding.readVarUint(decoder);
+
+      expect(messageType).toBe(PRESENCE_MESSAGE_TYPE);
+
+      // Dispatch to the handler
+      const encoder = encoding.createEncoder();
+      const handler = provider.messageHandlers?.[PRESENCE_MESSAGE_TYPE];
+      expect(handler).toBeDefined();
+      handler?.(encoder, decoder);
+
+      // The second callback should receive the message, the first should not
+      expect(onPresence2).toHaveBeenCalledWith(presencePayload);
+      expect(onPresence1).not.toHaveBeenCalled();
+
+      destroyProvider('presence-cache-room');
+    });
+
+    it('updates the follow handler on cache hit when called with a different callback', () => {
+      vi.stubGlobal('window', {
+        location: {
+          protocol: 'https:',
+          hostname: 'whiteboard.example.com',
+          host: 'whiteboard.example.com',
+        },
+      });
+
+      const followPayload = { active: true, viewport: { x: 100, y: 200, zoom: 1.5 } };
+
+      const onFollow1 = vi.fn();
+      const onFollow2 = vi.fn();
+      const doc = new Y.Doc();
+
+      // First call with onFollow1
+      const entry1 = createYWebsocketProvider(doc, 'follow-cache-room', undefined, onFollow1);
+      const provider = entry1.provider;
+
+      // Second call with onFollow2 for same room and doc
+      const entry2 = createYWebsocketProvider(doc, 'follow-cache-room', undefined, onFollow2);
+
+      // The returned provider should be the same cached instance
+      expect(entry2.provider).toBe(provider);
+
+      // Build the follow frame
+      const frame = encodeFollowMessage(followPayload);
+      const decoder = decoding.createDecoder(frame);
+      const messageType = decoding.readVarUint(decoder);
+
+      expect(messageType).toBe(FOLLOW_MESSAGE_TYPE);
+
+      // Dispatch to the handler
+      const encoder = encoding.createEncoder();
+      const handler = provider.messageHandlers?.[FOLLOW_MESSAGE_TYPE];
+      expect(handler).toBeDefined();
+      handler?.(encoder, decoder);
+
+      // The second callback should receive the message, the first should not
+      expect(onFollow2).toHaveBeenCalledWith(followPayload);
+      expect(onFollow1).not.toHaveBeenCalled();
+
+      destroyProvider('follow-cache-room');
+    });
+
+    it('clears a handler slot when a second call passes undefined for that callback', () => {
+      vi.stubGlobal('window', {
+        location: {
+          protocol: 'https:',
+          hostname: 'whiteboard.example.com',
+          host: 'whiteboard.example.com',
+        },
+      });
+
+      const presencePayload = {
+        users: [{ peerId: 'peer1', userName: 'User 1', color: '#ff0000' }],
+        hostPeerId: 'peer0',
+      };
+
+      const onPresence = vi.fn();
+      const doc = new Y.Doc();
+
+      // First call with onPresence handler
+      const entry1 = createYWebsocketProvider(doc, 'clear-handler-room', onPresence);
+      const provider = entry1.provider;
+
+      // Second call with undefined for onPresence (clear the slot)
+      const entry2 = createYWebsocketProvider(doc, 'clear-handler-room', undefined);
+
+      // The returned provider should be the same cached instance
+      expect(entry2.provider).toBe(provider);
+
+      // Build the presence frame
+      const frame = encodePresenceMessage(presencePayload);
+      const decoder = decoding.createDecoder(frame);
+      const messageType = decoding.readVarUint(decoder);
+
+      expect(messageType).toBe(PRESENCE_MESSAGE_TYPE);
+
+      // Try to dispatch to the handler
+      const encoder = encoding.createEncoder();
+      const handler = provider.messageHandlers?.[PRESENCE_MESSAGE_TYPE];
+      // The handler should be undefined now
+      expect(handler).toBeUndefined();
+      // Calling it should not crash and should not call the original callback
+      handler?.(encoder, decoder);
+      expect(onPresence).not.toHaveBeenCalled();
+
+      destroyProvider('clear-handler-room');
+    });
+
+    it('does not create a second provider when called multiple times with the same room and doc', () => {
+      vi.stubGlobal('window', {
+        location: {
+          protocol: 'https:',
+          hostname: 'whiteboard.example.com',
+          host: 'whiteboard.example.com',
+        },
+      });
+
+      const onPresence1 = vi.fn();
+      const onPresence2 = vi.fn();
+      const onPresence3 = vi.fn();
+      const doc = new Y.Doc();
+
+      // Multiple calls with different callbacks
+      const entry1 = createYWebsocketProvider(doc, 'multi-call-room', onPresence1);
+      const entry2 = createYWebsocketProvider(doc, 'multi-call-room', onPresence2);
+      const entry3 = createYWebsocketProvider(doc, 'multi-call-room', onPresence3);
+
+      // All should return the same provider instance
+      expect(entry2.provider).toBe(entry1.provider);
+      expect(entry3.provider).toBe(entry1.provider);
+
+      // All should return the same ProviderEntry (cached object)
+      expect(entry2).toBe(entry1);
+      expect(entry3).toBe(entry1);
+
+      // WebsocketProvider should have been instantiated only once
+      expect(websocketCtor).toHaveBeenCalledTimes(1);
+
+      destroyProvider('multi-call-room');
     });
   });
 });
