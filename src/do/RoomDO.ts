@@ -348,6 +348,7 @@ export class RoomDO extends DurableObject {
   private readonly lastOrphanSweepAt = new Map<string, number>();
 
   private static readonly ORPHAN_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
+  private static readonly RETENTION_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
@@ -1744,7 +1745,16 @@ export class RoomDO extends DurableObject {
     if (this.dirtyRooms.size > 0 || this.projectionDirtyRooms.size > 0) {
       await this.scheduleAlarmNoLaterThan(now + RoomDO.FLUSH_INTERVAL_MS);
     }
-    if (sockets.length === 0) return;
+    if (sockets.length === 0) {
+      // Retention must continue after the last connection disappears: if rooms
+      // remain that will eventually expire per the idle TTL, schedule a future
+      // alarm to continue cleanup. Without this, rooms could persist indefinitely
+      // once all sockets disconnect.
+      if (roomIds.size > 0) {
+        await this.scheduleAlarmNoLaterThan(now + RoomDO.RETENTION_CHECK_INTERVAL_MS);
+      }
+      return;
+    }
 
     const nextRevocationCheckAt = this.lastRevocationCheckAt + this.checkIntervalMs;
     if (this.lastRevocationCheckAt > 0 && now < nextRevocationCheckAt) {

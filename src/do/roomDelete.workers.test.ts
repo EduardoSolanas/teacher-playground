@@ -492,6 +492,50 @@ describe('idle room board purge', () => {
     await runDurableObjectAlarm(roomStub(roomId));
     await assertBoardStateDeleted(roomId);
   });
+
+  it('schedules a retention alarm when the last socket closes and rooms remain', async () => {
+    const owner = await bootstrapLocalSession(`retention-alarm-owner-${crypto.randomUUID()}`);
+    const roomId = `retention-alarm-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    // Open and close a socket to flush pending state
+    const ws = await openRoomSocket(owner, roomId);
+    const closed = waitForClose(ws);
+    ws.close();
+    await closed;
+
+    // Verify the room exists before alarm
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      expect(scopedCounts(instance, roomId)).toEqual({
+        rooms: 1,
+        room_members: 1,
+        room_presence: 0,
+        waiting_peers: 0,
+        kicked_peers: 0,
+      });
+    });
+
+    // Run alarm with no sockets
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => instance.alarm());
+
+    // Assert a future alarm was scheduled and room still exists
+    await runInDurableObject(roomStub(roomId), async (instance: RoomDO) => {
+      const alarm = await instance.ctx.storage.getAlarm();
+      expect(alarm).toBeDefined();
+      expect(alarm).toBeGreaterThan(Date.now());
+      expect(scopedCounts(instance, roomId)).toEqual({
+        rooms: 1,
+        room_members: 1,
+        room_presence: 0,
+        waiting_peers: 0,
+        kicked_peers: 0,
+      });
+    });
+  });
 });
 
 async function ageSessionCreatedAt(accountId: string, ageMs: number): Promise<void> {
