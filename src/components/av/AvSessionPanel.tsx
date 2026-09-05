@@ -27,12 +27,19 @@ interface AvSessionPanelProps {
   /** Start out of the way rather than open. */
   readonly collapsed?: boolean;
   /**
-   * Hang up, without leaving the room.
+   * Hang up for this person only, without leaving the room.
    *
    * The board carries on either way, so this is not the Leave in the bottom
-   * bar. Absent where the call is not something the caller can end.
+   * bar. Absent where the call is not something the caller can leave.
    */
-  readonly onEndCall?: () => void;
+  readonly onLeaveCall?: () => void;
+  /**
+   * End the room's call for everybody in it. Host only: pass it only for a
+   * host, and a peer gets no such control. Leaving and ending are deliberately
+   * separate, so a teacher who steps away does not hang up on the class --
+   * which is the choice Pencil Spaces and Google Meet both give a host.
+   */
+  readonly onEndCallForEveryone?: () => void;
 }
 
 function errorCopy(av: UseAvSessionResult): string | null {
@@ -335,7 +342,8 @@ export default function AvSessionPanel({
   localIdentity,
   users,
   collapsed = false,
-  onEndCall,
+  onLeaveCall,
+  onEndCallForEveryone,
 }: AvSessionPanelProps) {
   const message = errorCopy(av);
   const tiles = useMemo(
@@ -533,15 +541,27 @@ export default function AvSessionPanel({
           <span aria-hidden className="inline-flex items-center gap-0.5 rounded-full bg-slate-800/80 px-2 py-0.5 text-[0.6875rem] text-slate-400">⠿</span>
         </div>
 
-        {onEndCall && (
+        {onLeaveCall && (
           <button
             type="button"
-            data-testid="av-end-call"
-            onClick={onEndCall}
-            title="Leave the call"
+            data-testid="av-leave-call"
+            onClick={onLeaveCall}
+            title="Leave the call. It carries on for everyone else."
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-500/40 bg-slate-500/15 px-2.5 py-1 text-[0.6875rem] font-medium text-slate-200 transition-all shadow-sm hover:bg-slate-500/25 hover:border-slate-500/60 shrink-0"
+          >
+            Leave
+          </button>
+        )}
+
+        {onEndCallForEveryone && (
+          <button
+            type="button"
+            data-testid="av-end-call-everyone"
+            onClick={onEndCallForEveryone}
+            title="End the call for everyone in the room"
             className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 text-[0.6875rem] font-medium text-rose-300 transition-all shadow-sm hover:bg-rose-500/25 hover:border-rose-500/60 shrink-0"
           >
-            End
+            End for all
           </button>
         )}
       </div>

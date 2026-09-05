@@ -282,12 +282,19 @@ function RoomContent({ roomId }: { roomId: string }) {
     sendCallMessage({ active: true, hostAccountId: localUser?.accountId ?? '', startedAt: Date.now() });
   }, [sendCallMessage, localUser?.accountId]);
 
-  const handleEndCall = useCallback(() => {
+  /*
+   * Leaving and ending are different things, and only the host can do the
+   * second. A teacher stepping away must not hang up on the class -- the same
+   * split Pencil Spaces and Google Meet give a host.
+   */
+  const handleLeaveCall = useCallback(() => {
     setCallWanted(false);
-    if (isLocalHost) {
-      sendCallMessage({ active: false });
-    }
-  }, [isLocalHost, sendCallMessage]);
+  }, []);
+
+  const handleEndCallForEveryone = useCallback(() => {
+    setCallWanted(false);
+    sendCallMessage({ active: false });
+  }, [sendCallMessage]);
 
   const hasHost = users.some((u) => u.isHost);
 
@@ -737,7 +744,8 @@ function RoomContent({ roomId }: { roomId: string }) {
           av={av}
           localIdentity={localPeerId}
           users={users}
-          onEndCall={handleEndCall}
+          onLeaveCall={handleLeaveCall}
+          onEndCallForEveryone={isLocalHost ? handleEndCallForEveryone : undefined}
         />
       )}
       {shouldOverlayConnectingScreen({ boardEverShown, isSynced }) && <LoadingScreen />}

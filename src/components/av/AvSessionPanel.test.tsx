@@ -71,22 +71,54 @@ describe('AvSessionPanel', () => {
     expect(screen.getByTestId('av-video-track-me')).toBeTruthy();
   });
 
-  it('ends the call when asked, without leaving the room', () => {
+  it('leaves the call when asked, without leaving the room', () => {
     // A call that can be joined has to be leavable, and leaving it is not the
     // same as leaving the lesson -- the board carries on either way.
-    const onEndCall = vi.fn();
+    const onLeaveCall = vi.fn();
     const av = makeAv();
     render(
-      <AvSessionPanel av={av} localIdentity="me" onEndCall={onEndCall} />,
+      <AvSessionPanel av={av} localIdentity="me" onLeaveCall={onLeaveCall} />,
     );
-    fireEvent.click(screen.getByTestId('av-end-call'));
-    expect(onEndCall).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId('av-leave-call'));
+    expect(onLeaveCall).toHaveBeenCalledTimes(1);
   });
 
-  it('leaves out the end control when there is nothing to end it with', () => {
+  it('leaves out the leave control when there is nothing to leave', () => {
     const av = makeAv();
     render(<AvSessionPanel av={av} localIdentity="me" />);
-    expect(screen.queryByTestId('av-end-call')).toBeNull();
+    expect(screen.queryByTestId('av-leave-call')).toBeNull();
+  });
+
+  it('offers no end-for-everyone control to a peer', () => {
+    /*
+     * Only the host may end the room's call. A peer leaving must never hang up
+     * on the people still talking.
+     */
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" onLeaveCall={() => {}} />);
+    expect(screen.queryByTestId('av-end-call-everyone')).toBeNull();
+  });
+
+  it('gives the host leaving and ending as separate choices', () => {
+    const onLeaveCall = vi.fn();
+    const onEndCallForEveryone = vi.fn();
+    const av = makeAv();
+    render(
+      <AvSessionPanel
+        av={av}
+        localIdentity="me"
+        onLeaveCall={onLeaveCall}
+        onEndCallForEveryone={onEndCallForEveryone}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('av-leave-call'));
+    expect(onLeaveCall).toHaveBeenCalledTimes(1);
+    expect(onEndCallForEveryone).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('av-end-call-everyone'));
+    expect(onEndCallForEveryone).toHaveBeenCalledTimes(1);
+    expect(onLeaveCall).toHaveBeenCalledTimes(1);
   });
 
   it('holds the mic and camera with the faces', () => {
