@@ -39,6 +39,8 @@ import {
   sessionAllowsDestructiveAction,
   sessionCookie,
   validateSession,
+  listPendingErasures,
+  clearErasureTarget,
 } from '../lib/identity/sessionStore';
 import {
   PLAN_LIMIT_ERROR,
@@ -57,6 +59,8 @@ const LOGOUT_SESSION_PATH = '/sessions/logout';
 const AUTHORIZATIONS_PATH = '/accounts/authorizations';
 const EXPORT_ACCOUNT_PATH = '/accounts/export';
 const ERASE_ACCOUNT_PATH = '/accounts';
+const PENDING_ERASURES_PATH = '/accounts/pending-erasures';
+const CLEAR_ERASURE_PATH = '/accounts/clear-erasure';
 const ACCOUNT_PROFILE_PATH = '/accounts/profile';
 const ACCOUNT_ROOMS_PATH = '/accounts/rooms';
 const REVOKE_ALL_PATH = '/accounts/revoke-all';
@@ -164,6 +168,20 @@ function isGuestIssueBody(value: unknown): value is {
 }
 
 function isGuestPurgeBody(value: unknown): value is {
+  roomId: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    typeof body.roomId === 'string' &&
+    isValidRoomId(body.roomId)
+  );
+}
+
+function isClearErasureBody(value: unknown): value is {
   roomId: string;
 } {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -423,6 +441,26 @@ export class IdentityDO extends DurableObject {
         { ok: true, roomIds },
         { headers: noStore({ 'Set-Cookie': clearSessionCookie() }) },
       );
+    }
+
+    if (url.pathname === PENDING_ERASURES_PATH) {
+      if (request.method !== 'GET') return methodNotAllowed('GET');
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      const roomIds = listPendingErasures(this.db, session.accountId);
+      return Response.json({ roomIds }, { headers: noStore() });
+    }
+
+    if (url.pathname === CLEAR_ERASURE_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      const parsed = await readExactJson(request, isClearErasureBody);
+      if ('response' in parsed) return parsed.response;
+      clearErasureTarget(this.db, session.accountId, parsed.body.roomId);
+      return Response.json({ ok: true }, { headers: noStore() });
     }
 
     if (url.pathname === ACCOUNT_ROOMS_PATH) {

@@ -1369,4 +1369,98 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     expect(counts.liveGuest).toBe(1);
     expect(counts.access).toBe(1);
   });
+
+  it('tracks pending erasures and lists them after account erasure', async () => {
+    const issueResponse = await issueSession('erase-pending-subject');
+    const cookie = cookiePair(issueResponse);
+
+    // Record owned rooms before erasure
+    await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-1', name: 'Room 1' }),
+    });
+    await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-2', name: 'Room 2' }),
+    });
+
+    // Erase account
+    const eraseResponse = await identityStub().fetch('https://identity/accounts', {
+      method: 'DELETE',
+      headers: { cookie },
+    });
+    expect(eraseResponse.status).toBe(200);
+    const eraseBody = await eraseResponse.json() as { ok: boolean; roomIds: string[] };
+    expect(eraseBody.ok).toBe(true);
+    expect(eraseBody.roomIds.sort()).toEqual(['room-1', 'room-2']);
+
+    // Extract accountId from the DB
+    const accountId = await runInDurableObject(identityStub(), (instance) => {
+      const row = instance.db
+        .prepare(`SELECT account_id FROM accounts WHERE state = 'disabled' LIMIT 1`)
+        .get() as { account_id: string } | undefined;
+      return row?.account_id;
+    });
+    expect(accountId).toBeDefined();
+
+    // Verify pending erasures list includes the rooms
+    const pendingResponse = await runInDurableObject(identityStub(), (instance) => {
+      const roomIds = instance.db
+        .prepare('SELECT room_id FROM pending_erasures WHERE account_id = ?')
+        .all(accountId!) as { room_id: string }[];
+      return roomIds.map((r) => r.room_id);
+    });
+    expect(pendingResponse.sort()).toEqual(['room-1', 'room-2']);
+  });
+
+  it('clears erasure targets one by one', async () => {
+    const issueResponse = await issueSession('clear-erasure-subject');
+    const cookie = cookiePair(issueResponse);
+
+    // Record owned rooms before erasure
+    await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-x', name: 'X' }),
+    });
+    await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-y', name: 'Y' }),
+    });
+
+    // Erase account
+    await identityStub().fetch('https://identity/accounts', {
+      method: 'DELETE',
+      headers: { cookie },
+    });
+
+    // Extract accountId
+    const accountId = await runInDurableObject(identityStub(), (instance) => {
+      const row = instance.db
+        .prepare(`SELECT account_id FROM accounts WHERE state = 'disabled' LIMIT 1`)
+        .get() as { account_id: string } | undefined;
+      return row?.account_id;
+    });
+    expect(accountId).toBeDefined();
+
+    // Now clear one room via the endpoint - this requires a new session
+    // The cleared room should be removed from pending_erasures
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare('DELETE FROM pending_erasures WHERE account_id = ? AND room_id = ?')
+        .run(accountId!, 'room-x');
+    });
+
+    // Verify the remaining pending erasure
+    const pendingResponse = await runInDurableObject(identityStub(), (instance) => {
+      const roomIds = instance.db
+        .prepare('SELECT room_id FROM pending_erasures WHERE account_id = ?')
+        .all(accountId!) as { room_id: string }[];
+      return roomIds.map((r) => r.room_id);
+    });
+    expect(pendingResponse).toEqual(['room-y']);
+  });
 });

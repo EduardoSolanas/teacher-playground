@@ -586,9 +586,10 @@ async function accountErase(
     roomIds = [];
   }
   const stamp = outcome.session;
-  await Promise.all(
+  const cookie = request.headers.get('cookie') ?? '';
+  const results = await Promise.allSettled(
     roomIds.map(async (roomId) => {
-      if (!isValidRoomId(roomId)) return;
+      if (!isValidRoomId(roomId)) throw new Error('Invalid room id');
       await forward(
         env,
         roomId,
@@ -605,8 +606,28 @@ async function accountErase(
        * destroy stayed exactly where they were.
        */
       await purgeBoardFiles(env, roomId);
+      // Cleanup succeeded, remove from pending_erasures
+      await identity.fetch(new Request('https://identity/accounts/clear-erasure', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          cookie,
+        },
+        body: JSON.stringify({ roomId }),
+      }));
     }),
   );
+
+  // Log any failures but don't fail the overall erasure
+  for (let i = 0; i < results.length; i++) {
+    if (results[i].status === 'rejected') {
+      console.error(
+        `Failed to erase room ${roomIds[i]}:`,
+        (results[i] as PromiseRejectedResult).reason,
+      );
+    }
+  }
+
   const headers = new Headers();
   headers.set('Cache-Control', 'no-store');
   const clearCookie = result.headers.get('set-cookie');

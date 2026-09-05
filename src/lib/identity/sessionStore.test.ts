@@ -28,6 +28,9 @@ import {
   guestSessionCookie,
   parseGuestSessionCookie,
   authorizeGuestSession,
+  persistErasureTargets,
+  listPendingErasures,
+  clearErasureTarget,
 } from './sessionStore';
 import {
   IdentityInputError,
@@ -844,5 +847,111 @@ describe('purgeExpiredGuestAccounts', () => {
     expect(purgeExpiredSessions(db, T0 + 10)).toBe(1);
     expect(purgeExpiredGuestAccounts(db, T0 + 10)).toBe(0);
     expect(accountCount(access.accountId)).toBe(1);
+  });
+});
+
+describe('durable erasure progress tracking', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    applyIdentitySchema(db);
+  });
+
+  it('persists erasure targets in a transaction with account_rooms deletion', async () => {
+    const session = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+    recordOwnedRoom(db, {
+      accountId: session.accountId,
+      roomId: 'room-a',
+      name: 'A',
+      now: T0,
+    });
+    recordOwnedRoom(db, {
+      accountId: session.accountId,
+      roomId: 'room-b',
+      name: 'B',
+      now: T0 + 1,
+    });
+
+    const erased = await eraseOwnAccount(db, session.token, T0 + 2);
+    expect(erased?.roomIds.sort()).toEqual(['room-a', 'room-b']);
+
+    // Verify targets are persisted
+    const pending = listPendingErasures(db, session.accountId);
+    expect(pending.sort()).toEqual(['room-a', 'room-b']);
+
+    // Verify account_rooms are deleted
+    expect(listOwnedRooms(db, session.accountId)).toEqual([]);
+  });
+
+  it('lists pending erasures for an account', async () => {
+    const session = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+    const accountId = session.accountId;
+
+    recordOwnedRoom(db, {
+      accountId,
+      roomId: 'room-1',
+      name: '1',
+      now: T0,
+    });
+    recordOwnedRoom(db, {
+      accountId,
+      roomId: 'room-2',
+      name: '2',
+      now: T0 + 1,
+    });
+
+    await eraseOwnAccount(db, session.token, T0 + 2);
+
+    expect(listPendingErasures(db, accountId).sort()).toEqual(['room-1', 'room-2']);
+  });
+
+  it('clears a specific erasure target', async () => {
+    const session = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+    const accountId = session.accountId;
+
+    recordOwnedRoom(db, {
+      accountId,
+      roomId: 'room-x',
+      name: 'X',
+      now: T0,
+    });
+    recordOwnedRoom(db, {
+      accountId,
+      roomId: 'room-y',
+      name: 'Y',
+      now: T0 + 1,
+    });
+
+    await eraseOwnAccount(db, session.token, T0 + 2);
+
+    clearErasureTarget(db, accountId, 'room-x');
+
+    expect(listPendingErasures(db, accountId)).toEqual(['room-y']);
+  });
+
+  it('returns empty list when no pending erasures exist', async () => {
+    const session = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+
+    expect(listPendingErasures(db, session.accountId)).toEqual([]);
+  });
+
+  it('survives clearing the same target multiple times', async () => {
+    const session = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+    const accountId = session.accountId;
+
+    recordOwnedRoom(db, {
+      accountId,
+      roomId: 'room-z',
+      name: 'Z',
+      now: T0,
+    });
+
+    await eraseOwnAccount(db, session.token, T0 + 1);
+
+    clearErasureTarget(db, accountId, 'room-z');
+    clearErasureTarget(db, accountId, 'room-z');
+
+    expect(listPendingErasures(db, accountId)).toEqual([]);
   });
 });

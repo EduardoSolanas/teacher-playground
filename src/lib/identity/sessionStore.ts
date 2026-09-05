@@ -498,6 +498,41 @@ function tableExists(db: RoomDatabase, name: string): boolean {
   );
 }
 
+export function persistErasureTargets(
+  db: RoomDatabase,
+  accountId: string,
+  roomIds: string[],
+  now: number,
+): void {
+  const stmt = db.prepare(
+    'INSERT OR IGNORE INTO pending_erasures (account_id, room_id, created_at) VALUES (?, ?, ?)',
+  );
+  db.transaction(() => {
+    for (const roomId of roomIds) {
+      stmt.run(accountId, roomId, now);
+    }
+  })();
+}
+
+export function listPendingErasures(db: RoomDatabase, accountId: string): string[] {
+  return (
+    db
+      .prepare('SELECT room_id FROM pending_erasures WHERE account_id = ?')
+      .all(accountId) as { room_id: string }[]
+  ).map((r) => r.room_id);
+}
+
+export function clearErasureTarget(
+  db: RoomDatabase,
+  accountId: string,
+  roomId: string,
+): void {
+  db.prepare('DELETE FROM pending_erasures WHERE account_id = ? AND room_id = ?').run(
+    accountId,
+    roomId,
+  );
+}
+
 /**
  * Verified self-erasure: the caller is identified only by a valid session
  * token. Sessions are revoked, Access subject bindings are dropped, the
@@ -516,6 +551,7 @@ export async function eraseOwnAccount(
 
   return db.transaction(() => {
     const roomIds = listOwnedRooms(db, accountId).map((room) => room.roomId);
+    persistErasureTargets(db, accountId, roomIds, now);
     db.prepare(`DELETE FROM account_rooms WHERE account_id = ?`).run(accountId);
 
     const disabled = disableAccount(
