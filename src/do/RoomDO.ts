@@ -112,6 +112,14 @@ import {
 export const REVOCATION_CHECK_INTERVAL_MS = 30_000;
 
 /**
+ * How long after its last breaching frame an abuse episode is still the same
+ * episode. Two rate windows: the sliding limiter needs a full window of traffic
+ * to climb back to the ceiling, so a sustained flood's next breach lands more
+ * than one window after the last.
+ */
+const BREACH_EPISODE_GAP_MS = SIGNALING_RATE_WINDOW_MS * 2;
+
+/**
  * Lower bound so a misconfigured binding cannot turn the check into a busy
  * loop against the identity object, and cannot silently disable it either.
  */
@@ -286,7 +294,11 @@ export class RoomDO extends DurableObject {
      */
     countRejected: true,
   });
-  private readonly ceilingBreachesPerAccount = new Map<string, { count: number; lastBreachTimeMs: number }>();
+  private readonly ceilingBreachesPerAccount = new Map<string, {
+    count: number;
+    firstBreachTimeMs: number;
+    lastBreachTimeMs: number;
+  }>();
   /** Last presence signature broadcast for a room; see the presence route. */
   private readonly lastPresenceSignature = new Map<string, string>();
 
@@ -1907,33 +1919,42 @@ export class RoomDO extends DurableObject {
     if (rateCheckResult.messagesInWindow >= SIGNALING_ABUSE_CEILING) {
       const prev = this.ceilingBreachesPerAccount.get(attachment.accountId);
       /*
-       * Count as sustained abuse (consecutive breaches) only if:
-       * 1. We have a previous breach AND
-       * 2. The previous breach is within the current rate-limit window
-       *    (i.e., less than SIGNALING_RATE_WINDOW_MS old)
+       * Two different questions, and conflating them is what broke this twice.
        *
-       * This ensures a single burst that straddles a calendar-window
-       * boundary is not incorrectly counted as abuse across two windows.
-       * The sliding-window rate limiter already groups messages sent
-       * within windowMs of each other.
+       * "Is this the same episode of abuse?" is answered by the gap since the
+       * last breaching frame. Every frame in a 361-message burst breaches, and
+       * they arrive microseconds apart, so counting each one as a fresh
+       * consecutive breach closes a socket inside a single burst. Frames close
+       * together are one episode, however many of them there are.
+       *
+       * "Has it gone on too long?" is answered by the age of the episode, not
+       * by the clock. Measuring from the first breach is what a calendar window
+       * got wrong: a finite burst that happened to straddle a second boundary
+       * was read as two sustained windows and disconnected a teacher drawing
+       * hard.
+       *
+       * The gap tolerance is two windows rather than one because the sliding
+       * limiter needs a full window of traffic to climb back to the ceiling, so
+       * a genuinely sustained flood's next breach lands appreciably more than
+       * one window after the previous one.
        */
-      if (prev && (now - prev.lastBreachTimeMs < SIGNALING_RATE_WINDOW_MS)) {
-        consecutiveCeilingBreaches = prev.count + 1;
-      } else {
-        consecutiveCeilingBreaches = 1;
-      }
+      const continuesEpisode = prev !== undefined
+        && now - prev.lastBreachTimeMs < BREACH_EPISODE_GAP_MS;
+      const firstBreachTimeMs = continuesEpisode ? prev.firstBreachTimeMs : now;
+
+      consecutiveCeilingBreaches = now - firstBreachTimeMs >= SIGNALING_RATE_WINDOW_MS ? 2 : 1;
+
       this.ceilingBreachesPerAccount.set(attachment.accountId, {
         count: consecutiveCeilingBreaches,
+        firstBreachTimeMs,
         lastBreachTimeMs: now,
       });
     } else {
       const prev = this.ceilingBreachesPerAccount.get(attachment.accountId);
-      /*
-       * Clear the breach record only after we've been under the ceiling for
-       * a full rate-limit window. This allows a quick burst at the start of
-       * a new window to be recognized as a new breach, not a continuation.
-       */
-      if (prev && (now - prev.lastBreachTimeMs >= SIGNALING_RATE_WINDOW_MS)) {
+      // Forgotten only once the episode is definitively over, on the same gap
+      // the branch above uses. Dropping it sooner erases the memory that makes
+      // sustained abuse distinguishable from a burst.
+      if (prev && now - prev.lastBreachTimeMs >= BREACH_EPISODE_GAP_MS) {
         this.ceilingBreachesPerAccount.delete(attachment.accountId);
       }
     }
