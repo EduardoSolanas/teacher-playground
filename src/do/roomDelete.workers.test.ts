@@ -523,8 +523,10 @@ describe('idle room board purge', () => {
     await runInDurableObject(roomStub(roomId), (instance: RoomDO) => instance.alarm());
 
     // Assert a future alarm was scheduled and room still exists
-    await runInDurableObject(roomStub(roomId), async (instance: RoomDO) => {
-      const alarm = await instance.ctx.storage.getAlarm();
+    await runInDurableObject(roomStub(roomId), async (instance: RoomDO, state) => {
+      // The state handed in by runInDurableObject, not instance.ctx: ctx is
+      // protected on DurableObject and reaching into it does not typecheck.
+      const alarm = await state.storage.getAlarm();
       expect(alarm).toBeDefined();
       expect(alarm).toBeGreaterThan(Date.now());
       expect(scopedCounts(instance, roomId)).toEqual({
