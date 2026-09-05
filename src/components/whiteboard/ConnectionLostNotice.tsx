@@ -19,7 +19,7 @@ export default function ConnectionLostNotice() {
       data-testid="whiteboard-connection-lost"
       className="fixed left-1/2 top-[max(0.75rem,env(safe-area-inset-top))] z-[1500] flex -translate-x-1/2 items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[0.8125rem] font-medium text-amber-900 shadow-lg"
     >
-      <span>Connection lost. Your work is saved in the room.</span>
+      <span>Connection lost. Recent changes may not be saved.</span>
       <button
         type="button"
         data-testid="whiteboard-connection-lost-reload"
