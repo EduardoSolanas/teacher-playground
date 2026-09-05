@@ -79,6 +79,22 @@ describe('shouldPublish force', () => {
     expect(shouldPublish(diff, false)).toBe(false);
     expect(shouldPublish(diff, true)).toBe(true);
   });
+
+  it('with force=true and unchanged elements, returns the baseline elements', () => {
+    const { elements, baseline } = board(1);
+    const diff = diffScene(baseline, elements);
+
+    // Confirm diff has no changes
+    expect(diff.changedIds.size).toBe(0);
+    expect(diff.removed).toBe(false);
+
+    // When force=true, should return the unchanged element even though changedIds is empty
+    const { elements: result, wholeScene } = elementsToPublish(elements, diff, true);
+
+    expect(wholeScene).toBe(false);
+    expect(result).toHaveLength(1);
+    expect((result[0] as El).id).toBe('el-0');
+  });
 });
 
 describe('publishing cost does not scale with the board', () => {
