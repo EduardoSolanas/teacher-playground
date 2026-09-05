@@ -4,6 +4,7 @@
  */
 
 export const MAX_BOARD_FILE_BYTES = 25 * 1024 * 1024;
+export const MAX_ROOM_FILE_BYTES_TOTAL = 250 * 1024 * 1024;
 const VALID_FILE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const ALLOWED_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
