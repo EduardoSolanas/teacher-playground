@@ -78,12 +78,29 @@ export function shouldPublish(diff: SceneDiff, force = false): boolean {
  * A removal needs the whole scene, because the stale sweep has to know what
  * survived. Everything else sends only what moved — while drawing that is a
  * single element, so the Yjs walk stops scaling with the size of the board.
+ *
+ * `force` is for the end of a stroke: when force=true and changedIds is empty,
+ * republish elements that existed in the baseline (they need to reach the peer
+ * even without a version bump). Only includes elements from the baseline, never
+ * new elements.
  */
 export function elementsToPublish<T>(
   elements: readonly T[],
   diff: SceneDiff,
+  force = false,
 ): { elements: readonly T[]; wholeScene: boolean } {
   if (diff.removed) return { elements, wholeScene: true };
+
+  if (force && diff.changedIds.size === 0) {
+    return {
+      elements: elements.filter((element) => {
+        const id = elementId(element);
+        return id !== null && diff.nextVersions.has(id);
+      }),
+      wholeScene: false,
+    };
+  }
+
   return {
     elements: elements.filter((element) => {
       const id = elementId(element);
