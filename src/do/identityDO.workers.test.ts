@@ -11,6 +11,9 @@ import {
   SESSION_COOKIE_NAME,
   GUEST_SESSION_COOKIE_NAME,
   clearSessionCookie,
+  persistErasureTargets,
+  listPendingErasures,
+  clearErasureTarget,
 } from '../lib/identity/sessionStore';
 import { readAuthorizationAudit } from '../lib/identity/identityStore';
 
@@ -1370,23 +1373,34 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     expect(counts.access).toBe(1);
   });
 
-  it('tracks pending erasures and lists them after account erasure', async () => {
+  it('records a pending erasure for the room the account owns', async () => {
+    const roomId = 'erase-pending-room';
     const issueResponse = await issueSession('erase-pending-subject');
     const cookie = cookiePair(issueResponse);
 
-    // Record owned rooms before erasure
-    await identityStub().fetch('https://identity/accounts/rooms', {
+    /*
+     * One room, not two. FREE_MAX_ROOMS is 1, so a second POST here is refused
+     * with 402 "Plan limit reached" -- an earlier version of this test recorded
+     * two rooms and then asserted on both, and failed for that reason rather
+     * than for anything wrong with erasure. Multi-target fan-out is covered
+     * below, against the store, where the plan cap does not apply.
+     */
+    const recorded = await identityStub().fetch('https://identity/accounts/rooms', {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie },
-      body: JSON.stringify({ roomId: 'room-1', name: 'Room 1' }),
+      body: JSON.stringify({ roomId, name: 'Room 1' }),
     });
-    await identityStub().fetch('https://identity/accounts/rooms', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', cookie },
-      body: JSON.stringify({ roomId: 'room-2', name: 'Room 2' }),
-    });
+    expect(recorded.status).toBe(200);
 
-    // Erase account
+    // Resolved from the room this test just created. Reading "any disabled
+    // account" instead picks up whatever other tests left in this singleton.
+    const accountId = await runInDurableObject(identityStub(), (instance) => (
+      (instance.db
+        .prepare('SELECT account_id FROM account_rooms WHERE room_id = ?')
+        .get(roomId) as { account_id: string } | undefined)?.account_id
+    ));
+    expect(accountId).toBeDefined();
+
     const eraseResponse = await identityStub().fetch('https://identity/accounts', {
       method: 'DELETE',
       headers: { cookie },
@@ -1394,73 +1408,50 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     expect(eraseResponse.status).toBe(200);
     const eraseBody = await eraseResponse.json() as { ok: boolean; roomIds: string[] };
     expect(eraseBody.ok).toBe(true);
-    expect(eraseBody.roomIds.sort()).toEqual(['room-1', 'room-2']);
+    expect(eraseBody.roomIds).toEqual([roomId]);
 
-    // Extract accountId from the DB
-    const accountId = await runInDurableObject(identityStub(), (instance) => {
-      const row = instance.db
-        .prepare(`SELECT account_id FROM accounts WHERE state = 'disabled' LIMIT 1`)
-        .get() as { account_id: string } | undefined;
-      return row?.account_id;
-    });
-    expect(accountId).toBeDefined();
-
-    // Verify pending erasures list includes the rooms
-    const pendingResponse = await runInDurableObject(identityStub(), (instance) => {
-      const roomIds = instance.db
-        .prepare('SELECT room_id FROM pending_erasures WHERE account_id = ?')
-        .all(accountId!) as { room_id: string }[];
-      return roomIds.map((r) => r.room_id);
-    });
-    expect(pendingResponse.sort()).toEqual(['room-1', 'room-2']);
+    const pending = await runInDurableObject(identityStub(), (instance) => (
+      listPendingErasures(instance.db, accountId!)
+    ));
+    expect(pending).toEqual([roomId]);
   });
 
-  it('clears erasure targets one by one', async () => {
-    const issueResponse = await issueSession('clear-erasure-subject');
-    const cookie = cookiePair(issueResponse);
+  it('keeps every erasure target until each one is cleared', async () => {
+    const accountId = 'erasure-fanout-account';
 
-    // Record owned rooms before erasure
-    await identityStub().fetch('https://identity/accounts/rooms', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', cookie },
-      body: JSON.stringify({ roomId: 'room-x', name: 'X' }),
-    });
-    await identityStub().fetch('https://identity/accounts/rooms', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', cookie },
-      body: JSON.stringify({ roomId: 'room-y', name: 'Y' }),
-    });
+    // Driven through the real store functions on the real Durable Object
+    // database. The HTTP route cannot reach a two-room account at all while
+    // FREE_MAX_ROOMS is 1, but erasure still has to fan out over whatever it
+    // is given, and a partial failure must not lose the rest.
+    const remaining = await runInDurableObject(identityStub(), (instance) => {
+      persistErasureTargets(instance.db, accountId, ['room-x', 'room-y'], Date.now());
+      const both = listPendingErasures(instance.db, accountId).sort();
 
-    // Erase account
-    await identityStub().fetch('https://identity/accounts', {
-      method: 'DELETE',
-      headers: { cookie },
+      clearErasureTarget(instance.db, accountId, 'room-x');
+      const afterFirst = listPendingErasures(instance.db, accountId);
+
+      clearErasureTarget(instance.db, accountId, 'room-y');
+      const afterSecond = listPendingErasures(instance.db, accountId);
+
+      return { both, afterFirst, afterSecond };
     });
 
-    // Extract accountId
-    const accountId = await runInDurableObject(identityStub(), (instance) => {
-      const row = instance.db
-        .prepare(`SELECT account_id FROM accounts WHERE state = 'disabled' LIMIT 1`)
-        .get() as { account_id: string } | undefined;
-      return row?.account_id;
-    });
-    expect(accountId).toBeDefined();
+    expect(remaining.both).toEqual(['room-x', 'room-y']);
+    expect(remaining.afterFirst).toEqual(['room-y']);
+    expect(remaining.afterSecond).toEqual([]);
+  });
 
-    // Now clear one room via the endpoint - this requires a new session
-    // The cleared room should be removed from pending_erasures
-    await runInDurableObject(identityStub(), (instance) => {
-      instance.db
-        .prepare('DELETE FROM pending_erasures WHERE account_id = ? AND room_id = ?')
-        .run(accountId!, 'room-x');
+  it('does not re-add an erasure target that was already cleared', async () => {
+    const accountId = 'erasure-idempotency-account';
+
+    const finalState = await runInDurableObject(identityStub(), (instance) => {
+      persistErasureTargets(instance.db, accountId, ['room-z'], Date.now());
+      clearErasureTarget(instance.db, accountId, 'room-z');
+      // A retry of the same erasure must not resurrect finished work.
+      persistErasureTargets(instance.db, accountId, [], Date.now());
+      return listPendingErasures(instance.db, accountId);
     });
 
-    // Verify the remaining pending erasure
-    const pendingResponse = await runInDurableObject(identityStub(), (instance) => {
-      const roomIds = instance.db
-        .prepare('SELECT room_id FROM pending_erasures WHERE account_id = ?')
-        .all(accountId!) as { room_id: string }[];
-      return roomIds.map((r) => r.room_id);
-    });
-    expect(pendingResponse).toEqual(['room-y']);
+    expect(finalState).toEqual([]);
   });
 });
