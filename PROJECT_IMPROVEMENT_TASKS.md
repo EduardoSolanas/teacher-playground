@@ -137,6 +137,47 @@ The log also points into `@cloudflare/vitest-pool-workers/dist/worker/lib/cloudf
 
 **Done after design:** non-owners cannot impersonate a host's start/end event, crashes do not resurrect previous calls, and legitimate host start/end works. Mutation-test the chosen ownership guard. Keep unrelated board edits working.
 
+**Design settled 2026-09-05 (orchestrator + owner). Not yet implemented.**
+
+*Product decision, from the owner:* peers **auto-join, with no explicit accept
+step**. A host starts a call and everyone in the room joins, including someone
+who arrives later. That works only because `call.active` is durable in the
+Y.Doc: `shouldPeerEnterCall` is `callActive && hasHost && avAllowed`, and the
+effect calls `syncCall()` on mount as well as on observe, so a late joiner syncs
+the doc, reads the flag and enters.
+
+*Correction to an earlier suggestion in this session:* do **not** gate the call
+map the way `follow` is gated at `RoomDO.ts:1869`. `follow` is a transient
+control message — relayed to whoever is connected, then gone. Making call start
+transient and owner-only would stop late joiners auto-connecting, which is the
+behaviour the owner wants to keep. Read and write must be split instead.
+
+*The gap, precisely.* Two control messages travel the same socket and are
+treated differently. `follow` is authorization-gated (`isOwnerRole(role)`, i.e.
+`role === 'owner'`). Call state rides as an ordinary Yjs sync frame, so the only
+check it meets is `canWriteBoard(role)` — `role === 'owner' || role === 'editor'`.
+**Any admitted editor can therefore start a call for the whole room.** Supporting
+evidence: `handleStartCall` does not check `isLocalHost` while `handleEndCall`
+does, so the intent was host-only and the enforcement was never written.
+
+*Design to implement:*
+
+1. Keep `call.active` durable. Late joiners must read it.
+2. Restrict **writes** to that key to `isOwnerRole`, enforced server-side in
+   RoomDO. Board edits stay open to editors. This is harder than gating `follow`
+   because it means inspecting a Yjs update for *which key changed* rather than
+   accepting or rejecting a whole frame — size this as a medium slice, not small.
+3. Stamp the flag with the setting host's identity and a timestamp, and have
+   peers ignore it when that host is no longer present. Chosen over clearing the
+   flag when the last owner socket closes, because a host reloading mid-lesson
+   is normal and must not drop the room's call.
+
+*Still required before implementation:* the reproduction this card already
+specifies — an admitted non-owner writes the map through real sockets, asserting
+actual join/media behaviour rather than the map value, plus the host-crash
+resurrection case. Security implementation stays with the orchestrator; a
+cheaper model must not silently redesign this.
+
 ### R05 — Recheck cancellation after asynchronous token parsing
 
 **Observed:** `src/hooks/useAvSession.ts:115` checks cancellation after fetch, then awaits `response.json()` at line 133 and constructs/publishes a provider without another cancellation check. Disabling or changing rooms while the body is arriving can start an obsolete session. The 403 body path has the same stale-state window. Current tests patch fetch and provider methods, contrary to the real-object rule.
