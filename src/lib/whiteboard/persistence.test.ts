@@ -208,4 +208,92 @@ describe('whiteboard persistence (SEC-011)', () => {
     expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
     expect(loadBoardState(ROOM)).toBeNull();
   });
+
+  /*
+   * jsdom enforces a real 5,000,000-code-unit quota, so this fills storage for
+   * real rather than patching setItem to throw. If jsdom ever stops enforcing
+   * it, the assertion below fails loudly instead of the test quietly passing
+   * without having tested anything.
+   */
+  function fillStorageToQuota(): number {
+    let written = 0;
+    /*
+     * Step the chunk size down so storage ends up packed to the true limit.
+     * Filling with one size only leaves a chunk-sized gap, and the board state
+     * JSON is small enough to slip into it -- which made an earlier version of
+     * this test pass against the unfixed code.
+     */
+    for (const size of [50 * 1024, 1024, 64, 1]) {
+      const chunk = 'x'.repeat(size);
+      for (let i = 0; i < 200_000; i++) {
+        try {
+          localStorage.setItem(`_fill_${size}_${i}`, chunk);
+          written++;
+        } catch {
+          break;
+        }
+      }
+    }
+    if (written === 0) {
+      throw new Error('localStorage never hit its quota; this test can no longer prove anything');
+    }
+    return written;
+  }
+
+
+  it('saveBoardState survives a genuinely full localStorage', async () => {
+    setOfflineBoardCacheEnabled(ROOM, true);
+    const written = fillStorageToQuota();
+    expect(written).toBeGreaterThan(0);
+
+    await expect(saveBoardState(ROOM, [ELEMENT], VIEWPORT)).resolves.toBeUndefined();
+  });
+
+  it('debouncedSaveBoardState leaves no unhandled rejection when the write fails', async () => {
+    vi.useFakeTimers();
+    setOfflineBoardCacheEnabled(ROOM, true);
+    fillStorageToQuota();
+
+    const rejections: unknown[] = [];
+    const listener = (event: PromiseRejectionEvent) => rejections.push(event.reason);
+    window.addEventListener('unhandledrejection', listener);
+
+    try {
+      debouncedSaveBoardState(ROOM, [ELEMENT], VIEWPORT, 100);
+      await vi.advanceTimersByTimeAsync(150);
+      await vi.runAllTimersAsync();
+      expect(rejections).toEqual([]);
+    } finally {
+      window.removeEventListener('unhandledrejection', listener);
+      vi.useRealTimers();
+    }
+  });
+
+  it('cleanupStaleRooms still sweeps an expired room', () => {
+    const expiredAt = Date.now() - 25 * 60 * 60 * 1000;
+    localStorage.setItem(`whiteboard:${ROOM}:state`, JSON.stringify({ elements: [ELEMENT], viewport: VIEWPORT }));
+    localStorage.setItem(`whiteboard:${ROOM}:timestamp`, String(expiredAt));
+    localStorage.setItem(`whiteboard:${ROOM}:offline_cache`, '1');
+
+    expect(() => cleanupStaleRooms()).not.toThrow();
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
+  });
+
+  it('never writes board data for a room that did not opt in', async () => {
+    expect(isOfflineBoardCacheEnabled(ROOM)).toBe(false);
+
+    await saveBoardState(ROOM, [ELEMENT], VIEWPORT);
+
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
+    expect(localStorage.getItem(`whiteboard:${ROOM}:timestamp`)).toBeNull();
+  });
+
+  it('does not start caching a non-opted-in room just because storage failed', async () => {
+    fillStorageToQuota();
+    expect(isOfflineBoardCacheEnabled(ROOM)).toBe(false);
+
+    await saveBoardState(ROOM, [ELEMENT], VIEWPORT);
+
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
+  });
 });

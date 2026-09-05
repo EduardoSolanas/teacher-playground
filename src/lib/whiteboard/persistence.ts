@@ -69,8 +69,12 @@ export async function saveBoardState(
     savedAt: Date.now(),
   };
 
-  localStorage.setItem(getStateKey(roomId), JSON.stringify(state));
-  localStorage.setItem(getTimestampKey(roomId), String(Date.now()));
+  try {
+    localStorage.setItem(getStateKey(roomId), JSON.stringify(state));
+    localStorage.setItem(getTimestampKey(roomId), String(Date.now()));
+  } catch {
+    // localStorage unavailable or quota exceeded
+  }
 }
 
 let saveTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -90,7 +94,10 @@ export function debouncedSaveBoardState(
 ): void {
   cancelDebouncedSave();
   saveTimeout = setTimeout(() => {
-    saveBoardState(roomId, elements, viewport);
+    // Nothing awaits this timer callback, so a rejection here would surface as
+    // an unhandled rejection and nothing else. saveBoardState already swallows
+    // storage failure; this is the backstop for anything it does not.
+    saveBoardState(roomId, elements, viewport).catch(() => {});
     saveTimeout = null;
   }, debounceMs);
 }
@@ -105,10 +112,10 @@ export function loadBoardState(
     return null;
   }
 
-  const raw = localStorage.getItem(getStateKey(roomId));
-  if (!raw) return null;
-
   try {
+    const raw = localStorage.getItem(getStateKey(roomId));
+    if (!raw) return null;
+
     const parsed = JSON.parse(raw);
     return {
       elements: parsed.elements || [],
@@ -122,8 +129,12 @@ export function loadBoardState(
 export function clearBoardState(roomId: string): void {
   if (typeof window === 'undefined') return;
   cancelDebouncedSave();
-  localStorage.removeItem(getStateKey(roomId));
-  localStorage.removeItem(getTimestampKey(roomId));
+  try {
+    localStorage.removeItem(getStateKey(roomId));
+    localStorage.removeItem(getTimestampKey(roomId));
+  } catch {
+    // localStorage unavailable
+  }
 }
 
 export function clearSessionIdentity(): void {
@@ -170,14 +181,28 @@ export function cleanupStaleRooms(): void {
   if (typeof window === 'undefined') return;
 
   const now = Date.now();
-  const keys = Object.keys(localStorage);
+
+  /*
+   * Only the enumeration is guarded. An origin with no storage at all throws
+   * from the `localStorage` getter itself, and this runs on mount from
+   * usePersistence -- unguarded, it took room startup down with it. The clears
+   * below guard themselves, so wrapping the whole body would only hide a
+   * mid-sweep failure and leave the rest of the rooms unswept in silence.
+   */
+  let entries: Array<readonly [string, string | null]>;
+  try {
+    entries = Object.keys(localStorage).map((key) => [key, localStorage.getItem(key)] as const);
+  } catch {
+    return;
+  }
+
   const roomsToExpire = new Set<string>();
   const leftoverBoards = new Set<string>();
 
-  for (const key of keys) {
+  for (const [key, value] of entries) {
     const timestampRoomId = roomIdFromPrefixedKey(key, TIMESTAMP_SUFFIX);
     if (timestampRoomId) {
-      const timestamp = parseInt(localStorage.getItem(key) || '0', 10);
+      const timestamp = parseInt(value || '0', 10);
       if (now - timestamp > ROOM_EXPIRY_MS) {
         roomsToExpire.add(timestampRoomId);
       } else if (!isOfflineBoardCacheEnabled(timestampRoomId)) {
