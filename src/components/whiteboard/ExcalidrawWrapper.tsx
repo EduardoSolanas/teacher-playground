@@ -805,7 +805,7 @@ export default function ExcalidrawWrapper({
   const strokeTrailingTimerRef = useRef<number | null>(null);
 
   const publishScene = useCallback(
-    (scene: readonly unknown[], candidate: PublishCandidate) => {
+    (scene: readonly unknown[], candidate: PublishCandidate): boolean => {
       const serializedElements = serializeExcalidrawElements(scene);
       const payload = serializeExcalidrawElements(candidate.elements);
       const previousIds = lastPublishedIdsRef.current;
@@ -828,7 +828,7 @@ export default function ExcalidrawWrapper({
 
       if (!yDoc || !yElementsArray) {
         pendingLocalPublishRef.current = serializedElements;
-        return;
+        return true;
       }
 
       lastSyncedElementsRef.current = serializedElements;
@@ -862,8 +862,10 @@ export default function ExcalidrawWrapper({
             });
           }
         }
+        return true;
       } catch {
         // A Yjs write must not roll back the local canvas state.
+        return false;
       }
     },
     [yDoc, yElementsArray, onElementsChange],
@@ -881,8 +883,10 @@ export default function ExcalidrawWrapper({
       if (!shouldPublish(diff, force)) return;
 
       const serializedElements = serializeExcalidrawElements(el);
-      publishedVersionsRef.current = diff.nextVersions;
-      publishScene(serializedElements, elementsToPublish(serializedElements, diff));
+      const success = publishScene(serializedElements, elementsToPublish(serializedElements, diff, force));
+      if (success) {
+        publishedVersionsRef.current = diff.nextVersions;
+      }
     },
     [publishScene],
   );
