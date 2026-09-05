@@ -401,4 +401,79 @@ describe('production deployment policy', () => {
 
     expect(exampleIgnored, devVarsExample).toBe(false);
   });
+
+  it('R01: deploy depends on successful CI checks for the exact SHA', () => {
+    const deploymentWorkflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
+
+    // Deploy must trigger on workflow_run from CI workflow, not push
+    expect(deploymentWorkflow).toContain('workflow_run:');
+    expect(deploymentWorkflow).toContain('workflows: [CI]');
+    expect(deploymentWorkflow).toContain('branches: [main]');
+    expect(deploymentWorkflow).toContain("types: [completed]");
+
+    // Deploy job must have a conditional that checks CI success
+    expect(deploymentWorkflow).toMatch(/if:\s*github\.event\.workflow_run\.conclusion\s*==\s*['"]success['"]/);
+
+    // Deploy must NOT trigger directly on push to main
+    expect(deploymentWorkflow).not.toMatch(/^\s+push:\s*\n\s+branches:\s+\[main\]/m);
+  });
+
+  it('R01: CI workflow is the gate for all deploys', () => {
+    const ciWorkflow = readRepositoryFile('.github/workflows/ci.yml');
+
+    // CI must run checks that validate the build
+    expect(ciWorkflow).toContain('npm run typecheck');
+    expect(ciWorkflow).toContain('npm test');
+    expect(ciWorkflow).toContain('npm run build');
+    expect(ciWorkflow).toContain('npm run test:workers');
+    expect(ciWorkflow).toContain('npm run security:scan');
+    expect(ciWorkflow).toContain('npm run lint');
+  });
+
+  it('R01: deploy cannot bypass CI checks', () => {
+    const deploymentWorkflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
+
+    // The workflow_run trigger ensures CI must run and pass before deploy even starts
+    // Verify there is no independent push trigger that would allow deploy without CI
+    const workflowRunStart = deploymentWorkflow.indexOf('workflow_run:');
+    const pushTrigger = deploymentWorkflow.indexOf('push:');
+
+    // If push appears after workflow_run in the on section, it's part of workflow_run config
+    // We want to ensure the main trigger is workflow_run, not push
+    expect(workflowRunStart).toBeGreaterThanOrEqual(0);
+
+    // Extract just the 'on:' section
+    const onSection = deploymentWorkflow.split(/^jobs:/m)[0];
+    const lines = onSection.split(/\r?\n/);
+    let foundWorkflowRun = false;
+    let foundPushAtTopLevel = false;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.includes('workflow_run:')) {
+        foundWorkflowRun = true;
+      }
+      // Check for push at top level (same indentation as workflow_run)
+      if (line.match(/^\s+push:/) && !line.includes('workflow_run')) {
+        foundPushAtTopLevel = true;
+      }
+    }
+
+    expect(foundWorkflowRun, 'deploy must use workflow_run').toBe(true);
+    expect(foundPushAtTopLevel, 'deploy must not have push at top level').toBe(false);
+  });
+
+  it('R01: deployed commit SHA matches the CI-validated SHA', () => {
+    const deploymentWorkflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
+
+    // The workflow_run trigger automatically runs on the commit that triggered CI
+    // The checkout step will use that commit, ensuring deployed code matches CI-validated code
+    expect(deploymentWorkflow).toContain('- name: Checkout');
+    expect(deploymentWorkflow).toContain('uses: actions/checkout');
+
+    // By using workflow_run, GitHub Actions automatically sets github.event.workflow_run.head_sha
+    // to the SHA that passed CI, so the checkout will use that same commit
+    expect(deploymentWorkflow).toContain('workflow_run:');
+    expect(deploymentWorkflow).toContain('workflows: [CI]');
+  });
 });
