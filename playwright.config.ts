@@ -70,5 +70,16 @@ export default defineConfig({
     {
       name: "chromium",
     },
+    // Real-media tests: only included when LIVEKIT_TEST_URL is set.
+    // These tests require a functional LiveKit service and fail (not skip) if it's missing.
+    ...(process.env.LIVEKIT_TEST_URL
+      ? [
+          {
+            name: "media",
+            testMatch: "**/e2e/media-*.spec.ts",
+            timeout: process.env.CI ? 120_000 : 60_000,
+          },
+        ]
+      : []),
   ],
 });
