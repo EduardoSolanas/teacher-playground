@@ -27,6 +27,7 @@ import { reconcileRemoteElements } from '@/lib/whiteboard/excalidrawReconcile';
 import { getElementsFromArray, replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 import { snapshotElements } from '@/lib/whiteboard/sceneSnapshot';
 import { libraryFileIds } from '@/lib/whiteboard/roomLibrary';
+import { canSaveLibrary, type LibraryLoadState } from '@/lib/whiteboard/libraryGuard';
 import { whiteboardRoomHref } from '@/lib/whiteboard/roomPath';
 import { collaboratorsFromPresence } from '@/lib/whiteboard/collaborators';
 import type { CanvasElement, RemoteCursor, WhiteboardUser } from '@/types/whiteboard';
@@ -1126,8 +1127,8 @@ export default function ExcalidrawWrapper({
     setTimeout(() => { applyingGuideRef.current = false; }, 0);
   }, [apiReady, guideMessage, hostPeerId, localPeerId, users]);
 
-  /** Whether the stored library has answered; nothing is saved before it has. */
-  const libraryLoadedRef = useRef(false);
+  /** State of the stored library load: pending, loaded, or failed. */
+  const libraryLoadedRef = useRef<LibraryLoadState>('pending');
   const librarySaveTimerRef = useRef<number | null>(null);
 
   /*
@@ -1147,33 +1148,41 @@ export default function ExcalidrawWrapper({
     void (async () => {
       try {
         const response = await ajaxFetch(`/api/whiteboard/room/${roomId}/library`);
-        if (!response.ok || cancelled) return;
+        if (!response.ok || cancelled) {
+          if (!cancelled) libraryLoadedRef.current = 'failed';
+          return;
+        }
         const body = await response.json() as { items?: unknown };
         const items = Array.isArray(body.items) ? body.items : [];
-        if (cancelled || items.length === 0) return;
-        libraryLoadedRef.current = true;
-        apiRef.current?.updateLibrary({ libraryItems: items as never, merge: false });
+        if (cancelled) return;
 
-        /*
-         * The pictures a saved shape draws with.
-         *
-         * The library panel renders its previews from the editor's file map,
-         * and a shape saved from a picture that has since left the board has
-         * nothing in it -- the bytes are in the room's bucket, not in this
-         * editor. Without this the shape is in the library and draws as an
-         * empty box, which looks exactly like the feature not working.
-         *
-         * fetchBoardFile is the same path a peer uses for an image it was
-         * never sent, including its memory of a 404, so a library referring to
-         * something long gone asks once rather than on every change.
-         */
-        for (const fileId of libraryFileIds(items)) {
-          void fetchBoardFile(fileId);
+        // Mark as loaded regardless of whether items exist
+        libraryLoadedRef.current = 'loaded';
+
+        // Update the library if items exist
+        if (items.length > 0) {
+          apiRef.current?.updateLibrary({ libraryItems: items as never, merge: false });
+
+          /*
+           * The pictures a saved shape draws with.
+           *
+           * The library panel renders its previews from the editor's file map,
+           * and a shape saved from a picture that has since left the board has
+           * nothing in it -- the bytes are in the room's bucket, not in this
+           * editor. Without this the shape is in the library and draws as an
+           * empty box, which looks exactly like the feature not working.
+           *
+           * fetchBoardFile is the same path a peer uses for an image it was
+           * never sent, including its memory of a 404, so a library referring to
+           * something long gone asks once rather than on every change.
+           */
+          for (const fileId of libraryFileIds(items)) {
+            void fetchBoardFile(fileId);
+          }
         }
       } catch {
         // A library that will not load must not stop the board opening.
-      } finally {
-        if (!cancelled) libraryLoadedRef.current = true;
+        if (!cancelled) libraryLoadedRef.current = 'failed';
       }
     })();
     return () => { cancelled = true; };
@@ -1191,7 +1200,7 @@ export default function ExcalidrawWrapper({
    * one replaces the whole library.
    */
   const handleLibraryChange = useCallback((items: readonly unknown[]) => {
-    if (!isLocalHost || !libraryLoadedRef.current) return;
+    if (!isLocalHost || !canSaveLibrary(libraryLoadedRef.current)) return;
     const snapshot = [...items];
     if (librarySaveTimerRef.current !== null) window.clearTimeout(librarySaveTimerRef.current);
     librarySaveTimerRef.current = window.setTimeout(() => {
