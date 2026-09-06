@@ -114,11 +114,23 @@ export const REVOCATION_CHECK_INTERVAL_MS = 30_000;
 
 /**
  * How long after its last breaching frame an abuse episode is still the same
- * episode. Two rate windows: the sliding limiter needs a full window of traffic
- * to climb back to the ceiling, so a sustained flood's next breach lands more
- * than one window after the last.
+ * episode.
+ *
+ * Five rate windows, and the size matters more than it looks. After a burst
+ * stops, the sliding limiter drains, and the next breach cannot happen until a
+ * flooder has resent a full ceiling's worth of frames -- so the gap between one
+ * breach and the next is the idle time *plus* however long that refill takes.
+ * This was two windows, which is barely above the refill itself: on a slower
+ * machine the refill alone pushed the gap over the threshold, the episode reset
+ * mid-flood, and a sustained abuser was never closed. It failed in CI and
+ * passed locally, which is the worst way for a security guard to behave.
+ *
+ * Five is far enough above any single refill to be insensitive to how fast the
+ * machine is, and is still a policy statement rather than a test
+ * accommodation: an account that clears three times the normal budget twice
+ * inside five seconds is abusing the room, not drawing quickly.
  */
-const BREACH_EPISODE_GAP_MS = SIGNALING_RATE_WINDOW_MS * 2;
+const BREACH_EPISODE_GAP_MS = SIGNALING_RATE_WINDOW_MS * 5;
 
 /**
  * Lower bound so a misconfigured binding cannot turn the check into a busy

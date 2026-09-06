@@ -621,8 +621,16 @@ async function accountErase(
   // Log any failures but don't fail the overall erasure
   for (let i = 0; i < results.length; i++) {
     if (results[i].status === 'rejected') {
+      /*
+       * Constant format string, room id passed as an argument.
+       *
+       * A room id reaches this from the request, so interpolating it into the
+       * first argument lets a crafted id carry format specifiers and forge the
+       * shape of the log line around it.
+       */
       console.error(
-        `Failed to erase room ${roomIds[i]}:`,
+        'Failed to erase room',
+        roomIds[i],
         (results[i] as PromiseRejectedResult).reason,
       );
     }
