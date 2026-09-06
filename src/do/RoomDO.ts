@@ -40,6 +40,7 @@ import {
 } from '../lib/whiteboard/handlers/presence';
 import { activePeerIds } from '../lib/whiteboard/presence';
 import { orphanKeys, referencedFileIds, type StoredFile } from '../lib/whiteboard/orphanFiles';
+import { subtractFileBytes } from '../lib/whiteboard/roomSchema';
 import { presenceSignature, sweepExpiredPresence } from '../lib/whiteboard/presence';
 import { internalErrorResponse, redactForLog } from '../lib/http/safeError';
 import { encodePresenceMessage } from '../lib/whiteboard/presenceMessage';
@@ -1730,8 +1731,18 @@ export class RoomDO extends DurableObject {
           key: object.key,
           uploaded: object.uploaded,
         }));
+        /*
+         * The bytes go back to the room as the object goes.
+         *
+         * Nothing subtracted before this, so the aggregate quota only ever
+         * climbed: a teacher pasting a photo and erasing it was charged for it
+         * for good, and a room could be refused new files while holding almost
+         * nothing.
+         */
+        const sizeByKey = new Map(listed.objects.map((object) => [object.key, object.size]));
         for (const key of orphanKeys({ files, referenced, now })) {
           await bucket.delete(key);
+          subtractFileBytes(this.db, roomId, sizeByKey.get(key) ?? 0);
         }
         cursor = listed.truncated ? listed.cursor : undefined;
       } while (cursor);

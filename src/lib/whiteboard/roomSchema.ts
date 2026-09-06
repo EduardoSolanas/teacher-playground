@@ -298,6 +298,20 @@ export function addFileBytes(db: RoomDatabase, roomId: string, bytes: number): v
   db.prepare(`UPDATE rooms SET file_bytes_total = file_bytes_total + ? WHERE room_id = ?`).run(bytes, roomId);
 }
 
+/**
+ * Give back the quota a deleted file was holding.
+ *
+ * Floored at zero on purpose. The counter and the bucket can disagree -- an
+ * upload that failed after the object was written is deliberately not counted,
+ * and subtracting it later would take the total negative, handing that room
+ * extra quota rather than merely losing track of it.
+ */
+export function subtractFileBytes(db: RoomDatabase, roomId: string, bytes: number): void {
+  db.prepare(
+    `UPDATE rooms SET file_bytes_total = MAX(0, file_bytes_total - ?) WHERE room_id = ?`,
+  ).run(bytes, roomId);
+}
+
 export function setFileBytes(db: RoomDatabase, roomId: string, bytes: number): void {
   db.prepare(`UPDATE rooms SET file_bytes_total = ? WHERE room_id = ?`).run(bytes, roomId);
 }
