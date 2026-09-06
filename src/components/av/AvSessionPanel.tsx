@@ -458,8 +458,8 @@ export default function AvSessionPanel({
    * came and went with the roster it resized the canvas under a live lesson.
    */
   const placement =
-    'left-2 right-2 bottom-[max(0.5rem,env(safe-area-inset-bottom))] w-auto '
-    + 'sm:left-auto sm:right-2 sm:top-[calc(3.5rem+env(safe-area-inset-top))] sm:bottom-2 '
+    'inset-x-0 bottom-0 w-auto pb-[max(0.75rem,env(safe-area-inset-bottom))] '
+    + 'sm:inset-x-auto sm:right-0 sm:top-12 sm:bottom-0 sm:pb-3 '
     + 'sm:w-[clamp(11rem,18vw,15rem)]';
   const focusTile = pinnedIdentity
     ? tiles.find((participant) => participant.identity === pinnedIdentity) ?? null
@@ -519,7 +519,7 @@ export default function AvSessionPanel({
        * layer) and the raised-hand cue (1300). The library and the shortcuts
        * sheet (10001) stay above -- those take the screen over on purpose.
        */
-      className={`fixed z-[1400] rounded-2xl border border-slate-700/70 bg-slate-900/95 backdrop-blur-xl p-3 shadow-2xl shadow-slate-950/60 max-h-[calc(100dvh-max(1rem,env(safe-area-inset-top))-max(1rem,env(safe-area-inset-bottom)))] overflow-y-auto ${placement}`}
+      className={`fixed z-[1400] flex flex-col rounded-t-2xl border-t border-slate-700/70 bg-slate-900/95 backdrop-blur-xl p-3 shadow-2xl shadow-slate-950/60 max-h-[70dvh] overflow-y-auto sm:max-h-none sm:rounded-none sm:border-t-0 sm:border-l sm:shadow-none ${placement}`}
     >
       <div className="mb-2.5 flex items-center justify-between gap-2 px-0.5">
         <div className="flex items-center gap-1.5">

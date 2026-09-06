@@ -311,13 +311,14 @@ describe('AvSessionPanel', () => {
   });
 
   it('takes the full available width on mobile', () => {
-    // On mobile screens, the call panel takes the full horizontal width with clean margins
-    // so video tiles and action buttons have ample space and do not cramp.
+    // On a phone the panel spans the screen edge to edge so tiles and buttons
+    // are not cramped. It used to keep a small gutter each side; as a docked
+    // strip it meets both edges instead.
     const av = makeAv();
     render(<AvSessionPanel av={av} localIdentity="me" />);
     const panel = screen.getByTestId('av-session-panel');
-    expect(panel.className).toContain('left-2');
-    expect(panel.className).toContain('right-2');
+    expect(panel.className).toContain('inset-x-0');
+    expect(panel.className).not.toContain('left-2');
   });
 
   it('names the microphones rather than reciting their ids', () => {
@@ -439,22 +440,35 @@ describe('AvSessionPanel', () => {
     expect(screen.getByTestId('av-panel-open')).toBeTruthy();
   });
 
-  it('is a bottom strip on a phone and a right rail on a wide screen', () => {
+  it('is a flush side panel on a wide screen and a flush bottom strip on a phone', () => {
     /*
-     * A 15rem sidebar on a phone leaves nothing to draw on, so the rail becomes
-     * a strip along the bottom below `sm:`. Asserted on the classes because
-     * jsdom has no layout and this is the one thing here with no behaviour to
-     * observe.
+     * A side panel, not a floating card parked near the edge. It meets the
+     * right edge with no gutter, runs the full height beside the board, and
+     * carries a border only on the side it joins the board -- the same shape
+     * Pencil Spaces and Lessonspace both use.
+     *
+     * Asserted on classes because jsdom has no layout and there is no
+     * behaviour to observe here.
      */
     const av = makeAv();
     render(<AvSessionPanel av={av} localIdentity="me" />);
     const panel = screen.getByTestId('av-session-panel');
 
-    expect(panel.className).toContain('left-2 right-2');
-    expect(panel.className).toContain('sm:left-auto');
-    expect(panel.className).toContain('sm:right-2');
+    // Phone: flush across the bottom.
+    expect(panel.className).toContain('inset-x-0');
+    expect(panel.className).toContain('bottom-0');
+
+    // Wide: flush to the right edge, full height, square against the board.
+    expect(panel.className).toContain('sm:right-0');
+    expect(panel.className).toContain('sm:top-12');
+    expect(panel.className).toContain('sm:bottom-0');
+    expect(panel.className).toContain('sm:rounded-none');
     expect(panel.className).toContain('sm:w-[clamp(11rem,18vw,15rem)]');
+
+    // No gutter parking it away from the edge.
+    expect(panel.className).not.toContain('sm:right-2');
   });
+
 
 
 
