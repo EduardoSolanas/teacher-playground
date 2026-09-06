@@ -89,6 +89,33 @@ describe('AvSessionPanel', () => {
     expect(screen.queryByTestId('av-leave-call')).toBeNull();
   });
 
+  it('confirms before ending the call for everyone', () => {
+    /*
+     * One click used to hang up on a whole class, from a button sitting next to
+     * the one that only affects you. Same treatment as clearing the board.
+     */
+    const onEndCallForEveryone = vi.fn();
+    const av = makeAv();
+    render(
+      <AvSessionPanel
+        av={av}
+        localIdentity="me"
+        onLeaveCall={() => {}}
+        onEndCallForEveryone={onEndCallForEveryone}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('av-end-call-everyone'));
+    expect(onEndCallForEveryone).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('av-end-call-confirm-cancel-btn'));
+    expect(onEndCallForEveryone).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('av-end-call-everyone'));
+    fireEvent.click(screen.getByTestId('av-end-call-confirm-confirm-btn'));
+    expect(onEndCallForEveryone).toHaveBeenCalledTimes(1);
+  });
+
   it('offers no end-for-everyone control to a peer', () => {
     /*
      * Only the host may end the room's call. A peer leaving must never hang up
@@ -117,6 +144,7 @@ describe('AvSessionPanel', () => {
     expect(onEndCallForEveryone).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByTestId('av-end-call-everyone'));
+    fireEvent.click(screen.getByTestId('av-end-call-confirm-confirm-btn'));
     expect(onEndCallForEveryone).toHaveBeenCalledTimes(1);
     expect(onLeaveCall).toHaveBeenCalledTimes(1);
   });

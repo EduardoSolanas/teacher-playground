@@ -59,6 +59,25 @@ describe('CallControls', () => {
     expect(screen.getByTestId('av-toggle-screen').textContent).toBe('Stop sharing');
   });
 
+  it('reports mic and camera state to assistive tech, not only in colour', () => {
+    /*
+     * Muted and camera-off are filled solid red so they read at a glance, which
+     * is what both Pencil Spaces and Lessonspace do. Colour alone is not a
+     * signal, so the same state is on aria-pressed, and the label already names
+     * the action rather than the state.
+     */
+    const off = makeAv({ local: { micMuted: true, camOn: false, isScreenSharing: false } });
+    const { unmount } = render(<CallControls av={off} />);
+    expect(screen.getByTestId('av-toggle-mic').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('av-toggle-cam').getAttribute('aria-pressed')).toBe('true');
+    unmount();
+
+    const live = makeAv({ local: { micMuted: false, camOn: true, isScreenSharing: false } });
+    render(<CallControls av={live} />);
+    expect(screen.getByTestId('av-toggle-mic').getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByTestId('av-toggle-cam').getAttribute('aria-pressed')).toBe('false');
+  });
+
   it('calls toggleScreenShare when screen share button is clicked', () => {
     const av = makeAv();
     render(<CallControls av={av} />);

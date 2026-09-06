@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ConfirmDialog from '../ConfirmDialog';
 import { RoomContext, RoomAudioRenderer, VideoTrack, useAudioPlayback } from '@livekit/components-react';
 import type { Room } from 'livekit-client';
 import { Track } from 'livekit-client';
@@ -405,6 +406,7 @@ export default function AvSessionPanel({
   const [open, setOpen] = useState(!collapsed);
   const [mode, setMode] = useState<AvPanelMode>('rail');
   const [pinnedIdentity, setPinnedIdentity] = useState<string | null>(null);
+  const [endCallConfirmOpen, setEndCallConfirmOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<PanelPoint | null>(null);
   /** Where in the panel it was grabbed, so it does not jump under the pointer. */
@@ -607,9 +609,9 @@ export default function AvSessionPanel({
           <button
             type="button"
             data-testid="av-end-call-everyone"
-            onClick={onEndCallForEveryone}
+            onClick={() => setEndCallConfirmOpen(true)}
             title="End the call for everyone in the room"
-            className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 text-[0.6875rem] font-medium text-rose-300 transition-all shadow-sm hover:bg-rose-500/25 hover:border-rose-500/60 shrink-0"
+            className="ml-auto inline-flex items-center gap-1 rounded-lg border border-rose-500 bg-rose-600 px-2.5 py-1 text-[0.6875rem] font-medium text-white transition-all shadow-sm hover:bg-rose-500 shrink-0"
           >
             End for all
           </button>
@@ -760,6 +762,19 @@ export default function AvSessionPanel({
           )}
         </div>
       )}
+
+      <ConfirmDialog
+        isOpen={endCallConfirmOpen}
+        title="End the call for everyone?"
+        body="Everyone in this room will be hung up on. The board stays as it is, and you can start a new call afterwards."
+        confirmLabel="End for everyone"
+        testIdPrefix="av-end-call-confirm"
+        onConfirm={() => {
+          setEndCallConfirmOpen(false);
+          onEndCallForEveryone?.();
+        }}
+        onCancel={() => setEndCallConfirmOpen(false)}
+      />
     </div>
   );
 }
