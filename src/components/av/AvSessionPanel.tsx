@@ -552,33 +552,6 @@ export default function AvSessionPanel({
           </div>
         </div>
 
-        {/* Spacer where the drag grip used to be: it keeps Leave and
-          * End for everyone apart rather than adjacent. */}
-        <div className="flex-1" />
-
-        {onLeaveCall && (
-          <button
-            type="button"
-            data-testid="av-leave-call"
-            onClick={onLeaveCall}
-            title="Leave the call. It carries on for everyone else."
-            className="inline-flex items-center gap-1 rounded-lg border border-slate-500/40 bg-slate-500/15 px-2.5 py-1 text-[0.6875rem] font-medium text-slate-200 transition-all shadow-sm hover:bg-slate-500/25 hover:border-slate-500/60 shrink-0"
-          >
-            Leave
-          </button>
-        )}
-
-        {onEndCallForEveryone && (
-          <button
-            type="button"
-            data-testid="av-end-call-everyone"
-            onClick={() => setEndCallConfirmOpen(true)}
-            title="End the call for everyone in the room"
-            className="ml-auto inline-flex items-center gap-1 rounded-lg border border-rose-500 bg-rose-600 px-2.5 py-1 text-[0.6875rem] font-medium text-white transition-all shadow-sm hover:bg-rose-500 shrink-0"
-          >
-            End for all
-          </button>
-        )}
       </div>
 
       {message && (
@@ -657,8 +630,44 @@ export default function AvSessionPanel({
       )}
 
 
-      <div className="mt-2.5 pt-2 border-t border-slate-800/80">
+      {/*
+        * One cluster: the toggles, then a divider, then leaving and ending.
+        * These two were in the panel header, at the far end from the mic and
+        * camera -- every call product groups them with the other call
+        * controls instead. The divider and the gap are what stop End for
+        * everyone reading as one more toggle, and it stays apart from Leave
+        * rather than adjacent to it.
+        */}
+      <div data-testid="av-call-cluster" className="mt-2.5 pt-2 border-t border-slate-800/80">
         <CallControls av={av} />
+
+        {(onLeaveCall || onEndCallForEveryone) && (
+          <div className="mt-2 flex items-center gap-2 border-t border-slate-800/80 pt-2">
+            {onLeaveCall && (
+              <button
+                type="button"
+                data-testid="av-leave-call"
+                onClick={onLeaveCall}
+                title="Leave the call. It carries on for everyone else."
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-500/40 bg-slate-500/15 px-2.5 py-1 text-[0.6875rem] font-medium text-slate-200 transition-all shadow-sm hover:bg-slate-500/25 hover:border-slate-500/60 shrink-0"
+              >
+                Leave
+              </button>
+            )}
+
+            {onEndCallForEveryone && (
+              <button
+                type="button"
+                data-testid="av-end-call-everyone"
+                onClick={() => setEndCallConfirmOpen(true)}
+                title="End the call for everyone in the room"
+                className="ml-auto inline-flex items-center gap-1 rounded-lg border border-rose-500 bg-rose-600 px-2.5 py-1 text-[0.6875rem] font-medium text-white transition-all shadow-sm hover:bg-rose-500 shrink-0"
+              >
+                End for all
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {((av.devices.microphone?.length ?? 0) > 1 || (av.devices.camera?.length ?? 0) > 1 || (av.devices.speaker?.length ?? 0) > 1) && (

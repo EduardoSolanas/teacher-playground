@@ -95,6 +95,29 @@ describe('AvSessionPanel', () => {
     expect(screen.queryByTestId('av-leave-call')).toBeNull();
   });
 
+  it('groups leaving and ending with the other call controls', () => {
+    /*
+     * They used to sit in the panel header, at the opposite end from the mic
+     * and camera toggles. Every call product puts leave and end with the other
+     * call controls rather than in a title bar, and the divider is what keeps
+     * End for everyone from reading as just another toggle.
+     */
+    const av = makeAv();
+    render(
+      <AvSessionPanel
+        av={av}
+        localIdentity="me"
+        onLeaveCall={() => {}}
+        onEndCallForEveryone={() => {}}
+      />,
+    );
+
+    const cluster = screen.getByTestId('av-call-cluster');
+    expect(cluster.contains(screen.getByTestId('av-call-controls'))).toBe(true);
+    expect(cluster.contains(screen.getByTestId('av-leave-call'))).toBe(true);
+    expect(cluster.contains(screen.getByTestId('av-end-call-everyone'))).toBe(true);
+  });
+
   it('confirms before ending the call for everyone', () => {
     /*
      * One click used to hang up on a whole class, from a button sitting next to
