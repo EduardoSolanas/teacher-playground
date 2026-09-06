@@ -4,6 +4,7 @@ import type { WhiteboardUser } from '@/types/whiteboard';
 
 import {
   ROOM_CANVAS_CLASS,
+  roomCanvasRightClass,
   mapAvPeerIds,
   mapAvPeerStateByPeerId,
   resolveAvTargetAccountId,
@@ -32,19 +33,38 @@ describe('room canvas responsive top offset', () => {
 });
 
 describe('room canvas width', () => {
-  it('spans the window rather than making room for the furniture', () => {
+  it('still spans the window for the furniture that floats over it', () => {
     /*
-     * The rail and the roster are both `fixed` and float over the board, so
-     * narrowing the board for them cost a teacher a strip of drawing surface
-     * down each side that nothing was ever painted into -- and the right-hand
-     * strip appeared and vanished as the roster was collapsed, resizing the
-     * canvas under a lesson in progress.
+     * The roster and the notices are `fixed` and float over the board. Making
+     * room for those cost a teacher a strip of drawing surface down each side
+     * that nothing was ever painted into, because they overlaid it anyway.
      */
     expect(ROOM_CANVAS_CLASS).toContain('inset-x-0');
     expect(ROOM_CANVAS_CLASS).not.toContain('sm:left-14');
     expect(ROOM_CANVAS_CLASS).not.toContain('100vw');
   });
+
+  it('ends where the call rail begins, and only while the rail is there', () => {
+    /*
+     * The call rail is the exception, and it is a different case from the
+     * roster: it is opaque, flush to the edge and full height, so a board that
+     * carried on underneath it would hide whatever was drawn there with no way
+     * to reach it. Lessonspace ends the board at the rail for the same reason.
+     * Pencil Spaces keeps the board full width instead -- and keeps its tiles
+     * visibly inset so they read as floating. Flush *and* overlapping, which is
+     * what this had briefly, is the one combination that misleads.
+     *
+     * Only on `sm:` and up. The rail is a bottom strip on a phone, where
+     * reserving its height would leave almost no board.
+     */
+    expect(roomCanvasRightClass(true)).toBe('sm:right-[clamp(11rem,18vw,15rem)]');
+  });
+
+  it('gives the width back when the rail is hidden or there is no call', () => {
+    expect(roomCanvasRightClass(false)).toBe('');
+  });
 });
+
 
 describe('mapAvPeerIds', () => {
   it('maps the local av placeholder onto the room local peer id', () => {

@@ -424,6 +424,24 @@ describe('AvSessionPanel', () => {
     expect(screen.getByTestId('av-session-panel').style.left).toBe('');
   });
 
+  it('tells the room whether it is taking up rail width', () => {
+    /*
+     * The board ends where the rail starts, so the room has to know when the
+     * rail is there -- including on first render, where the answer comes from
+     * what this viewer last chose rather than from a default.
+     */
+    const onOpenChange = vi.fn();
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" onOpenChange={onOpenChange} />);
+    expect(onOpenChange).toHaveBeenLastCalledWith(true);
+
+    fireEvent.click(screen.getByTestId('av-panel-collapse'));
+    expect(onOpenChange).toHaveBeenLastCalledWith(false);
+
+    fireEvent.click(screen.getByTestId('av-panel-open'));
+    expect(onOpenChange).toHaveBeenLastCalledWith(true);
+  });
+
   it('remembers that the call was hidden, and restores it', () => {
     // A per-viewer convenience, so localStorage rather than shared state. It
     // has to survive storage being unavailable, which is why the read is

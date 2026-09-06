@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
+import { CALL_RAIL_WIDTH } from '@/lib/av/callRail';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { useCollaboration } from '@/hooks/useCollaboration';
@@ -59,6 +60,23 @@ const ExcalidrawWrapper = dynamic(
  */
 export const ROOM_CANVAS_CLASS =
   'absolute inset-x-0 bottom-0 overflow-hidden bg-slate-50';
+
+/**
+ * How much of the canvas the call rail takes, if it is showing.
+ *
+ * The rail is the one piece of furniture the board makes room for. The roster
+ * and the notices float over it and the board keeps its full width, because
+ * reserving space for something that overlays anyway left dead strips down each
+ * side. The rail is different: opaque, flush to the edge and full height, so a
+ * board continuing underneath would hide whatever was drawn there with no way
+ * to reach it.
+ *
+ * Only from `sm:` up. On a phone the rail is a strip along the bottom, and
+ * reserving its height would leave almost nothing to draw on.
+ */
+export function roomCanvasRightClass(railVisible: boolean): string {
+  return railVisible ? `sm:right-[${CALL_RAIL_WIDTH}]` : '';
+}
 
 export function roomCanvasTopClass(guestHost: boolean): string {
   return guestHost ? 'top-0 sm:top-12' : 'top-[calc(3rem+env(safe-area-inset-top))] sm:top-12';
@@ -295,6 +313,8 @@ function RoomContent({ roomId }: { roomId: string }) {
     setCallWanted(false);
     sendCallMessage({ active: false });
   }, [sendCallMessage]);
+
+  const [callRailOpen, setCallRailOpen] = useState(false);
 
   const hasHost = users.some((u) => u.isHost);
 
@@ -680,7 +700,7 @@ function RoomContent({ roomId }: { roomId: string }) {
           </div>
         }
       />
-      <div className={`${ROOM_CANVAS_CLASS} ${roomCanvasTopClass(guestHost)}`} data-testid="whiteboard-canvas-area">
+      <div className={`${ROOM_CANVAS_CLASS} ${roomCanvasTopClass(guestHost)} ${roomCanvasRightClass(avAllowed && avEnabled && callRailOpen)}`} data-testid="whiteboard-canvas-area">
         <ExcalidrawWrapper
           roomId={roomId}
           userName={userName}
@@ -744,6 +764,7 @@ function RoomContent({ roomId }: { roomId: string }) {
           av={av}
           localIdentity={localPeerId}
           users={users}
+          onOpenChange={setCallRailOpen}
           onLeaveCall={handleLeaveCall}
           onEndCallForEveryone={isLocalHost ? handleEndCallForEveryone : undefined}
         />

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ConfirmDialog from '../ConfirmDialog';
+import { CALL_RAIL_WIDTH } from '@/lib/av/callRail';
 import { RoomContext, RoomAudioRenderer, VideoTrack, useAudioPlayback } from '@livekit/components-react';
 import type { Room } from 'livekit-client';
 import { Track } from 'livekit-client';
@@ -28,6 +29,13 @@ interface AvSessionPanelProps {
   readonly users?: readonly AvUser[];
   /** Start out of the way rather than open. */
   readonly collapsed?: boolean;
+  /**
+   * Told whenever the rail appears or goes away, including on first render.
+   *
+   * The board ends where the rail starts, so the room has to reserve that width
+   * -- and give it back the moment the rail is hidden.
+   */
+  readonly onOpenChange?: (open: boolean) => void;
   /**
    * Hang up for this person only, without leaving the room.
    *
@@ -431,6 +439,7 @@ export default function AvSessionPanel({
   localIdentity,
   users,
   collapsed = false,
+  onOpenChange,
   onLeaveCall,
   onEndCallForEveryone,
 }: AvSessionPanelProps) {
@@ -445,6 +454,12 @@ export default function AvSessionPanel({
   const [mode, setMode] = useState<AvPanelMode>('rail');
   const [pinnedIdentity, setPinnedIdentity] = useState<string | null>(null);
   const [endCallConfirmOpen, setEndCallConfirmOpen] = useState(false);
+
+  // Reported on mount too: the first answer comes from what this viewer last
+  // chose, not from a default, so the board must not assume the rail is there.
+  useEffect(() => {
+    onOpenChange?.(open);
+  }, [open, onOpenChange]);
   const panelRef = useRef<HTMLDivElement>(null);
 
   /*
@@ -460,7 +475,7 @@ export default function AvSessionPanel({
   const placement =
     'inset-x-0 bottom-0 w-auto pb-[max(0.75rem,env(safe-area-inset-bottom))] '
     + 'sm:inset-x-auto sm:right-0 sm:top-12 sm:bottom-0 sm:pb-3 '
-    + 'sm:w-[clamp(11rem,18vw,15rem)]';
+    + `sm:w-[${CALL_RAIL_WIDTH}]`;
   const focusTile = pinnedIdentity
     ? tiles.find((participant) => participant.identity === pinnedIdentity) ?? null
     : tiles.find((participant) => participant.isSpeaking) ?? tiles[0] ?? null;
