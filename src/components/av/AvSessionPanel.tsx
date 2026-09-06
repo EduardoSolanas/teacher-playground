@@ -16,6 +16,8 @@ export interface AvUser {
   readonly peerId: string;
   readonly userName: string;
   readonly accountId?: string | null;
+  readonly color?: string;
+  readonly isHost?: boolean;
   readonly handRaised?: boolean;
 }
 
@@ -117,33 +119,53 @@ function getInitials(name: string): string {
   return name.slice(0, 2).toUpperCase();
 }
 
-function resolveParticipantInfo(
+function getFirstInitial(name: string): string {
+  return name.trim().slice(0, 1).toUpperCase();
+}
+
+export function resolveParticipantInfo(
   participantIdentity: string,
   localIdentity: string,
   isLocal: boolean,
   users?: readonly AvUser[],
-): { displayName: string; initials: string; handRaised: boolean } {
+): {
+  displayName: string;
+  initials: string;
+  handRaised: boolean;
+  color: string | null;
+  isHost: boolean;
+} {
   const isMe = isLocal || participantIdentity === localIdentity || participantIdentity === '__local__';
   const user = users?.find(
-    (u) => u.peerId === participantIdentity || (u.accountId && u.accountId === participantIdentity),
+    (u) =>
+      u.peerId === participantIdentity ||
+      (isMe && u.peerId === localIdentity) ||
+      (u.accountId && (
+        u.accountId === participantIdentity ||
+        (isMe && u.accountId === localIdentity)
+      )),
   );
 
   const handRaised = Boolean(user?.handRaised);
+  const color = user?.color ?? null;
+  const isHost = Boolean(user?.isHost);
 
   if (isMe) {
     const name = user?.userName ? `${user.userName} (you)` : 'You';
     const initials = user?.userName ? getInitials(user.userName) : 'YO';
-    return { displayName: name, initials, handRaised };
+    return { displayName: name, initials, handRaised, color, isHost };
   }
 
   if (user?.userName) {
-    return { displayName: user.userName, initials: getInitials(user.userName), handRaised };
+    return { displayName: user.userName, initials: getInitials(user.userName), handRaised, color, isHost };
   }
 
   return {
     displayName: participantIdentity,
     initials: participantIdentity.slice(0, 2).toUpperCase(),
     handRaised,
+    color,
+    isHost,
   };
 }
 
@@ -223,12 +245,13 @@ function ParticipantTile({
     : null;
   const shouldMirror = isLocal && !isScreenShare;
 
-  const { displayName, initials, handRaised } = resolveParticipantInfo(
+  const { displayName, handRaised, color, isHost } = resolveParticipantInfo(
     participant.identity,
     localIdentity,
     isLocal,
     users,
   );
+  const firstInitial = getFirstInitial(displayName);
 
   return (
     <div
@@ -247,41 +270,68 @@ function ParticipantTile({
       ) : null}
       {!participant.camOn && !isScreenShare && (
         <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-gradient-to-b from-slate-800/90 to-slate-950/95 p-2 text-slate-300">
-          <div className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-600/60 bg-slate-700/60 text-xs font-bold text-slate-200 shadow-inner">
-            {initials}
+          <div
+            data-testid={`av-avatar-${participant.identity}`}
+            className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-slate-600/60 bg-slate-700/60 text-base font-semibold text-slate-200 shadow-inner"
+            style={{ color: color ?? undefined, borderColor: color ?? undefined }}
+          >
+            {firstInitial}
           </div>
           <span className="text-[0.6875rem] font-medium text-slate-400">
             Camera off
           </span>
         </div>
       )}
-      {handRaised && (
-        <div
-          data-testid={`av-hand-raised-${participant.identity}`}
-          className="absolute left-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-amber-500/90 px-1.5 py-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-slate-950 shadow-md animate-pulse"
-        >
-          <span>✋</span> Hand raised
-        </div>
-      )}
-      {isScreenShare && (
-        <div
-          data-testid={`av-screenshare-badge-${participant.identity}`}
-          className="absolute left-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-emerald-500/90 px-1.5 py-0.5 text-[0.625rem] font-semibold text-white shadow-md backdrop-blur-sm"
-        >
-          <span>🖥️</span> Screen
-        </div>
-      )}
-      {(participant.quality === 'poor' || participant.quality === 'lost') && !handRaised && (
-        <div
-          data-testid={`av-quality-${participant.identity}`}
-          className={`absolute left-1.5 top-1.5 z-10 flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[0.625rem] font-medium text-white shadow-md backdrop-blur-sm ${
-            participant.quality === 'lost' ? 'bg-rose-600/90' : 'bg-amber-600/90'
-          }`}
-        >
-          <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />
-          {participant.quality === 'lost' ? 'Lost connection' : 'Poor connection'}
-        </div>
-      )}
+      {/*
+        * One flow container, not four elements each pinned to the same corner.
+        * The host badge is permanent while the other three come and go, so a
+        * host raising their hand drew one badge on top of another. Wrapping
+        * lets them sit side by side and wrap onto a second line on a narrow
+        * tile. The quality badge still defers to hand-raised: both are
+        * transient and hand-raised is the one being waited on.
+        */}
+      <div
+        data-testid={`av-tile-badges-${participant.identity}`}
+        className="absolute left-1.5 top-1.5 z-10 flex flex-wrap items-start gap-1"
+      >
+        {isHost && (
+          <span
+            data-testid={`av-host-badge-${participant.identity}`}
+            aria-label="Host"
+            title="Host"
+            className="rounded-md bg-slate-950/75 px-1.5 py-0.5 text-sm shadow-md"
+          >
+            👑
+          </span>
+        )}
+        {handRaised && (
+          <div
+            data-testid={`av-hand-raised-${participant.identity}`}
+            className="flex items-center gap-1 rounded-md bg-amber-500/90 px-1.5 py-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-slate-950 shadow-md animate-pulse"
+          >
+            <span>✋</span> Hand raised
+          </div>
+        )}
+        {isScreenShare && (
+          <div
+            data-testid={`av-screenshare-badge-${participant.identity}`}
+            className="flex items-center gap-1 rounded-md bg-emerald-500/90 px-1.5 py-0.5 text-[0.625rem] font-semibold text-white shadow-md backdrop-blur-sm"
+          >
+            <span>🖥️</span> Screen
+          </div>
+        )}
+        {(participant.quality === 'poor' || participant.quality === 'lost') && !handRaised && (
+          <div
+            data-testid={`av-quality-${participant.identity}`}
+            className={`flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[0.625rem] font-medium text-white shadow-md backdrop-blur-sm ${
+              participant.quality === 'lost' ? 'bg-rose-600/90' : 'bg-amber-600/90'
+            }`}
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />
+            {participant.quality === 'lost' ? 'Lost connection' : 'Poor connection'}
+          </div>
+        )}
+      </div>
       <div className="absolute right-1.5 top-1.5 flex items-center gap-1 opacity-90 transition-opacity group-hover:opacity-100">
         <button
           type="button"

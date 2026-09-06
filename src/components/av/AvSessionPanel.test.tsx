@@ -788,10 +788,85 @@ describe('AvSessionPanel', () => {
 
     const aliceTile = screen.getByTestId('av-tile-peer-alice');
     expect(aliceTile.textContent).toContain('Alice Smith');
-    expect(aliceTile.textContent).toContain('AS');
+    expect(aliceTile.textContent).toContain('A');
 
     const meTile = screen.getByTestId('av-tile-me');
     expect(meTile.textContent).toContain('Teacher (you)');
+  });
+
+  it('falls back to the first initial in their own colour', () => {
+    /*
+     * The colour is the one their cursor already uses on the board, so a
+     * student's pointer and their tile are the same colour rather than two
+     * unrelated palettes.
+     */
+    const av = makeAv({
+      participants: [
+        { identity: 'peer-alice', micMuted: false, micPresent: true, camOn: false, isSpeaking: false },
+      ],
+    });
+    const users = [{ peerId: 'peer-alice', userName: 'Alice Smith', color: '#3498db' }];
+    render(<AvSessionPanel av={av} localIdentity="me" users={users} />);
+
+    const avatar = screen.getByTestId('av-avatar-peer-alice');
+    expect(avatar.textContent).toBe('A');
+    expect(avatar.style.color).toBe('rgb(52, 152, 219)');
+    expect(avatar.style.borderColor).toBe('rgb(52, 152, 219)');
+  });
+
+  it('leaves an unknown participant a neutral avatar', () => {
+    // No user row means no colour of theirs to use. Inventing one from the peer
+    // id would not match their cursor, and two sources for one person's colour
+    // is how they drift apart.
+    const av = makeAv({
+      participants: [
+        { identity: 'peer-ghost', micMuted: false, micPresent: true, camOn: false, isSpeaking: false },
+      ],
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" users={[]} />);
+
+    const avatar = screen.getByTestId('av-avatar-peer-ghost');
+    expect(avatar.style.color).toBe('');
+  });
+
+  it('marks the host tile and leaves other tiles unmarked', () => {
+    const av = makeAv({
+      participants: [
+        { identity: 'peer-teacher', micMuted: false, micPresent: true, camOn: false, isSpeaking: false },
+        { identity: 'peer-pupil', micMuted: false, micPresent: true, camOn: false, isSpeaking: false },
+      ],
+    });
+    const users = [
+      { peerId: 'peer-teacher', userName: 'Teacher', color: '#e74c3c', isHost: true },
+      { peerId: 'peer-pupil', userName: 'Pupil', color: '#2ecc71', isHost: false },
+    ];
+    render(<AvSessionPanel av={av} localIdentity="me" users={users} />);
+
+    expect(screen.getByTestId('av-host-badge-peer-teacher')).toBeTruthy();
+    expect(screen.queryByTestId('av-host-badge-peer-pupil')).toBeNull();
+  });
+
+  it('lays badges out side by side rather than on top of each other', () => {
+    /*
+     * The host badge is permanent while hand-raised, screen-share and poor
+     * connection come and go, so a host who raises their hand had two badges
+     * absolutely positioned at the same corner, one drawn over the other.
+     * They belong in one flow container. jsdom has no layout, so the contract
+     * asserted here is that the container exists and holds both.
+     */
+    const av = makeAv({
+      participants: [
+        { identity: 'peer-teacher', micMuted: false, micPresent: true, camOn: false, isSpeaking: false },
+      ],
+    });
+    const users = [
+      { peerId: 'peer-teacher', userName: 'Teacher', color: '#e74c3c', isHost: true, handRaised: true },
+    ];
+    render(<AvSessionPanel av={av} localIdentity="me" users={users} />);
+
+    const badges = screen.getByTestId('av-tile-badges-peer-teacher');
+    expect(badges.contains(screen.getByTestId('av-host-badge-peer-teacher'))).toBe(true);
+    expect(badges.contains(screen.getByTestId('av-hand-raised-peer-teacher'))).toBe(true);
   });
 
   it('shows hand-raised indicator on a participant tile when their hand is raised', () => {
