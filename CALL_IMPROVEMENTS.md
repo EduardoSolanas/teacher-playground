@@ -116,8 +116,14 @@ keep moving it.
 - **Below `sm:` the rail becomes a horizontal strip along the bottom.** A 15rem
   sidebar on a phone leaves nothing for the board. This is the case most likely
   to be skipped; it should be in the same slice as the rail, not deferred.
-- The board's canvas must shrink to the remaining width rather than being
-  overlapped, so nothing is drawn underneath the rail and lost.
+- **The board must NOT shrink for the rail.** This line originally said the
+  opposite and was wrong. `ROOM_CANVAS_CLASS` is deliberately `inset-x-0` and
+  `RoomClient.test.tsx` asserts it: narrowing the board for fixed side panels
+  previously cost a teacher a strip of drawing surface down each side that
+  nothing was ever painted into, and because the right-hand strip came and went
+  with the roster, collapsing it resized the canvas under a live lesson. The
+  rail floats over the board like the roster does, and the canvas keeps the full
+  width.
 
 Dropping the drag handle removes the `⠿` control at `AvSessionPanel.tsx:530`.
 

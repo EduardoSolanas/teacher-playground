@@ -9,7 +9,6 @@ import { Track } from 'livekit-client';
 import CallControls from './CallControls';
 import type { UseAvSessionResult } from '@/hooks/useAvSession';
 import type { AvDevice, ParticipantState } from '@/lib/av/avSession';
-import { clampPanelPosition, type PanelPoint } from '@/lib/av/panelPosition';
 
 export type AvPanelMode = 'rail' | 'focus' | 'off';
 
@@ -295,16 +294,6 @@ function ParticipantTile({
         data-testid={`av-tile-badges-${participant.identity}`}
         className="absolute left-1.5 top-1.5 z-10 flex flex-wrap items-start gap-1"
       >
-        {isHost && (
-          <span
-            data-testid={`av-host-badge-${participant.identity}`}
-            aria-label="Host"
-            title="Host"
-            className="rounded-md bg-slate-950/75 px-1.5 py-0.5 text-sm shadow-md"
-          >
-            👑
-          </span>
-        )}
         {handRaised && (
           <div
             data-testid={`av-hand-raised-${participant.identity}`}
@@ -356,9 +345,30 @@ function ParticipantTile({
         </button>
       </div>
       <div className="absolute bottom-1.5 left-1.5 right-1.5 flex items-center justify-between gap-1">
-        <span className="truncate rounded-md border border-white/10 bg-slate-950/75 px-2 py-0.5 text-[0.6875rem] font-medium text-slate-200 backdrop-blur-md shadow-sm">
-          {displayName}
-          {participant.micMuted ? ' · muted' : ''}
+        <span
+          data-testid="av-participant-name"
+          className="flex min-w-0 items-center gap-1 truncate rounded-md border border-white/10 bg-slate-950/75 px-2 py-0.5 text-[0.6875rem] font-medium text-slate-200 backdrop-blur-md shadow-sm"
+        >
+          {/*
+            * Beside the name rather than in the badge cluster above, which is
+            * where Lessonspace puts it and what keeps that cluster for the
+            * badges that come and go. Who is teaching is a property of the
+            * person, so it belongs with their name.
+            */}
+          {isHost && (
+            <span
+              data-testid={`av-host-badge-${participant.identity}`}
+              role="img"
+              aria-label="Host"
+              title="Host"
+            >
+              👑
+            </span>
+          )}
+          <span className="truncate">
+            {displayName}
+            {participant.micMuted ? ' · muted' : ''}
+          </span>
         </span>
         {onFocus && (
           <button
@@ -388,6 +398,34 @@ function ParticipantTile({
  * guest hostname, which renders no top bar at all.
  * Rendered only for admitted participants (parent gates on !isWaiting).
  */
+/**
+ * Whether this viewer hid the call last time. A per-viewer convenience, so it
+ * lives in their browser rather than in shared room state.
+ *
+ * Every access is guarded: the getter itself throws on an origin with storage
+ * disabled, and a thrown preference must not stop the call rendering.
+ */
+const CALL_HIDDEN_KEY = 'whiteboard_call_hidden';
+
+function readCallHidden(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return localStorage.getItem(CALL_HIDDEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeCallHidden(hidden: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (hidden) localStorage.setItem(CALL_HIDDEN_KEY, '1');
+    else localStorage.removeItem(CALL_HIDDEN_KEY);
+  } catch {
+    // Storage unavailable or full; the preference is not worth an error.
+  }
+}
+
 export default function AvSessionPanel({
   av,
   localIdentity,
@@ -403,88 +441,26 @@ export default function AvSessionPanel({
       : [{ identity: localIdentity, micMuted: av.local.micMuted, micPresent: true, camOn: av.local.camOn, isSpeaking: false }]),
     [av.local.camOn, av.local.micMuted, av.participants, localIdentity],
   );
-  const [open, setOpen] = useState(!collapsed);
+  const [open, setOpen] = useState(() => (collapsed ? false : !readCallHidden()));
   const [mode, setMode] = useState<AvPanelMode>('rail');
   const [pinnedIdentity, setPinnedIdentity] = useState<string | null>(null);
   const [endCallConfirmOpen, setEndCallConfirmOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<PanelPoint | null>(null);
-  /** Where in the panel it was grabbed, so it does not jump under the pointer. */
-  const grabRef = useRef<{ dx: number; dy: number } | null>(null);
-
-  const startDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    const rect = panelRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    grabRef.current = { dx: event.clientX - rect.left, dy: event.clientY - rect.top };
-    event.preventDefault();
-  }, []);
 
   /*
-   * The move and the release are listened for on the window, not the handle.
+   * Docked, not placed by hand. A right rail on a wide screen, a strip along
+   * the bottom on a phone -- a 15rem sidebar there would leave nothing to draw
+   * on.
    *
-   * A pointer moving faster than React re-renders leaves the handle behind,
-   * and a release that lands anywhere else would never be heard -- the panel
-   * would then follow the pointer around with no button held down.
+   * It floats over the board rather than narrowing it. ROOM_CANVAS_CLASS is
+   * deliberately inset-x-0: narrowing the board for a fixed side panel left a
+   * strip down each side that nothing ever painted into, and because that strip
+   * came and went with the roster it resized the canvas under a live lesson.
    */
-  useEffect(() => {
-    const onMove = (event: PointerEvent) => {
-      const grab = grabRef.current;
-      if (!grab) return;
-      const rect = panelRef.current?.getBoundingClientRect();
-      setPosition(
-        clampPanelPosition({
-          x: event.clientX - grab.dx,
-          y: event.clientY - grab.dy,
-          width: rect?.width ?? 0,
-          height: rect?.height ?? 0,
-          viewportWidth: window.innerWidth,
-          viewportHeight: window.innerHeight,
-        }),
-      );
-    };
-    const onRelease = () => {
-      grabRef.current = null;
-    };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onRelease);
-    window.addEventListener('pointercancel', onRelease);
-    return () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onRelease);
-      window.removeEventListener('pointercancel', onRelease);
-    };
-  }, []);
-
-  /*
-   * A window that shrinks under a panel parked at the far edge would leave it
-   * off screen, and the handle with it.
-   */
-  useEffect(() => {
-    if (!position) return;
-    const onResize = () => {
-      const rect = panelRef.current?.getBoundingClientRect();
-      setPosition((current) =>
-        current === null
-          ? null
-          : clampPanelPosition({
-              ...current,
-              width: rect?.width ?? 0,
-              height: rect?.height ?? 0,
-              viewportWidth: window.innerWidth,
-              viewportHeight: window.innerHeight,
-            }),
-      );
-    };
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, [position]);
-
-  // Placed by hand, the panel stops taking its position from the stylesheet --
-  // but it still needs a width, which the parked classes were supplying.
-  const placement = position
-    ? 'w-[min(26.25rem,calc(100vw-1rem))]'
-    : 'left-2 right-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)] w-auto sm:bottom-16 sm:left-14 sm:right-auto sm:top-auto sm:w-[min(26.25rem,calc(100vw-18.75rem))]';
+  const placement =
+    'left-2 right-2 bottom-[max(0.5rem,env(safe-area-inset-bottom))] w-auto '
+    + 'sm:left-auto sm:right-2 sm:top-[calc(3.5rem+env(safe-area-inset-top))] sm:bottom-2 '
+    + 'sm:w-[clamp(11rem,18vw,15rem)]';
   const focusTile = pinnedIdentity
     ? tiles.find((participant) => participant.identity === pinnedIdentity) ?? null
     : tiles.find((participant) => participant.isSpeaking) ?? tiles[0] ?? null;
@@ -521,14 +497,13 @@ export default function AvSessionPanel({
       <button
         type="button"
         data-testid="av-panel-open"
-        onClick={() => setOpen(true)}
+        onClick={() => { setOpen(true); writeCallHidden(false); }}
         className={`fixed z-[1400] rounded-full border border-slate-700/80 bg-slate-900/95 px-3 py-1.5 text-[0.6875rem] font-medium text-slate-200 shadow-lg shadow-slate-900/30 ${
-          position
+          false
             ? ''
             : 'left-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)] sm:bottom-16 sm:left-14 sm:top-auto'
         }`}
-        style={position ? { left: position.x, top: position.y } : undefined}
-      >
+        >
         Show call ({tiles.length})
       </button>
     );
@@ -545,14 +520,13 @@ export default function AvSessionPanel({
        * sheet (10001) stay above -- those take the screen over on purpose.
        */
       className={`fixed z-[1400] rounded-2xl border border-slate-700/70 bg-slate-900/95 backdrop-blur-xl p-3 shadow-2xl shadow-slate-950/60 max-h-[calc(100dvh-max(1rem,env(safe-area-inset-top))-max(1rem,env(safe-area-inset-bottom)))] overflow-y-auto ${placement}`}
-      style={position ? { left: position.x, top: position.y } : undefined}
     >
       <div className="mb-2.5 flex items-center justify-between gap-2 px-0.5">
         <div className="flex items-center gap-1.5">
           <button
             type="button"
             data-testid="av-panel-collapse"
-            onClick={() => setOpen(false)}
+            onClick={() => { setOpen(false); writeCallHidden(true); }}
             aria-label="Hide the call"
             className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[0.6875rem] font-medium uppercase tracking-wider text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200"
           >
@@ -578,20 +552,9 @@ export default function AvSessionPanel({
           </div>
         </div>
 
-        {/*
-          * The grip is the empty middle of the header, which is space the
-          * panel already had. `touch-action: none` is what stops a drag on a
-          * phone being read as a scroll of the board underneath.
-          */}
-        <div
-          data-testid="av-panel-drag"
-          onPointerDown={startDrag}
-          role="presentation"
-          title="Drag to move"
-          className="flex flex-1 cursor-move touch-none items-center justify-center self-stretch px-2 text-slate-500 hover:text-slate-400"
-        >
-          <span aria-hidden className="inline-flex items-center gap-0.5 rounded-full bg-slate-800/80 px-2 py-0.5 text-[0.6875rem] text-slate-400">⠿</span>
-        </div>
+        {/* Spacer where the drag grip used to be: it keeps Leave and
+          * End for everyone apart rather than adjacent. */}
+        <div className="flex-1" />
 
         {onLeaveCall && (
           <button

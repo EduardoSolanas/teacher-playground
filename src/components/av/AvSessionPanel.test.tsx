@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { Room, Track, RemoteParticipant } from 'livekit-client';
 
@@ -62,6 +62,12 @@ function makeAv(overrides: AvOverrides = {}): UseAvSessionResult {
 }
 
 describe('AvSessionPanel', () => {
+  // The hidden-call preference is per viewer and persists, so one test hiding
+  // the call would otherwise render every later test collapsed.
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
   it('renders a local tile with VideoTrack when camera is on', () => {
     const room = new Room();
     addTrackPublication(room.localParticipant, Track.Source.Camera);
@@ -380,61 +386,53 @@ describe('AvSessionPanel', () => {
     expect(screen.getByTestId('av-panel-open').className).toContain('z-[1400]');
   });
 
-  it('moves when its handle is dragged', () => {
+  it('is docked rather than draggable', () => {
     /*
-     * The panel sits over the board. Wherever it is put by default, it is
-     * covering the part of the board somebody wants at some point in a lesson,
-     * so it has to be movable out of the way rather than only hideable.
+     * The panel used to float wherever it was dragged, which meant it was
+     * always covering some part of the board and somebody had to keep moving
+     * it. Both Pencil Spaces and Lessonspace dock video to a fixed right rail
+     * instead. Nothing to grab is the point: the drag handle is gone.
+     */
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+
+    expect(screen.queryByTestId('av-panel-drag')).toBeNull();
+    expect(screen.getByTestId('av-session-panel').style.left).toBe('');
+  });
+
+  it('remembers that the call was hidden, and restores it', () => {
+    // A per-viewer convenience, so localStorage rather than shared state. It
+    // has to survive storage being unavailable, which is why the read is
+    // guarded the same way persistence.ts guards its own.
+    const av = makeAv();
+    const { unmount } = render(<AvSessionPanel av={av} localIdentity="me" />);
+
+    fireEvent.click(screen.getByTestId('av-panel-collapse'));
+    expect(screen.getByTestId('av-panel-open')).toBeTruthy();
+    unmount();
+
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    expect(screen.queryByTestId('av-session-panel')).toBeNull();
+    expect(screen.getByTestId('av-panel-open')).toBeTruthy();
+  });
+
+  it('is a bottom strip on a phone and a right rail on a wide screen', () => {
+    /*
+     * A 15rem sidebar on a phone leaves nothing to draw on, so the rail becomes
+     * a strip along the bottom below `sm:`. Asserted on the classes because
+     * jsdom has no layout and this is the one thing here with no behaviour to
+     * observe.
      */
     const av = makeAv();
     render(<AvSessionPanel av={av} localIdentity="me" />);
     const panel = screen.getByTestId('av-session-panel');
-    const handle = screen.getByTestId('av-panel-drag');
 
-    fireEvent.pointerDown(handle, { clientX: 100, clientY: 100, button: 0 });
-    fireEvent.pointerMove(window, { clientX: 160, clientY: 190 });
-    fireEvent.pointerUp(window, { clientX: 160, clientY: 190 });
-
-    // Once moved by hand, the panel stops taking its place from the stylesheet.
-    expect(panel.style.left).not.toBe('');
-    expect(panel.style.top).not.toBe('');
-    expect(panel.className).not.toContain('sm:bottom-16');
+    expect(panel.className).toContain('left-2 right-2');
+    expect(panel.className).toContain('sm:left-auto');
+    expect(panel.className).toContain('sm:right-2');
+    expect(panel.className).toContain('sm:w-[clamp(11rem,18vw,15rem)]');
   });
 
-  it('stays put when the drag never starts', () => {
-    const av = makeAv();
-    render(<AvSessionPanel av={av} localIdentity="me" />);
-    const panel = screen.getByTestId('av-session-panel');
-    fireEvent.pointerMove(window, { clientX: 400, clientY: 400 });
-    expect(panel.style.left).toBe('');
-    expect(panel.className).toContain('sm:bottom-16');
-  });
-
-  it('leaves the pill where the panel was put', () => {
-    // Moving the panel and then hiding it should not send it back to a corner
-    // it was deliberately dragged out of.
-    const av = makeAv();
-    render(<AvSessionPanel av={av} localIdentity="me" />);
-    fireEvent.pointerDown(screen.getByTestId('av-panel-drag'), { clientX: 100, clientY: 100, button: 0 });
-    fireEvent.pointerMove(window, { clientX: 220, clientY: 260 });
-    fireEvent.pointerUp(window, { clientX: 220, clientY: 260 });
-    const moved = screen.getByTestId('av-session-panel').style.left;
-
-    fireEvent.click(screen.getByTestId('av-panel-collapse'));
-    expect(screen.getByTestId('av-panel-open').style.left).toBe(moved);
-  });
-
-  it('positions the panel and collapsed pill below the Excalidraw toolbar on mobile by default', () => {
-    const av = makeAv();
-    const { unmount } = render(<AvSessionPanel av={av} localIdentity="me" />);
-    const panel = screen.getByTestId('av-session-panel');
-    expect(panel.className).toContain('top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)]');
-    unmount();
-
-    render(<AvSessionPanel av={av} localIdentity="me" collapsed />);
-    const openBtn = screen.getByTestId('av-panel-open');
-    expect(openBtn.className).toContain('top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)]');
-  });
 
 
   it('offers a fullscreen control on every face', () => {
@@ -893,8 +891,9 @@ describe('AvSessionPanel', () => {
     render(<AvSessionPanel av={av} localIdentity="me" users={users} />);
 
     const badges = screen.getByTestId('av-tile-badges-peer-teacher');
-    expect(badges.contains(screen.getByTestId('av-host-badge-peer-teacher'))).toBe(true);
     expect(badges.contains(screen.getByTestId('av-hand-raised-peer-teacher'))).toBe(true);
+    // The host marker sits with the name instead, so it cannot collide at all.
+    expect(badges.contains(screen.getByTestId('av-host-badge-peer-teacher'))).toBe(false);
   });
 
   it('shows hand-raised indicator on a participant tile when their hand is raised', () => {

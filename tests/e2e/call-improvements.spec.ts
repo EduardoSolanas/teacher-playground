@@ -49,10 +49,14 @@ test.describe('call identity presentation', () => {
       await expect(nameLabel).toContainText('CallHost');
       await expect(nameLabel.getByRole('img', { name: 'Host' })).toBeVisible();
 
-      await expandPresenceIfCollapsed(page);
-      await page.getByTestId('whiteboard-raise-hand').click();
-      await expect(tile.locator('[data-testid^="av-hand-raised-"]')).toBeVisible({ timeout: 15000 });
-      await expect(nameLabel.getByRole('img', { name: 'Host' })).toBeVisible();
+      /*
+       * No raise-hand step here. A host has no such control -- PresencePanel
+       * renders it only for a non-host, and PresencePanel.test.tsx asserts its
+       * absence for a host -- so a host raising their own hand is unreachable
+       * and this test used to fail trying. The host marker sits with the name
+       * rather than in the transient badge cluster, so it cannot be crowded out
+       * by a badge in any case.
+       */
 
       await page.getByTestId('av-toggle-cam').click();
 

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { resolveUserColor } from '@/lib/whiteboard/userColor';
 import type {
   WhiteboardUser,
   CanvasElement,
@@ -139,7 +140,12 @@ export function useCollaboration(
   const pendingViewportRef = useRef<Viewport | null>(null);
   const viewportSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingUserNameRef = useRef(localUserName);
-  const localUserColorRef = useRef('#3498db');
+  /*
+   * Was a hard-coded '#3498db' that nothing ever reassigned, so every peer in
+   * every room announced the same blue -- the palette existed, was written to
+   * localStorage on join, and was never read back by anything.
+   */
+  const localUserColorRef = useRef(resolveUserColor(localUserName));
   const isRemoteUpdateRef = useRef(false);
 
   const ensureCollaboration = useCallback(() => {
@@ -552,6 +558,13 @@ export function useCollaboration(
     setLocalPeerId(peerId);
     localUserNameRef.current = name;
     pendingUserNameRef.current = name;
+    /*
+     * Resolved here, not at hook construction: on a first visit the name does
+     * not exist until this call, so a colour derived at construction is the
+     * default for everybody and the palette never gets used.
+     */
+    localUserColorRef.current = resolveUserColor(name);
+    collaborationRef.current?.setLocalUserColor(localUserColorRef.current);
     hasJoinedRef.current = true;
     setHasJoined(true);
     setWasKicked(false);
