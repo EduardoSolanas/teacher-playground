@@ -156,6 +156,9 @@ async function approveWaitingPeerIfPresent(hostPage: Page) {
 }
 
 async function waitForPresence(page: Page, name: string, timeout = 15000) {
+  // The roster is behind the People button now rather than docked open, so a
+  // presence row is only on the page once the panel is.
+  await expandPresenceIfCollapsed(page);
   await expect(page.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: name }).first()).toBeVisible({ timeout });
 }
 

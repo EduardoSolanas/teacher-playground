@@ -10,6 +10,7 @@ export default function RoomTopNav({
   onDisplayNameChange,
   onNavigate,
   center,
+  people,
 }: {
   displayName: string | null;
   onDisplayNameChange: (name: string) => void;
@@ -21,6 +22,11 @@ export default function RoomTopNav({
    * is carrying and whoever renders it decides.
    */
   center?: ReactNode;
+  /**
+   * Sits left of the avatar, which is where Lessonspace and Pencil Spaces both
+   * put the people control.
+   */
+  people?: ReactNode;
 }) {
   const [showNav, setShowNav] = useState(false);
 
@@ -45,7 +51,8 @@ export default function RoomTopNav({
           {center}
         </div>
       )}
-      <div className="flex h-full items-center pr-[max(0.5rem,env(safe-area-inset-right))]">
+      <div className="flex h-full items-center gap-2 pr-[max(0.5rem,env(safe-area-inset-right))]">
+        {people}
         <UserProfileMenu
           displayName={displayName}
           onDisplayNameChange={onDisplayNameChange}

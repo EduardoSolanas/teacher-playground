@@ -220,12 +220,26 @@ async function getFirstWaitingPeerId(hostPage: Page) {
 }
 
 async function expandPresenceIfCollapsed(hostPage: Page) {
+  /*
+   * The roster lives behind the People button now rather than being docked
+   * open, so anything wanting a participant row has to open it first.
+   *
+   * Driven by what the panel is actually doing, not by the wording on the
+   * button. This used to click only when the title contained "Expand" -- the
+   * collapsed handle says "Show participants", so it never clicked at all, and
+   * that went unnoticed while the roster happened to be open by default.
+   */
   const toggle = hostPage.getByTestId('whiteboard-presence-toggle');
   await toggle.waitFor({ state: 'visible', timeout: 15000 });
-  const title = await toggle.getAttribute('title');
-  if (title?.includes('Expand')) {
-    await toggle.click({ force: true });
-  }
+  await expect
+    .poll(async () => {
+      if (await hostPage.getByTestId('whiteboard-presence-panel').isVisible().catch(() => false)) {
+        return 'open';
+      }
+      await toggle.click({ force: true }).catch(() => undefined);
+      return 'closed';
+    }, { timeout: 15000 })
+    .toBe('open');
 }
 
 async function approveFirstWaitingPeer(hostPage: Page) {

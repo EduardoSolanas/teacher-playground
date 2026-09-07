@@ -7,6 +7,7 @@ import {
   expectWaiting,
   newAuthenticatedContext,
   appendElement,
+  expandPresenceIfCollapsed,
 } from './helpers';
 
 // ── Scene element helpers (copied from excalidraw-sync.spec.ts) ────────────
@@ -285,6 +286,11 @@ test.describe('Multi-peer collaboration', () => {
       await expectWaiting(peerPage);
       await approveFirstWaitingPeer(page);
       await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+
+      // Both rosters live behind the People button now, so open each before
+      // asking what it shows.
+      await expandPresenceIfCollapsed(page);
+      await expandPresenceIfCollapsed(peerPage);
 
       // Host should see the peer in the presence panel
       const hostSeePeer = page.locator('[data-testid^="whiteboard-user-"]').filter({ hasText: 'PresencePeer' });

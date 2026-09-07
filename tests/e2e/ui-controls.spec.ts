@@ -5,6 +5,7 @@ import {
   clickCreateRoom,
   excalidrawRectangle,
   waitForExcalidrawApi,
+  expandPresenceIfCollapsed,
 } from './helpers';
 
 function appUrl(path: string) {
@@ -56,6 +57,9 @@ test.describe('Room chrome', () => {
      */
     await joinRoom(page, 'ChromeHost');
     await waitForExcalidrawApi(page);
+    // The roster is behind the People button now, so it has to be opened before
+    // anything can sit on top of it.
+    await expandPresenceIfCollapsed(page);
     await expect(page.locator('#whiteboard-presence-panel')).toBeVisible({ timeout: 15000 });
 
     const profile = page.getByTestId('whiteboard-profile-btn');
@@ -72,6 +76,9 @@ test.describe('Room chrome', () => {
   test('the profile menu items are on top of the participants panel when opened', async ({ page }) => {
     await joinRoom(page, 'ChromeHost2');
     await waitForExcalidrawApi(page);
+    // The roster is behind the People button now, so it has to be opened before
+    // anything can sit on top of it.
+    await expandPresenceIfCollapsed(page);
     await expect(page.locator('#whiteboard-presence-panel')).toBeVisible({ timeout: 15000 });
 
     const profile = page.getByTestId('whiteboard-profile-btn');

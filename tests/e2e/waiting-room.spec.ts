@@ -90,6 +90,7 @@ test.describe('Waiting Room', () => {
 
     try {
       const roomId = await createRoomWithMaxUsers(hostPage, 'HostBadgeHost', 2);
+      await expandPresenceIfCollapsed(hostPage);
       await expect(hostPage.locator('[data-testid^="whiteboard-user-host-"]')).toBeVisible({
         timeout: 15000,
       });
@@ -100,6 +101,8 @@ test.describe('Waiting Room', () => {
       await approveFirstWaitingPeer(hostPage);
       await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
 
+      // The peer's roster is behind their own People button too.
+      await expandPresenceIfCollapsed(peerPage);
       await expect(peerPage.locator('[data-testid^="whiteboard-user-host-"]')).toHaveCount(1);
       await expect(hostPage.locator('[data-testid^="whiteboard-user-host-"]')).toHaveCount(1);
     } finally {
@@ -428,7 +431,22 @@ test.describe('Waiting Room', () => {
     await joinExistingRoom(waitingPeerPage, roomId, 'WaitingPeer');
     await expectWaiting(waitingPeerPage);
 
+    /*
+     * Both rosters open, and the peer's on purpose.
+     *
+     * The roster is closed until asked for now, and every assertion below is an
+     * absence -- no approve, no reject, no kick, no suspend. With the panel shut
+     * those counts are zero because there is no panel, and this test would pass
+     * while saying nothing about who is allowed to moderate. Opening it first
+     * is what keeps it a real check.
+     */
+    await expandPresenceIfCollapsed(hostPage);
+    await expandPresenceIfCollapsed(approvedPeerPage);
+
     await expect(hostPage.locator('[data-testid="whiteboard-waiting-section"] [data-testid^="whiteboard-user-"]').first()).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(approvedPeerPage.locator('[data-testid^="whiteboard-user-"]').first()).toBeVisible({
       timeout: 15000,
     });
     await expect(approvedPeerPage.locator('[data-testid^="whiteboard-approve-"]')).toHaveCount(0);
@@ -449,6 +467,13 @@ test.describe('Waiting Room', () => {
     const page = await context.newPage();
 
     await createRoomWithMaxUsers(page, 'CollapseHost', 2);
+
+    // Starts closed: the roster lives behind the People button now rather than
+    // being docked open beside the call rail.
+    await expect(page.getByTestId('whiteboard-presence-panel')).toHaveCount(0);
+    await expect(page.getByTestId('whiteboard-presence-toggle')).toHaveAttribute('aria-expanded', 'false');
+
+    await page.getByTestId('whiteboard-presence-toggle').click();
     await expect(page.getByTestId('whiteboard-presence-panel')).toBeVisible({ timeout: 15000 });
     await expect(page.getByTestId('whiteboard-presence-toggle')).toHaveAttribute('aria-expanded', 'true');
 

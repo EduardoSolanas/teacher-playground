@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
+import PeopleButton from '@/components/whiteboard/PeopleButton';
 import { CALL_RAIL_WIDTH } from '@/lib/av/callRail';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
@@ -202,7 +203,21 @@ function RoomContent({ roomId }: { roomId: string }) {
     store.setTool(tool as Parameters<typeof store.setTool>[0]);
   }, []);
   const [boardEverShown, setBoardEverShown] = useState(false);
-  const [presenceCollapsed, setPresenceCollapsed] = useState(false);
+  /*
+   * Closed until asked for. It used to be docked open, which put it on the same
+   * edge as the call rail -- two permanent panels, and everybody's mic and
+   * camera state drawn twice, once on their tile and once on their row.
+   *
+   * Lessonspace and Pencil Spaces both keep only the tiles on screen and put
+   * the participant list behind a control in the top right. The People button
+   * is that control, and it carries a badge so somebody waiting to be let in is
+   * still visible without opening it.
+   *
+   * Deliberately not auto-collapsed when a call starts: that fights whoever
+   * just opened it, and a host moderating mid-call would have it shut in their
+   * face.
+   */
+  const [presenceCollapsed, setPresenceCollapsed] = useState(true);
   const [isGuiding, setIsGuiding] = useState(false);
   const {
     isConnected,
@@ -315,6 +330,8 @@ function RoomContent({ roomId }: { roomId: string }) {
   }, [sendCallMessage]);
 
   const [callRailOpen, setCallRailOpen] = useState(false);
+
+  const callRailVisible = avAllowed && avEnabled && callRailOpen;
 
   const hasHost = users.some((u) => u.isHost);
 
@@ -685,6 +702,15 @@ function RoomContent({ roomId }: { roomId: string }) {
         onDisplayNameChange={handleJoin}
         onNavigate={handleBackToRooms}
         rosterExpanded={!presenceCollapsed}
+        people={
+          <PeopleButton
+            users={users}
+            waitingCount={waitingPeers.length}
+            capacity={maxUsers}
+            expanded={!presenceCollapsed}
+            onToggle={() => setPresenceCollapsed((collapsed) => !collapsed)}
+          />
+        }
         center={
           <div className="flex items-center gap-2 min-w-0">
             <RoomTitleMenu
@@ -700,7 +726,7 @@ function RoomContent({ roomId }: { roomId: string }) {
           </div>
         }
       />
-      <div className={`${ROOM_CANVAS_CLASS} ${roomCanvasTopClass(guestHost)} ${roomCanvasRightClass(avAllowed && avEnabled && callRailOpen)}`} data-testid="whiteboard-canvas-area">
+      <div className={`${ROOM_CANVAS_CLASS} ${roomCanvasTopClass(guestHost)} ${roomCanvasRightClass(callRailVisible)}`} data-testid="whiteboard-canvas-area">
         <ExcalidrawWrapper
           roomId={roomId}
           userName={userName}
@@ -735,7 +761,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         localPeerId={localPeerId}
         isLocalHost={isLocalHost}
         collapsed={presenceCollapsed}
-        callRailOpen={avAllowed && avEnabled && callRailOpen}
+        callRailOpen={callRailVisible}
         onToggle={() => setPresenceCollapsed((collapsed) => !collapsed)}
         onApprove={approvePeer}
         onReject={rejectPeer}
