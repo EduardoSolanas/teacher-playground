@@ -410,6 +410,70 @@ describe('AvSessionPanel', () => {
     expect(screen.getByTestId('av-panel-open').className).toContain('z-[1400]');
   });
 
+  it('keeps playing incoming audio while the panel is hidden', () => {
+    /*
+     * Hiding puts the faces away; it does not leave the call. The audio
+     * renderer is the only thing playing what other people say, so unmounting
+     * it with the call still connected leaves someone sitting in a silent
+     * lesson wondering why nobody is talking.
+     */
+    const room = new Room();
+    const av = makeAv({ room });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    expect(screen.getByTestId('av-room-audio-renderer')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('av-panel-collapse'));
+
+    expect(screen.getByTestId('av-panel-open')).toBeTruthy();
+    expect(screen.getByTestId('av-room-audio-renderer')).toBeTruthy();
+  });
+
+  it('puts the end-call confirmation outside the rail', () => {
+    /*
+     * The rail carries backdrop-blur, and a backdrop-filter makes its element a
+     * containing block for `position: fixed` descendants. A dialog rendered
+     * inside it is therefore trapped in a 15rem column instead of covering the
+     * viewport, so it has to be portalled out.
+     */
+    const av = makeAv();
+    render(
+      <AvSessionPanel
+        av={av}
+        localIdentity="me"
+        onLeaveCall={() => {}}
+        onEndCallForEveryone={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('av-end-call-everyone'));
+    const dialog = screen.getByRole('dialog', { name: /end the call for everyone/i });
+    expect(screen.getByTestId('av-session-panel').contains(dialog)).toBe(false);
+  });
+
+  it('stacks tiles down the rail on a wide screen and keeps the controls at the bottom', () => {
+    /*
+     * The rail is a column about 15rem wide. Laying tiles in a row there meant
+     * they scrolled sideways -- you could only see one face and had to drag to
+     * find the rest -- while the controls floated wherever the tiles left them.
+     * On a phone the strip is horizontal, so the row behaviour stays below sm:.
+     */
+    const av = makeAv({
+      participants: [
+        { identity: 'a', micMuted: false, micPresent: true, camOn: false, isSpeaking: false },
+        { identity: 'b', micMuted: false, micPresent: true, camOn: false, isSpeaking: false },
+      ],
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" onLeaveCall={() => {}} />);
+
+    const rail = screen.getByTestId('av-tiles-rail');
+    expect(rail.className).toContain('sm:flex-col');
+    expect(rail.className).toContain('sm:overflow-y-auto');
+    expect(rail.className).toContain('sm:flex-1');
+    expect(rail.className).toContain('sm:min-h-0');
+
+    expect(screen.getByTestId('av-call-cluster').className).toContain('sm:mt-auto');
+  });
+
   it('is docked rather than draggable', () => {
     /*
      * The panel used to float wherever it was dragged, which meant it was

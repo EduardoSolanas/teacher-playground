@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 type ConfirmDialogProps = {
   isOpen: boolean;
@@ -23,6 +24,11 @@ type ConfirmDialogProps = {
  *
  * Not the native <dialog> element: jsdom does not implement showModal, so the
  * behaviour would not be unit-testable in this repo.
+ *
+ * Rendered into document.body rather than where it is written. The call rail
+ * carries backdrop-blur, and a backdrop-filter makes its element a containing
+ * block for `position: fixed` descendants -- a dialog inside it is trapped in a
+ * 15rem column instead of covering the viewport.
  */
 export default function ConfirmDialog({
   isOpen,
@@ -40,6 +46,10 @@ export default function ConfirmDialog({
   const previousActiveElementRef = useRef<HTMLElement | null>(null);
   const titleId = `${testIdPrefix}-title`;
 
+  // Portalling needs a document, which server rendering has not got.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   // Focus starts on the safe action, not the destructive one, and returns to
   // whatever opened the dialog when it closes.
   useEffect(() => {
@@ -49,7 +59,7 @@ export default function ConfirmDialog({
     } else {
       previousActiveElementRef.current?.focus();
     }
-  }, [isOpen]);
+  }, [isOpen, mounted]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -97,9 +107,9 @@ export default function ConfirmDialog({
     [onCancel],
   );
 
-  if (!isOpen) return null;
+  if (!isOpen || !mounted) return null;
 
-  return (
+  return createPortal(
     <div
       onClick={handleBackdropClick}
       className="fixed inset-0 bg-black/60 flex items-center justify-center z-[1000]"
@@ -134,6 +144,7 @@ export default function ConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

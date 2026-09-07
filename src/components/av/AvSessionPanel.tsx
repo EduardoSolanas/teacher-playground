@@ -512,23 +512,33 @@ export default function AvSessionPanel({
    * the top bar still says so -- so there has to be a way back to the faces.
    */
   if (!open) {
-    // The pill stands in for the panel, so it stands where the panel was put:
-    // returning to the default corner would undo a deliberate move.
     return (
-      <button
-        type="button"
-        data-testid="av-panel-open"
-        onClick={() => { setOpen(true); writeCallHidden(false); }}
-        className={`fixed z-[1400] rounded-full border border-slate-700/80 bg-slate-900/95 px-3 py-1.5 text-[0.6875rem] font-medium text-slate-200 shadow-lg shadow-slate-900/30 ${
-          false
-            ? ''
-            : 'left-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)] sm:bottom-16 sm:left-14 sm:top-auto'
-        }`}
+      <>
+        {/*
+          * Hidden puts the faces away; it does not leave the call. The audio
+          * renderer is the only thing playing what other people are saying, so
+          * unmounting it here left somebody sitting in a silent lesson with the
+          * call still connected and the mic still live.
+          */}
+        {av.unavailableReason === null && av.room && (
+          <RoomContext.Provider value={av.room}>
+            <div data-testid="av-room-audio-renderer" aria-hidden className="absolute">
+              <RoomAudioRenderer room={av.room} />
+            </div>
+          </RoomContext.Provider>
+        )}
+        <button
+          type="button"
+          data-testid="av-panel-open"
+          onClick={() => { setOpen(true); writeCallHidden(false); }}
+          className="fixed z-[1400] rounded-full border border-slate-700/80 bg-slate-900/95 px-3 py-1.5 text-[0.6875rem] font-medium text-slate-200 shadow-lg shadow-slate-900/30 left-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)] sm:bottom-16 sm:left-14 sm:top-auto"
         >
-        Show call ({tiles.length})
-      </button>
+          Show call ({tiles.length})
+        </button>
+      </>
     );
   }
+
 
   return (
     <div
@@ -597,11 +607,21 @@ export default function AvSessionPanel({
           </div>
           <AudioPlaybackBanner room={av.room} />
           {mode === 'rail' && (
-            <div data-testid="av-tiles-rail" className="flex gap-2.5 overflow-x-auto pb-1.5">
+            <div
+              data-testid="av-tiles-rail"
+              /*
+                * A row on a phone, where the strip runs across the top; a column
+                * on a wide screen, where the rail is ~15rem and a row meant one
+                * visible face and a sideways drag to find anyone else.
+                * min-h-0 is what lets the column actually scroll rather than
+                * pushing the controls off the bottom of the panel.
+                */
+              className="flex gap-2.5 overflow-x-auto pb-1.5 sm:flex-1 sm:min-h-0 sm:flex-col sm:overflow-x-visible sm:overflow-y-auto"
+            >
               {tiles.map((participant) => (
                 <div
                   key={participant.identity}
-                  className={`min-w-0 ${tiles.length === 1 ? 'w-full' : 'shrink-0 basis-44 sm:basis-48'}`}
+                  className={`min-w-0 sm:w-full sm:shrink sm:basis-auto ${tiles.length === 1 ? 'w-full' : 'shrink-0 basis-44'}`}
                 >
                   <ParticipantTile
                     participant={participant}
@@ -659,7 +679,7 @@ export default function AvSessionPanel({
         * everyone reading as one more toggle, and it stays apart from Leave
         * rather than adjacent to it.
         */}
-      <div data-testid="av-call-cluster" className="mt-2.5 pt-2 border-t border-slate-800/80">
+      <div data-testid="av-call-cluster" className="mt-2.5 pt-2 border-t border-slate-800/80 sm:mt-auto">
         <CallControls av={av} />
 
         {(onLeaveCall || onEndCallForEveryone) && (
