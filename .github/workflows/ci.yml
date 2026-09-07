@@ -78,6 +78,17 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts --loglevel=error
 
+      # The browser download is the slow half of this step. --with-deps also
+      # installs OS packages through apt, which a cache cannot cover, so the
+      # step still runs -- it just has nothing left to fetch on a hit.
+      - name: Cache Playwright browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
