@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useRef, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { withRenderableGeometry } from '@/lib/whiteboard/renderableElements';
 import { diffScene, shouldPublish, elementsToPublish } from '@/lib/whiteboard/scenePublish';
 import { livePointCount, strokeCommitIntervalMs } from '@/lib/whiteboard/strokeCadence';
 // MUST stay above the Excalidraw import: it sets EXCALIDRAW_ASSET_PATH, and ES
@@ -78,7 +79,14 @@ type ExcalidrawSubscriptionsAPI = ExcalidrawImperativeAPI & {
 function toExcalidrawElements(
   elements: readonly SharedSceneElement[],
 ): readonly ExcalidrawElement[] {
-  return elements as unknown as readonly ExcalidrawElement[];
+  /*
+   * Every route into updateScene goes through here -- the reconciled remote
+   * scene, the queued elements, the shared snapshot -- which makes it the one
+   * place worth checking that a linear element still has points to render.
+   * Without them Excalidraw throws mid-scene and the board goes blank for
+   * everybody in the room.
+   */
+  return withRenderableGeometry(elements) as unknown as readonly ExcalidrawElement[];
 }
 
 function toCanvasElements(elements: readonly SharedSceneElement[]): CanvasElement[] {
