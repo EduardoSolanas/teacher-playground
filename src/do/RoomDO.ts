@@ -1161,9 +1161,26 @@ export class RoomDO extends DurableObject {
     const storedSnapshot = await this.readSnapshot(roomId);
     if (storedSnapshot) {
       Y.applyUpdate(doc, storedSnapshot);
-    } else {
-      // Seed from SQL elements if no ydoc snapshot exists. Boards created before
-      // this work must not open empty; seeding on read ensures it is impossible to miss.
+    }
+
+    /*
+     * Seed from the room row whenever the document came up empty -- whether
+     * that is because there was no snapshot or because the snapshot held
+     * nothing.
+     *
+     * The row and the snapshot are written by different paths. A client POSTs
+     * its scene straight to the row; the snapshot is written by the flush
+     * below. So the row can hold a board the snapshot has not caught up with:
+     * paste a picture, save, and reload before the flush runs, and this object
+     * wakes with an empty snapshot on top of a row that still has the drawing.
+     * Treating "there is a snapshot" as "the board is known" opened the room
+     * blank -- in CI, "saved=1 elements=0": persisted, and not restored.
+     *
+     * Only ever fills an empty document. A snapshot with content wins, because
+     * it is the live document and the row is a projection of it -- seeding over
+     * it would resurrect elements somebody had just erased.
+     */
+    if (getElementsFromArray(doc.getArray('elements')).length === 0) {
       const row = this.db.prepare(
         `SELECT elements FROM rooms WHERE room_id = ?`,
       ).get(roomId) as { elements: string } | undefined;
