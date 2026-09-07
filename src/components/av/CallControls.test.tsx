@@ -45,19 +45,38 @@ describe('CallControls', () => {
   });
 
   it('names the action rather than the state', () => {
-    // A button that reads "Mute" mutes: the label is what pressing it does,
-    // which is the only reading that survives someone glancing at it mid-lesson.
+    /*
+     * The name is what pressing it does, which is the only reading that
+     * survives someone glancing at it mid-lesson. It lives on aria-label
+     * rather than in visible text: three labelled buttons do not fit the
+     * docked rail, where they overlapped and clipped each other.
+     */
     const live = makeAv({ local: { micMuted: false, camOn: true, isScreenSharing: false } });
     const { rerender } = render(<CallControls av={live} />);
-    expect(screen.getByTestId('av-toggle-mic').textContent).toBe('Mute');
-    expect(screen.getByTestId('av-toggle-cam').textContent).toBe('Camera off');
-    expect(screen.getByTestId('av-toggle-screen').textContent).toBe('Share screen');
+    expect(screen.getByRole('button', { name: 'Mute' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Camera off' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Share screen' })).toBeTruthy();
 
     rerender(<CallControls av={makeAv({ local: { micMuted: true, camOn: false, isScreenSharing: true } })} />);
-    expect(screen.getByTestId('av-toggle-mic').textContent).toBe('Unmute');
-    expect(screen.getByTestId('av-toggle-cam').textContent).toBe('Camera on');
-    expect(screen.getByTestId('av-toggle-screen').textContent).toBe('Stop sharing');
+    expect(screen.getByRole('button', { name: 'Unmute' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Camera on' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop sharing' })).toBeTruthy();
   });
+
+  it('keeps the controls to icons so three of them fit the rail', () => {
+    // The rail is clamp(11rem,18vw,15rem) wide. Three text labels in it
+    // overlapped and clipped one another; the meaning is on the accessible
+    // name and the title instead.
+    const av = makeAv();
+    render(<CallControls av={av} />);
+    for (const id of ['av-toggle-mic', 'av-toggle-cam', 'av-toggle-screen']) {
+      const button = screen.getByTestId(id);
+      expect(button.textContent).toBe('');
+      expect(button.getAttribute('aria-label')).toBeTruthy();
+      expect(button.getAttribute('title')).toBe(button.getAttribute('aria-label'));
+    }
+  });
+
 
   it('reports mic and camera state to assistive tech, not only in colour', () => {
     /*

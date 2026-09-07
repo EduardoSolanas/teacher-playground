@@ -277,7 +277,7 @@ function ParticipantTile({
         />
       ) : null}
       {!participant.camOn && !isScreenShare && (
-        <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-gradient-to-b from-slate-800/90 to-slate-950/95 p-2 text-slate-300">
+        <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-gradient-to-b from-slate-800/90 to-slate-950/95 p-2 pb-7 text-slate-300">
           <div
             data-testid={`av-avatar-${participant.identity}`}
             className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-slate-600/60 bg-slate-700/60 text-base font-semibold text-slate-200 shadow-inner"
