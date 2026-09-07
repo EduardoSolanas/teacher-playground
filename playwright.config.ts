@@ -69,6 +69,14 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
+      /*
+       * The media specs are deliberately loud: they fail rather than skip when
+       * LIVEKIT_TEST_URL is missing, so that a media gate cannot pass by
+       * quietly skipping everything. That only works if they are confined to
+       * the media project -- without this, the default run picked them up and
+       * failed on a service it was never given.
+       */
+      testIgnore: "**/e2e/media-*.spec.ts",
     },
     // Real-media tests: only included when LIVEKIT_TEST_URL is set.
     // These tests require a functional LiveKit service and fail (not skip) if it's missing.

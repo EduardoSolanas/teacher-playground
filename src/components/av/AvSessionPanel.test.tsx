@@ -472,9 +472,16 @@ describe('AvSessionPanel', () => {
     render(<AvSessionPanel av={av} localIdentity="me" />);
     const panel = screen.getByTestId('av-session-panel');
 
-    // Phone: flush across the bottom.
+    /*
+     * Phone: flush across the top, under the toolbar -- NOT the bottom. The
+     * presence roster is `bottom-0 inset-x-0` there, so a call strip at the
+     * bottom lies straight over its moderation buttons and eats the clicks.
+     * Asserting `bottom-0` here passed for the wrong reason, because the
+     * desktop `sm:bottom-0` contains it.
+     */
     expect(panel.className).toContain('inset-x-0');
-    expect(panel.className).toContain('bottom-0');
+    expect(panel.className).toContain('top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)]');
+    expect(panel.className).not.toContain(' bottom-0');
 
     // Wide: flush to the right edge, full height, square against the board.
     expect(panel.className).toContain('sm:right-0');

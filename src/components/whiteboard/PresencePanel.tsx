@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { CALL_RAIL_WIDTH } from '@/lib/av/callRail';
 import type { WhiteboardUser } from '@/types/whiteboard';
 import { RaisedHandIcon } from './RaisedHandCue';
 import { DEFAULT_MAX_USERS } from '@/lib/plan/limits';
@@ -18,6 +19,13 @@ interface PresencePanelProps {
   localPeerId: string;
   isLocalHost: boolean;
   collapsed: boolean;
+  /**
+   * Whether the call rail is showing.
+   *
+   * Both are docked to the right edge, so without this the rail sits on top of
+   * the roster and swallows its moderation buttons -- clicks land on the rail.
+   */
+  callRailOpen?: boolean;
   onToggle: () => void;
   onApprove: (peerId: string, accountId?: string | null) => void;
   onReject: (peerId: string, accountId?: string | null) => void;
@@ -231,6 +239,7 @@ export default function PresencePanel({
   localPeerId,
   isLocalHost,
   collapsed,
+  callRailOpen = false,
   onToggle,
   onApprove,
   onReject,
@@ -464,7 +473,7 @@ export default function PresencePanel({
           aria-label={ariaLabel}
           onClick={onToggle}
           title="Show participants"
-          className="presence-handle fixed right-2 top-1/2 -translate-y-1/2 z-[1200] flex w-11 cursor-pointer flex-col items-center gap-1.5 rounded-xl border border-slate-700/80 bg-slate-900/95 py-2 shadow-lg shadow-slate-950/30 backdrop-blur-md transition-colors duration-150 hover:bg-slate-800"
+          className={`presence-handle fixed ${callRailOpen ? `sm:right-[calc(0.5rem+${CALL_RAIL_WIDTH})]` : ""} right-2 top-1/2 -translate-y-1/2 z-[1200] flex w-11 cursor-pointer flex-col items-center gap-1.5 rounded-xl border border-slate-700/80 bg-slate-900/95 py-2 shadow-lg shadow-slate-950/30 backdrop-blur-md transition-colors duration-150 hover:bg-slate-800`}
         >
           <ChevronRightIcon className="h-4 w-4 rotate-180 text-slate-200" />
           {stack.length > 0 ? (
@@ -531,7 +540,7 @@ export default function PresencePanel({
     <>
       <div
         id="whiteboard-presence-panel"
-        className="presence-panel fixed z-[1200] flex w-full flex-col overflow-hidden rounded-t-2xl border-t border-slate-200 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur bottom-0 inset-x-0 max-h-[62dvh] sm:inset-x-auto sm:bottom-0 sm:right-0 sm:top-[calc(3rem+env(safe-area-inset-top))] sm:max-h-none sm:w-[min(13.75rem,85vw)] sm:rounded-none sm:border-l sm:border-t-0"
+        className={`presence-panel fixed z-[1200] flex w-full flex-col overflow-hidden rounded-t-2xl border-t border-slate-200 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur bottom-0 inset-x-0 max-h-[62dvh] sm:inset-x-auto sm:bottom-0 sm:top-[calc(3rem+env(safe-area-inset-top))] sm:max-h-none sm:w-[min(13.75rem,85vw)] sm:rounded-none sm:border-l sm:border-t-0 ${callRailOpen ? `sm:right-[${CALL_RAIL_WIDTH}]` : "sm:right-0"}`}
         data-testid="whiteboard-presence-panel"
         aria-label="Participants"
       >

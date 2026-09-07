@@ -473,7 +473,13 @@ export default function AvSessionPanel({
    * came and went with the roster it resized the canvas under a live lesson.
    */
   const placement =
-    'inset-x-0 bottom-0 w-auto pb-[max(0.75rem,env(safe-area-inset-bottom))] '
+    /*
+     * On a phone the strip hangs from the top, under the toolbar, because the
+     * presence roster owns the bottom edge -- it is `bottom-0 inset-x-0` there.
+     * Putting the call at the bottom too laid it straight over the roster's
+     * moderation buttons and swallowed the clicks.
+     */
+    'inset-x-0 top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)] w-auto '
     + 'sm:inset-x-auto sm:right-0 sm:top-12 sm:bottom-0 sm:pb-3 '
     + `sm:w-[${CALL_RAIL_WIDTH}]`;
   const focusTile = pinnedIdentity
@@ -534,7 +540,7 @@ export default function AvSessionPanel({
        * layer) and the raised-hand cue (1300). The library and the shortcuts
        * sheet (10001) stay above -- those take the screen over on purpose.
        */
-      className={`fixed z-[1400] flex flex-col rounded-t-2xl border-t border-slate-700/70 bg-slate-900/95 backdrop-blur-xl p-3 shadow-2xl shadow-slate-950/60 max-h-[70dvh] overflow-y-auto sm:max-h-none sm:rounded-none sm:border-t-0 sm:border-l sm:shadow-none ${placement}`}
+      className={`fixed z-[1400] flex flex-col rounded-b-2xl border-b border-slate-700/70 bg-slate-900/95 backdrop-blur-xl p-3 shadow-2xl shadow-slate-950/60 max-h-[70dvh] overflow-y-auto sm:max-h-none sm:rounded-none sm:border-b-0 sm:border-l sm:shadow-none ${placement}`}
     >
       <div className="mb-2.5 flex items-center justify-between gap-2 px-0.5">
         <div className="flex items-center gap-1.5">

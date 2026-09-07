@@ -735,6 +735,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         localPeerId={localPeerId}
         isLocalHost={isLocalHost}
         collapsed={presenceCollapsed}
+        callRailOpen={avAllowed && avEnabled && callRailOpen}
         onToggle={() => setPresenceCollapsed((collapsed) => !collapsed)}
         onApprove={approvePeer}
         onReject={rejectPeer}
