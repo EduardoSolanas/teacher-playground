@@ -27,6 +27,7 @@ import {
 import { reconcileRemoteElements } from '@/lib/whiteboard/excalidrawReconcile';
 import { getElementsFromArray, replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 import { snapshotElements } from '@/lib/whiteboard/sceneSnapshot';
+import { shouldRestoreScene } from '@/lib/whiteboard/sceneRestore';
 import { libraryFileIds } from '@/lib/whiteboard/roomLibrary';
 import { canSaveLibrary, type LibraryLoadState } from '@/lib/whiteboard/libraryGuard';
 import { whiteboardRoomHref } from '@/lib/whiteboard/roomPath';
@@ -729,8 +730,24 @@ export default function ExcalidrawWrapper({
        * which is the same thing it would see if it had never been away.
        */
       const shared = snapshotElements(readSharedElements());
-      if (shared.length === 0) return;
-      if (excalidrawElementsEqual(shared, lastSyncedElementsRef.current)) return;
+      /*
+       * A picture already in the document has to be asked for from here.
+       *
+       * applyRemoteElements asks as elements arrive, but it can only ask once
+       * there is an editor to hand the bytes to -- and on a reload the document
+       * usually syncs before this callback runs, so that ask was skipped and
+       * nothing ever made it again on a board where nothing else changes. The
+       * element came back and the image did not.
+       */
+      fetchMissingBoardFiles(shared);
+      /*
+       * Decided against the editor's own scene, not against the last document
+       * seen on the wire: a scene that synced before this editor existed was
+       * only queued, and Excalidraw overwrites a queued scene while it
+       * initialises. Comparing against the wire read that board as already
+       * restored and left the canvas empty.
+       */
+      if (!shouldRestoreScene(shared, api.getSceneElements() ?? [])) return;
       lastSyncedElementsRef.current = shared;
       adoptVersionBaseline(shared);
       try {
@@ -766,7 +783,7 @@ export default function ExcalidrawWrapper({
         // ignore
       }
     }
-  }, [adoptVersionBaseline, readSharedElements]);
+  }, [adoptVersionBaseline, readSharedElements, fetchMissingBoardFiles]);
 
   useEffect(() => {
     if (!apiRef.current || !activeTool) return;
