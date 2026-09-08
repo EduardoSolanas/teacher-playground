@@ -809,6 +809,26 @@ test.describe('Multi-Peer Sync', () => {
       await expect
         .poll(() => bobPage.evaluate(() => (window as any).__debugExcalidrawApi.getAppState().userToFollow))
         .toBeNull();
+
+      /*
+       * Stopped has to stay stopped.
+       *
+       * A pan does not send the viewport as it happens -- it waits 50ms for
+       * the movement to settle -- so a teacher who stops guiding just after
+       * moving the board left a send in flight behind the one that stopped it.
+       * The class was released and told to follow again about thirty
+       * milliseconds later, and nothing on either screen said so: the
+       * teacher's button read "Guide class" while every student was still
+       * pinned to their viewport, for the rest of the lesson.
+       *
+       * Asserting that it is null is what missed this: the board did go null,
+       * for a moment. What matters is that it stays null once the sends the
+       * pan left behind have had their window to arrive.
+       */
+      await bobPage.waitForTimeout(500);
+      expect(
+        await bobPage.evaluate(() => (window as any).__debugExcalidrawApi.getAppState().userToFollow),
+      ).toBeNull();
     } finally {
       await bobContext.close();
     }

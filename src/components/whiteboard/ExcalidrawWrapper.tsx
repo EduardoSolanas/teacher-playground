@@ -204,6 +204,7 @@ export default function ExcalidrawWrapper({
   const publishedVersionsRef = useRef<Map<string, number>>(new Map());
   const latestViewportRef = useRef({ x: 0, y: 0, zoom: 1 });
   const guideSendTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isGuidingRef = useRef(isGuiding);
   const guideActiveRef = useRef(false);
   const followOptedOutRef = useRef(false);
   const applyingGuideRef = useRef(false);
@@ -554,6 +555,23 @@ export default function ExcalidrawWrapper({
   useEffect(() => {
     activeToolRef.current = activeTool;
   }, [activeTool]);
+
+  /*
+   * A pan that has not been sent yet must not outlive the guiding it belongs to.
+   *
+   * The viewport is sent 50ms after the board stops moving, so a teacher who
+   * stops guiding just after panning leaves a send in flight behind the one
+   * that stops it -- and the class, released a moment earlier, is put straight
+   * back into follow with nothing on either screen to say so.
+   */
+  useEffect(() => {
+    isGuidingRef.current = isGuiding;
+    if (isGuiding) return;
+    if (guideSendTimeoutRef.current) {
+      clearTimeout(guideSendTimeoutRef.current);
+      guideSendTimeoutRef.current = null;
+    }
+  }, [isGuiding]);
 
   useEffect(() => {
     if (!yDoc || !yElementsArray) return;
@@ -1266,6 +1284,9 @@ export default function ExcalidrawWrapper({
             if (guideSendTimeoutRef.current) clearTimeout(guideSendTimeoutRef.current);
             guideSendTimeoutRef.current = setTimeout(() => {
               guideSendTimeoutRef.current = null;
+              // Read now, not when this was scheduled: guiding may have been
+              // stopped in between, and this send would undo the stop.
+              if (!isGuidingRef.current) return;
               onGuideViewport(latestViewportRef.current);
             }, 50);
           }
