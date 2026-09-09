@@ -8,6 +8,8 @@
  * protocol-faithful fake instead of a real SFU connection.
  */
 
+import { writeDevicePreference } from './devicePreferences';
+
 /*
  * 'reconnecting' is the middle of a dropped-and-recovering socket: LiveKit
  * re-establishes it on its own, so the call is neither joined nor over. The
@@ -74,6 +76,8 @@ export interface AvProviderEvents {
   onDisconnected?: () => void;
   onError?: (error: AvError) => void;
   onDevices?: (kind: DeviceKind, devices: AvDevice[]) => void;
+  /** The active device for a given kind changed. */
+  onActiveDevice?: (kind: DeviceKind, deviceId: string) => void;
 }
 
 export interface AvProvider {
@@ -103,6 +107,7 @@ export interface AvSessionSnapshot {
   readonly local: Readonly<LocalState>;
   readonly participants: readonly ParticipantState[];
   readonly devices: Readonly<Record<DeviceKind, readonly AvDevice[]>>;
+  readonly activeDevices: Readonly<Record<DeviceKind, string | undefined>>;
 }
 
 export type AvSessionListener = () => void;
@@ -113,6 +118,7 @@ export interface AvSession {
   readonly local: LocalState;
   readonly participants: ParticipantState[];
   readonly devices: Record<DeviceKind, AvDevice[]>;
+  readonly activeDevices: Record<DeviceKind, string | undefined>;
   getSnapshot(): AvSessionSnapshot;
   subscribe(listener: AvSessionListener): () => void;
   join(token: string, url: string): Promise<void>;
@@ -163,6 +169,7 @@ export function createAvSession(provider: AvProvider): AvSession {
   let localQuality: ParticipantState['quality'] = 'unknown';
   const participants: ParticipantState[] = [];
   const devices: Record<DeviceKind, AvDevice[]> = { microphone: [], camera: [], speaker: [] };
+  const activeDevices: Record<DeviceKind, string | undefined> = { microphone: undefined, camera: undefined, speaker: undefined };
   const listeners = new Set<AvSessionListener>();
   let snapshot: AvSessionSnapshot;
 
@@ -176,6 +183,11 @@ export function createAvSession(provider: AvProvider): AvSession {
         microphone: [...devices.microphone],
         camera: [...devices.camera],
         speaker: [...devices.speaker],
+      },
+      activeDevices: {
+        microphone: activeDevices.microphone,
+        camera: activeDevices.camera,
+        speaker: activeDevices.speaker,
       },
     };
   }
@@ -276,6 +288,10 @@ export function createAvSession(provider: AvProvider): AvSession {
       devices[kind] = list;
       emitChange();
     },
+    onActiveDevice(kind, deviceId) {
+      activeDevices[kind] = deviceId;
+      emitChange();
+    },
   });
 
   async function join(token: string, url: string): Promise<void> {
@@ -310,6 +326,9 @@ export function createAvSession(provider: AvProvider): AvSession {
     devices.microphone = [];
     devices.camera = [];
     devices.speaker = [];
+    activeDevices.microphone = undefined;
+    activeDevices.camera = undefined;
+    activeDevices.speaker = undefined;
     emitChange();
   }
 
@@ -370,6 +389,7 @@ export function createAvSession(provider: AvProvider): AvSession {
       if (!devices[kind].some((device) => device.deviceId === deviceId)) {
         devices[kind].push({ deviceId, label: '' });
       }
+      writeDevicePreference(kind, deviceId);
     } catch (err) {
       error = mapProviderError(err);
       status = 'error';
@@ -415,6 +435,9 @@ export function createAvSession(provider: AvProvider): AvSession {
     },
     get devices() {
       return devices;
+    },
+    get activeDevices() {
+      return activeDevices;
     },
     getSnapshot() {
       return snapshot;

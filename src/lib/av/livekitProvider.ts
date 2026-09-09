@@ -28,6 +28,7 @@ import type {
   ParticipantState,
 } from './avSession';
 import { mapProviderError } from './avSession';
+import { readDevicePreference } from './devicePreferences';
 
 function mapConnectionQuality(
   quality: ConnectionQuality | undefined,
@@ -62,11 +63,28 @@ function mediaKind(kind: DeviceKind): MediaDeviceKind {
   return kind === 'microphone' ? 'audioinput' : 'videoinput';
 }
 
+function deviceKind(media: MediaDeviceKind): DeviceKind | undefined {
+  if (media === 'audioinput') return 'microphone';
+  if (media === 'videoinput') return 'camera';
+  if (media === 'audiooutput') return 'speaker';
+  return undefined;
+}
+
 export class LiveKitProvider implements AvProvider {
-  private readonly room = new Room();
+  private readonly room: Room;
   private events: AvProviderEvents = {};
   private wired = false;
   private activeSpeakerIds = new Set<string>();
+
+  constructor() {
+    const micPref = readDevicePreference('microphone');
+    const camPref = readDevicePreference('camera');
+
+    this.room = new Room({
+      ...(micPref && { audioCaptureDefaults: { deviceId: { ideal: micPref } } }),
+      ...(camPref && { videoCaptureDefaults: { deviceId: { ideal: camPref } } }),
+    });
+  }
 
   async connect(token: string, url: string): Promise<void> {
     this.ensureWired();
@@ -86,6 +104,8 @@ export class LiveKitProvider implements AvProvider {
     }
     this.emitLocal();
     this.refreshDevices();
+    this.emitActiveDevices();
+    this.applySpeakerPreference();
     for (const participant of this.room.remoteParticipants.values()) {
       this.wireSpeakingParticipant(participant);
       this.events.onParticipant?.(participantState(participant));
@@ -222,6 +242,12 @@ export class LiveKitProvider implements AvProvider {
       })
       .on(RoomEvent.ActiveSpeakersChanged, (participants: Participant[]) => {
         this.handleActiveSpeakersChanged(participants);
+      })
+      .on(RoomEvent.ActiveDeviceChanged, (kind: MediaDeviceKind, deviceId: string) => {
+        const appKind = deviceKind(kind);
+        if (appKind) {
+          this.events.onActiveDevice?.(appKind, deviceId);
+        }
       });
   }
 
@@ -307,5 +333,25 @@ export class LiveKitProvider implements AvProvider {
       return this.room.localParticipant;
     }
     return this.room.remoteParticipants.get(identity);
+  }
+
+  private emitActiveDevices(): void {
+    const micId = this.room.getActiveDevice('audioinput');
+    if (micId) this.events.onActiveDevice?.('microphone', micId);
+
+    const camId = this.room.getActiveDevice('videoinput');
+    if (camId) this.events.onActiveDevice?.('camera', camId);
+
+    const spkId = this.room.getActiveDevice('audiooutput');
+    if (spkId) this.events.onActiveDevice?.('speaker', spkId);
+  }
+
+  private applySpeakerPreference(): void {
+    const spkPref = readDevicePreference('speaker');
+    if (spkPref) {
+      void this.room.switchActiveDevice('audiooutput', spkPref).catch(() => {
+        // Device preference is gone; let LiveKit use its own default.
+      });
+    }
   }
 }

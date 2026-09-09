@@ -9,6 +9,7 @@ const livekit = vi.hoisted(() => {
   const setCameraEnabled = vi.fn(async () => {});
   const setScreenShareEnabled = vi.fn(async () => {});
   const switchActiveDevice = vi.fn(async () => {});
+  const getActiveDevice = vi.fn(() => undefined);
   const getLocalDevices = vi.fn(async () => []);
 
   const localParticipant = {
@@ -41,6 +42,7 @@ const livekit = vi.hoisted(() => {
     disconnect: roomDisconnect,
     on: roomOn,
     switchActiveDevice,
+    getActiveDevice,
     localParticipant,
     remoteParticipants: new Map<string, typeof remoteParticipant>(),
   };
@@ -54,6 +56,7 @@ const livekit = vi.hoisted(() => {
     setCameraEnabled,
     setScreenShareEnabled,
     switchActiveDevice,
+    getActiveDevice,
     getLocalDevices,
     localParticipant,
     remoteParticipant,
@@ -77,6 +80,7 @@ vi.mock('livekit-client', () => {
     MediaDevicesChanged = 'mediaDevicesChanged',
     MediaDevicesError = 'mediaDevicesError',
     ActiveSpeakersChanged = 'activeSpeakersChanged',
+    ActiveDeviceChanged = 'activeDeviceChanged',
   }
 
   enum ConnectionQuality {
@@ -99,6 +103,7 @@ vi.mock('livekit-client', () => {
         disconnect = livekit.roomDisconnect;
         on = livekit.roomOn;
         switchActiveDevice = livekit.switchActiveDevice;
+        getActiveDevice = livekit.getActiveDevice;
         localParticipant = livekit.localParticipant;
         remoteParticipants = livekit.room.remoteParticipants;
 

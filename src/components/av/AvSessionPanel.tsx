@@ -98,6 +98,24 @@ function deviceLabel(device: AvDevice, index: number, kind: 'Microphone' | 'Came
   return device.label.trim() || `${kind} ${index + 1}`;
 }
 
+/**
+ * Select a device value for a controlled select element, falling back to the
+ * placeholder when the active device is not among the enumerated options.
+ *
+ * LiveKit seeds its active-device map from its own capture defaults, which are
+ * the literal string 'default'. Browsers expose 'default' only for audioinput
+ * and audiooutput (not videoinput), and typically only on Chrome/Edge. When the
+ * call is denied a camera, no track publishes to replace the stale 'default'
+ * string with the real device id, so that 'default' gets reported as active
+ * even though it is not in the enumerated devices. A controlled <select> whose
+ * value matches no <option> renders blank instead of showing the placeholder
+ * -- a row that looks broken rather than one that looks unset.
+ */
+function selectedDeviceValue(devices: readonly AvDevice[], activeId: string | undefined): string {
+  if (!activeId) return '';
+  return devices.some((device) => device.deviceId === activeId) ? activeId : '';
+}
+
 function modeButtonClass(active: boolean): string {
   return active
     ? 'rounded-lg bg-slate-800 px-3 py-1 text-[0.6875rem] font-semibold text-white shadow-sm border border-slate-700/80 transition-all'
@@ -720,7 +738,7 @@ export default function AvSessionPanel({
                 data-testid="av-device-mic"
                 className="min-w-0 flex-1 truncate rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-1 text-xs text-slate-200 shadow-sm transition-colors hover:border-slate-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer"
                 onChange={(event) => void av.selectDevice('microphone', event.target.value)}
-                defaultValue=""
+                value={selectedDeviceValue(av.devices.microphone, av.activeDevices.microphone)}
               >
                 <option value="" disabled>
                   Select microphone
@@ -740,7 +758,7 @@ export default function AvSessionPanel({
                 data-testid="av-device-cam"
                 className="min-w-0 flex-1 truncate rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-1 text-xs text-slate-200 shadow-sm transition-colors hover:border-slate-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer"
                 onChange={(event) => void av.selectDevice('camera', event.target.value)}
-                defaultValue=""
+                value={selectedDeviceValue(av.devices.camera, av.activeDevices.camera)}
               >
                 <option value="" disabled>
                   Select camera
@@ -760,7 +778,7 @@ export default function AvSessionPanel({
                 data-testid="av-device-speaker"
                 className="min-w-0 flex-1 truncate rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-1 text-xs text-slate-200 shadow-sm transition-colors hover:border-slate-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer"
                 onChange={(event) => void av.selectDevice('speaker', event.target.value)}
-                defaultValue=""
+                value={selectedDeviceValue(av.devices.speaker ?? [], av.activeDevices.speaker)}
               >
                 <option value="" disabled>
                   Select speaker

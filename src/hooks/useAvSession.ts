@@ -31,6 +31,7 @@ export interface UseAvSessionResult {
   readonly local: { micMuted: boolean; camOn: boolean; isScreenSharing?: boolean };
   readonly participants: readonly ParticipantState[];
   readonly devices: Readonly<Record<DeviceKind, readonly AvDevice[]>>;
+  readonly activeDevices: Readonly<Record<DeviceKind, string | undefined>>;
   readonly unavailableReason: 'unconfigured' | 'forbidden' | 'waiting' | null;
   readonly room: Room | null;
   readonly toggleMicrophone: () => void;
@@ -56,6 +57,7 @@ const EMPTY_SNAPSHOT: AvSessionSnapshot = {
   local: { micMuted: false, camOn: false, isScreenSharing: false },
   participants: [],
   devices: { microphone: [], camera: [], speaker: [] },
+  activeDevices: { microphone: undefined, camera: undefined, speaker: undefined },
 };
 
 /**
@@ -243,6 +245,7 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
       local: state.local,
       participants: state.participants,
       devices: state.devices,
+      activeDevices: state.activeDevices,
       unavailableReason,
       room,
       toggleMicrophone,
@@ -258,6 +261,7 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
       state.local,
       state.participants,
       state.devices,
+      state.activeDevices,
       unavailableReason,
       room,
       toggleMicrophone,

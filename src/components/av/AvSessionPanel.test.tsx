@@ -51,6 +51,7 @@ function makeAv(overrides: AvOverrides = {}): UseAvSessionResult {
     participants: [],
     local: { micMuted: false, camOn: true, isScreenSharing: false, ...local },
     devices: { microphone: [mic('mic-1')], camera: [cam('cam-1')], speaker: [], ...devices },
+    activeDevices: { microphone: undefined, camera: undefined, speaker: undefined },
     toggleMicrophone: vi.fn(),
     toggleCamera: vi.fn(),
     toggleScreenShare: vi.fn().mockResolvedValue(undefined),
@@ -1069,6 +1070,53 @@ describe('AvSessionPanel', () => {
     const panel = screen.getByTestId('av-session-panel');
     expect(panel.className).toContain('max-h-');
     expect(panel.className).toContain('overflow-y-auto');
+  });
+
+  describe('device selection with unrecognized active device', () => {
+    it('shows an active device id that is among the listed devices as the select value', () => {
+      // When an active device is enumerated, it should be selected in the dropdown.
+      const av = makeAv({
+        devices: {
+          microphone: [mic('mic-1', 'Headset'), mic('mic-2', 'Builtin')],
+          camera: [cam('cam-1')],
+        },
+        activeDevices: { microphone: 'mic-2', camera: undefined, speaker: undefined },
+      });
+      render(<AvSessionPanel av={av} localIdentity="me" />);
+      const select = screen.getByTestId('av-device-mic') as HTMLSelectElement;
+      expect(select.value).toBe('mic-2');
+    });
+
+    it('leaves the select on the empty placeholder when active device id is not enumerated', () => {
+      // LiveKit's active device can be 'default' which is not enumerated on videoinput,
+      // causing a controlled select to render blank. The helper should fall back to ''.
+      const av = makeAv({
+        devices: {
+          microphone: [mic('mic-1', 'Headset'), mic('mic-2', 'Builtin')],
+          camera: [cam('cam-1'), cam('cam-2')],
+        },
+        activeDevices: { microphone: undefined, camera: 'default', speaker: undefined },
+      });
+      render(<AvSessionPanel av={av} localIdentity="me" />);
+      const select = screen.getByTestId('av-device-cam') as HTMLSelectElement;
+      expect(select.value).toBe('');
+    });
+
+    it('leaves the select on the placeholder when active device is undefined', () => {
+      // Undefined active devices should show the disabled placeholder option.
+      const av = makeAv({
+        devices: {
+          microphone: [mic('mic-1'), mic('mic-2')],
+          camera: [cam('cam-1'), cam('cam-2')],
+        },
+        activeDevices: { microphone: undefined, camera: undefined, speaker: undefined },
+      });
+      render(<AvSessionPanel av={av} localIdentity="me" />);
+      const micSelect = screen.getByTestId('av-device-mic') as HTMLSelectElement;
+      const camSelect = screen.getByTestId('av-device-cam') as HTMLSelectElement;
+      expect(micSelect.value).toBe('');
+      expect(camSelect.value).toBe('');
+    });
   });
 });
 

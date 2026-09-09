@@ -23,6 +23,7 @@ function makeAv(overrides: AvOverrides = {}): UseAvSessionResult {
     participants: [],
     local: { micMuted: false, camOn: true, isScreenSharing: false, ...local },
     devices: { microphone: [mic('mic-1')], camera: [cam('cam-1')], speaker: [], ...devices },
+    activeDevices: { microphone: undefined, camera: undefined, speaker: undefined },
     toggleMicrophone: vi.fn(),
     toggleCamera: vi.fn(),
     toggleScreenShare: vi.fn().mockResolvedValue(undefined),

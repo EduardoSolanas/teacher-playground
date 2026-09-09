@@ -359,6 +359,61 @@ describe('createAvSession', () => {
       isSpeaking: true,
     });
   });
+
+  it('exposes the active device from the provider', async () => {
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+
+    // Initially no active device
+    expect(session.activeDevices.microphone).toBeUndefined();
+    expect(session.activeDevices.camera).toBeUndefined();
+    expect(session.activeDevices.speaker).toBeUndefined();
+
+    // Provider reports active device
+    provider.emit.onActiveDevice?.('microphone', 'mic-device-123');
+    expect(session.activeDevices.microphone).toBe('mic-device-123');
+
+    provider.emit.onActiveDevice?.('camera', 'cam-device-456');
+    expect(session.activeDevices.camera).toBe('cam-device-456');
+
+    provider.emit.onActiveDevice?.('speaker', 'spk-device-789');
+    expect(session.activeDevices.speaker).toBe('spk-device-789');
+  });
+
+  it('notifies listeners when active device changes', async () => {
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+    const listener = vi.fn<AvSessionListener>();
+    session.subscribe(listener);
+
+    provider.emit.onActiveDevice?.('microphone', 'mic-device-123');
+    expect(listener).toHaveBeenCalled();
+  });
+
+  it('clears active devices when leaving', async () => {
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+    await session.join('token', 'url');
+
+    provider.emit.onActiveDevice?.('microphone', 'mic-device-123');
+    expect(session.activeDevices.microphone).toBe('mic-device-123');
+
+    session.leave();
+
+    expect(session.activeDevices.microphone).toBeUndefined();
+    expect(session.activeDevices.camera).toBeUndefined();
+    expect(session.activeDevices.speaker).toBeUndefined();
+  });
+
+  it('includes activeDevices in the snapshot', async () => {
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+
+    provider.emit.onActiveDevice?.('microphone', 'mic-device-123');
+
+    const snapshot = session.getSnapshot();
+    expect(snapshot.activeDevices.microphone).toBe('mic-device-123');
+  });
 });
 
 describe('mapProviderError', () => {
