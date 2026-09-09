@@ -19,5 +19,20 @@ describe('StartCallButton', () => {
     expect(button.className).toContain('inline-flex');
     expect(button.textContent).toContain('Start call');
   });
+
+  it('hides the text label below the sm breakpoint', () => {
+    render(<StartCallButton onStart={() => undefined} />);
+
+    const labelSpan = screen.getByText('Start call');
+    expect(labelSpan.className).toContain('hidden');
+    expect(labelSpan.className).toContain('sm:inline');
+  });
+
+  it('is reachable by aria-label when text is hidden', () => {
+    render(<StartCallButton onStart={() => undefined} />);
+
+    const button = screen.getByRole('button', { name: 'Start call' });
+    expect(button).toBeTruthy();
+  });
 });
 

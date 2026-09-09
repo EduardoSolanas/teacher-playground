@@ -17,6 +17,7 @@ export default function StartCallButton({ onStart }: { readonly onStart: () => v
     <button
       type="button"
       data-testid="av-start-call"
+      aria-label="Start call"
       onClick={onStart}
       className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1 text-xs font-medium text-emerald-300 shadow-sm transition-all hover:border-emerald-500/60 hover:bg-emerald-500/25 active:scale-95"
     >
@@ -33,7 +34,7 @@ export default function StartCallButton({ onStart }: { readonly onStart: () => v
           d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
         />
       </svg>
-      <span>Start call</span>
+      <span className="hidden sm:inline">Start call</span>
     </button>
   );
 }

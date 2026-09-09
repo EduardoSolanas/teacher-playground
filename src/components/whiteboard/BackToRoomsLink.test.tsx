@@ -48,4 +48,23 @@ describe('BackToRoomsLink', () => {
 
     expect(screen.getByTestId('whiteboard-back-to-rooms')).toBeTruthy();
   });
+
+  it('hides the text label below the sm breakpoint and preserves accessibility', () => {
+    vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', 'join-playground.example.com');
+
+    render(<BackToRoomsLink embedded />);
+
+    const labelSpan = screen.getByText('Back to rooms');
+    expect(labelSpan.className).toContain('hidden');
+    expect(labelSpan.className).toContain('sm:inline');
+  });
+
+  it('is reachable by aria-label when text is hidden', () => {
+    vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', 'join-playground.example.com');
+
+    render(<BackToRoomsLink embedded />);
+
+    const link = screen.getByRole('link', { name: 'Back to rooms' });
+    expect(link).toBeTruthy();
+  });
 });

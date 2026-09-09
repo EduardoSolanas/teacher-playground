@@ -32,6 +32,7 @@ export default function BackToRoomsLink({
       href="/whiteboard"
       prefetch={false}
       data-testid="whiteboard-back-to-rooms"
+      aria-label="Back to rooms"
       onClick={(event) => {
         if (!onNavigate) return;
         event.preventDefault();
@@ -53,7 +54,7 @@ export default function BackToRoomsLink({
       >
         <path d="m15 18-6-6 6-6" />
       </svg>
-      Back to rooms
+      <span className="hidden sm:inline">Back to rooms</span>
     </Link>
   );
 }
