@@ -76,7 +76,28 @@ export const ROOM_CANVAS_CLASS =
  * reserving its height would leave almost nothing to draw on.
  */
 export function roomCanvasRightClass(railVisible: boolean): string {
-  return railVisible ? `sm:right-[${CALL_RAIL_WIDTH}]` : '';
+  /*
+   * The width reaches CSS through the --call-rail-w variable, set inline by
+   * {@link roomCanvasRailStyle}, rather than through a class assembled by
+   * interpolation. An interpolated arbitrary value is invisible to Tailwind's
+   * source scan: the generated stylesheet only ever contained this one because
+   * the unit test spelled the resolved literal out, and any reshuffle of the
+   * test files would have silently deleted the reservation. PresencePanel
+   * already carried the variable for the same constant; the canvas now does
+   * too, and both read the same static `sm:right-[var(--call-rail-w)]`.
+   */
+  return railVisible ? 'sm:right-[var(--call-rail-w)]' : '';
+}
+
+/**
+ * The inline CSS variable the rail-width class reads. Paired with
+ * {@link roomCanvasRightClass}: the class reserves the space, this names how
+ * much. Absent when the rail is hidden, so nothing is reserved for nothing.
+ */
+export function roomCanvasRailStyle(railVisible: boolean): React.CSSProperties {
+  return railVisible
+    ? ({ ['--call-rail-w' as string]: CALL_RAIL_WIDTH } as React.CSSProperties)
+    : {};
 }
 
 export function roomCanvasTopClass(guestHost: boolean): string {
@@ -726,7 +747,7 @@ function RoomContent({ roomId }: { roomId: string }) {
           </div>
         }
       />
-      <div className={`${ROOM_CANVAS_CLASS} ${roomCanvasTopClass(guestHost)} ${roomCanvasRightClass(callRailVisible)}`} data-testid="whiteboard-canvas-area">
+      <div className={`${ROOM_CANVAS_CLASS} ${roomCanvasTopClass(guestHost)} ${roomCanvasRightClass(callRailVisible)}`} style={roomCanvasRailStyle(callRailVisible)} data-testid="whiteboard-canvas-area">
         <ExcalidrawWrapper
           roomId={roomId}
           userName={userName}

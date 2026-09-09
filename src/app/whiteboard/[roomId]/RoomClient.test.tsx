@@ -5,6 +5,7 @@ import type { WhiteboardUser } from '@/types/whiteboard';
 import {
   ROOM_CANVAS_CLASS,
   roomCanvasRightClass,
+  roomCanvasRailStyle,
   mapAvPeerIds,
   mapAvPeerStateByPeerId,
   resolveAvTargetAccountId,
@@ -56,8 +57,20 @@ describe('room canvas width', () => {
      *
      * Only on `sm:` and up. The rail is a bottom strip on a phone, where
      * reserving its height would leave almost no board.
+     *
+     * The width arrives through the --call-rail-w variable rather than an
+     * interpolated arbitrary value. A class built by string interpolation
+     * survives Tailwind's scan only by accident -- it did, for a while, purely
+     * because this test file spelled the resolved literal out. The variable is
+     * set inline on the canvas, so the class is static and cannot be purged.
      */
-    expect(roomCanvasRightClass(true)).toBe('sm:right-[clamp(11rem,18vw,15rem)]');
+    expect(roomCanvasRightClass(true)).toBe('sm:right-[var(--call-rail-w)]');
+  });
+
+  it('sets the rail width variable on the canvas only while the rail is there', () => {
+    const open = roomCanvasRailStyle(true) as Record<string, string>;
+    expect(open['--call-rail-w']).toBe('clamp(11rem,18vw,15rem)');
+    expect(roomCanvasRailStyle(false)).toEqual({});
   });
 
   it('gives the width back when the rail is hidden or there is no call', () => {

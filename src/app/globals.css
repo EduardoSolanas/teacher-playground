@@ -14,6 +14,20 @@
  */
 @import "../../public/brand.css";
 
+/*
+ * The call-rail width utilities, kept alive on purpose.
+ *
+ * Both the canvas reservation (sm:right-[var(--call-rail-w)], RoomClient) and
+ * the rail itself (sm:w-[var(--call-rail-w)], AvSessionPanel) are static
+ * classes reading the --call-rail-w variable that the components set inline.
+ * They are listed here so the stylesheet carries them even if source scanning
+ * ever stops seeing those two files -- an earlier, interpolated form of the
+ * same values survived only because a unit test happened to spell the resolved
+ * literal out, which is not a thing a stylesheet should depend on.
+ */
+@source inline("sm:right-[var(--call-rail-w)]");
+@source inline("sm:w-[var(--call-rail-w)]");
+
 * {
   box-sizing: border-box;
 }
