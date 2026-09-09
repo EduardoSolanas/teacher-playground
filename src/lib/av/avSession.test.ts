@@ -208,6 +208,51 @@ describe('createAvSession', () => {
     expect(session.participants).toEqual([]);
   });
 
+  it('reconnecting keeps the call and every face in it', async () => {
+    // LiveKit re-connects a dropped socket on its own. Reporting that drop
+    // through onDisconnected's full reset emptied the panel of faces that were
+    // in fact still there, while the socket quietly re-established itself.
+    // Say reconnecting instead, and keep everything until the socket is back.
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+    await session.join('token', 'url');
+    addParticipant(provider, { identity: 'peer-1', micMuted: false, micPresent: true, camOn: true, isSpeaking: false });
+
+    provider.emit.onReconnecting?.();
+
+    expect(session.status).toBe('reconnecting');
+    expect(session.participants.map((p) => p.identity)).toEqual(['__local__', 'peer-1']);
+    expect(session.local.micMuted).toBe(false);
+    expect(session.local.camOn).toBe(true);
+  });
+
+  it('reconnected returns to joined with the room intact', async () => {
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+    await session.join('token', 'url');
+    addParticipant(provider, { identity: 'peer-1', micMuted: false, micPresent: true, camOn: true, isSpeaking: false });
+    provider.emit.onReconnecting?.();
+
+    provider.emit.onReconnected?.();
+
+    expect(session.status).toBe('joined');
+    expect(session.participants.map((p) => p.identity)).toEqual(['__local__', 'peer-1']);
+  });
+
+  it('carries the local connection quality onto the local participant', async () => {
+    // The remote faces have carried their quality badge all along; the person
+    // whose uplink the lesson actually depends on was hardcoded to 'unknown'.
+    // The tile renders participant.quality for whoever it shows, so the local
+    // entry needs the same truth the remote ones get.
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+    await session.join('token', 'url');
+
+    provider.emit.onLocalQuality?.('poor');
+
+    const local = session.participants.find((p) => p.identity === '__local__');
+    expect(local?.quality).toBe('poor');
+  });
   it('provider error event moves to error status', async () => {
     const provider = makeProvider();
     const session = createAvSession(provider);
@@ -241,6 +286,23 @@ describe('createAvSession', () => {
     await joining;
     session.toggleMicrophone();
     expect(provider.calls.setMicrophone).toEqual([true]);
+  });
+
+  it('a mute pressed during reconnection still reaches the provider', async () => {
+    // The refusal above is about connecting, where the join publishes both
+    // devices and would overwrite whatever was asked for. Reconnection is
+    // different: the tracks already exist and stay mine. Refusing the toggle
+    // mid-drop takes the working mic away from the teacher precisely when the
+    // lesson is struggling to hold together.
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+    await session.join('token', 'url');
+    provider.emit.onReconnecting?.();
+
+    session.toggleMicrophone();
+
+    expect(provider.calls.setMicrophone).toEqual([true]);
+    expect(session.local.micMuted).toBe(true);
   });
 
   it('keeps the call when a device fails mid-lesson', async () => {

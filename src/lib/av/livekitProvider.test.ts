@@ -17,6 +17,7 @@ const livekit = vi.hoisted(() => {
     isCameraEnabled: true,
     isScreenShareEnabled: false,
     isSpeaking: false,
+    connectionQuality: 'excellent',
     setMicrophoneEnabled,
     setCameraEnabled,
     setScreenShareEnabled,
@@ -69,6 +70,8 @@ vi.mock('livekit-client', () => {
     LocalTrackPublished = 'localTrackPublished',
     TrackSubscribed = 'trackSubscribed',
     TrackUnsubscribed = 'trackUnsubscribed',
+    Reconnecting = 'reconnecting',
+    Reconnected = 'reconnected',
     Disconnected = 'disconnected',
     DataReceived = 'dataReceived',
     MediaDevicesChanged = 'mediaDevicesChanged',
@@ -254,6 +257,53 @@ describe('LiveKitProvider speaking state', () => {
       isSpeaking: false,
       quality: 'poor',
     });
+  });
+
+  it('reports a dropped socket as reconnecting and its recovery as reconnected', async () => {
+    // The SDK re-establishes the socket on its own; what the session needs is
+    // the news, not a teardown. The old wiring only knew Disconnected, whose
+    // full reset threw away a room that was in fact coming back.
+    const handlers = new Map<string, (...args: unknown[]) => void>();
+    livekit.roomOn.mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
+      handlers.set(event, handler);
+      return livekit.room;
+    });
+
+    const provider = new LiveKitProvider();
+    const seen: string[] = [];
+    provider.onEvents({
+      onReconnecting: () => seen.push('reconnecting'),
+      onReconnected: () => seen.push('reconnected'),
+    });
+    await provider.connect('token', 'wss://livekit.test');
+
+    handlers.get('reconnecting')?.();
+    handlers.get('reconnected')?.();
+
+    expect(seen).toEqual(['reconnecting', 'reconnected']);
+  });
+
+  it('reports the local connection quality when LiveKit reports it', async () => {
+    // The remote participants' quality is already forwarded; the local one
+    // was swallowed by emitLocal, which speaks only of mic, camera and
+    // speaking. The teacher is the one whose uplink matters most.
+    const participantHandlers = new Map<string, (...args: unknown[]) => void>();
+    livekit.localParticipant.on.mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
+      participantHandlers.set(event, handler);
+      return livekit.localParticipant;
+    });
+
+    const provider = new LiveKitProvider();
+    const seen: Array<string | null> = [];
+    provider.onEvents({
+      onLocalQuality: (quality) => seen.push(quality ?? null),
+    });
+    await provider.connect('token', 'wss://livekit.test');
+
+    livekit.localParticipant.connectionQuality = 'poor';
+    participantHandlers.get('connectionQualityChanged')?.();
+
+    expect(seen).toEqual(['poor']);
   });
 
   it('sets micPresent to true when participant has microphone publication', async () => {

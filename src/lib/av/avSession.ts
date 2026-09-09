@@ -8,7 +8,13 @@
  * protocol-faithful fake instead of a real SFU connection.
  */
 
-export type AvSessionStatus = 'idle' | 'connecting' | 'joined' | 'error';
+/*
+ * 'reconnecting' is the middle of a dropped-and-recovering socket: LiveKit
+ * re-establishes it on its own, so the call is neither joined nor over. The
+ * panel reads this to say so instead of either lying (joined) or clearing the
+ * room (the old full-reset path).
+ */
+export type AvSessionStatus = 'idle' | 'connecting' | 'joined' | 'reconnecting' | 'error';
 
 export type AvErrorKind =
   | 'permission-denied'
@@ -59,6 +65,12 @@ export interface AvProviderEvents {
   onLocalCamera?: (on: boolean) => void;
   onLocalScreenShare?: (on: boolean) => void;
   onLocalSpeaking?: (speaking: boolean) => void;
+  /** The caller's own uplink quality, as the SDK reports it. */
+  onLocalQuality?: (quality: ParticipantState['quality']) => void;
+  /** The socket dropped and the SDK is re-establishing it. The call continues. */
+  onReconnecting?: () => void;
+  /** The socket is back; the call is fully joined again. */
+  onReconnected?: () => void;
   onDisconnected?: () => void;
   onError?: (error: AvError) => void;
   onDevices?: (kind: DeviceKind, devices: AvDevice[]) => void;
@@ -143,6 +155,12 @@ export function createAvSession(provider: AvProvider): AvSession {
   // Seeding it on makes every label lie for as long as the join takes.
   let local: LocalState = { micMuted: false, camOn: false, isScreenSharing: false };
   let localSpeaking = false;
+  /*
+   * The local participant's own connection quality, unknown until the SDK
+   * reports it. It rides on the '__local__' participant entry like the remote
+   * quality rides on theirs, so the tile renders one badge rule for anyone.
+   */
+  let localQuality: ParticipantState['quality'] = 'unknown';
   const participants: ParticipantState[] = [];
   const devices: Record<DeviceKind, AvDevice[]> = { microphone: [], camera: [], speaker: [] };
   const listeners = new Set<AvSessionListener>();
@@ -177,7 +195,7 @@ export function createAvSession(provider: AvProvider): AvSession {
       micPresent: true,
       camOn: local.camOn,
       isSpeaking: localSpeaking,
-      quality: 'unknown',
+      quality: localQuality,
     };
     if (index >= 0) participants[index] = entry;
     else participants.push(entry);
@@ -204,6 +222,11 @@ export function createAvSession(provider: AvProvider): AvSession {
       updateLocalParticipant();
       emitChange();
     },
+    onLocalQuality(quality) {
+      localQuality = quality ?? 'unknown';
+      updateLocalParticipant();
+      emitChange();
+    },
     onLocalCamera(on) {
       local.camOn = on;
       updateLocalParticipant();
@@ -218,11 +241,27 @@ export function createAvSession(provider: AvProvider): AvSession {
       updateLocalParticipant();
       emitChange();
     },
+    /*
+     * A dropped socket is not an ended call. LiveKit re-establishes it on its
+     * own -- usually within seconds -- so everything on screen stays: the
+     * participants, the local toggles, the devices. Only the status moves, and
+     * the panel says what is happening rather than emptying the room as if
+     * everybody had left.
+     */
+    onReconnecting() {
+      if (status === 'joined') status = 'reconnecting';
+      emitChange();
+    },
+    onReconnected() {
+      if (status === 'reconnecting') status = 'joined';
+      emitChange();
+    },
     onDisconnected() {
       status = 'idle';
       clearParticipants();
       local = { micMuted: false, camOn: false, isScreenSharing: false };
       localSpeaking = false;
+      localQuality = 'unknown';
       emitChange();
     },
     onError(err) {
@@ -267,14 +306,26 @@ export function createAvSession(provider: AvProvider): AvSession {
     clearParticipants();
     local = { micMuted: false, camOn: false, isScreenSharing: false };
     localSpeaking = false;
+    localQuality = 'unknown';
     devices.microphone = [];
     devices.camera = [];
     devices.speaker = [];
     emitChange();
   }
 
+  /*
+   * The toggles refuse everything but a live call -- except reconnection.
+   * During connecting the join publishes both devices and would overwrite
+   * whatever was asked for, but the tracks of a reconnecting call already
+   * exist and stay the caller's own, so a mute pressed mid-drop still means
+   * something.
+   */
+  function callAcceptsToggles(): boolean {
+    return status === 'joined' || status === 'reconnecting';
+  }
+
   function toggleMicrophone(): void {
-    if (status !== 'joined') return;
+    if (!callAcceptsToggles()) return;
     local.micMuted = !local.micMuted;
     try {
       provider.setMicrophone(local.micMuted);
@@ -287,7 +338,7 @@ export function createAvSession(provider: AvProvider): AvSession {
   }
 
   function toggleCamera(): void {
-    if (status !== 'joined') return;
+    if (!callAcceptsToggles()) return;
     local.camOn = !local.camOn;
     try {
       provider.setCamera(local.camOn);

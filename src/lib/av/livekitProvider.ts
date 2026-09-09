@@ -198,6 +198,19 @@ export class LiveKitProvider implements AvProvider {
       .on(RoomEvent.TrackUnsubscribed, (_track, _pub, participant: RemoteParticipant) => {
         this.events.onParticipant?.(participantState(participant));
       })
+      /*
+       * The SDK re-establishes a dropped socket on its own, usually within
+       * seconds. That is news, not a teardown: reporting it through
+       * Disconnected's full reset threw away every face in a room that was in
+       * fact coming back. The session keeps everything and changes only what
+       * it says about the call.
+       */
+      .on(RoomEvent.Reconnecting, () => {
+        this.events.onReconnecting?.();
+      })
+      .on(RoomEvent.Reconnected, () => {
+        this.events.onReconnected?.();
+      })
       .on(RoomEvent.Disconnected, () => {
         this.events.onDisconnected?.();
       })
@@ -226,6 +239,13 @@ export class LiveKitProvider implements AvProvider {
     participant.on(ParticipantEvent.ConnectionQualityChanged, () => {
       if (participant === this.room.localParticipant) {
         this.emitLocal();
+        /*
+         * emitLocal speaks of the mic, the camera and speaking; quality it
+         * drops. The remote participants' quality is forwarded above, and the
+         * local one is the uplink the lesson most depends on, so it goes out
+         * on its own event and lands on the '__local__' entry.
+         */
+        this.events.onLocalQuality?.(mapConnectionQuality(participant.connectionQuality));
         return;
       }
       this.events.onParticipant?.(participantState(participant));
