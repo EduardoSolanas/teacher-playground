@@ -324,7 +324,13 @@ padding:.5rem .75rem;font-size:.85rem;color:var(--ink)}
 .guest-pin{border:1px solid var(--line);border-radius:0.125rem;background:#fff;padding:.5rem .75rem;
 font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:1.5rem;letter-spacing:.35em;color:var(--ink);margin:0}
 .btn-grow{flex:1 1 0}
-.room-shell{width:100vw;height:100vh;overflow:hidden;position:relative;background:var(--paper)}
+/* On mobile, 100vh resolves to the LARGE viewport height (when URL bar is
+   hidden). While the URL bar is showing, the document becomes taller than the
+   visible area, causing scroll and the absolutely-positioned canvas to slide
+   under the fixed navigation bar. 100dvh (dynamic viewport height) resolves to
+   the ACTUAL visible height, preventing scroll. The second height declaration
+   wins where supported; the first is a fallback for older browsers. */
+.room-shell{width:100vw;height:100vh;height:100dvh;overflow:hidden;position:relative;background:var(--paper)}
 
 /* ---- app: full-screen states and modals -------------------------------
  * The keyframe lives here, not in globals.css, because the classes that use
