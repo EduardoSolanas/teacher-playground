@@ -730,6 +730,7 @@ function RoomContent({ roomId }: { roomId: string }) {
             capacity={maxUsers}
             expanded={!presenceCollapsed}
             onToggle={() => setPresenceCollapsed((collapsed) => !collapsed)}
+            anyHandRaised={users.some((user) => user.handRaised)}
           />
         }
         center={
@@ -783,6 +784,7 @@ function RoomContent({ roomId }: { roomId: string }) {
         isLocalHost={isLocalHost}
         collapsed={presenceCollapsed}
         callRailOpen={callRailVisible}
+        showCollapsedHandle={guestHost}
         onToggle={() => setPresenceCollapsed((collapsed) => !collapsed)}
         onApprove={approvePeer}
         onReject={rejectPeer}

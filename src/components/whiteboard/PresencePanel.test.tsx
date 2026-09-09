@@ -782,6 +782,50 @@ describe('PresencePanel collapsed state', () => {
     fireEvent.click(button);
     expect(onToggle).toHaveBeenCalled();
   });
+
+  it('collapsed + handle suppressed -> no whiteboard-presence-toggle in the document, but live region IS present', () => {
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-1', userName: 'Alice' }),
+        ]}
+        waitingPeers={[]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={true}
+        showCollapsedHandle={false}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+      />,
+    );
+
+    expect(screen.queryByTestId('whiteboard-presence-toggle')).toBeNull();
+    expect(screen.getByTestId('whiteboard-presence-waiting-live')).toBeTruthy();
+  });
+
+  it('collapsed + handle allowed (the default) -> the handle still renders', () => {
+    render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-1', userName: 'Alice' }),
+        ]}
+        waitingPeers={[]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={true}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+      />,
+    );
+
+    expect(screen.getByTestId('whiteboard-presence-toggle')).toBeTruthy();
+  });
 });
 
 describe('PresencePanel microphone icons', () => {

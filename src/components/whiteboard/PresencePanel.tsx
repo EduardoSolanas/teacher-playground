@@ -26,6 +26,15 @@ interface PresencePanelProps {
    * the roster and swallows its moderation buttons -- clicks land on the rail.
    */
   callRailOpen?: boolean;
+  /**
+   * Whether to render the collapsed side handle.
+   *
+   * Two openers exist for the panel: the nav's People button (where a nav exists)
+   * is the intended opener for teachers, and the collapsed side handle serves guests
+   * who have no nav. The handle is suppressed when the nav is present so the button
+   * becomes the sole opener.
+   */
+  showCollapsedHandle?: boolean;
   onToggle: () => void;
   onApprove: (peerId: string, accountId?: string | null) => void;
   onReject: (peerId: string, accountId?: string | null) => void;
@@ -240,6 +249,7 @@ export default function PresencePanel({
   isLocalHost,
   collapsed,
   callRailOpen = false,
+  showCollapsedHandle = true,
   onToggle,
   onApprove,
   onReject,
@@ -465,48 +475,50 @@ export default function PresencePanel({
     const ariaLabel = `Participants: ${orderedActive.length} of ${maxUsers}${waitingCount > 0 ? `, ${waitingCount} waiting` : ''}`;
     return (
       <>
-        <button
-          type="button"
-          data-testid="whiteboard-presence-toggle"
-          aria-expanded={false}
-          aria-controls="whiteboard-presence-panel"
-          aria-label={ariaLabel}
-          onClick={onToggle}
-          title="Show participants"
-          style={{ ["--call-rail-w" as string]: callRailOpen ? CALL_RAIL_WIDTH : "0px" } as React.CSSProperties}
-          className={`presence-handle fixed right-2 sm:right-[calc(0.5rem+var(--call-rail-w))] top-1/2 -translate-y-1/2 z-[1200] flex w-11 cursor-pointer flex-col items-center gap-1.5 rounded-xl border border-slate-700/80 bg-slate-900/95 py-2 shadow-lg shadow-slate-950/30 backdrop-blur-md transition-colors duration-150 hover:bg-slate-800`}
-        >
-          <ChevronRightIcon className="h-4 w-4 rotate-180 text-slate-200" />
-          {stack.length > 0 ? (
-            <div className="flex -space-x-1.5">
-              {stack.map((user) => (
-                <div
-                  key={user.peerId}
-                  className="h-5 w-5 flex-shrink-0 overflow-hidden rounded-full ring-2 ring-slate-900"
-                  title={user.userName}
-                >
-                  <UserAvatar user={user} />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <UsersIcon className="h-5 w-5 text-slate-300" />
-          )}
-          <span data-testid="whiteboard-presence-count" className="text-[0.625rem] font-semibold text-slate-300">
-            {orderedActive.length}/{maxUsers}
-          </span>
-          {waitingCount > 0 && (
-            <span
-              className="flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[0.625rem] font-bold text-white"
-              title={`${waitingCount} waiting`}
-            >
-              {waitingCount}
+        {showCollapsedHandle && (
+          <button
+            type="button"
+            data-testid="whiteboard-presence-toggle"
+            aria-expanded={false}
+            aria-controls="whiteboard-presence-panel"
+            aria-label={ariaLabel}
+            onClick={onToggle}
+            title="Show participants"
+            style={{ ["--call-rail-w" as string]: callRailOpen ? CALL_RAIL_WIDTH : "0px" } as React.CSSProperties}
+            className={`presence-handle fixed right-2 sm:right-[calc(0.5rem+var(--call-rail-w))] top-1/2 -translate-y-1/2 z-[1200] flex w-11 cursor-pointer flex-col items-center gap-1.5 rounded-xl border border-slate-700/80 bg-slate-900/95 py-2 shadow-lg shadow-slate-950/30 backdrop-blur-md transition-colors duration-150 hover:bg-slate-800`}
+          >
+            <ChevronRightIcon className="h-4 w-4 rotate-180 text-slate-200" />
+            {stack.length > 0 ? (
+              <div className="flex -space-x-1.5">
+                {stack.map((user) => (
+                  <div
+                    key={user.peerId}
+                    className="h-5 w-5 flex-shrink-0 overflow-hidden rounded-full ring-2 ring-slate-900"
+                    title={user.userName}
+                  >
+                    <UserAvatar user={user} />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <UsersIcon className="h-5 w-5 text-slate-300" />
+            )}
+            <span data-testid="whiteboard-presence-count" className="text-[0.625rem] font-semibold text-slate-300">
+              {orderedActive.length}/{maxUsers}
             </span>
-          )}
-          {anyHandRaised && (
-            <RaisedHandIcon className="h-4 w-4" tone="ink" />
-          )}
-        </button>
+            {waitingCount > 0 && (
+              <span
+                className="flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[0.625rem] font-bold text-white"
+                title={`${waitingCount} waiting`}
+              >
+                {waitingCount}
+              </span>
+            )}
+            {anyHandRaised && (
+              <RaisedHandIcon className="h-4 w-4" tone="ink" />
+            )}
+          </button>
+        )}
         {/*
           Mounted unconditionally and left empty while the queue is: a screen
           reader only announces a live region that was already in the document

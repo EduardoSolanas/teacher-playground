@@ -1,6 +1,7 @@
 'use client';
 
 import type { WhiteboardUser } from '@/types/whiteboard';
+import { RaisedHandIcon } from './RaisedHandCue';
 
 /**
  * Opens the room's participant list.
@@ -17,17 +18,24 @@ export default function PeopleButton({
   capacity,
   expanded,
   onToggle,
+  anyHandRaised,
 }: {
   readonly users: readonly WhiteboardUser[];
   readonly waitingCount?: number;
   readonly capacity?: number;
   readonly expanded: boolean;
   readonly onToggle: () => void;
+  readonly anyHandRaised?: boolean;
 }) {
   const shown = users.slice(0, 3);
   const label = capacity
     ? `People in the room, ${users.length} of ${capacity}`
     : `People in the room, ${users.length}`;
+  const labelParts = [
+    label,
+    ...(waitingCount > 0 ? [`${waitingCount} waiting`] : []),
+    ...(anyHandRaised ? ['hand raised'] : []),
+  ];
 
   return (
     <button
@@ -35,7 +43,7 @@ export default function PeopleButton({
       data-testid="whiteboard-people-button"
       onClick={onToggle}
       aria-expanded={expanded}
-      aria-label={waitingCount > 0 ? `${label}, ${waitingCount} waiting` : label}
+      aria-label={labelParts.join(', ')}
       title={label}
       className="relative inline-flex items-center gap-1.5 rounded-full border border-slate-600 bg-slate-800 py-1 pl-1 pr-2.5 text-slate-100 transition-colors hover:border-slate-400 hover:bg-slate-700"
     >
@@ -62,6 +70,9 @@ export default function PeopleButton({
         >
           {waitingCount}
         </span>
+      )}
+      {anyHandRaised && (
+        <RaisedHandIcon className="h-4 w-4" tone="ink" />
       )}
     </button>
   );

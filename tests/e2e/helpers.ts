@@ -224,12 +224,13 @@ async function expandPresenceIfCollapsed(hostPage: Page) {
    * The roster lives behind the People button now rather than being docked
    * open, so anything wanting a participant row has to open it first.
    *
-   * Driven by what the panel is actually doing, not by the wording on the
-   * button. This used to click only when the title contained "Expand" -- the
-   * collapsed handle says "Show participants", so it never clicked at all, and
-   * that went unnoticed while the roster happened to be open by default.
+   * Driven through the People button in the top nav, which is the only opener
+   * a teacher has: the collapsed side handle that used to sit on the right edge
+   * showed the same roster twice and is now rendered only on the guest
+   * hostname, where there is no nav to hold the button. The button carries
+   * aria-expanded and toggles the same state, so it both opens and closes.
    */
-  const toggle = hostPage.getByTestId('whiteboard-presence-toggle');
+  const toggle = hostPage.getByTestId('whiteboard-people-button');
   await toggle.waitFor({ state: 'visible', timeout: 15000 });
   await expect
     .poll(async () => {

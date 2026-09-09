@@ -162,16 +162,32 @@ test.describe('Waiting Room', () => {
 
     const roomId = await createRoomWithMaxUsers(page1, 'AutoExpandHost', 1);
 
-    // Collapse before anyone knocks: the arrival is what has to reopen it, so
-    // a panel that was already open would prove nothing.
-    const toggle = page1.getByTestId('whiteboard-presence-toggle');
-    await toggle.click({ force: true });
-    await expect(toggle).toHaveAttribute('aria-expanded', 'false', { timeout: 15000 });
+    /*
+     * Collapse before anyone knocks: the arrival is what has to reopen it, so
+     * a panel that was already open would prove nothing.
+     *
+     * Driven to the closed state rather than clicked once and assumed. The
+     * single blind click this replaces was written when the roster was docked
+     * open. It went on passing after the roster became closed-by-default only
+     * because the click on the collapsed side handle never took effect -- the
+     * panel was already shut, so nothing moved and the assertion held. Through
+     * the People button in the top nav the click does land, and a blind one
+     * opens the very panel this test needs shut.
+     */
+    const toggle = page1.getByTestId('whiteboard-people-button');
+    await expect
+      .poll(async () => {
+        const expanded = await toggle.getAttribute('aria-expanded');
+        if (expanded === 'false') return 'false';
+        await toggle.click({ force: true }).catch(() => undefined);
+        return await toggle.getAttribute('aria-expanded');
+      }, { timeout: 15000 })
+      .toBe('false');
 
     await joinExistingRoom(page2, roomId);
     await expectWaiting(page2);
 
-    await expect(page1.getByTestId('whiteboard-presence-toggle'))
+    await expect(page1.getByTestId('whiteboard-people-button'))
       .toHaveAttribute('aria-expanded', 'true', { timeout: 15000 });
     await expect(page1.getByTestId('whiteboard-waiting-section')).toBeVisible({ timeout: 15000 });
 
@@ -191,13 +207,13 @@ test.describe('Waiting Room', () => {
     await joinExistingRoom(page2, roomId);
     await expectWaiting(page2);
 
-    const toggle = page1.getByTestId('whiteboard-presence-toggle');
+    const toggle = page1.getByTestId('whiteboard-people-button');
     await expect(toggle).toHaveAttribute('aria-expanded', 'true', { timeout: 15000 });
 
     // Deriving the panel's state from "someone is waiting" would pin it open
     // here and leave the host no way out of it.
     await toggle.click({ force: true });
-    await expect(page1.getByTestId('whiteboard-presence-toggle'))
+    await expect(page1.getByTestId('whiteboard-people-button'))
       .toHaveAttribute('aria-expanded', 'false', { timeout: 15000 });
 
     await context1.close();
@@ -471,19 +487,19 @@ test.describe('Waiting Room', () => {
     // Starts closed: the roster lives behind the People button now rather than
     // being docked open beside the call rail.
     await expect(page.getByTestId('whiteboard-presence-panel')).toHaveCount(0);
-    await expect(page.getByTestId('whiteboard-presence-toggle')).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByTestId('whiteboard-people-button')).toHaveAttribute('aria-expanded', 'false');
 
-    await page.getByTestId('whiteboard-presence-toggle').click();
+    await page.getByTestId('whiteboard-people-button').click();
     await expect(page.getByTestId('whiteboard-presence-panel')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByTestId('whiteboard-presence-toggle')).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByTestId('whiteboard-people-button')).toHaveAttribute('aria-expanded', 'true');
 
-    await page.getByTestId('whiteboard-presence-toggle').click();
+    await page.getByTestId('whiteboard-people-button').click();
     await expect(page.getByTestId('whiteboard-presence-panel')).toHaveCount(0);
-    await expect(page.getByTestId('whiteboard-presence-toggle')).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByTestId('whiteboard-people-button')).toHaveAttribute('aria-expanded', 'false');
 
-    await page.getByTestId('whiteboard-presence-toggle').click();
+    await page.getByTestId('whiteboard-people-button').click();
     await expect(page.getByTestId('whiteboard-presence-panel')).toBeVisible({ timeout: 10000 });
-    await expect(page.getByTestId('whiteboard-presence-toggle')).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByTestId('whiteboard-people-button')).toHaveAttribute('aria-expanded', 'true');
 
     await context.close();
   });

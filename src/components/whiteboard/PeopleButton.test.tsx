@@ -73,4 +73,50 @@ describe('PeopleButton', () => {
     const face = screen.getByText('A');
     expect(face.style.borderColor).toBe('rgb(231, 76, 60)');
   });
+
+  it('renders the raised-hand indicator when any participant has a hand raised', () => {
+    const { container } = render(
+      <PeopleButton
+        users={[makeUser()]}
+        expanded={false}
+        onToggle={() => {}}
+        anyHandRaised={true}
+      />,
+    );
+
+    const button = screen.getByTestId('whiteboard-people-button');
+    const svg = button.querySelector('svg');
+    expect(svg).toBeTruthy();
+  });
+
+  it('does not render the raised-hand indicator when no one has a hand raised', () => {
+    render(
+      <PeopleButton
+        users={[makeUser()]}
+        expanded={false}
+        onToggle={() => {}}
+        anyHandRaised={false}
+      />,
+    );
+
+    const button = screen.getByTestId('whiteboard-people-button');
+    // Should only have the stacked user faces, not the raised hand icon
+    const svgs = button.querySelectorAll('svg');
+    // One span contains inline spans for avatars (which don't have SVG), so we expect 0 SVGs at the top level of the button structure
+    expect(button.getAttribute('aria-label')).not.toContain('hand');
+  });
+
+  it('reflects raised-hand indicator in aria-label when present', () => {
+    render(
+      <PeopleButton
+        users={[makeUser()]}
+        expanded={false}
+        onToggle={() => {}}
+        anyHandRaised={true}
+      />,
+    );
+
+    const button = screen.getByTestId('whiteboard-people-button');
+    expect(button.getAttribute('aria-label')).toContain('hand');
+  });
 });

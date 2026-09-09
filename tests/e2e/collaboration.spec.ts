@@ -515,7 +515,7 @@ test.describe('Excalidraw Collaboration', () => {
 
     await page1.waitForTimeout(5000);
 
-    const presenceToggle1 = page1.getByTestId('whiteboard-presence-toggle');
+    const presenceToggle1 = page1.getByTestId('whiteboard-people-button');
     await expect(presenceToggle1).toBeVisible();
 
     await context.close();
