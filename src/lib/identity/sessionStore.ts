@@ -2,6 +2,8 @@ import type { RoomDatabase } from '../whiteboard/db';
 import {
   type AccountState,
   type AuditContext,
+  IdentityInputError,
+  MAX_AUTHORIZATION_BATCH,
   listOwnedRooms,
   recordAuthorizationAudit,
   resolveAccountForSubject,
@@ -191,6 +193,7 @@ function insertSession(
   authorizationEpoch: number,
   now: number,
   absoluteExpiresAt = now + SESSION_ABSOLUTE_TTL_MS,
+  persistedCreatedAt = now,
 ): Omit<IssuedSession, 'token'> {
   const idleExpiresAt = Math.min(
     now + SESSION_IDLE_TTL_MS,
@@ -205,7 +208,7 @@ function insertSession(
     sessionHash,
     accountId,
     authorizationEpoch,
-    now,
+    persistedCreatedAt,
     now,
     idleExpiresAt,
     absoluteExpiresAt,
@@ -296,6 +299,61 @@ export function purgeExpiredGuestAccounts(db: RoomDatabase, now = Date.now()): n
          )`,
     )
     .run(now, now).changes;
+}
+
+export interface SessionHashRequest {
+  accountId: string;
+  sessionHash: string;
+}
+
+/**
+ * The subset of the requested session hashes that are still usable: not
+ * revoked, and not past either expiry. Account state and epoch are checked
+ * separately by the caller, which already reads the accounts.
+ *
+ * The pair's account must match the session row's account, so one account's
+ * hash can never be reported active for another. Unknown and expired rows are
+ * omitted rather than defaulted, exactly like readAccountAuthorizations.
+ */
+export function selectActiveSessionHashes(
+  db: RoomDatabase,
+  sessions: readonly SessionHashRequest[],
+  now = Date.now(),
+): string[] {
+  if (sessions.length > MAX_AUTHORIZATION_BATCH) {
+    throw new IdentityInputError(
+      `at most ${MAX_AUTHORIZATION_BATCH} sessions may be checked at once`,
+    );
+  }
+
+  // First pair wins if the same hash is sent twice; callers send one pair per
+  // socket, and a hash belongs to exactly one account.
+  const requested = new Map<string, string>();
+  for (const session of sessions) {
+    if (!requested.has(session.sessionHash)) {
+      requested.set(session.sessionHash, session.accountId);
+    }
+  }
+  const hashes = [...requested.keys()];
+  if (hashes.length === 0) return [];
+
+  const rows = db
+    .prepare(
+      `SELECT session_hash AS sessionHash, account_id AS accountId
+       FROM sessions
+       WHERE session_hash IN (${hashes.map(() => '?').join(', ')})
+         AND revoked_at IS NULL
+         AND idle_expires_at > ?
+         AND absolute_expires_at > ?`,
+    )
+    .all(...hashes, now, now) as Array<{
+    sessionHash: string;
+    accountId: string;
+  }>;
+
+  return rows
+    .filter((row) => requested.get(row.sessionHash) === row.accountId)
+    .map((row) => row.sessionHash);
 }
 
 export async function validateSession(
@@ -395,6 +453,7 @@ export async function rotateSession(
           row.accountEpoch,
           now,
           row.absoluteExpiresAt,
+          row.createdAt,
         );
       })();
       return persisted ? { token: replacement, ...persisted } : null;

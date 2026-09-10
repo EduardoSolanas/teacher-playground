@@ -476,4 +476,19 @@ describe('production deployment policy', () => {
     expect(deploymentWorkflow).toContain('workflow_run:');
     expect(deploymentWorkflow).toContain('workflows: [CI]');
   });
+
+  it('SEC-A08: deploy job requires a same-repository push-triggered CI run', () => {
+    const deploymentWorkflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
+    const jobCondition = /^ {4}if:\s*(.+)$/m.exec(deploymentWorkflow)?.[1] ?? '';
+
+    expect(jobCondition, 'deploy job condition').toContain(
+      "github.event.workflow_run.event == 'push'",
+    );
+    expect(jobCondition, 'deploy job condition').toContain(
+      'github.event.workflow_run.head_repository.full_name == github.repository',
+    );
+    expect(jobCondition, 'deploy job condition').toContain(
+      "github.event_name == 'workflow_dispatch'",
+    );
+  });
 });

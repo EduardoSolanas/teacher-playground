@@ -36,6 +36,7 @@ import {
   purgeExpiredSessions,
   revokeAllSessions,
   rotateSession,
+  selectActiveSessionHashes,
   sessionAllowsDestructiveAction,
   sessionCookie,
   validateSession,
@@ -85,18 +86,45 @@ function isSubjectBody(value: unknown): value is {
   );
 }
 
-function isAuthorizationsBody(value: unknown): value is { accountIds: string[] } {
+function isAuthorizationsBody(value: unknown): value is {
+  accountIds: string[];
+  sessions?: Array<{ accountId: string; sessionHash: string }>;
+} {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false;
   }
   const body = value as Record<string, unknown>;
-  if (Object.keys(body).length !== 1 || !Array.isArray(body.accountIds)) {
+  if (
+    !Object.keys(body).every((key) => key === 'accountIds' || key === 'sessions')
+  ) {
     return false;
   }
+  if (!Array.isArray(body.accountIds)) return false;
   if (body.accountIds.length > MAX_AUTHORIZATION_BATCH) return false;
-  return body.accountIds.every(
-    (id) => typeof id === 'string' && id.length >= 1 && id.length <= 128,
-  );
+  if (
+    !body.accountIds.every(
+      (id) => typeof id === 'string' && id.length >= 1 && id.length <= 128,
+    )
+  ) {
+    return false;
+  }
+  if (body.sessions === undefined) return true;
+  if (!Array.isArray(body.sessions)) return false;
+  if (body.sessions.length > MAX_AUTHORIZATION_BATCH) return false;
+  return body.sessions.every((entry) => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      return false;
+    }
+    const pair = entry as Record<string, unknown>;
+    if (Object.keys(pair).length !== 2) return false;
+    return (
+      typeof pair.accountId === 'string' &&
+      pair.accountId.length >= 1 &&
+      pair.accountId.length <= 128 &&
+      typeof pair.sessionHash === 'string' &&
+      /^[0-9a-f]{64}$/.test(pair.sessionHash)
+    );
+  });
 }
 
 // Actor and reason are mandatory so no authorization change can be made
@@ -522,10 +550,17 @@ export class IdentityDO extends DurableObject {
       const parsed = await readExactJson(request, isAuthorizationsBody);
       if ('response' in parsed) return parsed.response;
       const statuses = readAccountAuthorizations(this.db, parsed.body.accountIds);
-      return Response.json(
-        { accounts: Object.fromEntries(statuses) },
-        { headers: noStore() },
-      );
+      const body: {
+        accounts: Record<string, { state: string; authorizationEpoch: number }>;
+        activeSessionHashes?: string[];
+      } = { accounts: Object.fromEntries(statuses) };
+      if (parsed.body.sessions !== undefined) {
+        body.activeSessionHashes = selectActiveSessionHashes(
+          this.db,
+          parsed.body.sessions,
+        );
+      }
+      return Response.json(body, { headers: noStore() });
     }
 
     const accountOperation =

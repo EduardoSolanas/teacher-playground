@@ -1,5 +1,6 @@
 import { SELF } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
+import { isOriginGuardedPath } from '../lib/worker/requestGuard';
 
 const BASE = 'https://example.com';
 
@@ -52,14 +53,11 @@ export async function authenticatedFetch(
 ): Promise<Response> {
   const headers = new Headers(init.headers);
   const method = (init.method ?? 'GET').toUpperCase();
-  const needsOrigin = path.startsWith('/signaling')
-    || (method !== 'GET' && method !== 'HEAD' && (
-      path === '/auth/session'
-      || path === '/auth/session/logout'
-      || path === '/auth/session/confirm'
-      || path === '/auth/account/profile'
-      || path.startsWith('/api/')
-    ));
+  // Ask the Worker's own guard which paths need an Origin, so this helper
+  // cannot drift from the rule it is exercising. The guard takes a pathname,
+  // so drop any query string (/signaling carries its room there).
+  const pathname = path.split('?', 1)[0];
+  const needsOrigin = isOriginGuardedPath(pathname, method);
   if (needsOrigin && !headers.has('Origin')) headers.set('Origin', BASE);
   headers.set('Cf-Access-Jwt-Assertion', token);
   headers.set('Cookie', session.cookie);

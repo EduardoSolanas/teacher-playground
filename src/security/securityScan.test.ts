@@ -122,6 +122,48 @@ describe('tracked-tree security scan', () => {
     expect(output).not.toContain(personalEmail);
   });
 
+  it('flags a tracked .dev.vars but accepts .dev.vars.example', () => {
+    // Built from a variable so this test's own source does not look like a
+    // committed credential to the scanner it is exercising.
+    const key = 'test_key_value_1234567890';
+    const flagged = createRepository({
+      '.dev.vars': `LIVEKIT_API_KEY=${key}\n`,
+    });
+    const flaggedResult = scan(flagged);
+    const flaggedOutput = `${flaggedResult.stdout}\n${flaggedResult.stderr}`;
+
+    expect(flaggedResult.status, flaggedOutput).toBe(1);
+    expect(flaggedOutput).toContain('non-example environment file: .dev.vars');
+    expect(flaggedOutput).not.toContain('test_key_value_1234567890');
+
+    const example = createRepository({
+      '.dev.vars.example': 'LIVEKIT_API_KEY=replace-me\n',
+    });
+    const exampleResult = scan(example);
+
+    expect(exampleResult.status, `${exampleResult.stdout}\n${exampleResult.stderr}`).toBe(0);
+    expect(exampleResult.stdout).toContain('Security scan passed');
+  });
+
+  it('detects LiveKit credential assignments', () => {
+    const key = 'test_key_value_1234567890';
+    const secret = 'test_secret_value_1234567890';
+    // One file per name so each pattern is proven on its own.
+    const root = createRepository({
+      'livekit-key.txt': `LIVEKIT_API_KEY=${key}\n`,
+      'livekit-secret.txt': `LIVEKIT_API_SECRET=${secret}\n`,
+    });
+
+    const result = scan(root);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status).toBe(1);
+    expect(output).toContain('known credential token: livekit-key.txt');
+    expect(output).toContain('known credential token: livekit-secret.txt');
+    expect(output).not.toContain(secret);
+    expect(output).not.toContain(key);
+  });
+
   it('detects provider-prefixed and named social-login secrets', () => {
     const fineGrainedPat = `github_pat_${'R'.repeat(60)}`;
     const googleOAuthSecret = `GOCSPX-${'S'.repeat(28)}`;

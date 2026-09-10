@@ -574,6 +574,30 @@ describe('fresh proof for destructive room DELETE', () => {
     expect(still.status).toBe(200);
   });
 
+  it('rejects a stale session deleting the room through a trailing-slash path', async () => {
+    // ROOM_API captures a trailing slash into the subpath, so an exact
+    // `subpath === ''` guard missed `DELETE /api/whiteboard/room/<id>/` while
+    // the Durable Object still routed it to the same delete handler.
+    const owner = await bootstrapLocalSession(`stale-delete-slash-${crypto.randomUUID()}`);
+    const roomId = `stale-delete-slash-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    await ageSessionCreatedAt(owner.accountId, DESTRUCTIVE_FRESH_MS + 60_000);
+
+    const del = await authenticatedFetch(`/api/whiteboard/room/${roomId}/`, owner, {
+      method: 'DELETE',
+    });
+    expect(del.status).toBe(403);
+    expect(await del.json()).toEqual({ error: 'Reauthentication required' });
+
+    const still = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner);
+    expect(still.status).toBe(200);
+  });
+
   it('allows DELETE after Access-bound session confirm on an old cookie', async () => {
     const owner = await bootstrapLocalSession(`confirm-delete-${crypto.randomUUID()}`);
     const roomId = `confirm-delete-${crypto.randomUUID()}`;

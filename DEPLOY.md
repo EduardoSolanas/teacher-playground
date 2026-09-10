@@ -30,18 +30,19 @@ owns two things at once:
 This is why the room API must not be scaled horizontally: signaling peers have
 to meet on one instance. The Durable Object guarantees that per room.
 
-### Guest hostname (planned — dashboard not applied)
+### Guest hostname
 
 Guest join uses a **second hostname** on the same Worker. The teacher hostname
 keeps the existing Access application (exact hostname only — no wildcard). The
 guest hostname gets DNS and a Worker route but **no Access application**; adding
-one breaks guest join. Set `TEACHER_HOSTNAME` and `GUEST_HOSTNAME` in Worker
-env; if either is unset, every request is treated as teacher-host. Before
-enabling guests in production, set `workers_dev = false` in `wrangler.toml` and
+one breaks guest join. `wrangler.toml` sets `TEACHER_HOSTNAME` and
+`GUEST_HOSTNAME`; if either is unset, every request is treated as teacher-host.
+`workers_dev` and `preview_urls` are already `false`, so the Worker has no
+Cloudflare-generated alternate origin. Before enabling guests in production,
 spend the zone's single free rate-limit rule on `POST /auth/guest` on the guest
 hostname. See `CLOUDFLARE_ACCESS_STAGING.md` and `guest_implementation.md` §6.5;
-none of this dashboard or Wrangler work is applied or verified in this
-repository yet.
+the Access application and DNS state live in the Cloudflare account and are not
+verified in this repository.
 
 ### Live-socket revocation
 
@@ -74,30 +75,35 @@ room links stay shareable.
 
 ## Production hostname closure (externally blocked)
 
-`wrangler.toml` disables both `workers.dev` and version preview URLs. It does
-not declare a route or custom domain because this repository does not contain
-an approved production hostname or proof that the deployment account controls
-its Cloudflare zone. Do not guess either value.
+`wrangler.toml` disables both `workers.dev` and version preview URLs and
+declares three custom domains: `app-playground.sen-tutor.co.uk` (teacher,
+behind the exact-hostname Access application), `join-playground.sen-tutor.co.uk`
+(guest join), and `playground.sen-tutor.co.uk` (public landing page). What the
+repository does not contain is proof that the deployment account controls the
+`sen-tutor.co.uk` zone, or a sanitized inventory and probe record showing the
+declared hostnames behave as documented.
 
-Before the next production deployment, an authorized owner must complete this
-runbook in the Cloudflare account:
+Before production custom-hostname closure is complete, an authorized owner must
+complete this runbook in the Cloudflare account:
 
 1. Inventory every currently deployed hostname and route for this Worker,
    including existing `workers.dev` URLs, version preview URLs, custom domains,
-   and zone routes.
-2. Provide the exact approved production hostname and evidence that the
-   deployment account controls its Cloudflare zone.
-3. Add that single hostname as the reviewed Wrangler custom-domain or route
-   configuration, then deploy through the supported GitHub workflow.
+   and zone routes, and compare it with the three domains declared in
+   `wrangler.toml`.
+2. Provide evidence that the deployment account controls the `sen-tutor.co.uk`
+   zone for those three declared custom domains.
+3. Confirm the reviewed Wrangler custom-domain configuration matches the
+   approved hostnames, then deploy through the supported GitHub workflow.
 4. Disable or remove every other Worker route, custom domain, `workers.dev`
    hostname, and preview hostname found by the inventory.
-5. Verify that the approved hostname reaches the Worker and that every
-   inventoried alternate or direct backend hostname fails closed.
+5. Verify that each approved hostname reaches the Worker with the intended
+   Access boundary and that every inventoried alternate or direct backend
+   hostname fails closed.
 
-Keep the following evidence with the deployment record: the approved hostname
-and route, the controlled zone and account (identifiers may be redacted), a
+Keep the following evidence with the deployment record: the approved hostnames
+and routes, the controlled zone and account (identifiers may be redacted), a
 Cloudflare Dashboard or API inventory before and after the change, the reviewed
-Wrangler diff and deployment identifier, and HTTP/WebSocket probes showing the
+Wrangler diff and deployment identifier, and HTTP/WebSocket probes showing each
 approved hostname succeeds while each alternate hostname is unreachable. Until
 that evidence exists, production custom-hostname closure remains incomplete.
 
@@ -137,16 +143,16 @@ the Excalidraw distribution is published separately by its fork repository.
 
 The production build points Excalidraw at the immutable release base:
 
-`https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.6/dist/prod/`
+`https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.11/dist/prod/`
 
 The fork repository is the sole owner of the R2 bucket, custom domain, release
 objects, and release metadata. This repository only consumes the pinned
 immutable base URL above; it does not provision the bucket or publish release
-objects. Release `0.18.1-tp.6` is published by fork workflow run
-`32781207895`; public `latest.json` points to it and the package is 9,445,242
-bytes. The CDN custom domain is live and serves immutable release objects. The
-local fallback remains `/` when running outside a production build
-or when `NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH=/` is supplied.
+objects, and it never resolves floating release metadata such as `latest.json`.
+The URL is pinned in `src/lib/whiteboard/excalidrawAssetPath.ts`. The CDN custom
+domain is live and serves immutable release objects. The local fallback remains
+`/` when running outside a production build or when
+`NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH=/` is supplied.
 
 #### Historical CDN publisher evidence
 
@@ -154,10 +160,12 @@ Earlier parent revisions contained a duplicate Terraform stack and an
 imperative publisher. Those were deliberately removed after the fork became
 the sole owner. Historical deployment runs `32680222826` and `32688811548`
 recorded the old publisher failing before R2 was enabled; they are retained as
-history only and are not current workflow behavior. The current parent
-production deployment is green: run `32783092806` completed clean install,
-security scan, typecheck, unit tests, static export, real Worker tests, and
-Wrangler deployment while consuming `0.18.1-tp.6`.
+history only and are not current workflow behavior. Historical release
+`0.18.1-tp.6` was published by fork workflow run `32781207895` and its package
+is 9,445,242 bytes. The parent production deployment at the time was green: run
+`32783092806` completed clean install, security scan, typecheck, unit tests,
+static export, real Worker tests, and Wrangler deployment while consuming
+`0.18.1-tp.6`. The pins have since moved to `0.18.1-tp.11`.
 
 #### The production asset host must exist before the first production deploy
 

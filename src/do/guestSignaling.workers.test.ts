@@ -147,6 +147,7 @@ interface SocketAttachment {
   authorizationEpoch?: number;
   roomId?: string;
   grantVersion?: number;
+  guest?: boolean;
 }
 
 async function readSocketAttachments(roomId: string): Promise<SocketAttachment[]> {
@@ -197,6 +198,7 @@ describe('guest signaling: granted upgrade binds identity', () => {
       authorizationEpoch: session.authorizationEpoch,
       roomId,
       grantVersion: await readGrantVersion(roomId),
+      guest: true,
     });
     ws.close();
   });
@@ -246,5 +248,80 @@ describe('guest signaling: room-bound cookie cannot cross rooms', () => {
     const crossed = await guestSignaling(cookie, roomB);
     expect(crossed.status).toBe(401);
     expect(crossed.webSocket).toBeNull();
+  });
+});
+
+describe('guest access turned off refuses guests that are already in', () => {
+  it('refuses a granted guest read when guest access is off', async () => {
+    const { roomId, owner } = await createTeacherRoom('guest-access-off-read-owner');
+    const cookie = await mintGuestCookie(roomId);
+    const accountId = await queueGuest(cookie, roomId);
+    await approveGuestEditor(owner, roomId, accountId);
+
+    const before = await guestFetch(`/api/whiteboard/room/${roomId}`, cookie);
+    expect(before.status).toBe(200);
+
+    // Seed the off state on the real row, as an owner write or app restart can
+    // leave it without this test exercising the settings route.
+    await runInDurableObject(env.ROOMS.get(env.ROOMS.idFromName(roomId)), (instance: RoomDO) => {
+      instance.db
+        .prepare(`UPDATE rooms SET guest_access = 0 WHERE room_id = ?`)
+        .run(roomId);
+    });
+
+    const after = await guestFetch(`/api/whiteboard/room/${roomId}`, cookie);
+    expect(after.status).toBe(403);
+  });
+
+  it('closes an open guest socket when the owner turns guest access off', async () => {
+    const { roomId, owner } = await createTeacherRoom('guest-access-off-socket-owner');
+    const cookie = await mintGuestCookie(roomId);
+    const accountId = await queueGuest(cookie, roomId);
+    await approveGuestEditor(owner, roomId, accountId);
+
+    const upgraded = await guestSignaling(cookie, roomId);
+    expect(upgraded.status).toBe(101);
+    const ws = upgraded.webSocket;
+    if (!ws) throw new Error('no webSocket on granted guest response');
+    ws.accept();
+    const closed = closeSignal(ws);
+
+    const settings = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/settings`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ guestAccess: false }),
+      },
+    );
+    expect(settings.status).toBe(200);
+
+    // The owner's own request has to drop the guest; the next alarm is the
+    // window this closes.
+    expect(await closed).toBe(4401);
+
+    const after = await guestFetch(`/api/whiteboard/room/${roomId}`, cookie);
+    expect(after.status).toBe(403);
+  });
+
+  it('refuses a guest signaling upgrade when guest access is off', async () => {
+    const { roomId, owner } = await createTeacherRoom('guest-access-off-upgrade-owner');
+    const cookie = await mintGuestCookie(roomId);
+    const accountId = await queueGuest(cookie, roomId);
+    await approveGuestEditor(owner, roomId, accountId);
+
+    await runInDurableObject(env.ROOMS.get(env.ROOMS.idFromName(roomId)), (instance: RoomDO) => {
+      instance.db
+        .prepare(`UPDATE rooms SET guest_access = 0 WHERE room_id = ?`)
+        .run(roomId);
+    });
+
+    // Without the gate, a granted guest whose socket was closed would simply
+    // reconnect and keep collaborating.
+    const refused = await guestSignaling(cookie, roomId);
+    expect(refused.status).not.toBe(101);
+    expect([401, 403]).toContain(refused.status);
+    expect(refused.webSocket).toBeNull();
   });
 });

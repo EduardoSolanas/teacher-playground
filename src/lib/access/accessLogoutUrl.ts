@@ -8,6 +8,9 @@ export const CF_ACCESS_LOGOUT_PATH = '/cdn-cgi/access/logout';
 export function safeRedirectPath(path: string | null | undefined): string {
   if (!path || !path.startsWith('/') || path.startsWith('//')) return '/';
   if (path.includes('..')) return '/';
+  // Browsers normalize `\` to `/` in Location, so `/\evil.example` becomes
+  // `//evil.example`. Control characters can do the same after URL parsing.
+  if (/[\\\u0000-\u001F\u007F]/.test(path)) return '/';
   return path;
 }
 

@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { DODatabase } from '../lib/whiteboard/doDatabase';
 import { applySchema, getGrantVersion, incrementGrantVersion, purgeExpiredRoomsAndTombstones, roomExists, getFileBytesTotal, addFileBytes } from '../lib/whiteboard/roomSchema';
-import { MAX_ROOM_FILE_BYTES_TOTAL } from '../lib/whiteboard/boardFileRoutes';
+import { MAX_BOARD_FILE_BYTES, MAX_ROOM_FILE_BYTES_TOTAL } from '../lib/whiteboard/boardFileRoutes';
 import {
   assertNotTombstoned,
   createSqlTombstoneStore,
@@ -79,7 +79,8 @@ import { createRateLimiter } from '../lib/http/rateLimit';
 import { logSocketClose } from '../lib/security/authEvents';
 import * as Y from 'yjs';
 import * as decoding from 'lib0/decoding';
-import { encodeUpdateFrame, handleSyncFrame } from '../lib/whiteboard/serverSync';
+import { encodeUpdateFrame, handleSyncFrame, MESSAGE_SYNC } from '../lib/whiteboard/serverSync';
+import { sanitizeSceneDoc } from '../lib/whiteboard/sceneGuard';
 import { replaceSharedElements, getElementsFromArray, pruneTombstonedElements } from '../lib/whiteboard/yjsDoc';
 import { snapshotElements } from '../lib/whiteboard/sceneSnapshot';
 import { snapshotBudgetState, SNAPSHOT_WARN_BYTES } from '../lib/whiteboard/snapshotBudget';
@@ -137,6 +138,16 @@ const BREACH_EPISODE_GAP_MS = SIGNALING_RATE_WINDOW_MS * 5;
  * loop against the identity object, and cannot silently disable it either.
  */
 const MIN_REVOCATION_CHECK_INTERVAL_MS = 50;
+
+/**
+ * How many session hashes one alarm may ask the identity object to revalidate.
+ *
+ * The room's own socket cap is far below this, so a healthy room never
+ * truncates. The bound exists so a corrupted attachment cannot build an
+ * unbounded request; if it is ever hit, the sockets past the cap fail closed
+ * like any other unchecked session.
+ */
+const MAX_REVOCATION_SESSION_CHECKS = 128;
 
 /** Close code sent to a socket whose account is no longer authorized. */
 export const SOCKET_REVOKED_CLOSE_CODE = 4401;
@@ -217,6 +228,23 @@ function logInternalRoomError(op: string, error: unknown, roomId?: string): void
 }
 
 
+/**
+ * Whether a Yjs v1 update carries nothing: no structs and no deletes.
+ *
+ * `encodeStateAsUpdate` always returns bytes, so an unchanged document still
+ * yields a two-byte header. The relay below must tell that apart from a real
+ * change, or every no-op frame would wake every peer.
+ */
+function isEmptyUpdate(update: Uint8Array): boolean {
+  try {
+    const decoder = decoding.createDecoder(update);
+    return decoding.readVarUint(decoder) === 0 && decoding.readVarUint(decoder) === 0;
+  } catch {
+    return false;
+  }
+}
+
+
 function forbidden(message = 'Forbidden'): Response {
   return Response.json(
     { error: message },
@@ -262,6 +290,8 @@ interface SocketIdentity {
   authorizationEpoch: number;
   roomId: string;
   grantVersion: number;
+  /** Stamped from the Worker's guest-flag; guests can be revoked wholesale. */
+  guest: boolean;
 }
 
 export interface RoomEnv {
@@ -336,6 +366,8 @@ export class RoomDO extends DurableObject {
   static signalingMaxSocketsPerRoomForTests: number | null = null;
   /** Test-only override for {@link MAX_WS_FRAME_BYTES}; production uses the constant. */
   static maxWebSocketFrameBytesForTests: number | null = null;
+  /** Test-only override for the scene element cap; production uses the schema cap. */
+  static maxElementsForTests: number | null = null;
   /** Test-only override for {@link SNAPSHOT_CHUNK_BYTES}; production uses the constant. */
   static snapshotChunkBytesForTests: number | null = null;
 
@@ -460,6 +492,16 @@ export class RoomDO extends DurableObject {
       // Guest flag from Worker stamp (Task 8)
       const guest = url.searchParams.get('guest') === '1';
 
+      /*
+       * Guest access can be switched off while a guest session is still valid.
+       * The real room row is the authority, not the session: a guest stopped
+       * being welcome the moment the owner turned the setting off, so every
+       * route except PIN verification is refused here.
+       */
+      if (guest && section !== 'guest-verify' && !this.guestAccessEnabled(roomId)) {
+        return forbidden();
+      }
+
       // Grant role only — no board, queue, or request PII. Discriminators that
       // share a route (kick vs heartbeat) are read from a bounded JSON object
       // after this identity is known. Scene and settings are separate paths.
@@ -538,11 +580,30 @@ export class RoomDO extends DurableObject {
       }
 
       if (response.ok && section === 'presence' && method === 'DELETE') {
-        // Broadcast presence after leaving
-        this.broadcastPresence(roomId);
+        // Broadcast after leaving only when the roster actually changed: a
+        // leave for a row the sweep already removed changes nothing, and the
+        // same signature comparison the POST branch uses sees that.
+        const signature = presenceSignature(this.db, roomId);
+        if (this.lastPresenceSignature.get(roomId) !== signature) {
+          this.lastPresenceSignature.set(roomId, signature);
+          this.broadcastPresence(roomId);
+        }
       }
 
       if (response.ok && section === 'waiting' && method === 'POST') {
+        // A reject is a ban, and it has to land like a kick: bump the room
+        // grant version, close the banned account's live sockets, and re-stamp
+        // the rest. Without this the banned peer kept its socket -- and the
+        // broadcast -- until the next alarm.
+        const payload = await response.clone().json() as {
+          bannedPeer?: { accountId?: string };
+        };
+        const bannedAccountId = payload.bannedPeer?.accountId;
+        if (bannedAccountId) {
+          incrementGrantVersion(this.db, roomId);
+          this.closeAccountSockets(bannedAccountId, roomId);
+          this.restampRoomSockets(roomId);
+        }
         // Broadcast presence after approve/reject
         this.broadcastPresence(roomId);
       }
@@ -550,6 +611,24 @@ export class RoomDO extends DurableObject {
       if (response.ok && section === 'waiting' && method === 'DELETE') {
         // Broadcast presence after deleting from waiting
         this.broadcastPresence(roomId);
+      }
+
+      if (
+        response.ok
+        && section === 'settings'
+        && (method === 'POST' || method === 'PATCH')
+        && body?.guestAccess === false
+      ) {
+        /*
+         * Turning guest access off ends the guests who are already in, inside
+         * the owner's request rather than on the next alarm.
+         *
+         * Rotation deliberately does not: it stops new joins and was never an
+         * eject button. Closing sockets here would drop a class mid-lesson
+         * because the teacher generated a new code, so rotation stays
+         * "new joins only".
+         */
+        this.closeGuestSockets(roomId);
       }
 
       return response;
@@ -763,8 +842,8 @@ export class RoomDO extends DurableObject {
       const action = url.pathname.split('/').filter(Boolean)[2] ?? '';
       if (action === 'authorize-write') return canWriteBoard(role) ? null : forbidden();
       if (action === 'authorize-read') return granted ? null : forbidden();
-      // check-quota and add-bytes require write access (called during PUT)
-      if (action === 'check-quota' || action === 'add-bytes') return canWriteBoard(role) ? null : forbidden();
+      // reserve and settle require write access (the Worker calls them during PUT)
+      if (action === 'reserve' || action === 'settle') return canWriteBoard(role) ? null : forbidden();
       return forbidden();
     }
 
@@ -931,7 +1010,18 @@ export class RoomDO extends DurableObject {
       case 'files': {
         const action = segments[2] ?? '';
 
-        // Authorization and quota checks for file uploads.
+        /*
+         * The Worker sends exactly /room/files/<action>. The route splitter
+         * filters empty segments, so a spelling like /room//files/reserve
+         * would otherwise reach the same handler if the public guard ever
+         * regressed. Refuse anything but the canonical path, before any side
+         * effect.
+         */
+        if (url.pathname !== `/room/files/${action}`) {
+          return Promise.resolve(Response.json({ error: 'Not found' }, { status: 404 }));
+        }
+
+        // Authorization checks for file uploads and downloads.
         if (action === 'authorize-write' || action === 'authorize-read') {
           // Authorization check only; actual R2 operations happen in the Worker.
           // Paths arrive as /room/files/authorize-write or /room/files/authorize-read.
@@ -940,43 +1030,86 @@ export class RoomDO extends DurableObject {
           return Promise.resolve(Response.json({ ok: true }, { status: 200 }));
         }
 
-        if (action === 'check-quota') {
-          if (method === 'POST') {
-            try {
-              const body = await request.json() as { incomingSize?: number };
-              const incomingSize = body.incomingSize ?? 0;
-
-              const currentTotal = getFileBytesTotal(this.db, roomId);
-
-              if (currentTotal + incomingSize > MAX_ROOM_FILE_BYTES_TOTAL) {
-                return Response.json(
-                  { error: 'Aggregate file storage quota exceeded (250 MB limit)' },
-                  { status: 413 },
-                );
-              }
-
-              return Response.json({ ok: true, currentTotal }, { status: 200 });
-            } catch (error) {
-              return Response.json({ error: 'Invalid request' }, { status: 400 });
-            }
+        if (action === 'reserve') {
+          if (method !== 'POST') {
+            return Response.json({ error: 'Method not allowed' }, { status: 405 });
           }
-          return Response.json({ error: 'Method not allowed' }, { status: 405 });
+          let bytes: unknown;
+          try {
+            bytes = (await request.json() as { bytes?: unknown }).bytes;
+          } catch {
+            return Response.json({ error: 'Invalid request' }, { status: 400 });
+          }
+          if (
+            typeof bytes !== 'number'
+            || !Number.isSafeInteger(bytes)
+            || bytes <= 0
+            || bytes > MAX_BOARD_FILE_BYTES
+          ) {
+            return Response.json({ error: 'Invalid request' }, { status: 400 });
+          }
+          /*
+           * Check and commit in one synchronous turn. The old split
+           * (check-quota, then R2 put, then add-bytes) let concurrent uploads
+           * read the same total and each pass the cap.
+           *
+           * There are no replacement credits: the Worker refuses a different
+           * size for a key that already holds bytes, so a reservation only
+           * ever adds. A credit computed against a stale head was the
+           * concurrency defect itself -- N racers each subtracted the stored
+           * size while R2 freed it once.
+           */
+          if (getFileBytesTotal(this.db, roomId) + bytes > MAX_ROOM_FILE_BYTES_TOTAL) {
+            return Response.json(
+              { error: 'Aggregate file storage quota exceeded (250 MB limit)' },
+              { status: 413 },
+            );
+          }
+          addFileBytes(this.db, roomId, bytes);
+          return Response.json({ ok: true, reserved: bytes }, { status: 200 });
         }
 
-        if (action === 'add-bytes') {
-          if (method === 'POST') {
-            try {
-              const body = await request.json() as { bytes?: number };
-              const bytes = body.bytes ?? 0;
-
-              addFileBytes(this.db, roomId, bytes);
-
-              return Response.json({ ok: true }, { status: 200 });
-            } catch (error) {
-              return Response.json({ error: 'Invalid request' }, { status: 400 });
-            }
+        if (action === 'settle') {
+          if (method !== 'POST') {
+            return Response.json({ error: 'Method not allowed' }, { status: 405 });
           }
-          return Response.json({ error: 'Method not allowed' }, { status: 405 });
+          let reserved: unknown;
+          let actual: unknown;
+          try {
+            const parsed = await request.json() as { reserved?: unknown; actual?: unknown };
+            reserved = parsed.reserved;
+            actual = parsed.actual;
+          } catch {
+            return Response.json({ error: 'Invalid request' }, { status: 400 });
+          }
+          if (
+            typeof reserved !== 'number'
+            || !Number.isSafeInteger(reserved)
+            || reserved < 0
+            || reserved > MAX_BOARD_FILE_BYTES
+            || typeof actual !== 'number'
+            || !Number.isSafeInteger(actual)
+            || actual < 0
+            || actual > MAX_BOARD_FILE_BYTES
+          ) {
+            return Response.json({ error: 'Invalid request' }, { status: 400 });
+          }
+          // Correct the reservation to what was actually stored. A positive
+          // delta is new bytes and must respect the cap; a negative one gives
+          // bytes back and floors at zero.
+          const delta = actual - reserved;
+          if (delta > 0) {
+            if (getFileBytesTotal(this.db, roomId) + delta > MAX_ROOM_FILE_BYTES_TOTAL) {
+              return Response.json(
+                { error: 'Aggregate file storage quota exceeded (250 MB limit)' },
+                { status: 413 },
+              );
+            }
+            addFileBytes(this.db, roomId, delta);
+          } else if (delta < 0) {
+            subtractFileBytes(this.db, roomId, -delta);
+          }
+          return Response.json({ ok: true }, { status: 200 });
         }
 
         return Promise.resolve(Response.json({ error: 'Not found' }, { status: 404 }));
@@ -1014,12 +1147,38 @@ export class RoomDO extends DurableObject {
   /** Closes live signaling sockets for one account (kick/suspend/revoke). */
   private closeAccountSockets(accountId: string, roomId: string): void {
     for (const socket of this.ctx.getWebSockets()) {
-      const attachment = socket.deserializeAttachment() as SocketIdentity | null;
+      let attachment: SocketIdentity | null = null;
+      try {
+        attachment = socket.deserializeAttachment() as SocketIdentity | null;
+      } catch {
+        // One unreadable attachment must not abort the sweep and leave every
+        // later socket open.
+        continue;
+      }
       if (attachment?.accountId === accountId) {
         this.closeRevoked(socket, attachment);
       }
     }
     this.scheduleLiveKitEviction(accountId, roomId);
+  }
+
+  /**
+   * Closes every guest-stamped socket in a room. Used when the owner turns
+   * guest access off: the grant still exists, but the door it came through no
+   * longer does.
+   */
+  private closeGuestSockets(roomId: string): void {
+    for (const socket of this.ctx.getWebSockets()) {
+      try {
+        const attachment = socket.deserializeAttachment() as SocketIdentity | null;
+        if (attachment?.roomId === roomId && attachment.guest === true) {
+          this.closeRevoked(socket, attachment);
+        }
+      } catch {
+        // An attachment that cannot be read cannot be identified as a guest;
+        // the alarm's fail-closed pass still closes it.
+      }
+    }
   }
 
   private broadcastFollow(message: FollowMessage, exclude?: WebSocket): void {
@@ -1233,12 +1392,13 @@ export class RoomDO extends DurableObject {
     await this.flushDirtyDocs();
   }
 
-  /** Sends one frame to every socket this object holds for a room. */
+  /** Sends one frame to every granted socket this object holds for a room. */
   private broadcastToRoom(roomId: string, frame: Uint8Array): void {
     for (const socket of this.ctx.getWebSockets()) {
+      // Same granted-recipient rule as the relays and presence: a revoked or
+      // banned account must not see the board emptied underneath it.
+      if (!this.isGrantedRecipient(socket, roomId)) continue;
       try {
-        const attachment = socket.deserializeAttachment() as SocketIdentity | null;
-        if (attachment?.roomId !== roomId) continue;
         socket.send(frame);
       } catch {
         // One unreachable socket must not stop the others being told.
@@ -1509,10 +1669,45 @@ export class RoomDO extends DurableObject {
   private countAccountSockets(accountId: string): number {
     let count = 0;
     for (const socket of this.ctx.getWebSockets()) {
+      if (socket.readyState !== WebSocket.OPEN) continue;
       const attachment = socket.deserializeAttachment() as SocketIdentity | null;
       if (attachment?.accountId === accountId) count += 1;
     }
     return count;
+  }
+
+  /** Reads guest access from the real room row; a missing room is off. */
+  private guestAccessEnabled(roomId: string): boolean {
+    const row = this.db
+      .prepare(`SELECT guest_access AS guestAccess FROM rooms WHERE room_id = ?`)
+      .get(roomId) as { guestAccess: number } | undefined;
+    return row?.guestAccess === 1;
+  }
+
+  /**
+   * Whether a socket in this object may receive a room broadcast right now:
+   * same room, attached account, and still holding a granted role.
+   *
+   * A role can lapse after the upgrade -- an expired editor grant, or a ban
+   * applied without the kick path -- and a peer in that state must not keep
+   * seeing the room's traffic between revocation checks.
+   */
+  private isGrantedRecipient(socket: WebSocket, roomId: string): boolean {
+    try {
+      const attachment = socket.deserializeAttachment() as SocketIdentity | null;
+      if (
+        !attachment?.roomId
+        || attachment.roomId !== roomId
+        || !attachment.accountId
+      ) {
+        return false;
+      }
+      return isGrantedRole(
+        getGrantRole(this.db, attachment.roomId, attachment.accountId),
+      );
+    } catch {
+      return false;
+    }
   }
 
   /** Broadcasts presence updates to all connected sockets in this room. */
@@ -1535,6 +1730,15 @@ export class RoomDO extends DurableObject {
         continue;
       }
       if (!attachment?.roomId || attachment.roomId !== roomId) continue;
+
+      // The same granted-recipient rule the binary relays apply: a banned or
+      // lapsed account does not get the room's roster either.
+      if (
+        !attachment.accountId
+        || !isGrantedRole(getGrantRole(this.db, roomId, attachment.accountId))
+      ) {
+        continue;
+      }
 
       /*
        * Redacted per recipient, never once for the room.
@@ -1615,6 +1819,13 @@ export class RoomDO extends DurableObject {
       return Response.json({ error: 'Not found' }, { status: 404 });
     }
 
+    // Guest access can be off while the guest session is still valid; the row
+    // is the authority, so a reconnecting guest is refused the same way an
+    // HTTP read is.
+    if (url.searchParams.get('guest') === '1' && !this.guestAccessEnabled(roomId)) {
+      return forbidden();
+    }
+
     const role = getGrantRole(this.db, roomId, accountId);
     if (!isGrantedRole(role)) {
       return forbidden();
@@ -1622,7 +1833,10 @@ export class RoomDO extends DurableObject {
 
     const maxSocketsPerRoom =
       RoomDO.signalingMaxSocketsPerRoomForTests ?? SIGNALING_MAX_SOCKETS_PER_ROOM;
-    if (this.ctx.getWebSockets().length >= maxSocketsPerRoom) {
+    const openSockets = this.ctx
+      .getWebSockets()
+      .filter((socket) => socket.readyState === WebSocket.OPEN);
+    if (openSockets.length >= maxSocketsPerRoom) {
       return forbidden('Too many connections');
     }
 
@@ -1640,6 +1854,7 @@ export class RoomDO extends DurableObject {
       authorizationEpoch: epoch,
       roomId,
       grantVersion: getGrantVersion(this.db, roomId),
+      guest: url.searchParams.get('guest') === '1',
     };
     server.serializeAttachment(identity);
     if (this.activeFollow) {
@@ -1798,6 +2013,8 @@ export class RoomDO extends DurableObject {
       (socket) => socket.readyState === WebSocket.OPEN,
     );
     const now = Date.now();
+    this.pruneBreachEpisodes(now);
+
     const roomIds = new Set<string>();
     for (const row of this.db.prepare(
       `SELECT room_id AS roomId FROM rooms`,
@@ -1852,10 +2069,11 @@ export class RoomDO extends DurableObject {
     const identities = new Map<WebSocket, SocketIdentity>();
     for (const socket of sockets) {
       const attachment = socket.deserializeAttachment() as SocketIdentity | null;
-      // A socket with no identity predates this check or lost its attachment;
-      // fail closed rather than treat it as authorized.
-      if (!attachment?.accountId) {
-        this.closeRevoked(socket);
+      // A socket with no identity -- or no session behind its account -- predates
+      // this check or lost its attachment; fail closed rather than treat it as
+      // authorized. The session is what logout and expiry actually revoke.
+      if (!attachment?.accountId || !attachment.sessionId) {
+        this.closeRevoked(socket, attachment);
         continue;
       }
       identities.set(socket, attachment);
@@ -1863,7 +2081,30 @@ export class RoomDO extends DurableObject {
     if (identities.size === 0) return;
 
     const accountIds = [...new Set([...identities.values()].map((i) => i.accountId))];
+    const sessionChecks = new Map<string, string>();
+    for (const identity of identities.values()) {
+      if (!sessionChecks.has(identity.sessionId)) {
+        sessionChecks.set(identity.sessionId, identity.accountId);
+      }
+    }
+    let sessions = [...sessionChecks].map(([sessionHash, accountId]) => ({
+      accountId,
+      sessionHash,
+    }));
+    if (sessions.length > MAX_REVOCATION_SESSION_CHECKS) {
+      try {
+        console.warn(JSON.stringify({
+          event: 'revocation_session_cap',
+          requested: sessions.length,
+          cap: MAX_REVOCATION_SESSION_CHECKS,
+        }));
+      } catch {
+        // Logging must never block a revocation check.
+      }
+      sessions = sessions.slice(0, MAX_REVOCATION_SESSION_CHECKS);
+    }
     let statuses: Record<string, { state: string; authorizationEpoch: number }>;
+    let activeSessionHashes: string[] = [];
     try {
       const identity = this.roomEnv.IDENTITY.get(
         this.roomEnv.IDENTITY.idFromName(GLOBAL_IDENTITY_OBJECT_NAME),
@@ -1872,13 +2113,18 @@ export class RoomDO extends DurableObject {
         new Request('https://identity/accounts/authorizations', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ accountIds }),
+          body: JSON.stringify({ accountIds, sessions }),
         }),
       );
       if (!response.ok) throw new Error(`identity check failed: ${response.status}`);
-      ({ accounts: statuses } = (await response.json()) as {
+      const payload = (await response.json()) as {
         accounts: Record<string, { state: string; authorizationEpoch: number }>;
-      });
+        activeSessionHashes?: unknown;
+      };
+      statuses = payload.accounts;
+      activeSessionHashes = Array.isArray(payload.activeSessionHashes)
+        ? payload.activeSessionHashes.filter((hash): hash is string => typeof hash === 'string')
+        : [];
     } catch {
       // Leave sockets open and retry: a transient identity failure must not
       // disconnect an entire classroom.
@@ -1886,12 +2132,21 @@ export class RoomDO extends DurableObject {
       return;
     }
 
+    const liveSessionHashes = new Set(activeSessionHashes);
     const evictedLiveKitAccounts = new Set<string>();
     for (const [socket, identity] of identities) {
       const status = statuses[identity.accountId];
+      // A grant can lapse between upgrades -- expired editor grants are purged
+      // by the alarm's own room pass -- and a socket that outlives its role
+      // must not keep reading the room.
+      const granted = isGrantedRole(
+        getGrantRole(this.db, identity.roomId, identity.accountId),
+      );
       const revoked = !status
         || status.state !== 'active'
-        || status.authorizationEpoch !== identity.authorizationEpoch;
+        || status.authorizationEpoch !== identity.authorizationEpoch
+        || !granted
+        || !liveSessionHashes.has(identity.sessionId);
       if (revoked) {
         this.closeRevoked(socket, identity);
         if (!evictedLiveKitAccounts.has(identity.accountId)) {
@@ -2120,11 +2375,70 @@ export class RoomDO extends DurableObject {
         return;
       }
 
+      /*
+       * Sync frames take the sanitized path; awareness and any other relayable
+       * frame keep the raw relay below.
+       *
+       * The object applies the update to its own document first, strips whatever
+       * the HTTP scene route would have refused (SEC-A02), and relays only the
+       * server-produced diff. Relaying the raw client frame would carry a
+       * blocked element to every peer before anything could refuse it, and
+       * would never deliver the sanitize deletion.
+       */
+      if (messageType === MESSAGE_SYNC) {
+        try {
+          const doc = await this.getRoomDoc(attachment.roomId);
+          const before = Y.encodeStateVector(doc);
+
+          const replies = handleSyncFrame(doc, bytes, ws);
+          for (const reply of replies) {
+            try {
+              ws.send(reply);
+            } catch {
+              try {
+                ws.close();
+              } catch {
+                // Already gone.
+              }
+            }
+          }
+
+          sanitizeSceneDoc(doc, { maxElements: RoomDO.maxElementsForTests ?? undefined });
+
+          const diff = Y.encodeStateAsUpdate(doc, before);
+          if (!isEmptyUpdate(diff)) {
+            const frame = encodeUpdateFrame(diff);
+            for (const peer of this.ctx.getWebSockets()) {
+              if (peer === ws) continue;
+              // A banned or lapsed recipient must not learn the board's state.
+              if (!this.isGrantedRecipient(peer, attachment.roomId)) continue;
+              try {
+                peer.send(frame);
+              } catch {
+                try {
+                  peer.close();
+                } catch {
+                  // Already gone.
+                }
+              }
+            }
+          }
+
+          await this.flushIfDue();
+        } catch (err) {
+          logInternalRoomError('serverDocSync', err, attachment.roomId);
+        }
+        return;
+      }
+
       // Only relay frames that belong in the y-protocol: sync (0) and awareness (1).
       // Forged presence frames (100) and unknown types are not relayed to peers.
       if (isRelayableFrame(bytes)) {
         for (const peer of this.ctx.getWebSockets()) {
           if (peer === ws) continue;
+          // Awareness and follow frames carry a peer's own state, but a banned
+          // or lapsed recipient still must not receive them.
+          if (!this.isGrantedRecipient(peer, attachment.roomId)) continue;
           try {
             peer.send(bytes);
           } catch {
@@ -2135,30 +2449,6 @@ export class RoomDO extends DurableObject {
             }
           }
         }
-      }
-
-      // Relaying above is unchanged; this is the added path. The object answers
-      // the sender from its own document, so a peer that arrives alone is no
-      // longer talking into an empty room.
-      try {
-        const doc = await this.getRoomDoc(attachment.roomId);
-
-        const replies = handleSyncFrame(doc, bytes, ws);
-        for (const reply of replies) {
-          try {
-            ws.send(reply);
-          } catch {
-            try {
-              ws.close();
-            } catch {
-              // Already gone.
-            }
-          }
-        }
-        await this.flushIfDue();
-      } catch (err) {
-        logInternalRoomError('serverDocSync', err, attachment.roomId);
-        // A bug in server sync must not break peer relay; it is the fallback path.
       }
 
       return;
@@ -2218,6 +2508,24 @@ export class RoomDO extends DurableObject {
     }
   }
 
+  /**
+   * Drops abuse episodes that are definitively over.
+   *
+   * SEC-A12 keeps an episode across socket closes so a reconnect cannot reset
+   * it, which means the map needs a bound that is not "the socket went away".
+   * Five episode gaps with no breaching frame is far past the gap the breach
+   * logic itself uses, so an entry removed here could never have continued an
+   * episode anyway. The alarm is the one beat that still ticks once every
+   * socket has gone, so a flooder that left cannot pin an entry forever.
+   */
+  private pruneBreachEpisodes(now: number): void {
+    for (const [accountId, episode] of this.ceilingBreachesPerAccount) {
+      if (now - episode.lastBreachTimeMs >= BREACH_EPISODE_GAP_MS * 5) {
+        this.ceilingBreachesPerAccount.delete(accountId);
+      }
+    }
+  }
+
   private async handleSocketGone(ws: WebSocket): Promise<void> {
     try {
       const attachment = ws.deserializeAttachment() as SocketIdentity | null;
@@ -2244,12 +2552,13 @@ export class RoomDO extends DurableObject {
         await this.setActiveCall(null);
       }
       if (attachment?.roomId) this.sweepDepartedCursors(attachment.roomId);
-      // The breach counter outlives nothing: an account with no socket left
-      // cannot breach again, and the entry would otherwise sit in the map for
-      // as long as the object lives.
-      if (attachment?.accountId && !this.hasOpenSocketForAccount(attachment.accountId, ws)) {
-        this.ceilingBreachesPerAccount.delete(attachment.accountId);
-      }
+      /*
+       * The breach episode is deliberately NOT forgotten when the account's
+       * last socket closes (SEC-A12). Deleting it here let a flooder reset the
+       * counter by reconnecting, so the next burst always read as a first
+       * breach and was never closed. The map is bounded by the alarm's prune
+       * instead, after five episode gaps with no breaching frame.
+       */
     } catch {
       // A socket with no attachment leaves nothing to sweep by.
     }

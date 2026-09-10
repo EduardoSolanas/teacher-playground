@@ -19,7 +19,7 @@ jobs:
     name: Deploy Worker and static assets
     runs-on: ubuntu-24.04
     environment: prod
-    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository || github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout
@@ -85,20 +85,6 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
 
-      # TEMP: e2e skipped until Phase 2 client changes are pushed
-      # - name: Install Playwright browser
-      #   run: npx playwright install --with-deps chromium
-
-      # - name: End-to-end tests
-      #   continue-on-error: true
-      #   run: npm run test:e2e -- --skip-build -- --skip-build
-
-      # - name: Upload e2e artifacts on failure
-      #   if: failure()
-      #   uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-      #   with:
-      #     name: e2e-results
-      #     path: |
-      #       test-results/
-      #       playwright-report/
-      #     retention-days: 7
+      # Deploy is gated on CI success for this exact commit via the
+      # workflow_run trigger above. CI's e2e job (.github/workflows/ci.yml)
+      # is blocking, so the browser/HTTP/session paths run before deploy.

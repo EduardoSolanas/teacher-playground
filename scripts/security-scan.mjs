@@ -37,7 +37,9 @@ function trackedContent(root, relativePath) {
 
 function isNonExampleEnvironmentFile(relativePath) {
   const fileName = basename(relativePath);
-  return /^\.env(?:\.|$)/.test(fileName) && !fileName.endsWith('.example');
+  // `.dev.vars` is Wrangler's secret file, exactly like `.env`: the unfilled
+  // one ships, the filled one must never be tracked.
+  return /^(?:\.env|\.dev\.vars)(?:\.|$)/.test(fileName) && !fileName.endsWith('.example');
 }
 
 function isTrackedDatabase(relativePath) {
@@ -55,6 +57,8 @@ const credentialPatterns = [
   /\bsk_(?:live|test)_[0-9A-Za-z]{16,}\b/,
   /\bsk-(?:proj-)?[0-9A-Za-z_-]{20,}\b/,
   /\b(?:CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CLOUDFLARE_ACCESS_CLIENT_SECRET|CLOUDFLARE_CLIENT_SECRET|CF_API_TOKEN|CF_API_KEY|CF_ACCESS_CLIENT_SECRET|OPENAI_API_KEY|GOOGLE_CLIENT_SECRET|FACEBOOK_APP_SECRET)\s*[:=]\s*["']?[0-9A-Za-z._~+/-]{20,}/,
+  /\bLIVEKIT_API_KEY\s*[:=]\s*["']?[0-9A-Za-z._~+/-]{16,}/,
+  /\bLIVEKIT_API_SECRET\s*[:=]\s*["']?[0-9A-Za-z._~+/-]{16,}/,
 ];
 const emailPattern = /[A-Z0-9][A-Z0-9.!#$%&'*+/=?^_`{|}~-]{0,63}@((?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,63})/gi;
 const reservedEmailDomains = new Set(['example.com', 'example.net', 'example.org']);

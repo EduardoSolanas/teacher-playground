@@ -20,6 +20,13 @@ describe('accessLogoutUrl', () => {
     expect(safeRedirectPath('whiteboard')).toBe('/');
   });
 
+  it('rejects backslashes and control characters browsers fold into an open redirect', () => {
+    // Browsers normalize `\` to `/` in Location: `/\evil.example` becomes
+    // `//evil.example`. A tab does the same after URL parsing.
+    expect(safeRedirectPath('/\\evil.example')).toBe('/');
+    expect(safeRedirectPath('/\t/evil.example')).toBe('/');
+  });
+
   it('clears CF_Authorization with Max-Age=0', () => {
     expect(clearCfAuthorizationSetCookie()).toContain('CF_Authorization=');
     expect(clearCfAuthorizationSetCookie()).toContain('Max-Age=0');

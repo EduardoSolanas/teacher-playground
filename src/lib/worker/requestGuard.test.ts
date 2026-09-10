@@ -14,6 +14,7 @@ import {
   readBoundedJsonBody,
   routeHostKind,
   isRouteAllowedOnHost,
+  isOriginGuardedPath,
 } from './requestGuard';
 
 describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
@@ -257,6 +258,41 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(isRouteAllowedOnHost('//whiteboard', 'GET', 'teacher')).toBe(false);
       expect(isRouteAllowedOnHost('/whiteboard/', 'GET', 'teacher')).toBe(false);
       expect(isRouteAllowedOnHost('/whiteboard.', 'GET', 'teacher')).toBe(false);
+    });
+  });
+
+  describe('isOriginGuardedPath (SEC-A09)', () => {
+    it('guards state-changing auth, account, and API paths, and signaling on any method', () => {
+      const guarded: Array<[string, string]> = [
+        ['POST', '/auth/session'],
+        ['POST', '/auth/session/logout'],
+        ['POST', '/auth/session/confirm'],
+        ['PATCH', '/auth/account/profile'],
+        ['POST', '/auth/guest'],
+        ['POST', '/api/anything'],
+        ['DELETE', '/auth/account'],
+        ['DELETE', '/auth/account/export'],
+        ['GET', '/signaling'],
+        ['POST', '/signaling'],
+      ];
+
+      for (const [method, pathname] of guarded) {
+        expect(isOriginGuardedPath(pathname, method), `${method} ${pathname}`).toBe(true);
+      }
+    });
+
+    it('leaves read-only session, account, and API requests unguarded', () => {
+      const unguarded: Array<[string, string]> = [
+        ['GET', '/auth/session/current'],
+        ['GET', '/auth/account/export'],
+        ['GET', '/api/anything'],
+        ['HEAD', '/api/anything'],
+        ['POST', '/whiteboard/x'],
+      ];
+
+      for (const [method, pathname] of unguarded) {
+        expect(isOriginGuardedPath(pathname, method), `${method} ${pathname}`).toBe(false);
+      }
     });
   });
 

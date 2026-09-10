@@ -31,7 +31,7 @@
     "@teacher-playground/excalidraw": "https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.11/package.tgz",
     "better-sqlite3": "^12.10.0",
     "livekit-client": "^2.22.0",
-    "next": "^16.3.1",
+    "next": "^16.3.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwindcss": "^4.1.18",
@@ -60,7 +60,7 @@
     "playwright": "^1.60.0",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.6",
+    "vitest": "^4.1.11",
     "wrangler": "^4.123.0"
   },
   "overrides": {
@@ -68,6 +68,7 @@
     "immutable": "4.3.9",
     "mermaid": "11.16.1",
     "lodash-es": "4.18.1",
+    "sharp": "^0.35.4",
     "@teacher-playground/excalidraw": {
       "nanoid": "3.3.18",
       "sass": {

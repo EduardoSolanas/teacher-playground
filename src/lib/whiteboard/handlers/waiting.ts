@@ -173,7 +173,10 @@ export async function handleWaitingPost(
         clearAccountPeers(db, roomId, target.accountId);
       })();
 
-      return Response.json({ success: true });
+      return Response.json({
+        success: true,
+        bannedPeer: { accountId: target.accountId },
+      });
     }
 
     return Response.json({ error: 'Invalid action' }, { status: 400 });

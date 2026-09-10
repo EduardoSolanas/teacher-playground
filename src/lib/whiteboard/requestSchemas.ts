@@ -143,7 +143,7 @@ function addBoundedSceneValueIssues(
   });
 }
 
-function isAllowedElementLink(value: string): boolean {
+export function isAllowedElementLink(value: string): boolean {
   const trimmed = value.trim();
   if (trimmed.length === 0) {
     return false;

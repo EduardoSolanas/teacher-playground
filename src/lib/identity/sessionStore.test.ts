@@ -214,6 +214,19 @@ describe('opaque application session store', () => {
     ).toBeNull();
   });
 
+  it('rotation preserves the original issue time so destructive-action freshness is not reset', async () => {
+    const issued = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+    const rotateAt = T0 + DESTRUCTIVE_FRESH_MS + 60_000;
+    const rotated = await rotateSession(db, issued.token, rotateAt);
+
+    expect(rotated?.absoluteExpiresAt).toBe(issued.absoluteExpiresAt);
+
+    const validated = await validateSession(db, rotated!.token, rotateAt);
+    expect(validated).not.toBeNull();
+    expect(validated?.createdAt).toBe(issued.createdAt);
+    expect(sessionAllowsDestructiveAction(validated!, rotateAt)).toBe(false);
+  });
+
   it('revoke-all and disable atomically advance the epoch and invalidate every session', async () => {
     const one = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
     const two = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0 + 1);

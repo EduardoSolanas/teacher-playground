@@ -194,10 +194,11 @@ approve, join, refresh, expiry, revoke, and denial.
 
 ### SEC-003 — authenticate and bound WebSocket admission
 
-**Evidence (2026-08-18):** `/signaling` requires Access + local session, exact
-Origin, Worker-stamped `accountId`/`accountEpoch`, and a granted role before
-`acceptWebSocket`. Frame size 1 MiB → 1009; account socket cap 4; message
-rate 60/s → 1008.
+**Evidence (2026-09-10):** `/signaling` requires Access + local session, exact
+Origin, Worker-stamped `accountId`/`accountEpoch`/`sessionId`, and a granted role
+before `acceptWebSocket`. Frame size 32 MiB (`MAX_WS_FRAME_BYTES`) → 1009;
+account socket cap 4; message rate 120/window → 1008, closing only on a
+sustained 360/window episode.
 
 - [x] Prefer a same-origin, hostname-protected upgrade authenticated by Access
   and the local application session. Add a short-lived, single-use,
@@ -214,11 +215,14 @@ rate 60/s → 1008.
   - Evidence: JSON types `subscribe`/`unsubscribe`/`ping`/`publish` only;
     `publish` topic must be `room` (`SIGNALING_ALLOWED_TOPIC`); independent
     verifier APPROVE-AS-BLOCKED for the topic slice then split so this item
-    can close. Frame 1 MiB → **1009**; account cap **4**; room cap **32**
-    (workers prove the cap via `signalingMaxSocketsPerRoomForTests`); rate
-    **60/s** → **1008**. Fan-out: JSON `publish` and binary writes only to
-    `canWriteBoard` peers (viewers excluded). Mutants: topic invert killed
-    mismatch test; Cookie strip is SEC-004.
+    can close. Frame **32 MiB** (`MAX_WS_FRAME_BYTES`) → **1009**; account cap
+    **4**; room cap **32** (workers prove the cap via
+    `signalingMaxSocketsPerRoomForTests`); rate **120/window** → **1008** on a
+    sustained 360/window episode. Fan-out: JSON `publish` reaches `canWriteBoard`
+    peers only (viewers excluded); binary sync frames relay a server-sanitized
+    diff (`sceneGuard`, SEC-A02) to granted recipients (viewers included,
+    read-only); every broadcast path is grant-filtered (SEC-A04). Mutants: topic
+    invert killed mismatch test; Cookie strip is SEC-004.
 - [x] Redact credentials/tickets from logs and metrics.
   - Evidence: `logAuthEvent` redacts JWT/Bearer/Cookie/email; workers assert
     auth_failure lines contain neither Access JWT nor `__Host-teacher-session`.
@@ -229,8 +233,9 @@ rate 60/s → 1008.
   happened while the socket slept is enforced at the first byte, not at the
   next reconnect.
   - Evidence: independent verifier APPROVE for ping: no
-    `setWebSocketAutoResponse`; stale grant on ping closes 4401. Epoch still
-    alarm-only.
+    `setWebSocketAutoResponse`; stale grant on ping closes 4401. Grant version
+    and role are re-checked on every frame; account epoch and the exact session
+    hash (`activeSessionHashes`) are re-checked by the alarm (≤30 s, SEC-A03).
 
 **Acceptance tests:** missing, revoked, expired, wrong-room, and foreign-origin
 upgrade credentials fail; if tickets are retained, replay also fails; topic
@@ -266,7 +271,9 @@ with `1008`; rate excess isolates only the attacker.
   behavior. Revocation must take effect on HTTP and already-open real-time
   connections even if the Cloudflare Access session remains valid.
   - Evidence: Phase 1 session verifier APPROVE (`revokeAllSessions`, logout,
-    disable + epoch). Live sockets: kick 0 s, disable ≤ 30 s
+    disable + epoch). Live sockets: kick/suspend 0 s; logout, idle/absolute
+    expiry, disable, revoke-all ≤ 30 s via exact-session-hash and epoch
+    revalidation; guest access disable closes guest sockets immediately
     (`SECURITY_REVOCATION_BOUND.md`). Provider-account unlinking is N/A
     under the no-linking identity rule; Access IdP removal is platform.
 - [x] Strip inbound identity headers on Worker `forward()` so RoomDO never
@@ -1304,26 +1311,30 @@ acceptance tests and evidence are satisfied.
   version, role, and expiry; validate exact `Origin`, protocol, topic, schema,
   message size, connection count, rate, and bounded fan-out.
   - Evidence: attachment binds `accountId`, `sessionId` (Worker-stamped
-    `sessions.session_hash`), `authorizationEpoch`, `roomId`, `grantVersion`.
-    Upgrade 401 without `sessionId`; forged query params overwritten (workers
-    test). JSON signaling whitelists `subscribe`/`unsubscribe`/`ping`/`publish`
-    only; unknown types dropped; `publish` fans out to `canWriteBoard` peers
-    only (viewers excluded). Socket caps and rate limits APPROVE (SEC-003).
-    Independent verifier APPROVE for this bind/whitelist slice. Residual:
-    role/expiry not stored on attachment (live lookup + alarm); room-wide cap
-    untested at 33; empty-`sessionId` 401 is Worker-path defense-in-depth.
+    `sessions.session_hash`), `authorizationEpoch`, `roomId`, `grantVersion`,
+    and the guest marker (SEC-A07). Upgrade 401 without `sessionId`; forged
+    query params overwritten (workers test). JSON signaling whitelists
+    `subscribe`/`unsubscribe`/`ping`/`publish` only; unknown types dropped;
+    `publish` fans out to `canWriteBoard` peers only (viewers excluded); binary
+    sync relays a sanitized server diff to granted recipients. Socket caps and
+    rate limits APPROVE (SEC-003). Independent verifier APPROVE for this
+    bind/whitelist slice; the exact session hash is revalidated by the alarm
+    (SEC-A03). Residual: role/expiry not stored on attachment (live lookup +
+    alarm); empty-`sessionId` 401 is Worker-path defense-in-depth.
 - [x] Implement room kick/revoke by incrementing the grant version and closing
   matching live and hibernating sockets.
   - Evidence: independent verifier APPROVE (4401 + grant_version + LiveKit).
 - [x] Revalidate hibernated-socket attachments on wake against current grant
   version, epoch, and expiry (SEC-003).
-  - Evidence: independent verifier APPROVE for grant on ping/message. Residual:
-    epoch still alarm-only (30 s with no traffic).
+  - Evidence: independent verifier APPROVE for grant on ping/message. Account
+    epoch and exact session hash are alarm-revalidated within 30 s with no
+    traffic (SEC-A03).
 - [x] Choose and document account-wide revocation: reliable active-room fan-out,
   or a measurable maximum delay enforced by authorization-epoch revalidation,
   short socket expiry, and forced reconnect.
-  - Evidence: `SECURITY_REVOCATION_BOUND.md` — kick 0 s, disable **30 s**.
-    Fan-out not adopted. Independent ping revalidation APPROVE.
+  - Evidence: `SECURITY_REVOCATION_BOUND.md` — kick/suspend 0 s; logout,
+    session expiry, disable, and revoke-all ≤ 30 s; guest access disable
+    immediate. Fan-out not adopted. Independent ping revalidation APPROVE.
 - [x] Add raw-client adversarial tests for pending reads, viewer writes, socket
   replay, wrong room/origin, malformed/oversized frames, rate abuse, kick, and
   account-wide revocation.

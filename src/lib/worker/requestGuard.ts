@@ -181,6 +181,31 @@ export function isRouteAllowedOnHost(
   return false;
 }
 
+/**
+ * Paths whose state-changing requests must carry an exact same-origin Origin.
+ *
+ * `/signaling` is guarded on every method because a cross-origin WebSocket
+ * handshake is just as dangerous as a cross-origin POST. Everything else is
+ * guarded only when it can change state; the read-only GET/HEAD forms stay
+ * reachable so navigation and fetches do not need an Origin header.
+ *
+ * `/auth/account` and its subpaths are included (SEC-A09): a forged
+ * cross-origin `DELETE /auth/account` erases the account, and it was missing
+ * from the guarded set.
+ */
+export function isOriginGuardedPath(pathname: string, method: string): boolean {
+  if (pathname === '/signaling') return true;
+  if (method === 'GET' || method === 'HEAD') return false;
+
+  return pathname === '/auth/session'
+    || pathname === '/auth/session/logout'
+    || pathname === '/auth/session/confirm'
+    || pathname === '/auth/account'
+    || pathname.startsWith('/auth/account/')
+    || pathname === '/auth/guest'
+    || pathname.startsWith('/api/');
+}
+
 /** Room identifiers are short alphanumeric codes plus `_`/`-`. */
 export const ROOM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 

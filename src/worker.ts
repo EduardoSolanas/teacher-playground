@@ -31,6 +31,7 @@ import {
   bodyTooLarge,
   isJsonContentType,
   isRouteAllowedOnHost,
+  isOriginGuardedPath,
   readBoundedJsonBody,
   isPublicPath,
   isValidRoomId,
@@ -129,8 +130,9 @@ function accessRequestLimiterFor(env: Env) {
 }
 
 /**
- * Presence POSTs (join/heartbeat and kick/suspend) per account per minute (SEC-017).
- * Kick shares this cap so the Worker can limit without cloning/parsing JSON.
+ * Presence POSTs (join/heartbeat and kick/suspend) and DELETEs (leave) per
+ * account per minute (SEC-017, SEC-A14). Kick shares this cap so the Worker
+ * can limit without cloning/parsing JSON.
  */
 const PRESENCE_POST_RATE_WINDOW_MS = RATE_WINDOW_MS;
 const productionPresencePostLimiter = createRateLimiter({
@@ -242,17 +244,7 @@ function hasExactOrigin(request: Request): boolean {
 }
 
 function originGuard(env: Env, request: Request, pathname: string): Response | null {
-  const readOnly = request.method === 'GET' || request.method === 'HEAD';
-  const guarded = pathname === '/signaling'
-    || (!readOnly && (
-      pathname === SESSION_ISSUE
-      || pathname === SESSION_LOGOUT
-      || pathname === SESSION_CONFIRM
-      || pathname === ACCOUNT_PROFILE
-      || pathname === AUTH_GUEST
-      || pathname.startsWith('/api/')
-    ));
-  if (!guarded || hasExactOrigin(request)) return null;
+  if (!isOriginGuardedPath(pathname, request.method) || hasExactOrigin(request)) return null;
   emitAuthEvent({ type: 'auth_failure', outcome: 'denied', reason: 'origin' }, env);
   return withSecurityHeaders(Response.json(
     { error: 'Origin required' },
@@ -803,6 +795,36 @@ function forward(
   });
 }
 
+/**
+ * Releases a room's file-byte reservation after an upload that stored nothing
+ * (missing object, or bytes that did not match the declared size). The room's
+ * settle endpoint keeps its cap check for positive adjustments, so the
+ * response is returned rather than ignored.
+ */
+function settleReservedFileBytes(
+  env: Env,
+  roomId: string,
+  url: URL,
+  session: ValidatedSession | null,
+  guest: boolean,
+  reserved: number,
+  actual: number,
+): Promise<Response> {
+  return forward(
+    env,
+    roomId,
+    '/room/files/settle',
+    new Request('https://room/room/files/settle', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reserved, actual }),
+    }),
+    url,
+    session,
+    guest,
+  );
+}
+
 async function probeRoomAccessStatus(
   env: Env,
   roomId: string,
@@ -1103,25 +1125,64 @@ const worker = {
         );
         if (!authCheck.ok) return authCheck;
 
-        // Check aggregate file quota: get current total and ensure upload won't exceed 250 MB.
-        const quotaCheck = await forward(
+        /*
+         * A key that already holds bytes is immutable by size.
+         *
+         * The room used to credit an overwrite for the stored object before
+         * the new one was measured, and the credit came from this Worker-side
+         * head: eight concurrent PUTs of the same key each read the same
+         * stored size and each subtracted it, while R2 freed it once. Refusing
+         * the different size removes the race by construction, and a same-size
+         * re-PUT is free because the net storage change is zero.
+         */
+        const key = buildR2ObjectKey(roomId, fileId);
+        const existing = await env.BOARD_FILES.head(key);
+        if (existing) {
+          if (existing.size !== declaredSize) {
+            return withSecurityHeaders(new Response(
+              'File id already stored with a different size',
+              { status: 409 },
+            ));
+          }
+          const stored = await env.BOARD_FILES.put(key, request.body, {
+            httpMetadata: {
+              contentType: mimeType!,
+            },
+          });
+          if (!stored || stored.size !== existing.size) {
+            if (stored) await env.BOARD_FILES.delete(key);
+            return withSecurityHeaders(new Response('File too large', { status: 413 }));
+          }
+          return withSecurityHeaders(Response.json({ ok: true }, { status: 201 }));
+        }
+
+        /*
+         * Reserve the declared size before touching R2.
+         *
+         * The old flow checked the quota, wrote the object, and then counted
+         * the bytes -- a read, a network write, and a write with no
+         * serialization between them, so two uploads could each pass a check
+         * taken against the same total. The room commits the reservation in
+         * one synchronous SQL turn, so the next request sees the reduced
+         * headroom.
+         */
+        const reservation = await forward(
           env,
           roomId,
-          '/room/files/check-quota',
-          new Request('https://room/room/files/check-quota', {
+          '/room/files/reserve',
+          new Request('https://room/room/files/reserve', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ incomingSize: declaredSize }),
+            body: JSON.stringify({ bytes: declaredSize }),
           }),
           url,
           session,
           guestCaller,
         );
-        if (!quotaCheck.ok) return quotaCheck;
+        if (!reservation.ok) return reservation;
 
         // Streamed, not buffered: an image is megabytes and reading it into
         // memory first would put the whole file in the isolate's heap.
-        const key = buildR2ObjectKey(roomId, fileId);
         const stored = await env.BOARD_FILES.put(key, request.body, {
           httpMetadata: {
             contentType: mimeType!,
@@ -1129,40 +1190,23 @@ const worker = {
         });
 
         /*
-         * Checked again against what actually arrived.
+         * Checked against what actually arrived.
          *
-         * The cap above tests content-length, which is the client's word about
-         * its own request. A peer that declares a small body and then streams a
-         * large one would otherwise write it in full, and the bucket -- and the
-         * bill -- would grow to whatever anyone with a grant felt like sending.
-         * The bytes are already spent by the time this runs, so this bounds
-         * storage rather than bandwidth; it is the difference between one
-         * oversized request and an unbounded store.
+         * Content-Length is the client's word about its own request. A peer
+         * that declares a small body and then streams a large one would
+         * otherwise write it in full, and the bucket -- and the bill -- would
+         * grow to whatever anyone with a grant felt like sending. The bytes
+         * are already spent by the time this runs, so this bounds storage
+         * rather than bandwidth; it is the difference between one oversized
+         * request and an unbounded store. A mismatch is also where the
+         * reservation is released.
          */
-        if (stored && stored.size > MAX_BOARD_FILE_BYTES) {
-          await env.BOARD_FILES.delete(key);
-          return withSecurityHeaders(new Response('File too large', { status: 413 }));
-        }
-
-        // Update the aggregate file bytes counter after successful upload.
-        if (stored) {
-          const updateResult = await forward(
-            env,
-            roomId,
-            '/room/files/add-bytes',
-            new Request('https://room/room/files/add-bytes', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ bytes: stored.size }),
-            }),
-            url,
-            session,
-            guestCaller,
-          );
-          if (!updateResult.ok) {
-            // Log the error but don't fail the request - file is already in R2
-            console.error('Failed to update file bytes counter', updateResult.status);
-          }
+        if (!stored || stored.size !== declaredSize) {
+          if (stored) await env.BOARD_FILES.delete(key);
+          await settleReservedFileBytes(env, roomId, url, session, guestCaller, declaredSize, 0);
+          return withSecurityHeaders(stored
+            ? new Response('File too large', { status: 413 })
+            : new Response('Upload failed', { status: 500 }));
         }
 
         return withSecurityHeaders(Response.json({ ok: true }, { status: 201 }));
@@ -1233,7 +1277,23 @@ const worker = {
         }
         request = new Request(request, { body: bounded.buffer });
       }
-      const subpath = match[2] ?? '';
+      // ROOM_API captures the raw remainder into the subpath. Collapse empty
+      // segments once so every exact comparison below -- the destructive-action
+      // gate, the limiters, the settings clone, the owned-room bookkeeping and
+      // the internal-route refusals -- sees `/x/`, `//x` and `/a//b/` as `/x`
+      // and `/a/b`. Stripping only trailing slashes read `//files/reserve` as
+      // a different path and forwarded it to the room.
+      const rawSubpath = match[2] ?? '';
+      const subpathParts = rawSubpath.split('/').filter(Boolean);
+      const subpath = subpathParts.length > 0 ? `/${subpathParts.join('/')}` : '';
+      // Board bytes are consumed by BOARD_FILE_API, which matches exactly
+      // /files/<fileId> with no trailing slash. Every other /files path names
+      // an action the Worker issues to the room itself (authorize-write,
+      // authorize-read, reserve, settle); a session cookie alone must not
+      // reach them, so the public API refuses the whole subtree.
+      if (subpath === '/files' || subpath.startsWith('/files/')) {
+        return withSecurityHeaders(new Response(null, { status: 404 }));
+      }
       // Refuse the internal guest-verify route from the public API.
       if (subpath === '/guest-verify' || subpath.startsWith('/guest-verify/')) {
         return withSecurityHeaders(new Response(null, { status: 404 }));
@@ -1263,7 +1323,12 @@ const worker = {
         const limit = accessRequestLimiterFor(env).take(session.accountId);
         if (!limit.ok) return rateLimited(env, limit.retryAfterMs);
       }
-      if (request.method === 'POST' && subpath === '/presence' && session && shouldRateLimitRoomCreate(env, request)) {
+      if (
+        (request.method === 'POST' || request.method === 'DELETE')
+        && subpath === '/presence'
+        && session
+        && shouldRateLimitRoomCreate(env, request)
+      ) {
         const limit = presencePostLimiterFor(env).take(session.accountId);
         if (!limit.ok) return rateLimited(env, limit.retryAfterMs);
       }

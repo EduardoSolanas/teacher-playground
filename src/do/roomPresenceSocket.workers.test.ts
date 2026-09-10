@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { env } from 'cloudflare:workers';
+import { runInDurableObject } from 'cloudflare:test';
+import { RoomDO } from './RoomDO';
 import { decodePresenceMessage } from '../lib/whiteboard/presenceMessage';
 import { ROOM_SETTINGS_KEYS } from '../lib/whiteboard/requestSchemas';
 import {
@@ -146,6 +148,106 @@ describe('presence broadcast over WebSocket', () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
 
     expect(frames.length).toBe(0);
+
+    ownerSocket.close();
+  });
+
+  it('does not broadcast when a presence DELETE removes nothing', async () => {
+    /*
+     * A peer row can still exist when the leave arrives: the wrapper's
+     * authorize runs before the sweep, so a row older than the active window
+     * is admitted and then swept before the handler runs. The DELETE itself
+     * changes nothing, and with the same signature check the POST branch uses
+     * it must not broadcast.
+     */
+    const owner = await bootstrapLocalSession('presence-delete-noop-owner');
+    const roomId = 'presence-delete-noop-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const join = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'owner-peer', userName: 'Owner', color: '#00ff00' }),
+    });
+    expect(join.status).toBe(200);
+
+    const ownerSocket = await vi.waitFor(async () => {
+      const res = await authenticatedFetch(`/signaling?room=${roomId}`, owner, {
+        headers: { Upgrade: 'websocket' },
+      });
+      expect(res.status).toBe(101);
+      const ws = res.webSocket;
+      if (!ws) throw new Error('no webSocket on response');
+      ws.accept();
+      return ws;
+    }, { timeout: SOCKET_EVENT_DEADLINE_MS });
+
+    const frames: ArrayBuffer[] = [];
+    ownerSocket.addEventListener('message', (event: MessageEvent) => {
+      if (event.data instanceof ArrayBuffer) frames.push(event.data);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    frames.length = 0;
+
+    await runInDurableObject(env.ROOMS.get(env.ROOMS.idFromName(roomId)), (instance: RoomDO) => {
+      const staleAt = Date.now() - 60_000;
+      instance.db.prepare(
+        `INSERT INTO room_presence
+           (room_id, peer_id, user_name, color, first_seen, last_seen, account_id, hand_raised)
+         VALUES (?, 'ghost-peer', 'Ghost', '#000000', ?, ?, ?, 0)`,
+      ).run(roomId, staleAt, staleAt, owner.accountId);
+    });
+
+    const del = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/presence?peerId=ghost-peer`,
+      owner,
+      { method: 'DELETE' },
+    );
+    expect(del.status).toBe(200);
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(frames.length).toBe(0);
+
+    ownerSocket.close();
+  });
+
+  it('broadcasts when a presence DELETE removes an active peer', async () => {
+    const owner = await bootstrapLocalSession('presence-delete-active-owner');
+    const roomId = 'presence-delete-active-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const join = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'owner-peer', userName: 'Owner', color: '#00ff00' }),
+    });
+    expect(join.status).toBe(200);
+    const joined = await join.json() as { peerId: string };
+
+    const ownerSocket = await vi.waitFor(async () => {
+      const res = await authenticatedFetch(`/signaling?room=${roomId}`, owner, {
+        headers: { Upgrade: 'websocket' },
+      });
+      expect(res.status).toBe(101);
+      const ws = res.webSocket;
+      if (!ws) throw new Error('no webSocket on response');
+      ws.accept();
+      return ws;
+    }, { timeout: SOCKET_EVENT_DEADLINE_MS });
+
+    const frame = nextPresenceMessage(ownerSocket);
+    const del = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/presence?peerId=${encodeURIComponent(joined.peerId)}`,
+      owner,
+      { method: 'DELETE' },
+    );
+    expect(del.status).toBe(200);
+
+    const payload = await frame;
+    expect(payload).toBeDefined();
+    expect((payload as { users?: unknown[] }).users).toEqual([]);
 
     ownerSocket.close();
   });

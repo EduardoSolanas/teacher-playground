@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { runInDurableObject } from 'cloudflare:test';
-import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import { RoomDO } from './RoomDO';
 import {
@@ -238,6 +237,7 @@ describe('binary frame relay security', () => {
 
     try {
       const syncFrames: Uint8Array[] = [];
+      const mirror = new Y.Doc();
       ownerSocket.addEventListener('message', (event) => {
         if (event.data instanceof ArrayBuffer) {
           const frame = new Uint8Array(event.data);
@@ -247,6 +247,7 @@ describe('binary frame relay security', () => {
             const msgType = decoding.readVarUint(decoder);
             if (msgType === MESSAGE_SYNC) {
               syncFrames.push(frame);
+              handleSyncFrame(mirror, frame);
             }
           } catch {
             // Ignore malformed frames
@@ -254,16 +255,19 @@ describe('binary frame relay security', () => {
         }
       });
 
-      // Editor sends a Yjs sync frame (sync step 1)
-      const syncEncoder = encoding.createEncoder();
-      encoding.writeVarUint(syncEncoder, MESSAGE_SYNC);
-      encoding.writeVarUint(syncEncoder, 0); // sync step 1
-      const syncFrame = encoding.toUint8Array(syncEncoder);
+      // Editor sends a real Yjs update. Sync frames now reach peers as the
+      // server-produced sanitized diff, so the assertion is on the change the
+      // peer ends up with, not on the editor's original bytes.
+      const seed = new Y.Doc();
+      seed.getMap('cursors').set('relay-cursor', { x: 1, y: 2 });
+      const syncFrame = encodeUpdateFrame(Y.encodeStateAsUpdate(seed));
 
       editorSocket.send(syncFrame.buffer as ArrayBuffer);
 
-      // Wait for relay to arrive
-      await new Promise((r) => setTimeout(r, 500));
+      await waitUntil(
+        () => mirror.getMap('cursors').has('relay-cursor'),
+        'the relayed sync update to arrive',
+      );
 
       // Sync frame should have been relayed
       expect(syncFrames.length).toBeGreaterThan(0);

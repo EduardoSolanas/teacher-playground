@@ -3,11 +3,13 @@ import { env } from 'cloudflare:workers';
 import { runInDurableObject, SELF } from 'cloudflare:test';
 import { getIdentityObject, type IdentityDO } from './do/IdentityDO';
 import { MAX_BODY_BYTES } from './lib/worker/requestGuard';
+import { MAX_ROOM_FILE_BYTES_TOTAL, MAX_BOARD_FILE_BYTES } from './lib/whiteboard/boardFileRoutes';
 import { DESTRUCTIVE_FRESH_MS } from './lib/identity/sessionStore';
 import { accessFetch, authenticatedFetch, bootstrapLocalSession, localAccessToken } from './test/workerAuth';
 import { resetAuthEventWriterForTests, setAuthEventWriterForTests } from './worker';
 
 import { ORPHAN_GRACE_MS } from './lib/whiteboard/orphanFiles';
+import { getFileBytesTotal, setFileBytes } from './lib/whiteboard/roomSchema';
 import { RoomDO } from './do/RoomDO';
 
 declare global {
@@ -204,6 +206,21 @@ describe('real local Access boundary through workerd', () => {
     expect(mixed.status).toBe(401);
   });
 
+  it('rejects a cross-origin-looking account erase with no Origin header', async () => {
+    const session = await bootstrapLocalSession('erase-missing-origin');
+    const response = await SELF.fetch(`${BASE}/auth/account`, {
+      method: 'DELETE',
+      headers: {
+        'Cf-Access-Jwt-Assertion': session.token,
+        Cookie: session.cookie,
+      },
+    });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'Origin required' });
+    // The refused erase left the account and its session in place.
+    expect((await authenticatedFetch('/auth/session/current', session)).status).toBe(200);
+  });
+
   it('erases the caller account after Access and a fresh local session', async () => {
     const session = await bootstrapLocalSession('erase-own-account');
     const other = await bootstrapLocalSession('erase-other-account');
@@ -214,6 +231,7 @@ describe('real local Access boundary through workerd', () => {
 
     const missingSession = await accessFetch('/auth/account', 'erase-own-account', 'valid', {
       method: 'DELETE',
+      headers: { Origin: BASE },
     });
     expect(missingSession.status).toBe(401);
 
@@ -747,6 +765,38 @@ describe('real local Access boundary through workerd', () => {
     }
   });
 
+  it('rate-limits trailing-slash access requests through the same cap', async () => {
+    const owner = await bootstrapLocalSession('boundary-access-rate-slash-owner');
+    const requester = await bootstrapLocalSession('boundary-access-rate-slash-requester');
+    const roomId = 'rate-access-request-slash';
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const requestAccess = (path: string) => authenticatedFetch(path, requester, {
+      method: 'POST',
+      headers: {
+        Origin: BASE,
+        'content-type': 'application/json',
+        'x-test-strict-rate-limit': '1',
+      },
+      body: JSON.stringify({ userName: 'Student' }),
+    });
+
+    for (let index = 0; index < ACCESS_REQUEST_RATE_MAX; index += 1) {
+      const response = await requestAccess(`/api/whiteboard/room/${roomId}/requests`);
+      expect(response.status, `request ${index}`).toBe(201);
+    }
+
+    const limited = await requestAccess(`/api/whiteboard/room/${roomId}/requests/`);
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('cache-control')).toBe('no-store');
+    expect(limited.headers.get('retry-after')).not.toBeNull();
+    expect(await limited.json()).toEqual({ error: 'Too many requests' });
+  }, 20_000);
+
   it('rate-limits presence POSTs per account with 429 and Retry-After', async () => {
     const owner = await bootstrapLocalSession('boundary-presence-rate-owner');
     const joiner = await bootstrapLocalSession('boundary-presence-rate-joiner');
@@ -802,6 +852,106 @@ describe('real local Access boundary through workerd', () => {
     expect(list.status).toBe(200);
     // 90 sequential workerd round trips: past vitest's 5s default under
     // suite load. Same reason the scene-write cap test below extends it.
+  }, 20_000);
+
+  it('rate-limits presence DELETEs per account with 429 and Retry-After', async () => {
+    const owner = await bootstrapLocalSession('boundary-presence-delete-rate-owner');
+    const roomId = 'rate-presence-delete';
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const deletePresence = () => authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/presence?peerId=rate-presence-delete-ghost`,
+      owner,
+      {
+        method: 'DELETE',
+        headers: {
+          Origin: BASE,
+          'x-test-strict-rate-limit': '1',
+        },
+      },
+    );
+
+    for (let index = 0; index < PRESENCE_POST_RATE_MAX; index += 1) {
+      const response = await deletePresence();
+      // 403: the room refuses a peer label bound to nobody. The request still
+      // took a rate-limit slot, which is what this test is counting.
+      expect(response.status, `presence delete ${index}`).toBe(403);
+    }
+
+    const limited = await deletePresence();
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('cache-control')).toBe('no-store');
+    const retryAfter = limited.headers.get('retry-after');
+    expect(retryAfter).not.toBeNull();
+    expect(Number(retryAfter)).toBeGreaterThan(0);
+    expect(await limited.json()).toEqual({ error: 'Too many requests' });
+    // 90 sequential workerd round trips: past vitest's 5s default under
+    // suite load, same as the presence POST cap test above.
+  }, 20_000);
+
+  it('rate-limits trailing-slash presence DELETEs through the same cap', async () => {
+    const owner = await bootstrapLocalSession('boundary-presence-delete-slash-owner');
+    const roomId = 'rate-presence-delete-slash';
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const join = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: 'slash-peer', userName: 'Ada', color: '#3498db' }),
+    });
+    expect(join.status).toBe(200);
+    const peerId = (await join.json() as { peerId: string }).peerId;
+
+    const exhaustCap = () => authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/presence?peerId=rate-presence-delete-slash-ghost`,
+      owner,
+      {
+        method: 'DELETE',
+        headers: {
+          Origin: BASE,
+          'x-test-strict-rate-limit': '1',
+        },
+      },
+    );
+    for (let index = 0; index < PRESENCE_POST_RATE_MAX; index += 1) {
+      expect((await exhaustCap()).status, `presence delete ${index}`).toBe(403);
+    }
+
+    const limited = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/presence/?peerId=${encodeURIComponent(peerId)}`,
+      owner,
+      {
+        method: 'DELETE',
+        headers: {
+          Origin: BASE,
+          'x-test-strict-rate-limit': '1',
+        },
+      },
+    );
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('cache-control')).toBe('no-store');
+    expect(limited.headers.get('retry-after')).not.toBeNull();
+    expect(await limited.json()).toEqual({ error: 'Too many requests' });
+
+    // The refused request must not have applied the mutation. Refresh the
+    // peer's last-seen time first: ~90 round trips under a loaded suite can
+    // outlive the 10s presence TTL, and the read below sweeps expired rows.
+    await runInDurableObject(env.ROOMS.get(env.ROOMS.idFromName(roomId)), (instance: RoomDO) => {
+      instance.db.prepare(
+        `UPDATE room_presence SET last_seen = ? WHERE room_id = ? AND peer_id = ?`,
+      ).run(Date.now(), roomId, peerId);
+    });
+    const list = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner);
+    const data = await list.json() as { users: Array<{ peerId: string }> };
+    expect(data.users.map((user) => user.peerId)).toContain(peerId);
   }, 20_000);
 
   it('rate-limits existing-room scene writes per account with 429 and Retry-After', async () => {
@@ -1292,6 +1442,303 @@ describe('real local Access boundary through workerd', () => {
       );
       expect(stolen.status).toBe(403);
       expect(stolen.headers.get('content-type')).not.toContain('image/');
+    });
+
+    it('refuses internal file actions on the public API and leaves the room counter untouched', async () => {
+      /*
+       * BOARD_FILE_API matches exactly /files/<fileId> with no trailing slash,
+       * so anything else under /files used to fall through to ROOM_API and
+       * reach the room's internal actions. A granted editor could POST
+       * /files/add-bytes/ with any number and move the 250 MB counter at will,
+       * because authorize() only asked whether the caller could write the
+       * board. Those actions are Worker-only now.
+       */
+      const owner = await bootstrapLocalSession('board-file-internal-route');
+      const roomId = 'board-file-internal-route-room';
+      expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ elements: [] }),
+      })).status).toBe(200);
+
+      const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+      await runInDurableObject(stub, (instance: RoomDO) => {
+        setFileBytes(instance.db, roomId, 1234);
+      });
+
+      for (const path of [
+        '/files/add-bytes/',
+        '/files/check-quota/',
+        '/files/reserve/',
+        '/files',
+        '/files/',
+      ]) {
+        const response = await authenticatedFetch(
+          `/api/whiteboard/room/${roomId}${path}`,
+          owner,
+          {
+            method: 'POST',
+            headers: { Origin: BASE, 'content-type': 'application/json' },
+            body: JSON.stringify({ bytes: 10_000_000 }),
+          },
+        );
+        expect(response.status, path).toBe(404);
+      }
+
+      const total = await runInDurableObject(stub, (instance: RoomDO) => (
+        getFileBytesTotal(instance.db, roomId)
+      ));
+      expect(total).toBe(1234);
+    });
+
+    it('refuses file actions behind empty path segments and leaves the counter untouched', async () => {
+      /*
+       * `/x//files/reserve` and `//files/reserve` reach the same room action
+       * as `/files/reserve`, but a guard that only rejected a trailing slash
+       * or a literal `/files/` prefix read the doubled slash as a different
+       * path and forwarded the request to the room. A granted editor could
+       * then inflate or deflate the aggregate counter at will.
+       */
+      const owner = await bootstrapLocalSession('board-file-double-slash-owner');
+      const editor = await bootstrapLocalSession('board-file-double-slash-editor');
+      const roomId = `board-file-double-slash-${crypto.randomUUID()}`;
+      expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ elements: [] }),
+      })).status).toBe(200);
+
+      const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+      await runInDurableObject(stub, (instance: RoomDO) => {
+        instance.db.prepare(
+          `INSERT INTO room_members (
+             room_id, account_id, role, display_name, email,
+             requested_at, created_at, updated_at, expires_at
+           ) VALUES (?, ?, 'editor', 'Editor', NULL, NULL, ?, ?, NULL)`,
+        ).run(roomId, editor.accountId, Date.now(), Date.now());
+        setFileBytes(instance.db, roomId, 1234);
+      });
+
+      const attempts = [
+        { path: '//files/reserve', body: { bytes: MAX_BOARD_FILE_BYTES } },
+        { path: '//files/settle', body: { reserved: MAX_BOARD_FILE_BYTES, actual: 0 } },
+        { path: '//files/add-bytes', body: { bytes: -MAX_BOARD_FILE_BYTES } },
+        { path: '/files//reserve', body: { bytes: MAX_BOARD_FILE_BYTES } },
+      ];
+      for (const { path, body } of attempts) {
+        const response = await authenticatedFetch(
+          `/api/whiteboard/room/${roomId}${path}`,
+          editor,
+          {
+            method: 'POST',
+            headers: { Origin: BASE, 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+          },
+        );
+        expect(response.status, path).toBe(404);
+        // A body would mean the request reached the room: the public refusal
+        // is the Worker's own bodyless 404, not the Durable Object's JSON.
+        expect(await response.text(), path).toBe('');
+      }
+
+      expect(await runInDurableObject(stub, (instance: RoomDO) => (
+        getFileBytesTotal(instance.db, roomId)
+      ))).toBe(1234);
+    });
+
+    it('charges an existing file id once when the same size is uploaded again', async () => {
+      /*
+       * A re-PUT of the same size is the one overwrite a client may do: the
+       * stored bytes are replaced by equivalent bytes, so the room's total
+       * does not move. The room charged the second upload under the old
+       * check-then-add flow.
+       */
+      const owner = await bootstrapLocalSession('board-file-dedupe');
+      const roomId = `board-file-dedupe-${crypto.randomUUID()}`;
+      expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ elements: [] }),
+      })).status).toBe(200);
+
+      const bytes = new Uint8Array(4096);
+      for (let i = 0; i < bytes.length; i += 1) bytes[i] = i % 251;
+
+      for (const attempt of [1, 2]) {
+        const upload = await authenticatedFetch(
+          `/api/whiteboard/room/${roomId}/files/dedupe-content-1`,
+          owner,
+          {
+            method: 'PUT',
+            headers: { Origin: BASE, 'content-type': 'image/png', 'content-length': String(bytes.length) },
+            body: bytes,
+          },
+        );
+        expect(upload.status, `upload ${attempt}`).toBe(201);
+      }
+
+      const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+      const charged = await runInDurableObject(stub, (instance: RoomDO) => (
+        getFileBytesTotal(instance.db, roomId)
+      ));
+      expect(charged).toBe(bytes.length);
+      expect((await env.BOARD_FILES.head(`rooms/${roomId}/files/dedupe-content-1`))?.size).toBe(bytes.length);
+    });
+
+    it('refuses a different-size upload for a file id that already holds bytes with 409', async () => {
+      /*
+       * File ids are keys the client chooses, and the room treats a stored
+       * object as immutable by size. The old overwrite credited the caller for
+       * the stored bytes before the new ones were measured, which under
+       * concurrency handed out credit for bytes R2 was only freeing once.
+       * A different size is refused instead, with nothing written or charged.
+       */
+      const owner = await bootstrapLocalSession('board-file-different-size');
+      const roomId = `board-file-different-size-${crypto.randomUUID()}`;
+      expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ elements: [] }),
+      })).status).toBe(200);
+
+      const key = `rooms/${roomId}/files/size-locked-file-1`;
+      const first = new Uint8Array(100).fill(7);
+      const second = new Uint8Array(200).fill(9);
+      expect((await authenticatedFetch(
+        `/api/whiteboard/room/${roomId}/files/size-locked-file-1`,
+        owner,
+        {
+          method: 'PUT',
+          headers: { Origin: BASE, 'content-type': 'image/png', 'content-length': String(first.length) },
+          body: first,
+        },
+      )).status).toBe(201);
+
+      const refused = await authenticatedFetch(
+        `/api/whiteboard/room/${roomId}/files/size-locked-file-1`,
+        owner,
+        {
+          method: 'PUT',
+          headers: { Origin: BASE, 'content-type': 'image/png', 'content-length': String(second.length) },
+          body: second,
+        },
+      );
+      expect(refused.status).toBe(409);
+
+      const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+      expect(await runInDurableObject(stub, (instance: RoomDO) => (
+        getFileBytesTotal(instance.db, roomId)
+      ))).toBe(first.length);
+      expect((await env.BOARD_FILES.head(key))?.size).toBe(first.length);
+    });
+
+    it('refuses concurrent same-key uploads when the stored size differs', async () => {
+      /*
+       * The defect the policy closes: 8 concurrent PUTs of the same key each
+       * read the stored 200-byte object and tried to replace it with 100
+       * bytes, so each subtracted 100 from the counter while R2 freed 200
+       * once. All of them are refused now, and the counter never moves.
+       */
+      const owner = await bootstrapLocalSession('board-file-concurrent-size');
+      const roomId = `board-file-concurrent-size-${crypto.randomUUID()}`;
+      expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ elements: [] }),
+      })).status).toBe(200);
+
+      const key = `rooms/${roomId}/files/concurrent-size-locked`;
+      await env.BOARD_FILES.put(key, new Uint8Array(200).fill(5));
+      const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+      await runInDurableObject(stub, (instance: RoomDO) => {
+        setFileBytes(instance.db, roomId, 200);
+      });
+
+      const declared = new Uint8Array(100).fill(6);
+      const upload = () => authenticatedFetch(
+        `/api/whiteboard/room/${roomId}/files/concurrent-size-locked`,
+        owner,
+        {
+          method: 'PUT',
+          headers: { Origin: BASE, 'content-type': 'image/png', 'content-length': String(declared.length) },
+          body: declared,
+        },
+      );
+      const responses = await Promise.all(Array.from({ length: 8 }, upload));
+      for (const [index, response] of responses.entries()) {
+        expect(response.status, `upload ${index}`).toBe(409);
+      }
+
+      expect(await runInDurableObject(stub, (instance: RoomDO) => (
+        getFileBytesTotal(instance.db, roomId)
+      ))).toBe(200);
+      expect((await env.BOARD_FILES.head(key))?.size).toBe(200);
+    });
+
+    it('rejects a body larger than its declared size without leaving bytes or charging for them', async () => {
+      /*
+       * Content-Length is the client's word. The reserve charges the declared
+       * size, so a stream that arrives larger must not be kept or charged:
+       * the object is deleted and the reservation released.
+       */
+      const owner = await bootstrapLocalSession('board-file-lying-length');
+      const roomId = `board-file-lying-length-${crypto.randomUUID()}`;
+      expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ elements: [] }),
+      })).status).toBe(200);
+
+      const key = `rooms/${roomId}/files/lying-length-file`;
+      const actualBytes = new Uint8Array(200).fill(3);
+      const upload = await authenticatedFetch(
+        `/api/whiteboard/room/${roomId}/files/lying-length-file`,
+        owner,
+        {
+          method: 'PUT',
+          headers: { Origin: BASE, 'content-type': 'image/png', 'content-length': '100' },
+          body: actualBytes,
+        },
+      );
+      expect(upload.status).toBe(413);
+
+      const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+      expect(await env.BOARD_FILES.head(key)).toBeNull();
+      expect(await runInDurableObject(stub, (instance: RoomDO) => (
+        getFileBytesTotal(instance.db, roomId)
+      ))).toBe(0);
+    });
+
+    it('refuses an upload that would cross the aggregate cap without storing or counting it', async () => {
+      const owner = await bootstrapLocalSession('board-file-over-cap');
+      const roomId = `board-file-over-cap-${crypto.randomUUID()}`;
+      expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ elements: [] }),
+      })).status).toBe(200);
+
+      const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+      const headroom = await runInDurableObject(stub, (instance: RoomDO) => {
+        setFileBytes(instance.db, roomId, MAX_ROOM_FILE_BYTES_TOTAL - 100);
+        return getFileBytesTotal(instance.db, roomId);
+      });
+
+      const bytes = new Uint8Array(101);
+      const upload = await authenticatedFetch(
+        `/api/whiteboard/room/${roomId}/files/over-cap-file`,
+        owner,
+        {
+          method: 'PUT',
+          headers: { Origin: BASE, 'content-type': 'image/png', 'content-length': String(bytes.length) },
+          body: bytes,
+        },
+      );
+      expect(upload.status).toBe(413);
+      expect(await env.BOARD_FILES.head(`rooms/${roomId}/files/over-cap-file`)).toBeNull();
+      expect(await runInDurableObject(stub, (instance: RoomDO) => (
+        getFileBytesTotal(instance.db, roomId)
+      ))).toBe(headroom);
     });
 
     it('refuses SVG, which would be script running from our own origin', async () => {

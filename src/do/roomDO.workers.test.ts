@@ -130,7 +130,7 @@ const LIVEKIT_ENV_KEYS = ['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET'
 const LIVEKIT_TEST_ENV: Record<(typeof LIVEKIT_ENV_KEYS)[number], string> = {
   LIVEKIT_URL: 'wss://livekit.invalid',
   LIVEKIT_API_KEY: 'test_api_key',
-  LIVEKIT_API_SECRET: 'test_api_secret_long_enough_to_sign',
+  LIVEKIT_API_SECRET: 'test_api_secret',
 };
 
 async function withLiveKitConfigured(
@@ -851,6 +851,109 @@ describe('signaling message rate limit', () => {
     expect(await closed).toBe(1008);
   });
 
+  it('keeps a flood episode across a reconnect and closes the second burst (SEC-A12)', async () => {
+    const owner = await bootstrapLocalSession('breach-episode-owner');
+    const roomId = 'breach-episode-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    let second: WebSocket | null = null;
+    try {
+      const first = await connectGranted(owner, roomId);
+      const firstClosed = closeSignal(first);
+
+      // One window over the ceiling is a breach, but not yet a close.
+      for (let i = 0; i < 361; i += 1) {
+        first.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
+      }
+      await new Promise((r) => setTimeout(r, 1100));
+
+      /*
+       * Close the flooded socket through the object itself, so the gone handler
+       * has definitely run before the reconnect. Waiting on the wire close is
+       * not enough: workerd retires the socket before webSocketClose executes,
+       * and the reconnect would race the handler this test is about.
+       */
+      await runInDurableObject(
+        env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+        async (instance: RoomDO) => {
+          const server = (instance as unknown as { ctx: DurableObjectState }).ctx
+            .getWebSockets()
+            .find((socket) => {
+              const attachment = socket.deserializeAttachment() as { accountId?: string } | null;
+              return attachment?.accountId === owner.accountId;
+            });
+          if (!server) throw new Error('no server-side socket for the owner');
+          await instance.webSocketClose(server, 1008, 'rate', false);
+        },
+      );
+      expect(await firstClosed).toBe(1008);
+
+      /*
+       * Reconnect inside the episode gap and flood again. The episode is still
+       * the same one, so crossing the ceiling once after the refill is already
+       * the second breach and closes the socket. Before SEC-A12 the counter was
+       * dropped when the first socket closed, so this burst read as a fresh
+       * episode and the socket was left open.
+       */
+      second = await connectGranted(owner, roomId);
+      const secondState = { closed: false, code: 0 };
+      second.addEventListener('close', (event: CloseEvent) => {
+        secondState.closed = true;
+        secondState.code = event.code;
+      }, { once: true });
+      await new Promise((r) => setTimeout(r, 1100));
+      for (let i = 0; i < 361; i += 1) {
+        second.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
+      }
+      await vi.waitFor(() => {
+        expect(secondState.closed).toBe(true);
+      }, { timeout: 5000, interval: 20 });
+      expect(secondState.code).toBe(1008);
+    } finally {
+      try {
+        second?.close();
+      } catch {
+        // Already closed by the server, or never opened.
+      }
+    }
+  });
+
+  it('prunes abuse episodes after several quiet episode gaps, keeping recent ones (SEC-A12)', async () => {
+    const owner = await bootstrapLocalSession('breach-prune-owner');
+    const roomId = 'breach-prune-room';
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const room = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+    type Episode = { count: number; firstBreachTimeMs: number; lastBreachTimeMs: number };
+    await runInDurableObject(room, async (instance: RoomDO) => {
+      const internal = instance as unknown as {
+        ceilingBreachesPerAccount: Map<string, Episode>;
+        ctx: DurableObjectState;
+      };
+      const now = Date.now();
+      internal.ceilingBreachesPerAccount.set('stale-breacher', {
+        count: 2,
+        firstBreachTimeMs: now - 60_000,
+        lastBreachTimeMs: now - 60_000,
+      });
+      internal.ceilingBreachesPerAccount.set('recent-breacher', {
+        count: 2,
+        firstBreachTimeMs: now - 1_000,
+        lastBreachTimeMs: now - 1_000,
+      });
+      await internal.ctx.storage.setAlarm(Date.now());
+    });
+
+    await runDurableObjectAlarm(room);
+
+    const survivors = await runInDurableObject(room, (instance: RoomDO) => (
+      [...(instance as unknown as { ceilingBreachesPerAccount: Map<string, Episode> })
+        .ceilingBreachesPerAccount.keys()]
+    ));
+    expect(survivors).toEqual(['recent-breacher']);
+  });
+
   it('does not close socket on a single window over the abuse ceiling', async () => {
     const owner = await bootstrapLocalSession('single-ceiling-owner');
     const roomId = 'single-ceiling-room';
@@ -1202,7 +1305,7 @@ describe('signaling message size limit', () => {
     ws.close();
   });
 
-  it('still relays a 1-byte binary frame to other granted peers', async () => {
+  it('still relays a 1-byte awareness frame to other granted peers', async () => {
     const owner = await bootstrapLocalSession('small-binary-owner');
     const editor = await bootstrapLocalSession('small-binary-editor');
     const roomId = 'small-binary-room';
@@ -1213,13 +1316,14 @@ describe('signaling message size limit', () => {
     const sender = await connectGranted(owner, roomId);
     const receiver = await connectGranted(editor, roomId);
 
-    // One byte, and still on-protocol: a bare sync type varint with no body.
-    // The size limit is what is under test, not the relay's type allowlist.
-    const payload = new Uint8Array([0x00]);
+    // One byte, and still relayable: awareness is the frame type that keeps the
+    // raw relay now that sync frames travel as server-produced diffs. The size
+    // limit is what is under test, not the relay's type allowlist.
+    const payload = new Uint8Array([0x01]);
     const received = nextBinaryMessage(receiver);
     sender.send(payload.buffer as ArrayBuffer);
 
-    expect(Array.from(new Uint8Array(await received))).toEqual([0x00]);
+    expect(Array.from(new Uint8Array(await received))).toEqual([0x01]);
   });
 });
 
@@ -4120,6 +4224,14 @@ describe('guest authorization matrix', () => {
     roomId = `guest-room-${crypto.randomUUID()}`;
     // Create room as owner
     expect((await writeRoom(roomId, owner, { name: 'Guest Test Room' })).status).toBe(200);
+    // A guest can only be in the room at all while guest access is on; these
+    // cases describe what an admitted guest may then do, so the real owner
+    // setting is the precondition.
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/settings`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ guestAccess: true }),
+    })).status).toBe(200);
   });
 
   // Helper to call RoomDO directly as guest

@@ -197,6 +197,29 @@ describe('server-side y-websocket sync', () => {
     return encoding.toUint8Array(encoder);
   }
 
+  /**
+   * A frame a hostile editor can build: a raw string pushed straight into the
+   * elements array, followed by a legitimate rectangle. Nothing on the client
+   * side prevents this -- `Y.Array.push` takes any value.
+   */
+  function malformedEntryFrame(): Uint8Array {
+    const doc = new Y.Doc();
+    doc.transact(() => {
+      const elements = doc.getArray<unknown>('elements');
+      elements.push(['not-a-map']);
+      const map = new Y.Map<unknown>();
+      map.set('id', 'after-malformed');
+      map.set('type', 'rectangle');
+      map.set('x', 1);
+      map.set('y', 2);
+      elements.push([map]);
+    });
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, 0);
+    syncProtocol.writeUpdate(encoder, Y.encodeStateAsUpdate(doc));
+    return encoding.toUint8Array(encoder);
+  }
+
   /** Applies a server reply the way the joining client would. */
   function boardFromReply(reply: ArrayBuffer): unknown[] {
     const decoder = decoding.createDecoder(new Uint8Array(reply));
@@ -633,6 +656,108 @@ describe('server-side y-websocket sync', () => {
       },
       { timeout: 5000, interval: 100 },
     ).toBe(100);
+
+    sender.close();
+    receiver.close();
+  });
+
+  it('strips a blocked element from the document and the frame peers receive', async () => {
+    const roomId = 'sanitize-blocked-room';
+    const editor = await bootstrapLocalSession('sanitize-blocked-editor');
+    expect((await createRoom(roomId)).status).toBe(200);
+    await grantEditor(session, editor, roomId);
+
+    const sender = await openSocket(roomId);
+    const receiver = await openSocketAs(editor, roomId);
+
+    const watcher = new Y.Doc();
+    const relayed = nextBinaryMessage(receiver);
+    sender.send(boardUpdateFrame([
+      { id: 'blocked-embeddable', type: 'embeddable', x: 1, y: 2 },
+      { id: 'pasted-image', type: 'image', x: 2, y: 3 },
+      { id: 'allowed-rect', type: 'rectangle', x: 3, y: 4 },
+    ]));
+    applyFrame(watcher, await relayed);
+
+    // The other peer must never see the element type the scene route refuses,
+    // while a pasted image -- a board file referenced by id -- still travels.
+    expect(getElementsFromArray(watcher.getArray('elements')).map((el) => el.id))
+      .toEqual(['pasted-image', 'allowed-rect']);
+
+    // And the stored projection, through the grant-checked HTTP read, must not
+    // serve the embed either.
+    await expect.poll(async () => {
+      const res = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session);
+      const body = await res.json() as { elements: Array<{ id: string }> };
+      return body.elements.map((el) => el.id);
+    }, { timeout: 5000, interval: 50 }).toEqual(['pasted-image', 'allowed-rect']);
+
+    sender.close();
+    receiver.close();
+  });
+
+  it('trims an update past the element cap on the socket path', async () => {
+    RoomDO.maxElementsForTests = 3;
+    try {
+      const roomId = 'sanitize-cap-room';
+      expect((await createRoom(roomId)).status).toBe(200);
+      const sender = await openSocket(roomId);
+      const receiver = await openSocket(roomId);
+
+      const watcher = new Y.Doc();
+      const relayed = nextBinaryMessage(receiver);
+      sender.send(boardUpdateFrame([
+        { id: 'cap-1', type: 'rectangle', x: 1, y: 1 },
+        { id: 'cap-2', type: 'rectangle', x: 2, y: 2 },
+        { id: 'cap-3', type: 'rectangle', x: 3, y: 3 },
+        { id: 'cap-4', type: 'rectangle', x: 4, y: 4 },
+      ]));
+      applyFrame(watcher, await relayed);
+
+      expect(getElementsFromArray(watcher.getArray('elements')).map((el) => el.id))
+        .toEqual(['cap-1', 'cap-2', 'cap-3']);
+
+      await expect.poll(async () => {
+        const stored = await storedBoard(roomId);
+        return stored?.map((el) => (el as { id: string }).id);
+      }, { timeout: 5000, interval: 100 }).toEqual(['cap-1', 'cap-2', 'cap-3']);
+
+      sender.close();
+      receiver.close();
+    } finally {
+      RoomDO.maxElementsForTests = null;
+    }
+  });
+
+  it('removes a non-map entry from the document and the frame peers receive', async () => {
+    const roomId = 'sanitize-malformed-room';
+    const editor = await bootstrapLocalSession('sanitize-malformed-editor');
+    expect((await createRoom(roomId)).status).toBe(200);
+    await grantEditor(session, editor, roomId);
+
+    const sender = await openSocket(roomId);
+    const receiver = await openSocketAs(editor, roomId);
+
+    const watcher = new Y.Doc();
+    const relayed = nextBinaryMessage(receiver);
+    sender.send(malformedEntryFrame());
+    applyFrame(watcher, await relayed);
+
+    // A raw value in the array throws every peer's conversion
+    // (`yMap.forEach is not a function`), so it must not survive the relay.
+    const peerEntries = watcher.getArray<unknown>('elements').toArray();
+    expect(peerEntries.map((entry) => (entry instanceof Y.Map ? entry.get('id') : entry)))
+      .toEqual(['after-malformed']);
+    expect(getElementsFromArray(watcher.getArray('elements')).map((el) => el.id))
+      .toEqual(['after-malformed']);
+
+    // The projection must stay writable. The malformed entry used to throw
+    // every flush, so the HTTP board stayed empty while the room retried.
+    await expect.poll(async () => {
+      const res = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session);
+      const body = await res.json() as { elements: Array<{ id: string }> };
+      return body.elements.map((el) => el.id);
+    }, { timeout: 5000, interval: 50 }).toEqual(['after-malformed']);
 
     sender.close();
     receiver.close();

@@ -1,6 +1,7 @@
 import { describe, expect, it, afterEach } from 'vitest';
 import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
+import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
 import {
   authenticatedFetch,
@@ -8,7 +9,7 @@ import {
   type LocalAuthSession,
 } from '../test/workerAuth';
 import { SIGNALING_MAX_SOCKETS_PER_ACCOUNT } from '../lib/worker/requestGuard';
-import { MESSAGE_SYNC } from '../lib/whiteboard/serverSync';
+import { encodeUpdateFrame, MESSAGE_SYNC } from '../lib/whiteboard/serverSync';
 import { RoomDO } from './RoomDO';
 
 /*
@@ -80,14 +81,24 @@ async function grantEditor(owner: LocalAuthSession, editor: LocalAuthSession, ro
 }
 
 /**
- * Builds a valid Yjs sync step 1 frame (what a fresh client sends to signal its state).
- * Used to verify sockets are still usable after receiving malformed frames.
+ * Builds a valid Yjs update frame carrying one cursor. Used to verify sockets
+ * are still usable after receiving malformed frames. It is an update, not a
+ * sync step 1: the object now relays the sanitized server-produced diff for
+ * sync frames, and a step 1 changes no state, so it produces no relay.
  */
-function buildSyncStepOneFrame(): Uint8Array {
-  const encoder = encoding.createEncoder();
-  encoding.writeVarUint(encoder, MESSAGE_SYNC);
-  syncProtocol.writeSyncStep1(encoder, new Y.Doc());
-  return encoding.toUint8Array(encoder);
+function buildSyncUpdateFrame(): Uint8Array {
+  const doc = new Y.Doc();
+  doc.getMap('cursors').set('robustness-cursor', { x: 1, y: 2 });
+  return encodeUpdateFrame(Y.encodeStateAsUpdate(doc));
+}
+
+/** Applies a relayed sync frame the way a client would, then reports the cursor. */
+function cursorInFrame(frame: ArrayBuffer): boolean {
+  const doc = new Y.Doc();
+  const decoder = decoding.createDecoder(new Uint8Array(frame));
+  expect(decoding.readVarUint(decoder)).toBe(MESSAGE_SYNC);
+  syncProtocol.readSyncMessage(decoder, encoding.createEncoder(), doc, undefined);
+  return doc.getMap('cursors').has('robustness-cursor');
 }
 
 /**
@@ -438,12 +449,12 @@ describe('signaling robustness: malformed JSON control frames', () => {
       ownerSocket.send('not valid json at all');
 
       // Send a valid binary sync frame from owner
-      const syncFrame = buildSyncStepOneFrame();
+      const syncFrame = buildSyncUpdateFrame();
       ownerSocket.send(syncFrame);
 
-      // Witness should receive the binary frame, proving socket is still usable
+      // Witness should receive the relayed update, proving socket is still usable
       const received = await nextBinaryMessage(witnessSocket);
-      expect(received).toEqual(syncFrame.buffer);
+      expect(cursorInFrame(received)).toBe(true);
     } finally {
       ownerSocket.close();
       witnessSocket.close();
@@ -466,12 +477,12 @@ describe('signaling robustness: malformed JSON control frames', () => {
       ownerSocket.send(JSON.stringify([1, 2, 3]));
 
       // Send a valid binary sync frame from owner
-      const syncFrame = buildSyncStepOneFrame();
+      const syncFrame = buildSyncUpdateFrame();
       ownerSocket.send(syncFrame);
 
-      // Witness should receive the binary frame, proving socket is still usable
+      // Witness should receive the relayed update, proving socket is still usable
       const received = await nextBinaryMessage(witnessSocket);
-      expect(received).toEqual(syncFrame.buffer);
+      expect(cursorInFrame(received)).toBe(true);
     } finally {
       ownerSocket.close();
       witnessSocket.close();
@@ -494,12 +505,12 @@ describe('signaling robustness: malformed JSON control frames', () => {
       ownerSocket.send(JSON.stringify({ data: 'no type field' }));
 
       // Send a valid binary sync frame from owner
-      const syncFrame = buildSyncStepOneFrame();
+      const syncFrame = buildSyncUpdateFrame();
       ownerSocket.send(syncFrame);
 
-      // Witness should receive the binary frame, proving socket is still usable
+      // Witness should receive the relayed update, proving socket is still usable
       const received = await nextBinaryMessage(witnessSocket);
-      expect(received).toEqual(syncFrame.buffer);
+      expect(cursorInFrame(received)).toBe(true);
     } finally {
       ownerSocket.close();
       witnessSocket.close();
@@ -522,12 +533,12 @@ describe('signaling robustness: malformed JSON control frames', () => {
       ownerSocket.send(JSON.stringify({ type: 'unknownTypeValue' }));
 
       // Send a valid binary sync frame from owner
-      const syncFrame = buildSyncStepOneFrame();
+      const syncFrame = buildSyncUpdateFrame();
       ownerSocket.send(syncFrame);
 
-      // Witness should receive the binary frame, proving socket is still usable
+      // Witness should receive the relayed update, proving socket is still usable
       const received = await nextBinaryMessage(witnessSocket);
-      expect(received).toEqual(syncFrame.buffer);
+      expect(cursorInFrame(received)).toBe(true);
     } finally {
       ownerSocket.close();
       witnessSocket.close();
@@ -556,12 +567,12 @@ describe('signaling robustness: subscribe and unsubscribe frames', () => {
       ownerSocket.send(JSON.stringify({ type: 'subscribe' }));
 
       // Send a valid binary sync frame to verify socket is still usable
-      const syncFrame = buildSyncStepOneFrame();
+      const syncFrame = buildSyncUpdateFrame();
       ownerSocket.send(syncFrame);
 
-      // Witness should receive the binary frame, proving socket is still usable
+      // Witness should receive the relayed update, proving socket is still usable
       const received = await nextBinaryMessage(witnessSocket);
-      expect(received).toEqual(syncFrame.buffer);
+      expect(cursorInFrame(received)).toBe(true);
     } finally {
       ownerSocket.close();
       witnessSocket.close();
@@ -584,12 +595,12 @@ describe('signaling robustness: subscribe and unsubscribe frames', () => {
       ownerSocket.send(JSON.stringify({ type: 'unsubscribe' }));
 
       // Send a valid binary sync frame to verify socket is still usable
-      const syncFrame = buildSyncStepOneFrame();
+      const syncFrame = buildSyncUpdateFrame();
       ownerSocket.send(syncFrame);
 
-      // Witness should receive the binary frame, proving socket is still usable
+      // Witness should receive the relayed update, proving socket is still usable
       const received = await nextBinaryMessage(witnessSocket);
-      expect(received).toEqual(syncFrame.buffer);
+      expect(cursorInFrame(received)).toBe(true);
     } finally {
       ownerSocket.close();
       witnessSocket.close();
@@ -615,12 +626,12 @@ describe('signaling robustness: subscribe and unsubscribe frames', () => {
       ownerSocket.send(JSON.stringify({ type: 'unsubscribe' }));
 
       // Send a valid binary sync frame to verify socket is still usable
-      const syncFrame = buildSyncStepOneFrame();
+      const syncFrame = buildSyncUpdateFrame();
       ownerSocket.send(syncFrame);
 
-      // Witness should receive the binary frame, proving socket is still usable
+      // Witness should receive the relayed update, proving socket is still usable
       const received = await nextBinaryMessage(witnessSocket);
-      expect(received).toEqual(syncFrame.buffer);
+      expect(cursorInFrame(received)).toBe(true);
     } finally {
       ownerSocket.close();
       witnessSocket.close();

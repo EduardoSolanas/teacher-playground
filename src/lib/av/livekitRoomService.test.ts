@@ -6,7 +6,7 @@ import { liveKitHttpHost, removeLiveKitParticipant, muteLiveKitParticipant } fro
 const LIVEKIT_ENV = {
   LIVEKIT_URL: 'wss://example.livekit.cloud',
   LIVEKIT_API_KEY: 'key_abc',
-  LIVEKIT_API_SECRET: 'secret_xyz_long_enough',
+  LIVEKIT_API_SECRET: 'secret_xyz',
 };
 
 describe('liveKitHttpHost', () => {

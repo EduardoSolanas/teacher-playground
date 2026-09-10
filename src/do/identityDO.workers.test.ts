@@ -67,6 +67,36 @@ function sessionRequest(
   });
 }
 
+/**
+ * Moves one session's idle expiry into the past, on the real row.
+ *
+ * The schema requires `idle_expires_at > created_at`, and a session issued in
+ * the same millisecond as the test's `Date.now() - 1` trips that check instead
+ * of expiring the row -- a flake that only fires on a fast runner. Creating the
+ * expiry one tick after `created_at` and waiting that tick out is the only
+ * shape that satisfies both the schema and "expired now".
+ */
+async function expireSessionIdleNow(where: {
+  accountId?: string;
+  sessionHash?: string;
+}): Promise<void> {
+  await runInDurableObject(identityStub(), async (instance: IdentityDO) => {
+    const column = where.accountId !== undefined ? 'account_id' : 'session_hash';
+    const value = where.accountId ?? where.sessionHash;
+    if (!value) throw new Error('expireSessionIdleNow needs an account or session');
+    const row = instance.db
+      .prepare(`SELECT created_at AS createdAt FROM sessions WHERE ${column} = ?`)
+      .get(value) as { createdAt: number } | undefined;
+    if (!row) throw new Error('session not found');
+    while (Date.now() <= row.createdAt) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    instance.db
+      .prepare(`UPDATE sessions SET idle_expires_at = ? WHERE ${column} = ?`)
+      .run(row.createdAt + 1, value);
+  });
+}
+
 async function changeAccount(
   path: 'revoke-all' | 'disable' | 'enable',
   accountId: string,
@@ -390,15 +420,7 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     const issued = await issueSession('do-expiry');
     const body = await issued.clone().json() as { accountId: string };
     const cookie = cookiePair(issued);
-    await runInDurableObject(identityStub(), (instance) => {
-      instance.db
-        .prepare(
-          `UPDATE sessions SET idle_expires_at = ? WHERE account_id = ?`,
-        )
-        // Must stay above created_at: the schema enforces
-        // idle_expires_at > created_at, so this cannot be backdated further.
-        .run(Date.now() - 1, body.accountId);
-    });
+    await expireSessionIdleNow({ accountId: body.accountId });
 
     const expired = await sessionRequest('/sessions/current', cookie);
     expect(expired.status).toBe(401);
@@ -409,13 +431,7 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     const issued = await issueSession('do-purge-expired');
     const body = await issued.clone().json() as { accountId: string };
     const cookie = cookiePair(issued);
-    await runInDurableObject(identityStub(), (instance) => {
-      instance.db
-        .prepare(
-          `UPDATE sessions SET idle_expires_at = ? WHERE account_id = ?`,
-        )
-        .run(Date.now() - 1, body.accountId);
-    });
+    await expireSessionIdleNow({ accountId: body.accountId });
 
     expect((await sessionRequest('/sessions/current', cookie)).status).toBe(401);
 
@@ -746,6 +762,58 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     });
     expect(await disabled.json()).toEqual({
       accounts: { [accountId]: { state: 'disabled', authorizationEpoch: 2 } },
+    });
+  });
+
+  it('reports only the requested session hashes that are still active', async () => {
+    // An active session, an idle-expired one, and a logged-out one, checked in
+    // one batch so the response must tell them apart.
+    const active = await issueSession('do-session-hash-active');
+    const activeCookie = cookiePair(active);
+    const activeBody = await active.json() as { accountId: string };
+    const activeCurrent = await sessionRequest('/sessions/current', activeCookie);
+    const { sessionId: activeHash } = await activeCurrent.json() as { sessionId: string };
+
+    const idle = await issueSession('do-session-hash-idle');
+    const idleCookie = cookiePair(idle);
+    const idleBody = await idle.json() as { accountId: string };
+    const idleCurrent = await sessionRequest('/sessions/current', idleCookie);
+    const { sessionId: idleHash } = await idleCurrent.json() as { sessionId: string };
+
+    const revoked = await issueSession('do-session-hash-revoked');
+    const revokedCookie = cookiePair(revoked);
+    const revokedBody = await revoked.json() as { accountId: string };
+    const revokedCurrent = await sessionRequest('/sessions/current', revokedCookie);
+    const { sessionId: revokedHash } = await revokedCurrent.json() as { sessionId: string };
+
+    // Idle expiry is only reachable by moving the real row's clock back.
+    await expireSessionIdleNow({ sessionHash: idleHash });
+    expect((await identityStub().fetch('https://identity/sessions/logout', {
+      method: 'POST',
+      headers: { cookie: revokedCookie },
+      body: null,
+    })).status).toBe(204);
+
+    const response = await identityStub().fetch('https://identity/accounts/authorizations', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accountIds: [activeBody.accountId, idleBody.accountId, revokedBody.accountId],
+        sessions: [
+          { accountId: activeBody.accountId, sessionHash: activeHash },
+          { accountId: idleBody.accountId, sessionHash: idleHash },
+          { accountId: revokedBody.accountId, sessionHash: revokedHash },
+        ],
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      accounts: {
+        [activeBody.accountId]: { state: 'active', authorizationEpoch: 0 },
+        [idleBody.accountId]: { state: 'active', authorizationEpoch: 0 },
+        [revokedBody.accountId]: { state: 'active', authorizationEpoch: 0 },
+      },
+      activeSessionHashes: [activeHash],
     });
   });
 
