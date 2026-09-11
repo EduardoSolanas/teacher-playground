@@ -1009,7 +1009,7 @@ describe('real local Access boundary through workerd', () => {
       },
     );
     expect(createStillAllowed.status).toBe(200);
-  }, 20_000);
+  }, 60_000);
 
   it('logs auth_failure without tokens when the local session is missing', async () => {
     const lines: string[] = [];

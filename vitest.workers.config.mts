@@ -25,6 +25,9 @@ export default defineConfig({
             // the exact boundary in unit tests and here by seeding the
             // configured cap.
             TUTOR_ACCOUNT_CAP: '10000',
+            STRIPE_API_BASE: 'https://stripe.invalid',
+            STRIPE_SECRET_KEY: 'sk_test_worker_binding',
+            STRIPE_WEBHOOK_SECRET: 'whsec_worker_binding',
             // Keep unrelated sockets from creating recurring alarms during the
             // worker suite. Tests that exercise revocation set their own
             // deadline; the self-scheduling test configures a short alarm.

@@ -41,6 +41,8 @@ import {
   isPublicPath,
   isValidRoomId,
   MARKETING_PAGES,
+  BILLING_WEBHOOK_PATH,
+  BILLING_WEBHOOK_MAX_BODY_BYTES,
   routeHostKind,
   stripForwardedIdentityHeaders,
   connectSrcForPageOrigin,
@@ -54,6 +56,10 @@ import {
   isAllowedMimeType,
   buildR2ObjectKey,
 } from './lib/whiteboard/boardFileRoutes';
+import { readBillingEnv, type BillingEnv } from './lib/billing/stripeConfig';
+import { verifyStripeSignature } from './lib/billing/stripeSignature';
+import { eventsFetchMapRequest } from './lib/billing/stripeRequest';
+import { executeStripeRequest } from './lib/billing/stripeClient';
 
 export interface Env {
   ROOMS: DurableObjectNamespace;
@@ -79,6 +85,9 @@ export interface Env {
    * pages cannot be public on the app hostname. Unset disables the surface.
    */
   MARKETING_HOSTNAME?: string;
+  STRIPE_API_BASE?: string;
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
 }
 
 // Room ids cannot be enumerated at build time, so the static export contains a
@@ -906,6 +915,331 @@ async function probeRoomAccessStatus(
   }
 }
 
+interface StripeWebhookEvent {
+  id: string;
+  type: string;
+  livemode: boolean;
+  created: number;
+  objectId: string;
+}
+
+function parseStripeEvent(value: unknown): StripeWebhookEvent | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.id !== 'string' || record.id.length === 0) return null;
+  if (typeof record.type !== 'string' || record.type.length === 0) return null;
+  if (typeof record.livemode !== 'boolean') return null;
+  if (typeof record.created !== 'number' || !Number.isFinite(record.created)) return null;
+  const data = record.data;
+  const object = typeof data === 'object' && data !== null
+    ? (data as Record<string, unknown>).object
+    : undefined;
+  const objectId = typeof object === 'object' && object !== null
+    ? (object as Record<string, unknown>).id
+    : undefined;
+  if (typeof objectId !== 'string' || objectId.length === 0) return null;
+  return {
+    id: record.id,
+    type: record.type,
+    livemode: record.livemode,
+    created: record.created * 1000,
+    objectId,
+  };
+}
+
+function webhookApplyBody(
+  event: StripeWebhookEvent,
+  objects?: Record<string, unknown>,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    event: {
+      id: event.id,
+      type: event.type,
+      livemode: event.livemode,
+      created: event.created,
+    },
+  };
+  if (objects !== undefined) body.objects = objects;
+  return body;
+}
+
+async function forwardWebhookEvent(
+  env: Env,
+  event: StripeWebhookEvent,
+  objects?: Record<string, unknown>,
+): Promise<Response> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const verdict = await identity.fetch(new Request(
+    'https://identity/billing/events/apply',
+    internalJson(webhookApplyBody(event, objects)),
+  ));
+  return withSecurityHeaders(verdict);
+}
+
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function idValue(value: unknown): string | null {
+  if (typeof value === 'string' && value.length > 0) return value;
+  const record = recordOf(value);
+  if (record === null) return null;
+  const id = record.id;
+  return typeof id === 'string' && id.length > 0 ? id : null;
+}
+
+function secondsToMs(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value * 1000 : null;
+}
+
+function normalizeSubscription(value: unknown): Record<string, unknown> | null {
+  const record = recordOf(value);
+  if (record === null) return null;
+  const id = idValue(record.id);
+  if (id === null) return null;
+  const items = recordOf(record.items);
+  const firstItem = Array.isArray(items?.data) ? recordOf(items.data[0]) : null;
+  const pauseCollection = recordOf(record.pause_collection);
+  return {
+    id,
+    customer: idValue(record.customer),
+    status: typeof record.status === 'string' ? record.status : 'unknown',
+    canceledAt: secondsToMs(record.canceled_at),
+    currentPeriodEnd: secondsToMs(firstItem?.current_period_end ?? record.current_period_end),
+    pauseCollection: pauseCollection === null
+      ? null
+      : {
+          behavior: typeof pauseCollection.behavior === 'string'
+            ? pauseCollection.behavior
+            : 'void',
+        },
+  };
+}
+
+function normalizeInvoicePayment(value: unknown): { id: string; amount: number } | null {
+  const record = recordOf(value);
+  if (record === null) return null;
+  const payment = recordOf(record.payment);
+  const id = idValue(payment?.charge)
+    ?? idValue(record.charge)
+    ?? idValue(payment?.payment_intent)
+    ?? idValue(record.payment_intent)
+    ?? idValue(record.id);
+  if (id === null) return null;
+  return { id, amount: typeof record.amount === 'number' ? record.amount : 0 };
+}
+
+function normalizeInvoice(value: unknown): Record<string, unknown> | null {
+  const record = recordOf(value);
+  if (record === null) return null;
+  const id = idValue(record.id);
+  if (id === null) return null;
+  const parent = recordOf(record.parent);
+  const subscriptionDetails = recordOf(parent?.subscription_details);
+  const paymentsList = recordOf(record.payments);
+  const paymentEntries = Array.isArray(paymentsList?.data) ? paymentsList.data : [];
+  const payments = paymentEntries
+    .map(normalizeInvoicePayment)
+    .filter((payment): payment is { id: string; amount: number } => payment !== null);
+  const firstPayment = recordOf(paymentEntries[0]);
+  const firstPaymentDetails = recordOf(firstPayment?.payment);
+  return {
+    id,
+    customer: idValue(record.customer),
+    status: typeof record.status === 'string' ? record.status : undefined,
+    amountPaid: typeof record.amount_paid === 'number' ? record.amount_paid : 0,
+    currency: typeof record.currency === 'string' ? record.currency : undefined,
+    paymentIntent: idValue(record.payment_intent)
+      ?? idValue(firstPaymentDetails?.payment_intent),
+    subscription: idValue(subscriptionDetails?.subscription)
+      ?? idValue(record.subscription),
+    payments,
+  };
+}
+
+function normalizeDispute(
+  disputeValue: unknown,
+  chargeValue: unknown,
+): Record<string, unknown> | null {
+  const dispute = recordOf(disputeValue);
+  if (dispute === null) return null;
+  const id = idValue(dispute.id);
+  if (id === null) return null;
+  const charge = recordOf(chargeValue) ?? recordOf(dispute.charge);
+  const chargeId = idValue(dispute.charge) ?? idValue(chargeValue);
+  return {
+    id,
+    status: typeof dispute.status === 'string' ? dispute.status : undefined,
+    charge: chargeId === null
+      ? undefined
+      : { id: chargeId, customer: idValue(charge?.customer) },
+  };
+}
+
+type WebhookFetchResult = { ok: true; json: unknown } | { ok: false };
+
+async function executeWebhookFetch(
+  billing: BillingEnv,
+  request: Request,
+): Promise<WebhookFetchResult> {
+  if (billing.secretKey === null) return { ok: false };
+  try {
+    const result = await executeStripeRequest(request, billing.secretKey);
+    return result.ok ? { ok: true, json: result.json } : { ok: false };
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function fetchWebhookObjects(
+  billing: BillingEnv,
+  event: StripeWebhookEvent,
+): Promise<Record<string, unknown> | null> {
+  const request = eventsFetchMapRequest(
+    billing.apiBaseUrl,
+    billing.secretKey ?? '',
+    event.type,
+    event.objectId,
+  );
+  if (request === null) return {};
+
+  const fetched = await executeWebhookFetch(billing, request);
+  if (!fetched.ok) return null;
+  const json = fetched.json;
+
+  if (event.type.startsWith('customer.subscription.')) {
+    const subscription = normalizeSubscription(json);
+    return subscription === null ? null : { subscription };
+  }
+
+  if (event.type.startsWith('invoice.')) {
+    const invoice = normalizeInvoice(json);
+    if (invoice === null) return null;
+    const objects: Record<string, unknown> = { invoice };
+    const record = recordOf(json);
+    const parent = recordOf(record?.parent);
+    const subscriptionDetails = recordOf(parent?.subscription_details);
+    const subscription = normalizeSubscription(subscriptionDetails?.subscription);
+    if (subscription !== null) objects.subscription = subscription;
+    return objects;
+  }
+
+  if (event.type === 'charge.refunded') {
+    const id = idValue(recordOf(json)?.id);
+    return id === null ? null : { charge: { id } };
+  }
+
+  if (event.type.startsWith('charge.dispute.')) {
+    const disputeRecord = recordOf(json);
+    const disputeId = idValue(disputeRecord?.id);
+    if (disputeId === null) return null;
+    let chargeValue = disputeRecord?.charge;
+    if (recordOf(chargeValue) === null) {
+      const chargeId = idValue(chargeValue);
+      if (chargeId === null) return null;
+      const chargeRequest = eventsFetchMapRequest(
+        billing.apiBaseUrl,
+        billing.secretKey ?? '',
+        'charge.refunded',
+        chargeId,
+      );
+      if (chargeRequest === null) return null;
+      const fetchedCharge = await executeWebhookFetch(billing, chargeRequest);
+      if (!fetchedCharge.ok) return null;
+      chargeValue = fetchedCharge.json;
+    }
+    const dispute = normalizeDispute(json, chargeValue);
+    return dispute === null ? null : { dispute };
+  }
+
+  if (event.type.startsWith('checkout.session.')) {
+    const subscriptionRef = recordOf(json)?.subscription;
+    if (recordOf(subscriptionRef) !== null) {
+      const subscription = normalizeSubscription(subscriptionRef);
+      return subscription === null ? null : { subscription };
+    }
+    const subscriptionId = idValue(subscriptionRef);
+    if (subscriptionId === null) return {};
+    const subscriptionRequest = eventsFetchMapRequest(
+      billing.apiBaseUrl,
+      billing.secretKey ?? '',
+      'customer.subscription.updated',
+      subscriptionId,
+    );
+    if (subscriptionRequest === null) return null;
+    const fetchedSubscription = await executeWebhookFetch(billing, subscriptionRequest);
+    if (!fetchedSubscription.ok) return null;
+    const subscription = normalizeSubscription(fetchedSubscription.json);
+    return subscription === null ? null : { subscription };
+  }
+
+  return {};
+}
+
+async function handleStripeWebhook(env: Env, request: Request): Promise<Response> {
+  const declaredLength = request.headers.get('content-length');
+  if (declaredLength !== null && Number(declaredLength) > BILLING_WEBHOOK_MAX_BODY_BYTES) {
+    return withSecurityHeaders(new Response('Body too large', { status: 413 }));
+  }
+  const rawBody = await request.text();
+  if (new TextEncoder().encode(rawBody).byteLength > BILLING_WEBHOOK_MAX_BODY_BYTES) {
+    return withSecurityHeaders(new Response('Body too large', { status: 413 }));
+  }
+
+  const billing = readBillingEnv({
+    STRIPE_API_BASE: env.STRIPE_API_BASE,
+    STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
+    STRIPE_WEBHOOK_SECRET: env.STRIPE_WEBHOOK_SECRET,
+  });
+  const verification = await verifyStripeSignature(
+    rawBody,
+    request.headers.get('stripe-signature'),
+    billing.webhookSecret === null ? [] : [billing.webhookSecret],
+    Date.now(),
+  );
+  if (!verification.valid) {
+    return withSecurityHeaders(new Response(null, { status: 400 }));
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawBody);
+  } catch {
+    return withSecurityHeaders(new Response(null, { status: 400 }));
+  }
+  const event = parseStripeEvent(parsed);
+  if (event === null) {
+    return withSecurityHeaders(new Response(null, { status: 400 }));
+  }
+
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const existing = await identity.fetch(
+    `https://identity/billing/events/status?id=${encodeURIComponent(event.id)}`,
+  );
+  if (existing.ok) {
+    return withSecurityHeaders(existing);
+  }
+  if (existing.status !== 404) {
+    return withSecurityHeaders(new Response(null, { status: 500 }));
+  }
+
+  if (!event.livemode) {
+    return forwardWebhookEvent(env, event);
+  }
+
+  const objects = await fetchWebhookObjects(billing, event);
+  if (objects === null) {
+    return withSecurityHeaders(new Response(null, { status: 500 }));
+  }
+  return forwardWebhookEvent(
+    env,
+    event,
+    Object.keys(objects).length > 0 ? objects : undefined,
+  );
+}
+
 function hostNotFound(): Response {
   return withSecurityHeaders(new Response(null, { status: 404 }));
 }
@@ -1003,8 +1337,22 @@ const worker = {
         { status: 405, headers: { Allow: 'POST' } },
       ));
     }
+    if (
+      hostKind === 'teacher'
+      && url.pathname === BILLING_WEBHOOK_PATH
+      && request.method !== 'POST'
+    ) {
+      return withSecurityHeaders(Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'POST' } },
+      ));
+    }
     if (!isRouteAllowedOnHost(url.pathname, request.method, hostKind)) return hostNotFound();
     const isGuestHost = hostKind === 'guest';
+
+    if (hostKind === 'teacher' && url.pathname === BILLING_WEBHOOK_PATH) {
+      return handleStripeWebhook(env, request);
+    }
 
     // SEC-015 sales-surface exemption: marketing pages must be reachable and
     // indexable by search engines without a Cf-Access-Jwt-Assertion, or the

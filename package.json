@@ -25,6 +25,7 @@
     "test:e2e": "node scripts/run-e2e.mjs",
     "test:e2e:ui": "node scripts/run-e2e.mjs --ui",
     "test:e2e:coverage": "node scripts/run-e2e.mjs --coverage",
+    "test:billing:staging": "node scripts/run-billing-staging.mjs",
     "coverage:e2e": "node scripts/e2e-coverage-report.mjs",
     "coverage:unit": "vitest run --coverage",
     "coverage:workers": "node scripts/run-worker-tests.mjs --coverage",

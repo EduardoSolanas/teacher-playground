@@ -7,6 +7,8 @@ import {
   withNonceHtmlSecurityHeaders,
   connectSrcForPageOrigin,
   MAX_BODY_BYTES,
+  BILLING_WEBHOOK_MAX_BODY_BYTES,
+  BILLING_WEBHOOK_PATH,
   applyCspNonceToHtml,
   isPublicPath,
   MARKETING_PAGES,
@@ -855,6 +857,42 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
 
     it('rejects suffixed marketing paths', () => {
       expect(isPublicPath('/pricing/extra')).toBe(false);
+    });
+  });
+
+  describe('billing webhook boundary (spec §5.3, §6.3)', () => {
+    it('caps the webhook body at 1 MiB, separate from the 4 MiB scene cap', () => {
+      expect(BILLING_WEBHOOK_MAX_BODY_BYTES).toBe(1_048_576);
+      expect(BILLING_WEBHOOK_MAX_BODY_BYTES).toBeLessThan(MAX_BODY_BYTES);
+    });
+
+    it('allows only POST /api/billing/webhook on the teacher host', () => {
+      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'POST', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'POST', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'POST', 'marketing')).toBe(false);
+      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'POST', 'unknown')).toBe(false);
+      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'GET', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'HEAD', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'PUT', 'teacher')).toBe(false);
+    });
+
+    it('keeps suffix and prefix variants out of the webhook allowance', () => {
+      for (const pathname of [
+        '/api/billing/webhook/',
+        '/api/billing/webhook/extra',
+        '/api/billing/webhookX',
+        '/api/billing/webhooks',
+      ]) {
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'teacher'), pathname).toBe(false);
+      }
+    });
+
+    it('exempts the exact webhook path from the origin guard and nothing nearby', () => {
+      expect(isOriginGuardedPath(BILLING_WEBHOOK_PATH, 'POST')).toBe(false);
+      expect(isOriginGuardedPath('/api/billing/webhook/', 'POST')).toBe(true);
+      expect(isOriginGuardedPath('/api/billing/webhook/extra', 'POST')).toBe(true);
+      expect(isOriginGuardedPath('/api/billing/webhookX', 'POST')).toBe(true);
+      expect(isOriginGuardedPath('/api/billing/checkout', 'POST')).toBe(true);
     });
   });
 });

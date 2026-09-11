@@ -53,6 +53,22 @@ import {
 } from '../lib/plan/limits';
 import { readEntitlementsForAccount } from '../lib/identity/entitlementWriter';
 import { resolveEffectivePlan } from '../lib/plan/effectivePlan';
+import {
+  applyEvent,
+  sha256Hex,
+  type ApplyVerdict,
+  type BillingApplyInput,
+} from '../lib/billing/apply';
+import {
+  isValidOperationKind,
+  recordUserOperation,
+  settleCollectionOperation,
+  type OperationKind,
+} from '../lib/billing/operations';
+import {
+  claimCollection,
+  type DesiredCollection,
+} from '../lib/identity/entitlementWriter';
 
 const RESOLVE_PATH = '/subjects/resolve';
 const ISSUE_SESSION_PATH = '/sessions/issue';
@@ -76,6 +92,10 @@ const DISABLE_ACCOUNT_PATH = '/accounts/disable';
 const ENABLE_ACCOUNT_PATH = '/accounts/enable';
 const GUESTS_ISSUE_PATH = '/guests/issue';
 const GUESTS_PURGE_PATH = '/guests/purge';
+const BILLING_APPLY_PATH = '/billing/events/apply';
+const BILLING_STATUS_PATH = '/billing/events/status';
+const BILLING_OPERATIONS_PATH = '/billing/operations';
+const BILLING_SETTLE_PATH = '/billing/operations/settle';
 export const GLOBAL_IDENTITY_OBJECT_NAME = 'global';
 
 /**
@@ -333,6 +353,104 @@ async function readExactJson<T>(
   return guard(body)
     ? { body }
     : { response: Response.json({ error: 'Invalid body' }, { status: 400 }) };
+}
+
+/**
+ * Billing routes hash the exact body text they received, so they read the raw
+ * string and parse it themselves instead of going through readExactJson.
+ */
+async function readRawJson(
+  request: Request,
+): Promise<{ raw: string; body: unknown } | { response: Response }> {
+  const raw = await request.text();
+  if (raw.trim() === '') {
+    return { response: Response.json({ error: 'Invalid JSON body' }, { status: 400 }) };
+  }
+  try {
+    return { raw, body: JSON.parse(raw) };
+  } catch {
+    return { response: Response.json({ error: 'Invalid JSON body' }, { status: 400 }) };
+  }
+}
+
+function isBillingApplyBody(value: unknown): value is Omit<BillingApplyInput, 'payloadHash'> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  const event = body.event as Record<string, unknown> | undefined;
+  if (typeof event !== 'object' || event === null) return false;
+  const objectsOk =
+    body.objects === undefined ||
+    body.objects === null ||
+    (typeof body.objects === 'object' && !Array.isArray(body.objects));
+  return (
+    typeof event.id === 'string' &&
+    event.id.length >= 1 &&
+    typeof event.type === 'string' &&
+    event.type.length >= 1 &&
+    typeof event.livemode === 'boolean' &&
+    typeof event.created === 'number' &&
+    Number.isFinite(event.created) &&
+    objectsOk
+  );
+}
+
+function isBillingOperationsBody(
+  value: unknown,
+): value is {
+  subjectKind: 'account' | 'company';
+  subjectId: string;
+  operationId: string;
+  kind: OperationKind;
+  stripeObjectId?: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  if (body.subjectKind !== 'account' && body.subjectKind !== 'company') return false;
+  return (
+    typeof body.subjectId === 'string' &&
+    body.subjectId.length >= 1 &&
+    typeof body.operationId === 'string' &&
+    body.operationId.length >= 1 &&
+    isValidOperationKind(body.kind) &&
+    (body.stripeObjectId === undefined || typeof body.stripeObjectId === 'string')
+  );
+}
+
+function isBillingSettleBody(
+  value: unknown,
+): value is {
+  subjectKind: 'account' | 'company';
+  subjectId: string;
+  operationId: string;
+  success?: boolean;
+  actualCollectionState?: DesiredCollection | null;
+  expectedVersion?: number;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  if (body.subjectKind !== 'account' && body.subjectKind !== 'company') return false;
+  if (typeof body.subjectId !== 'string' || body.subjectId.length === 0) return false;
+  if (typeof body.operationId !== 'string' || body.operationId.length === 0) return false;
+  if (body.success !== undefined && typeof body.success !== 'boolean') return false;
+  if (
+    body.actualCollectionState !== undefined &&
+    body.actualCollectionState !== null &&
+    body.actualCollectionState !== 'active' &&
+    body.actualCollectionState !== 'paused' &&
+    body.actualCollectionState !== 'canceled'
+  ) {
+    return false;
+  }
+  if (body.expectedVersion !== undefined && typeof body.expectedVersion !== 'number') {
+    return false;
+  }
+  return true;
+}
+
+function applyVerdictJson(verdict: ApplyVerdict): Record<string, string | undefined> {
+  return verdict.outcome === 'ignored'
+    ? { outcome: 'ignored', outcomeDetail: verdict.outcomeDetail }
+    : { outcome: 'applied' };
 }
 
 /** Singleton Durable Object containing global account and session authority. */
@@ -744,6 +862,155 @@ export class IdentityDO extends DurableObject {
           return Response.json({ error: error.message }, { status: 400 });
         }
         throw error;
+      }
+    }
+
+    if (url.pathname === BILLING_APPLY_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readRawJson(request);
+      if ('response' in parsed) return parsed.response;
+      if (!isBillingApplyBody(parsed.body)) {
+        return Response.json({ error: 'Invalid body' }, { status: 400 });
+      }
+      const applyInput = parsed.body;
+      const payloadHash = await sha256Hex(parsed.raw);
+      try {
+        const verdict = this.db.transaction(() =>
+          applyEvent(this.db, { ...applyInput, payloadHash }),
+        )();
+        return Response.json(applyVerdictJson(verdict), {
+          status: 200,
+          headers: noStore(),
+        });
+      } catch (error) {
+        console.error(
+          '[billing:apply]',
+          JSON.stringify({
+            eventId: parsed.body.event.id,
+            type: parsed.body.event.type,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+        return Response.json({ error: 'apply_failed' }, { status: 500, headers: noStore() });
+      }
+    }
+
+    if (url.pathname === BILLING_STATUS_PATH) {
+      if (request.method !== 'GET') return methodNotAllowed('GET');
+      const id = url.searchParams.get('id');
+      if (!id) return Response.json({ error: 'Invalid body' }, { status: 400 });
+      const row = this.db
+        .prepare(
+          `SELECT outcome, outcome_detail, event_created, applied_at
+           FROM billing_events WHERE event_id = ?`,
+        )
+        .get(id) as
+        | {
+            outcome: string;
+            outcome_detail: string | null;
+            event_created: number;
+            applied_at: number;
+          }
+        | undefined;
+      if (!row) return Response.json({ error: 'Not found' }, { status: 404 });
+      return Response.json(
+        {
+          outcome: row.outcome,
+          outcomeDetail: row.outcome_detail,
+          eventCreated: row.event_created,
+          appliedAt: row.applied_at,
+        },
+        { headers: noStore() },
+      );
+    }
+
+    if (url.pathname === BILLING_OPERATIONS_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readRawJson(request);
+      if ('response' in parsed) return parsed.response;
+      if (!isBillingOperationsBody(parsed.body)) {
+        return Response.json({ error: 'Invalid body' }, { status: 400 });
+      }
+      const operationsInput = parsed.body;
+      const requestHash = await sha256Hex(parsed.raw);
+      const now = Date.now();
+      try {
+        const { recorded, claim } = this.db.transaction(() => {
+          const recorded = recordUserOperation(this.db, operationsInput, { requestHash, now });
+          if (recorded.status !== 'created' || operationsInput.kind !== 'subscription-collection') {
+            return { recorded, claim: null };
+          }
+          const row = this.db
+            .prepare(
+              `SELECT processor_subscription_id FROM billing_subscriptions
+               WHERE subject_kind = ? AND subject_id = ?
+               ORDER BY updated_at DESC, processor_subscription_id ASC
+               LIMIT 1`,
+            )
+            .get(operationsInput.subjectKind, operationsInput.subjectId) as
+            | { processor_subscription_id: string }
+            | undefined;
+          const claim = row
+            ? claimCollection(this.db, {
+                processorSubscriptionId: row.processor_subscription_id,
+                now,
+              })
+            : { claimed: false, inFlightVersion: null, inFlightState: null };
+          return { recorded, claim };
+        })();
+        if (recorded.status === 'conflict') {
+          return Response.json({ error: 'Conflict' }, { status: 409, headers: noStore() });
+        }
+        return Response.json(
+          {
+            status: recorded.record?.status,
+            ...(claim ? { claim } : {}),
+          },
+          {
+            status: recorded.status === 'created' ? 201 : 200,
+            headers: noStore(),
+          },
+        );
+      } catch (error) {
+        console.error(
+          '[billing:operations]',
+          JSON.stringify({
+            subjectKind: parsed.body.subjectKind,
+            subjectId: parsed.body.subjectId,
+            operationId: parsed.body.operationId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+        return Response.json({ error: 'operation_failed' }, { status: 500, headers: noStore() });
+      }
+    }
+
+    if (url.pathname === BILLING_SETTLE_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readRawJson(request);
+      if ('response' in parsed) return parsed.response;
+      if (!isBillingSettleBody(parsed.body)) {
+        return Response.json({ error: 'Invalid body' }, { status: 400 });
+      }
+      const settleInput = parsed.body;
+      const requestHash = await sha256Hex(parsed.raw);
+      const now = Date.now();
+      try {
+        const outcome = this.db.transaction(() =>
+          settleCollectionOperation(this.db, settleInput, { requestHash, now }),
+        )();
+        return Response.json(outcome, { status: 200, headers: noStore() });
+      } catch (error) {
+        console.error(
+          '[billing:settle]',
+          JSON.stringify({
+            subjectKind: parsed.body.subjectKind,
+            subjectId: parsed.body.subjectId,
+            operationId: parsed.body.operationId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+        return Response.json({ error: 'settle_failed' }, { status: 500, headers: noStore() });
       }
     }
 

@@ -76,6 +76,10 @@ export function isRouteAllowedOnHost(
     return false;
   }
 
+  if (pathname === BILLING_WEBHOOK_PATH) {
+    return hostKind === 'teacher' && method === 'POST';
+  }
+
   // Teacher-only paths: allow on teacher host, deny on guest host
   const isTeacherOnlyPath =
     pathname === '/' ||
@@ -211,6 +215,7 @@ export function isRouteAllowedOnHost(
  */
 export function isOriginGuardedPath(pathname: string, method: string): boolean {
   if (pathname === '/signaling') return true;
+  if (pathname === BILLING_WEBHOOK_PATH) return false;
   if (method === 'GET' || method === 'HEAD') return false;
 
   return pathname === '/auth/session'
@@ -236,6 +241,10 @@ export const ROOM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
  * a Durable Object.
  */
 export const MAX_BODY_BYTES = 4 * 1024 * 1024;
+
+export const BILLING_WEBHOOK_PATH = '/api/billing/webhook';
+
+export const BILLING_WEBHOOK_MAX_BODY_BYTES = 1024 * 1024;
 
 /**
  * Max bytes in one signaling WebSocket frame.
