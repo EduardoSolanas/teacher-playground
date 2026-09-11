@@ -1,13 +1,18 @@
 /*
  * Branch coverage of src/ from an e2e coverage run, per test.
  *
- *   npm run test:e2e -- --coverage                 # records coverage/e2e-raw/
- *   node scripts/e2e-coverage-report.mjs           # totals, per spec, unique per test
- *   node scripts/e2e-coverage-report.mjs --without=excalidraw.spec.ts,room-lifecycle.spec.ts
- *   node scripts/e2e-coverage-report.mjs --without-title="Clear Board Modal"
+ *   npm run test:e2e:coverage                      # records coverage-e2e/
+ *   npm run coverage:e2e                           # totals, per spec, unique per test
+ *   npm run coverage:e2e -- --without=raise-hand.spec.ts,"ui-controls.spec.ts::cancel"
+ *   npm run coverage:e2e -- --without-file=cut-list.txt
+ *   npm run coverage:e2e -- --greedy               # fewest tests that keep every arm
+ *
+ * Asking "what would removing these tests cost?" this way answers for browser
+ * branches only; a test that asserts an HTTP status or a cookie can cover
+ * nothing unique here and still be the only guard on what it checks.
  *
  * Each test's raw V8 data is converted to istanbul branch counts once and
- * cached (coverage/e2e-raw/istanbul/). Every question after that -- the suite's
+ * cached (coverage-e2e/istanbul/). Every question after that -- the suite's
  * total, what one test alone covers, what is lost without a set of tests -- is
  * a union over those per-test counts, so it needs no second e2e run.
  *
@@ -21,7 +26,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = process.cwd();
-const RAW_DIR = join(ROOT, 'coverage', 'e2e-raw');
+const RAW_DIR = join(ROOT, 'coverage-e2e');
 const TESTS_DIR = join(RAW_DIR, 'tests');
 const SOURCES_DIR = join(RAW_DIR, 'sources');
 const ISTANBUL_DIR = join(RAW_DIR, 'istanbul');
@@ -39,6 +44,17 @@ function normalizeSourcePath(path) {
   return match ? match[1] : path;
 }
 
+/*
+ * This project's own source, and nothing else. Library maps carry their own
+ * `src/` too (Next's router is webpack://next/src/client/..., Radix and y-webrtc
+ * likewise), so "has src/ in the path" counts the framework as ours. Existing
+ * under this checkout's src/ is the test that cannot be fooled.
+ */
+function isOwnSource(sourcePath) {
+  const path = normalizeSourcePath(sourcePath);
+  return path.startsWith('src/') && !sourcePath.includes('node_modules') && existsSync(join(ROOT, path));
+}
+
 // ── Convert one test (child process) ────────────────────────────────────────
 
 async function convertOne(testFile, outFile) {
@@ -46,7 +62,9 @@ async function convertOne(testFile, outFile) {
   const raw = JSON.parse(readFileSync(testFile, 'utf8'));
   const entries = [];
   for (const entry of raw.entries) {
-    const mapFile = join(OUT_DIR, `${entry.url}.map`);
+    // The URL is percent-encoded (/app/whiteboard/%5BroomId%5D/page-*.js), the
+    // file on disk is not; an undecoded lookup silently drops the room page.
+    const mapFile = join(OUT_DIR, `${decodeURIComponent(entry.url)}.map`);
     if (!existsSync(mapFile)) continue;
     const sourceMap = JSON.parse(readFileSync(mapFile, 'utf8'));
     // Most chunks are framework or Excalidraw; skip any without our code.
@@ -63,8 +81,7 @@ async function convertOne(testFile, outFile) {
     name: raw.title,
     outputDir,
     reports: [['json', { file: 'coverage.json' }]],
-    sourceFilter: (sourcePath) => /(^|\/)src\//.test(sourcePath.replace(/\\/g, '/'))
-      && !sourcePath.includes('node_modules'),
+    sourceFilter: isOwnSource,
     sourcePath: (filePath) => normalizeSourcePath(filePath),
     cleanCache: true,
     logging: 'error',
@@ -76,6 +93,7 @@ async function convertOne(testFile, outFile) {
   // Keep only what the analysis needs: branch locations and arm counts.
   const slim = {};
   for (const [file, data] of Object.entries(istanbul)) {
+    if (!isOwnSource(file)) continue;
     slim[normalizeSourcePath(file)] = { branchMap: data.branchMap, b: data.b };
   }
   writeFileSync(outFile, JSON.stringify({ testId: raw.testId, file: raw.file, title: raw.title, status: raw.status, coverage: slim }));
@@ -108,7 +126,7 @@ function runChild(testFile, outFile) {
 
 async function convertAll() {
   if (!existsSync(TESTS_DIR)) {
-    console.error('No coverage/e2e-raw/tests. Run: npm run test:e2e -- --coverage');
+    console.error('No coverage-e2e/tests. Run: npm run test:e2e -- --coverage');
     process.exit(1);
   }
   mkdirSync(ISTANBUL_DIR, { recursive: true });

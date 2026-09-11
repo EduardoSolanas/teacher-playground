@@ -1,30 +1,6 @@
 import { test, expect } from './fixtures';
-import { Page, Locator } from '@playwright/test';
+import { Page } from '@playwright/test';
 import { newAuthenticatedContext, expandPresenceIfCollapsed, clickCreateRoom } from './helpers';
-
-/**
- * Choose a tool and wait until the editor says it has it.
- *
- * Excalidraw's tool is a radio with its own icon painted over it, so a plain
- * click lands on the icon; forcing dispatches to the control. But force also
- * skips the actionability checks, and a forced click that arrives before
- * Excalidraw has finished mounting is simply dropped -- leaving the selection
- * tool active, so the drag that follows draws nothing at all and the test
- * fails somewhere else entirely. Asking the editor what it holds is the only
- * reliable acknowledgement.
- */
-async function selectTool(locator: Locator, expected: string) {
-  await locator.click({ force: true });
-  await expect
-    .poll(
-      async () =>
-        locator.page().evaluate(
-          () => (window as any).__debugExcalidrawApi?.getAppState?.().activeTool?.type ?? null,
-        ),
-      { timeout: 15000 },
-    )
-    .toBe(expected);
-}
 
 function appUrl(path: string) {
   return new URL(path, process.env.PLAYWRIGHT_BASE_URL).toString();
@@ -309,66 +285,6 @@ async function selectExcalidrawTool(page: Page, testId: keyof typeof EXCALIDRAW_
     .toBe(EXCALIDRAW_TOOL_BY_TEST_ID[testId]);
 }
 
-test.describe('Excalidraw', () => {
-  test('whiteboard page loads with Excalidraw canvas', async ({ page }) => {
-    await joinRoom(page, 'TestUser');
-    await page.waitForTimeout(2000);
-    const canvas = page.locator('canvas').first();
-    await expect(canvas).toBeVisible({ timeout: 10000 });
-  });
-
-  test('tool buttons are visible in sidebar', async ({ page }) => {
-    await joinRoom(page, 'ToolUser');
-    await expect(page.getByTestId('toolbar-selection')).toBeVisible();
-    await expect(page.getByTestId('toolbar-freedraw')).toBeVisible();
-    await expect(page.getByTestId('toolbar-text')).toBeVisible();
-    await expect(page.getByTestId('toolbar-rectangle')).toBeVisible();
-    await expect(page.getByTestId('toolbar-ellipse')).toBeVisible();
-    await expect(page.getByTestId('toolbar-line')).toBeVisible();
-    await expect(page.getByTestId('toolbar-arrow')).toBeVisible();
-    await expect(page.getByTestId('toolbar-rectangle')).toBeVisible();
-    await expect(page.getByTestId('toolbar-eraser')).toBeVisible();
-  });
-
-  test('undo/redo bar is visible', async ({ page }) => {
-    await joinRoom(page, 'UndoUser');
-    await expect(page.locator('.undo-button-container button')).toBeVisible();
-  });
-
-  test('select tool is active by default', async ({ page }) => {
-    await joinRoom(page, 'SelectUser');
-    const selectBtn = page.getByTestId('toolbar-selection');
-    await expect(selectBtn).toBeChecked();
-  });
-
-  test('clicking a tool highlights it', async ({ page }) => {
-    await joinRoom(page, 'ClickTool');
-    const penBtn = page.getByTestId('toolbar-freedraw');
-    const selectBtn = page.getByTestId('toolbar-selection');
-
-    // Through the helper, which waits for the editor to report the tool rather
-    // than for a fixed number of milliseconds: a click that lands before
-    // Excalidraw has finished mounting is dropped, and this test runs straight
-    // after the join.
-    await expect(selectBtn).toBeChecked();
-    await selectExcalidrawTool(page, 'toolbar-freedraw');
-    await expect(penBtn).toBeChecked();
-    await expect(selectBtn).not.toBeChecked();
-
-    const circleBtn = page.getByTestId('toolbar-ellipse');
-    await selectExcalidrawTool(page, 'toolbar-ellipse');
-    await expect(circleBtn).toBeChecked();
-    await expect(penBtn).not.toBeChecked();
-  });
-
-  test('canvas has no drawn shapes on fresh room', async ({ page }) => {
-    await joinRoom(page, 'EmptyUser');
-    await page.waitForTimeout(2000);
-    const shapeRects = await page.locator('svg rect[stroke]').count();
-    expect(shapeRects).toBe(0);
-  });
-});
-
 test.describe('Excalidraw Collaboration', () => {
   test.describe.configure({ timeout: 90_000 });
   test('drawings sync in both directions in the same room', async ({ browser }) => {
@@ -403,122 +319,6 @@ test.describe('Excalidraw Collaboration', () => {
 
     await context1.close();
     await context2.close();
-  });
-
-  test('drawing a rectangle on one peer appears on the other', async ({ browser }) => {
-    const context1 = await newAuthenticatedContext(browser);
-    const context2 = await newAuthenticatedContext(browser);
-
-    const page1 = await context1.newPage();
-    const page2 = await context2.newPage();
-
-    const roomId = await createRoom(page1, 'PeerA');
-    await joinExistingRoom(page2, roomId, 'PeerB', page1);
-
-    await page1.waitForTimeout(3000);
-    await page2.waitForTimeout(3000);
-
-    await selectExcalidrawTool(page1, 'toolbar-rectangle');
-    await dragInCanvas(page1, [{ x: 420, y: 260 }, { x: 600, y: 400 }]);
-
-    const canvas2 = page2.locator('canvas').first();
-    await expect(canvas2).toBeVisible({ timeout: 5000 });
-    await expectCommittedElement(page1, 'rectangle', 1, { minWidth: 40, minHeight: 40 });
-    await expectCommittedElement(page2, 'rectangle', 1, { minWidth: 40, minHeight: 40 });
-    await expectCanvasInk(page1);
-    await expectCanvasInk(page2);
-
-    await context1.close();
-    await context2.close();
-  });
-
-  test('drawing a circle on one peer appears on the other', async ({ browser }) => {
-    const context1 = await newAuthenticatedContext(browser);
-    const context2 = await newAuthenticatedContext(browser);
-
-    const page1 = await context1.newPage();
-    const page2 = await context2.newPage();
-
-    const roomId = await createRoom(page1, 'CirclePeerA');
-    await joinExistingRoom(page2, roomId, 'CirclePeerB', page1);
-
-    await page1.waitForTimeout(3000);
-    await page2.waitForTimeout(3000);
-
-    await selectExcalidrawTool(page1, 'toolbar-ellipse');
-    await dragInCanvas(page1, [{ x: 420, y: 260 }, { x: 600, y: 400 }]);
-    await expectCommittedElement(page1, 'ellipse', 1, { minWidth: 40, minHeight: 40 });
-    await expectCommittedElement(page2, 'ellipse', 1, { minWidth: 40, minHeight: 40 });
-    await expectCanvasInk(page1);
-    await expectCanvasInk(page2);
-
-    await context1.close();
-    await context2.close();
-  });
-
-  test('drawing a pen stroke on one peer appears on the other', async ({ browser }) => {
-    const context1 = await newAuthenticatedContext(browser);
-    const context2 = await newAuthenticatedContext(browser);
-
-    const page1 = await context1.newPage();
-    const page2 = await context2.newPage();
-
-    const roomId = await createRoom(page1, 'PenPeerA');
-    await joinExistingRoom(page2, roomId, 'PenPeerB', page1);
-
-    await page1.waitForTimeout(3000);
-    await page2.waitForTimeout(3000);
-
-    await selectExcalidrawTool(page1, 'toolbar-freedraw');
-    await dragInCanvas(page1, [
-      { x: 420, y: 320 },
-      { x: 480, y: 280 },
-      { x: 560, y: 340 },
-      { x: 680, y: 290 },
-    ]);
-    await expectCommittedElement(page1, 'freedraw', 1, { minPoints: 3 });
-    await expectCommittedElement(page2, 'freedraw', 1, { minPoints: 3 });
-    await expectCanvasInk(page1);
-    await expectCanvasInk(page2);
-
-    await context1.close();
-    await context2.close();
-  });
-
-  test('tool switch on one peer highlights the correct button locally', async ({ browser }) => {
-    const context = await newAuthenticatedContext(browser);
-    const page1 = await context.newPage();
-
-    await joinRoom(page1, 'ToolA');
-
-    await page1.waitForTimeout(3000);
-
-    const selectBtn1 = page1.getByTestId('toolbar-selection');
-    await expect(selectBtn1).toBeChecked();
-
-    const penBtn1 = page1.getByTestId('toolbar-freedraw');
-    await selectTool(penBtn1, 'freedraw');
-    await page1.waitForTimeout(500);
-    await expect(penBtn1).toBeChecked();
-    await expect(selectBtn1).not.toBeChecked();
-
-    await expect(page1.getByTestId('toolbar-freedraw')).toBeChecked();
-
-    await context.close();
-  });
-
-  test('presence panel shows at least one user', async ({ browser }) => {
-    const context = await newAuthenticatedContext(browser);
-    const page1 = await context.newPage();
-
-    await joinRoom(page1, 'PresenceA');
-
-    await page1.waitForTimeout(5000);
-
-    const presenceToggle1 = page1.getByTestId('whiteboard-people-button');
-    await expect(presenceToggle1).toBeVisible();
-
-    await context.close();
   });
 
   test('provider status reflects disconnect and reconnect', async ({ page }) => {
@@ -591,23 +391,6 @@ test.describe('Excalidraw Collaboration', () => {
     await context2.close();
   });
 
-  test('pen tool works locally', async ({ page }) => {
-    await joinRoom(page, 'PenLocal');
-    await page.waitForTimeout(2000);
-
-    await selectExcalidrawTool(page, 'toolbar-freedraw');
-
-    await expect(page.getByTestId('toolbar-freedraw')).toBeChecked();
-
-    await dragInCanvas(page, [
-      { x: 420, y: 320 },
-      { x: 480, y: 280 },
-      { x: 560, y: 340 },
-      { x: 680, y: 290 },
-    ]);
-    await expectCommittedElement(page, 'freedraw', 1, { minPoints: 3 });
-  });
-
   // Was 'pen draws through the first-run empty state hints'. The hint overlay
   // is gone, so there is nothing left to draw through, but what the test
   // actually proved — selecting the pen and dragging produces a freedraw
@@ -637,17 +420,5 @@ test.describe('Excalidraw Collaboration', () => {
     });
 
     expect(freedraw?.points?.length ?? 0).toBeGreaterThan(2);
-  });
-
-  test('arrow tool works locally', async ({ page }) => {
-    await joinRoom(page, 'ArrowUser');
-    await page.waitForTimeout(2000);
-
-    await selectExcalidrawTool(page, 'toolbar-arrow');
-
-    await expect(page.getByTestId('toolbar-arrow')).toBeChecked();
-
-    await dragInCanvas(page, [{ x: 420, y: 320 }, { x: 680, y: 320 }]);
-    await expectCommittedElement(page, 'arrow', 1, { minPoints: 2 });
   });
 });

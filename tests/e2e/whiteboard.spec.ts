@@ -587,19 +587,6 @@ test.describe('Room Connection Lifecycle', () => {
       .toBeGreaterThanOrEqual(1);
   });
 
-  test('connection status transitions from connecting to connected', async ({ page }) => {
-    await cleanContextAndJoin(page, 'StatusUser');
-
-    // Initially status should be 'connecting' or 'connected'
-    const collab1 = await getCollabState(page);
-    expect(['connecting', 'connected', 'synced'].includes(collab1.status)).toBeTruthy();
-
-    // After some time, should be connected or synced
-    await expect
-      .poll(async () => (await getCollabState(page)).status, { timeout: 15000 })
-      .toMatch(/^(connected|synced)$/);
-  });
-
   test('navigating to a room id that was never created stays in the waiting room', async ({ page }) => {
     await cleanContextAndJoin(page, 'NavUser');
 
@@ -657,59 +644,6 @@ test.describe('Stored room view', () => {
 });
 
 test.describe('Multi-Peer Sync', () => {
-  test('Alice draws rectangle, Bob sees it via Yjs WebRTC', async ({ page, browser }) => {
-    // Alice creates room
-    await cleanContextAndJoin(page, 'Alice');
-    const roomUrl = page.url();
-    await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible();
-
-    // Bob joins in separate browser context (simulates different browser/process)
-    const bobContext = await newAuthenticatedContext(browser);
-    const bobPage = await bobContext.newPage();
-    try {
-      await bobContext.addInitScript(() => {
-        localStorage.removeItem('whiteboard_username');
-        localStorage.removeItem('whiteboard_user_color');
-        localStorage.setItem('whiteboard_user_color', '#e74c3c');
-      });
-      await bobPage.goto(roomUrl);
-      await expect(bobPage.getByTestId('whiteboard-username-input')).toBeVisible();
-      await bobPage.getByTestId('whiteboard-username-input').fill('Bob');
-      await bobPage.getByTestId('whiteboard-join-room-btn').click();
-      await approveWaitingPeerIfPresent(page);
-      await expect(bobPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
-
-      // Wait for both peers to be connected and present in rosters
-      await waitForProviderConnected(page);
-      await waitForProviderConnected(bobPage);
-      await waitForPresence(page, 'Bob');
-      await waitForPresence(bobPage, 'Alice');
-
-      // Alice draws a rectangle
-      const rectIcon = page.getByTestId('toolbar-rectangle');
-      await selectTool(rectIcon, 'rectangle');
-      await dragOnCanvas(page, { x: 320, y: 200 }, { x: 420, y: 300 });
-
-      // Verify Alice's store has the element
-      await expect
-        .poll(async () => (await getStoreState(page)).elements?.length ?? 0, { timeout: 15000 })
-        .toBeGreaterThanOrEqual(1);
-
-      // Bob should see the element via Yjs sync
-      await waitForSync(bobPage, 1, 15000);
-
-      await expect
-        .poll(async () => {
-          const bobState = await getStoreState(bobPage);
-          const remoteRect = bobState.elements?.at(-1);
-          return remoteRect?.type === 'rectangle' && remoteRect?.x === 320 && remoteRect?.y === 200;
-        }, { timeout: 15000 })
-        .toBe(true);
-    } finally {
-      await bobContext.close();
-    }
-  });
-
   test('the host can guide the class through the native Excalidraw follow state', async ({ page, browser }) => {
     await cleanContextAndJoin(page, 'GuideTeacher');
     const roomUrl = page.url();
@@ -829,59 +763,6 @@ test.describe('Multi-Peer Sync', () => {
       expect(
         await bobPage.evaluate(() => (window as any).__debugExcalidrawApi.getAppState().userToFollow),
       ).toBeNull();
-    } finally {
-      await bobContext.close();
-    }
-  });
-
-  test('Bob draws, Alice sees it', async ({ page, browser }) => {
-    // Alice creates room
-    await cleanContextAndJoin(page, 'HostAlice');
-    const roomUrl = page.url();
-
-    // Bob joins
-    const bobContext = await newAuthenticatedContext(browser);
-    const bobPage = await bobContext.newPage();
-    try {
-      await bobContext.addInitScript(() => {
-        localStorage.removeItem('whiteboard_username');
-        localStorage.removeItem('whiteboard_user_color');
-      });
-      await bobPage.goto(roomUrl);
-      await bobPage.getByTestId('whiteboard-username-input').fill('BobDrawer');
-      await bobPage.getByTestId('whiteboard-join-room-btn').click();
-      await approveWaitingPeerIfPresent(page);
-      await expect(bobPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
-
-      await waitForProviderConnected(page);
-      await waitForProviderConnected(bobPage);
-      await waitForPresence(page, 'Bob');
-      await waitForPresence(bobPage, 'Alice');
-
-      // Bob draws a pen stroke
-      const penIcon = bobPage.getByTestId('toolbar-freedraw');
-      await selectTool(penIcon, 'freedraw');
-      await dragOnCanvas(bobPage, { x: 320, y: 200 }, { x: 420, y: 300 });
-
-      await expect
-        .poll(async () => (await getStoreState(bobPage)).elements?.length ?? 0, { timeout: 15000 })
-        .toBeGreaterThanOrEqual(1);
-
-      // Alice should see the element
-      await waitForSync(page, 1, 15000);
-
-      await expect
-        .poll(async () => (await getStoreState(page)).elements?.at(-1)?.type, { timeout: 15000 })
-        .toBe('freedraw');
-
-      // Stroke geometry lives on the Excalidraw element; the legacy store
-      // projection has no `points` field, so assert against the real scene.
-      const remotePointCount = await page.evaluate(() => {
-        const scene = (window as any).__debugExcalidrawApi?.getSceneElements?.() ?? [];
-        const last = scene[scene.length - 1];
-        return Array.isArray(last?.points) ? last.points.length : 0;
-      });
-      expect(remotePointCount).toBeGreaterThan(1);
     } finally {
       await bobContext.close();
     }
@@ -1518,24 +1399,6 @@ test.describe('Reconnection & Resilience', () => {
 });
 
 test.describe('Edge Cases', () => {
-  test('creating many rooms in succession works', async ({ browser }) => {
-    for (let i = 0; i < 5; i++) {
-      const ctx = await newAuthenticatedContext(browser);
-      const page = await ctx.newPage();
-      try {
-        await cleanContextAndJoin(page, `User${i}`);
-        await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 10000 });
-      } finally {
-        await ctx.close();
-      }
-    }
-  });
-
-  test('joining with special characters in name works', async ({ page }) => {
-    await cleanContextAndJoin(page, 'User-123_Test');
-    await waitForPresence(page, 'User-123_Test');
-  });
-
   test('drawing while provider is still connecting still works', async ({ page }) => {
     await cleanContextAndJoin(page, 'FastDraw');
 

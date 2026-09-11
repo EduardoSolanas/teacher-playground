@@ -1,9 +1,9 @@
 /*
  * Per-test V8 coverage for the e2e suite (E2E_COVERAGE=1 only).
  *
- * Each test writes coverage/e2e-raw/tests/<testId>.json holding the raw V8
+ * Each test writes coverage-e2e/tests/<testId>.json holding the raw V8
  * function/block ranges it produced -- no source text, which is stored once
- * per bundle under coverage/e2e-raw/sources/. Keeping tests apart is the point:
+ * per bundle under coverage-e2e/sources/. Keeping tests apart is the point:
  * scripts/e2e-coverage-report.mjs merges any subset afterwards, so "what does
  * the suite cover without these tests?" needs no second e2e run.
  *
@@ -21,7 +21,8 @@ import type { Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
 
 export const COVERAGE_ENABLED = process.env.E2E_COVERAGE === '1';
 
-const RAW_DIR = join(process.cwd(), 'coverage', 'e2e-raw');
+// Not under coverage/: vitest's coverage run empties that directory.
+const RAW_DIR = join(process.cwd(), 'coverage-e2e');
 const SOURCES_DIR = join(RAW_DIR, 'sources');
 const TESTS_DIR = join(RAW_DIR, 'tests');
 

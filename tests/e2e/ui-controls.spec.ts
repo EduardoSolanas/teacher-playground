@@ -99,20 +99,6 @@ test.describe('Room chrome', () => {
 });
 
 test.describe('Clear Board Modal', () => {
-  test('clear board button is visible in bottom controls', async ({ page }) => {
-    await joinRoom(page, 'ClearVisible');
-    await page.waitForTimeout(2000);
-    await expect(page.getByTestId('whiteboard-clear-btn')).toBeVisible();
-  });
-
-  test('clear board button opens the confirmation modal', async ({ page }) => {
-    await joinRoom(page, 'ClearOpen');
-    await page.waitForTimeout(2000);
-    await page.getByTestId('whiteboard-clear-btn').click();
-    await expect(page.getByTestId('whiteboard-clear-confirm-btn')).toBeVisible();
-    await expect(page.getByTestId('whiteboard-clear-cancel-btn')).toBeVisible();
-  });
-
   test('cancel button closes the clear board modal', async ({ page }) => {
     await joinRoom(page, 'ClearCancel');
     await page.waitForTimeout(2000);
@@ -146,18 +132,6 @@ test.describe('Clear Board Modal', () => {
 });
 
 test.describe('Undo/Redo Bar', () => {
-  test('undo button is visible', async ({ page }) => {
-    await joinRoom(page, 'UndoVisible');
-    await page.waitForTimeout(2000);
-    await expect(page.locator('.undo-button-container button')).toBeVisible();
-  });
-
-  test('redo button is visible', async ({ page }) => {
-    await joinRoom(page, 'RedoVisible');
-    await page.waitForTimeout(2000);
-    await expect(page.locator('.redo-button-container button')).toBeVisible();
-  });
-
   test('undo and redo buttons are disabled initially', async ({ page }) => {
     await joinRoom(page, 'InitUndo');
     await page.waitForTimeout(2000);

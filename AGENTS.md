@@ -22,6 +22,9 @@ repository. Do not skip tests to save time.
 | `npm run test:workers` | Real workerd / Durable Object tests (`*.workers.test.ts`) |
 | `npm run typecheck` | Both `tsconfig.json` and `tsconfig.worker.json` |
 | `npm run test:e2e` | Playwright against a local Worker + Access issuer |
+| `npm run coverage:unit` / `coverage:workers` | Branch coverage of `src/` from each vitest suite (`coverage/unit`, `coverage/workers`) |
+| `npm run test:e2e:coverage` then `coverage:e2e` | Per-test browser branch coverage of the e2e suite; `--without=` shows what removing tests would lose |
+| `npm run coverage:layers` | The three side by side, per directory |
 
 Worker tests require exported HTML in `out/`; run `npm run build` first in a
 fresh checkout or when build inputs change. The worker runner checks for

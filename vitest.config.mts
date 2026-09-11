@@ -31,5 +31,14 @@ export default defineConfig({
       "tests/e2e",
       "**/*.workers.test.ts",
     ],
+    // `npm run coverage:unit`. Test files and setup are not the code under test.
+    coverage: {
+      provider: "v8",
+      reportsDirectory: "coverage/unit",
+      reporter: ["text-summary", "json", "json-summary"],
+      include: ["src/**"],
+      exclude: ["**/*.test.ts", "**/*.test.tsx", "src/test/**", "**/*.d.ts"],
+      reportOnFailure: true,
+    },
   },
 });
