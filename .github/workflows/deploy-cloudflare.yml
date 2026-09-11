@@ -22,8 +22,15 @@ jobs:
     if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository || github.event_name == 'workflow_dispatch'
 
     steps:
+      # The commit whose CI passed, not main's tip. Without a ref, a
+      # workflow_run checkout gets the newest commit on main -- which, when
+      # something was pushed while CI ran, is a commit whose e2e has not
+      # passed (run 34600013919 deployed 6486607 on f1e01c3's green CI).
+      # github.sha covers workflow_dispatch, which has no workflow_run.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
