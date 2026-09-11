@@ -874,32 +874,6 @@ export default function TeacherRoomList({
                               </svg>
                             )}
                           </button>
-                          {copyFallbackId === room.roomId && (
-                            <span
-                              role="alert"
-                              data-room-static
-                              data-testid={`whiteboard-room-copy-fallback-${room.roomId}`}
-                              className="room-copy-fallback"
-                            >
-                              <span className="room-pin-note">
-                                Couldn’t copy automatically — select this link and copy it by hand.{' '}
-                              </span>
-                              <span
-                                data-testid={`whiteboard-room-url-${room.roomId}`}
-                                className="room-url"
-                              >
-                                {joinUrl}
-                              </span>
-                            </span>
-                          )}
-                          {guestAccessOff && (
-                            <span
-                              data-testid={`whiteboard-room-link-inactive-${room.roomId}`}
-                              className="room-pin-note room-pin-block"
-                            >
-                              Create a PIN to let students use this link.
-                            </span>
-                          )}
                         </dd>
                       </div>
 
@@ -921,7 +895,7 @@ export default function TeacherRoomList({
                         className="room-share-row room-actions-row"
                         data-testid={`whiteboard-room-actions-${room.roomId}`}
                       >
-                        <dt className="room-share-label">Class PIN</dt>
+                        <dt className="room-share-label room-share-label--pin">Class PIN</dt>
                         <dd className="room-share-value">
                           {settingsErrorRooms[room.roomId] ? (
                             <span
@@ -976,11 +950,6 @@ export default function TeacherRoomList({
                                     {formatGuestPin(roomSettings.guestPin)}
                                   </span>
                                   <CopyButton value={roomSettings.guestPin} label={`class PIN for ${label}`} />
-                                  {expiryLabel && !previousPin && (
-                                    <span className="room-pin-note room-pin-block">
-                                      Stops working {expiryLabel}
-                                    </span>
-                                  )}
                                 </>
                               ) : (
                                 <span className="room-pin-note">
@@ -1021,45 +990,91 @@ export default function TeacherRoomList({
                                     : pinState === 'off' ? 'Create PIN' : 'New PIN'}
                                 </button>
                               </div>
-
-                              {settingsActionError?.roomId === room.roomId && (
-                                <span
-                                  role="alert"
-                                  data-testid={`whiteboard-room-pin-error-${room.roomId}`}
-                                  className="room-pin-block room-pin-warn"
-                                >
-                                  Couldn’t change guest access.{' '}
-                                  <button
-                                    type="button"
-                                    data-testid={`whiteboard-room-pin-retry-${room.roomId}`}
-                                    disabled={pinBusy}
-                                    onClick={() => {
-                                      void patchGuestSettings(room.roomId, settingsActionError.body);
-                                    }}
-                                    className="btn-outline btn-small"
-                                  >
-                                    Try again
-                                  </button>
-                                </span>
-                              )}
-
-                              {previousPin && pinState === 'live' && (
-                                <span className="room-pin-block">
-                                  Anyone holding the old PIN is locked out — send this one.
-                                </span>
-                              )}
-                              {lockedOut && (
-                                <span
-                                  data-testid={`whiteboard-room-lockout-${room.roomId}`}
-                                  className="room-pin-block room-pin-warn"
-                                >
-                                  Too many wrong PIN attempts — join is locked. A new PIN unlocks it.
-                                </span>
-                              )}
                             </>
                           )}
                         </dd>
                       </div>
+
+                      {/*
+                        * Notes sit outside the controls row on purpose. They are
+                        * full-width, and a full-width child inside a row makes
+                        * the whole row full width, which pushed the link, PIN
+                        * and buttons onto separate lines whenever a live or
+                        * rotated PIN had something to say.
+                        */}
+                      {(guestAccessOff
+                        || copyFallbackId === room.roomId
+                        || (pinState === 'live' && expiryLabel && !previousPin)
+                        || (pinState === 'live' && previousPin)
+                        || lockedOut
+                        || settingsActionError?.roomId === room.roomId) && (
+                        <div className="room-share-row room-notes-row">
+                          {guestAccessOff && (
+                            <span
+                              data-testid={`whiteboard-room-link-inactive-${room.roomId}`}
+                              className="room-pin-note room-pin-block"
+                            >
+                              Create a PIN to let students use this link.
+                            </span>
+                          )}
+                          {copyFallbackId === room.roomId && (
+                            <span
+                              role="alert"
+                              data-room-static
+                              data-testid={`whiteboard-room-copy-fallback-${room.roomId}`}
+                              className="room-copy-fallback"
+                            >
+                              <span className="room-pin-note">
+                                Couldn’t copy automatically — select this link and copy it by hand.{' '}
+                              </span>
+                              <span
+                                data-testid={`whiteboard-room-url-${room.roomId}`}
+                                className="room-url"
+                              >
+                                {joinUrl}
+                              </span>
+                            </span>
+                          )}
+                          {pinState === 'live' && expiryLabel && !previousPin && (
+                            <span className="room-pin-note room-pin-block">
+                              Stops working {expiryLabel}
+                            </span>
+                          )}
+                          {pinState === 'live' && previousPin && (
+                            <span className="room-pin-block">
+                              Anyone holding the old PIN is locked out — send this one.
+                            </span>
+                          )}
+                          {lockedOut && (
+                            <span
+                              data-testid={`whiteboard-room-lockout-${room.roomId}`}
+                              className="room-pin-block room-pin-warn"
+                            >
+                              Too many wrong PIN attempts — join is locked. A new PIN unlocks it.
+                            </span>
+                          )}
+                          {settingsActionError?.roomId === room.roomId && (
+                            <span
+                              role="alert"
+                              data-testid={`whiteboard-room-pin-error-${room.roomId}`}
+                              className="room-pin-block room-pin-warn"
+                            >
+                              Couldn’t change guest access.{' '}
+                              <button
+                                type="button"
+                                data-testid={`whiteboard-room-pin-retry-${room.roomId}`}
+                                disabled={pinBusy}
+                                onClick={() => {
+                                  void patchGuestSettings(room.roomId, settingsActionError.body);
+                                }}
+                                className="btn-outline btn-small"
+                              >
+                                Try again
+                              </button>
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </dl>
                   </div>
                 )}

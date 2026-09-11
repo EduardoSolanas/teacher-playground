@@ -12,6 +12,7 @@ const config = [
       "excalidraw/**",
       ".claude/worktrees/**",
       "coverage/**",
+      "coverage-e2e/**",
     ],
   },
   {

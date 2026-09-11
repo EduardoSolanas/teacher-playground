@@ -434,13 +434,17 @@ transition:background .15s}
      wrap only when the viewport is too narrow to hold them. */
   .room-share{flex-direction:row;flex-wrap:wrap;align-items:center;gap:.5rem 1.25rem}
   .room-share-row{flex-direction:row;align-items:center;gap:.75rem}
-  /* The label column is dropped from sm up: the copy button names the link and
-     the PIN reads as digits, and the card is only about 600px wide, so keeping
-     the fixed columns pushed the PIN and its actions onto a second line. The
-     labels stay in the DOM for assistive tech. */
-  .room-share-label{position:absolute;width:1px;height:1px;margin:-1px;padding:0;
+  /* The card is only about 600px wide. The share label earns its space (it is
+     the only clue what the link button copies), but a second fixed column for
+     the PIN pushed the PIN and its actions onto their own line, so only the
+     PIN label is visually hidden -- it stays in the DOM for assistive tech. */
+  .room-share-label{width:auto;flex-shrink:0;white-space:nowrap}
+  .room-share-label--pin{position:absolute;width:1px;height:1px;margin:-1px;padding:0;
     overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 }
+/* Notes take their own full-width line under the controls, never widening the
+   row they describe. */
+.room-notes-row{flex:1 0 100%;flex-direction:column;align-items:flex-start;gap:.25rem}
 .room-share-label{margin:0;font-size:.7rem;font-weight:600;letter-spacing:.06em;
 text-transform:uppercase;color:var(--mut)}
 /* Wraps as a row of whole things, never inside one. The PIN line carries the
