@@ -37,12 +37,19 @@ function fromIstanbul(file) {
   return out;
 }
 
-/** The e2e report's per-test cache, unioned per file. */
-function fromE2e(dir) {
+/**
+ * The e2e report's data, unioned per file: coverage-e2e/merged.json when it is
+ * there (all that CI keeps), else the per-test cache in coverage-e2e/istanbul.
+ */
+function fromE2e(root) {
   const acc = new Map();
-  if (!existsSync(dir)) return new Map();
-  for (const f of readdirSync(dir).filter((name) => name.endsWith('.json'))) {
-    const test = JSON.parse(readFileSync(join(dir, f), 'utf8'));
+  const mergedFile = join(root, 'merged.json');
+  const dir = join(root, 'istanbul');
+  const files = existsSync(mergedFile)
+    ? [mergedFile]
+    : existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith('.json')).map((name) => join(dir, name)) : [];
+  for (const f of files) {
+    const test = JSON.parse(readFileSync(f, 'utf8'));
     for (const [path, { b }] of Object.entries(test.coverage)) {
       const own = ownPath(path);
       if (!own) continue;
@@ -59,7 +66,7 @@ function fromE2e(dir) {
 const layers = {
   unit: fromIstanbul(join(ROOT, 'coverage/unit/coverage-final.json')),
   workers: fromIstanbul(join(ROOT, 'coverage/workers/coverage-final.json')),
-  e2e: fromE2e(join(ROOT, 'coverage-e2e/istanbul')),
+  e2e: fromE2e(join(ROOT, 'coverage-e2e')),
 };
 const pct = (c, t) => (t ? `${((100 * c) / t).toFixed(0)}%` : '-');
 

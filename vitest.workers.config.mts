@@ -47,14 +47,16 @@ export default defineConfig({
     testTimeout: 20_000,
     hookTimeout: 20_000,
     /*
-     * `npm run coverage:workers`. Istanbul, not v8: these tests run inside
+     * `npm run coverage:workers`, or COVERAGE=1 (CI sets it on the unchanged
+     * `npm run test:workers` step). Istanbul, not v8: these tests run inside
      * workerd, whose inspector does not implement V8 precise coverage, so the
      * code has to carry its own counters.
      */
     coverage: {
+      enabled: process.env.COVERAGE === '1',
       provider: 'istanbul',
       reportsDirectory: 'coverage/workers',
-      reporter: ['text-summary', 'json', 'json-summary'],
+      reporter: ['text-summary', 'json', 'json-summary', 'html'],
       include: ['src/**'],
       exclude: ['**/*.test.ts', '**/*.test.tsx', 'src/test/**', '**/*.d.ts'],
       reportOnFailure: true,
