@@ -13,6 +13,7 @@ import {
   eraseOwnAccount,
   exportOwnAccountData,
   issueSessionForVerifiedPrincipal,
+  TutorCapReachedError,
   logoutSession,
   parseSessionCookie,
   purgeExpiredGuestAccounts,
@@ -860,6 +861,51 @@ describe('purgeExpiredGuestAccounts', () => {
     expect(purgeExpiredSessions(db, T0 + 10)).toBe(1);
     expect(purgeExpiredGuestAccounts(db, T0 + 10)).toBe(0);
     expect(accountCount(access.accountId)).toBe(1);
+  });
+});
+
+describe('tutor account cap sessions', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    applyIdentitySchema(db);
+  });
+
+  it('throws TutorCapReachedError at the cap and inserts no session row', async () => {
+    await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0, {
+      tutorAccountCap: 1,
+    });
+
+    await expect(
+      issueSessionForVerifiedPrincipal(
+        db,
+        { issuer: PRINCIPAL.issuer, subject: 'second-tutor' },
+        T0 + 1,
+        { tutorAccountCap: 1 },
+      ),
+    ).rejects.toThrow(TutorCapReachedError);
+
+    expect(
+      db.prepare(`SELECT COUNT(*) AS count FROM sessions`).get(),
+    ).toEqual({ count: 1 });
+    expect(
+      db.prepare(`SELECT COUNT(*) AS count FROM access_subjects`).get(),
+    ).toEqual({ count: 1 });
+  });
+
+  it('an existing account still gets a session at the cap', async () => {
+    const first = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0, {
+      tutorAccountCap: 1,
+    });
+    const second = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0 + 1, {
+      tutorAccountCap: 1,
+    });
+
+    expect(second.accountId).toBe(first.accountId);
+    expect(
+      db.prepare(`SELECT COUNT(*) AS count FROM sessions`).get(),
+    ).toEqual({ count: 2 });
   });
 });
 

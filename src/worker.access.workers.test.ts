@@ -4,7 +4,7 @@ import { runInDurableObject, SELF } from 'cloudflare:test';
 import { getIdentityObject, type IdentityDO } from './do/IdentityDO';
 import { MAX_BODY_BYTES } from './lib/worker/requestGuard';
 import { MAX_ROOM_FILE_BYTES_TOTAL, MAX_BOARD_FILE_BYTES } from './lib/whiteboard/boardFileRoutes';
-import { DESTRUCTIVE_FRESH_MS } from './lib/identity/sessionStore';
+import { DESTRUCTIVE_FRESH_MS, SESSION_COOKIE_NAME } from './lib/identity/sessionStore';
 import { accessFetch, authenticatedFetch, bootstrapLocalSession, localAccessToken } from './test/workerAuth';
 import { resetAuthEventWriterForTests, setAuthEventWriterForTests } from './worker';
 
@@ -16,6 +16,7 @@ declare global {
   namespace Cloudflare {
     interface Env {
       BOARD_FILES: R2Bucket;
+      TUTOR_ACCOUNT_CAP: string;
     }
   }
 }
@@ -1457,6 +1458,145 @@ describe('real local Access boundary through workerd', () => {
 
     const root = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner);
     expect(root.status).toBe(200);
+  });
+
+  /*
+   * Tutor account cap (D10, §3.9) over the real Worker path. The test harness
+   * raises the cap to keep later tests in this shared-storage file alive, so
+   * each case seeds the identity store to the configured cap first. The cap
+   * boundary itself is proven in the identityStore/sessionStore unit tests;
+   * this proves the Worker serves its paused page instead of a session.
+   */
+  function capIdentityStub() {
+    return getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  }
+
+  function configuredTutorCap(): number {
+    const configured = Number(env.TUTOR_ACCOUNT_CAP);
+    if (!Number.isInteger(configured) || configured < 1) {
+      throw new Error('TUTOR_ACCOUNT_CAP must be set by the worker test harness');
+    }
+    return configured;
+  }
+
+  function activeAccessAccountCount(): Promise<number> {
+    return runInDurableObject(capIdentityStub(), (instance: IdentityDO) => (
+      instance.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM accounts
+           WHERE provenance = 'access' AND state = 'active'`,
+        )
+        .get() as { count: number }
+    ).count);
+  }
+
+  function seedActiveAccessAccounts(prefix: string, count: number): Promise<void> {
+    return runInDurableObject(capIdentityStub(), (instance: IdentityDO) => {
+      if (count <= 0) return;
+      instance.db
+        .prepare(
+          `WITH RECURSIVE seed(n) AS (
+             SELECT 1 UNION ALL SELECT n + 1 FROM seed WHERE n < ?
+           )
+           INSERT INTO accounts (
+             account_id, state, authorization_epoch, created_at, updated_at, provenance
+           )
+           SELECT ? || n, 'active', 0, 1, 1, 'access' FROM seed`,
+        )
+        .run(count, prefix);
+    });
+  }
+
+  function clearSeedAccounts(prefix: string): Promise<void> {
+    return runInDurableObject(capIdentityStub(), (instance: IdentityDO) => {
+      instance.db
+        .prepare(`DELETE FROM accounts WHERE account_id LIKE ? || '%'`)
+        .run(prefix);
+    });
+  }
+
+  function accessSubjectCount(subject: string): Promise<number> {
+    return runInDurableObject(capIdentityStub(), (instance: IdentityDO) => (
+      instance.db
+        .prepare(`SELECT COUNT(*) AS count FROM access_subjects WHERE subject = ?`)
+        .get(subject) as { count: number }
+    ).count);
+  }
+
+  it('a new tutor at the cap gets 403 and no session', async () => {
+    const cap = configuredTutorCap();
+    const subject = `tutor-cap-new-${crypto.randomUUID()}`;
+    const prefix = `cap-seed-${crypto.randomUUID()}-`;
+    const before = await activeAccessAccountCount();
+    expect(
+      before,
+      `worker test file already has ${before} active access accounts; the cap is ${cap}`,
+    ).toBeLessThan(cap);
+    try {
+      await seedActiveAccessAccounts(prefix, cap - before);
+
+      const response = await SELF.fetch(`${BASE}/auth/session`, {
+        method: 'POST',
+        headers: {
+          Origin: BASE,
+          'Cf-Access-Jwt-Assertion': await localAccessToken(subject),
+        },
+      });
+      expect(response.status).toBe(403);
+      expect(await response.text()).toContain('tutor sign-ups are paused');
+      expect(response.headers.get('content-type')).toContain('text/html; charset=utf-8');
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      expect(response.headers.get('set-cookie')).toBeNull();
+      // The machine-readable DO outcome must not reach the browser.
+      expect(response.headers.get('x-identity-outcome')).toBeNull();
+      expect(await accessSubjectCount(subject)).toBe(0);
+    } finally {
+      await clearSeedAccounts(prefix);
+    }
+  });
+
+  it('an existing account still resolves at the cap', async () => {
+    const cap = configuredTutorCap();
+    const subject = `tutor-cap-existing-${crypto.randomUUID()}`;
+    await bootstrapLocalSession(subject);
+    const prefix = `cap-seed-${crypto.randomUUID()}-`;
+    const before = await activeAccessAccountCount();
+    expect(
+      before,
+      `worker test file already has ${before} active access accounts; the cap is ${cap}`,
+    ).toBeLessThan(cap);
+    try {
+      await seedActiveAccessAccounts(prefix, cap - before);
+
+      const response = await SELF.fetch(`${BASE}/auth/session`, {
+        method: 'POST',
+        headers: {
+          Origin: BASE,
+          'Cf-Access-Jwt-Assertion': await localAccessToken(subject),
+        },
+      });
+      expect(response.status).toBe(201);
+      expect(response.headers.get('set-cookie')).toContain(`${SESSION_COOKIE_NAME}=`);
+      expect(await accessSubjectCount(subject)).toBe(1);
+    } finally {
+      await clearSeedAccounts(prefix);
+    }
+  });
+
+  it('does not expose the internal account-plan route on the public Worker', async () => {
+    /*
+     * RoomDO admission will call IdentityDO GET /accounts/plan service-side.
+     * The route has no session guard of its own, so the security property is
+     * that the Worker never proxies it: an authenticated teacher asking for
+     * another account's plan must not get one.
+     */
+    const session = await bootstrapLocalSession('internal-plan-route');
+    const response = await authenticatedFetch(
+      `/accounts/plan?accountId=${session.accountId}`,
+      session,
+    );
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe('');
   });
 
   describe('board file upload and download', () => {

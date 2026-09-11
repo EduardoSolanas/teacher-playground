@@ -7,6 +7,7 @@ import {
   MAX_AUTHORIZATION_BATCH,
   applyIdentitySchema,
   createGuestAccount,
+  isTutorCapReached,
   listOwnedRooms,
   readAccountAuthorizations,
   recordOwnedRoom,
@@ -19,6 +20,7 @@ import {
 } from '../lib/identity/identityStore';
 import {
   SessionUnauthorizedError,
+  TutorCapReachedError,
   authorizeGuestSession,
   authorizeSessionForPrincipal,
   clearSessionCookie,
@@ -49,6 +51,8 @@ import {
   PLAN_LIMIT_STATUS,
   canAddOwnedRoom,
 } from '../lib/plan/limits';
+import { readEntitlementsForAccount } from '../lib/identity/entitlementWriter';
+import { resolveEffectivePlan } from '../lib/plan/effectivePlan';
 
 const RESOLVE_PATH = '/subjects/resolve';
 const ISSUE_SESSION_PATH = '/sessions/issue';
@@ -64,6 +68,7 @@ const ERASE_ACCOUNT_PATH = '/accounts';
 const PENDING_ERASURES_PATH = '/accounts/pending-erasures';
 const CLEAR_ERASURE_PATH = '/accounts/clear-erasure';
 const ACCOUNT_PROFILE_PATH = '/accounts/profile';
+const ACCOUNT_PLAN_PATH = '/accounts/plan';
 const ACCOUNT_ROOMS_PATH = '/accounts/rooms';
 const ACCOUNT_ROOMS_TOUCH_PATH = '/accounts/rooms/touch';
 const REVOKE_ALL_PATH = '/accounts/revoke-all';
@@ -72,6 +77,25 @@ const ENABLE_ACCOUNT_PATH = '/accounts/enable';
 const GUESTS_ISSUE_PATH = '/guests/issue';
 const GUESTS_PURGE_PATH = '/guests/purge';
 export const GLOBAL_IDENTITY_OBJECT_NAME = 'global';
+
+/**
+ * Internal marker the Worker uses to turn a refused session mint into its
+ * paused page. It travels DO -> Worker only and is never copied to a client.
+ */
+export const IDENTITY_OUTCOME_HEADER = 'X-Identity-Outcome';
+export const TUTOR_CAP_REACHED_OUTCOME = 'tutor_cap_reached';
+
+/**
+ * Reads the configured tutor cap from the environment. Absent or invalid
+ * values return undefined so the store applies TUTOR_ACCOUNT_CAP_DEFAULT.
+ */
+function configuredTutorAccountCap(env: unknown): number | undefined {
+  if (typeof env !== 'object' || env === null) return undefined;
+  const raw = (env as { TUTOR_ACCOUNT_CAP?: unknown }).TUTOR_ACCOUNT_CAP;
+  if (typeof raw !== 'string') return undefined;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
 
 function isSubjectBody(value: unknown): value is {
   issuer: string;
@@ -314,9 +338,11 @@ async function readExactJson<T>(
 /** Singleton Durable Object containing global account and session authority. */
 export class IdentityDO extends DurableObject {
   readonly db: RoomDatabase;
+  readonly tutorAccountCap: number | undefined;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
+    this.tutorAccountCap = configuredTutorAccountCap(env);
     this.db = new DODatabase(ctx.storage.sql, ctx.storage);
     applyIdentitySchema(this.db);
   }
@@ -330,7 +356,15 @@ export class IdentityDO extends DurableObject {
       const parsed = await readExactJson(request, isSubjectBody);
       if ('response' in parsed) return parsed.response;
       try {
-        const resolved = resolveAccountForSubject(this.db, parsed.body);
+        const resolved = resolveAccountForSubject(this.db, parsed.body, {
+          tutorAccountCap: this.tutorAccountCap,
+        });
+        if (isTutorCapReached(resolved)) {
+          return Response.json(
+            { error: 'Tutor account cap reached' },
+            { status: 403, headers: noStore() },
+          );
+        }
         return Response.json(resolved, { status: resolved.created ? 201 : 200 });
       } catch (error) {
         if (error instanceof IdentityInputError) {
@@ -348,6 +382,8 @@ export class IdentityDO extends DurableObject {
         const issued = await issueSessionForVerifiedPrincipal(
           this.db,
           parsed.body,
+          undefined,
+          { tutorAccountCap: this.tutorAccountCap },
         );
         const { token: _token, createdAt: _createdAt, ...publicSession } = issued;
         return Response.json(publicSession, {
@@ -355,6 +391,17 @@ export class IdentityDO extends DurableObject {
           headers: noStore({ 'Set-Cookie': sessionCookie(issued) }),
         });
       } catch (error) {
+        if (error instanceof TutorCapReachedError) {
+          return Response.json(
+            { error: 'Tutor account cap reached' },
+            {
+              status: 403,
+              headers: noStore({
+                [IDENTITY_OUTCOME_HEADER]: TUTOR_CAP_REACHED_OUTCOME,
+              }),
+            },
+          );
+        }
         if (
           error instanceof IdentityInputError ||
           error instanceof SessionUnauthorizedError
@@ -458,6 +505,19 @@ export class IdentityDO extends DurableObject {
         }
         throw error;
       }
+    }
+
+    if (url.pathname === ACCOUNT_PLAN_PATH) {
+      if (request.method !== 'GET') return methodNotAllowed('GET');
+      const accountId = url.searchParams.get('accountId');
+      if (accountId === null || accountId.length < 1 || accountId.length > 128) {
+        return Response.json({ error: 'Invalid accountId' }, { status: 400 });
+      }
+      const plan = resolveEffectivePlan(
+        readEntitlementsForAccount(this.db, accountId),
+        Date.now(),
+      );
+      return Response.json(plan, { headers: noStore() });
     }
 
     if (url.pathname === EXPORT_ACCOUNT_PATH) {

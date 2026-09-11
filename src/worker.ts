@@ -11,7 +11,12 @@ import {
   clearCfAuthorizationSetCookie,
   safeRedirectPath,
 } from './lib/access/accessLogoutUrl';
-import { IdentityDO, getIdentityObject } from './do/IdentityDO';
+import {
+  IDENTITY_OUTCOME_HEADER,
+  IdentityDO,
+  TUTOR_CAP_REACHED_OUTCOME,
+  getIdentityObject,
+} from './do/IdentityDO';
 import { createRateLimiter } from './lib/http/rateLimit';
 import {
   parseGuestSessionCookie,
@@ -58,6 +63,8 @@ export interface Env {
   ACCESS_ISSUER?: string;
   ACCESS_AUDIENCE?: string;
   ACCESS_JWKS_URL?: string;
+  /** Cloudflare Access free-plan seat budget for brand-new tutor accounts. */
+  TUTOR_ACCOUNT_CAP?: string;
   ENVIRONMENT?: string;
   LIVEKIT_URL?: string;
   LIVEKIT_API_KEY?: string;
@@ -111,6 +118,27 @@ const ACCOUNT_ROOMS = '/api/whiteboard/rooms';
 const AUTH_GUEST = '/auth/guest';
 const IDENTITY_ACCOUNT_ROOMS = 'https://identity/accounts/rooms';
 const IDENTITY_GUESTS_PURGE = 'https://identity/guests/purge';
+
+/**
+ * Served when the identity store refuses a brand-new tutor account at the
+ * configured cap. Static: the refused browser has no session and no app
+ * assets are needed to read it.
+ */
+const TUTOR_CAP_PAUSED_HTML = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Tutor sign-ups are paused</title>
+  </head>
+  <body>
+    <main>
+      <h1>Tutor sign-ups are paused</h1>
+      <p>New tutor sign-ups are paused while the account limit is reviewed.
+      Existing tutors can still sign in.</p>
+    </main>
+  </body>
+</html>`;
 
 /** Room-creation POSTs per verified account within a one-minute window (SEC-005). */
 const ROOM_CREATE_RATE_WINDOW_MS = RATE_WINDOW_MS;
@@ -439,6 +467,18 @@ async function issueSession(
   const result = await identity.fetch(
     new Request('https://identity/sessions/issue', internalJson(accessAccountKey(principal))),
   );
+  if (result.headers.get(IDENTITY_OUTCOME_HEADER) === TUTOR_CAP_REACHED_OUTCOME) {
+    // The DO outcome marker is routing information for this Worker only: the
+    // browser gets a fresh page carrying no marker, no DO credentials and no
+    // cookie from the refused mint.
+    return withSecurityHeaders(new Response(TUTOR_CAP_PAUSED_HTML, {
+      status: 403,
+      headers: {
+        'content-type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+      },
+    }));
+  }
   return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
 }
 

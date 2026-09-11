@@ -92,6 +92,9 @@ ACCESS_JWKS_URL = "https://ha-smart-home.cloudflareaccess.com/cdn-cgi/access/cer
 TEACHER_HOSTNAME = "app-playground.sen-tutor.co.uk"
 MARKETING_HOSTNAME = "playground.sen-tutor.co.uk"
 GUEST_HOSTNAME = "join-playground.sen-tutor.co.uk"
+# Cloudflare Access free-plan seat budget. A brand-new tutor account is
+# refused at this count; an existing tutor is never refused.
+TUTOR_ACCOUNT_CAP = "50"
 # LiveKit A/V (optional). Prefer `wrangler secret put LIVEKIT_*` in production.
 # When unset, POST /api/av/token returns 503 and the UI degrades gracefully.
 # LIVEKIT_URL = "wss://your-project.livekit.cloud"

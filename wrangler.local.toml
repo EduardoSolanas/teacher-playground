@@ -10,6 +10,11 @@ preview_urls = false
 
 [vars]
 ENVIRONMENT = "local-test"
+# Local dev/e2e storage accumulates identities across runs, so the production
+# cap would refuse every new subject. The cap's purpose is Cloudflare Access
+# seat economics in production; locally it is effectively disabled. The guard
+# itself is proven at the exact boundary by unit and worker tests.
+TUTOR_ACCOUNT_CAP = "1000000"
 ACCESS_ISSUER = "http://127.0.0.1:8790"
 ACCESS_AUDIENCE = "teacher-playground-local"
 ACCESS_JWKS_URL = "http://127.0.0.1:8790/jwks"

@@ -4,6 +4,7 @@ import {
   type AuditContext,
   IdentityInputError,
   MAX_AUTHORIZATION_BATCH,
+  isTutorCapReached,
   listOwnedRooms,
   recordAuthorizationAudit,
   resolveAccountForSubject,
@@ -78,6 +79,13 @@ export class SessionUnauthorizedError extends Error {
   constructor() {
     super('Unauthorized');
     this.name = 'SessionUnauthorizedError';
+  }
+}
+
+export class TutorCapReachedError extends Error {
+  constructor() {
+    super('Tutor account cap reached');
+    this.name = 'TutorCapReachedError';
   }
 }
 
@@ -243,8 +251,10 @@ export async function issueSessionForVerifiedPrincipal(
   db: RoomDatabase,
   principal: VerifiedAccessPrincipal,
   now = Date.now(),
+  options: { tutorAccountCap?: number } = {},
 ): Promise<IssuedSession> {
-  const resolved = resolveAccountForSubject(db, principal);
+  const resolved = resolveAccountForSubject(db, principal, options);
+  if (isTutorCapReached(resolved)) throw new TutorCapReachedError();
 
   for (let attempt = 0; attempt < MAX_INSERT_ATTEMPTS; attempt += 1) {
     const token = generateSessionToken();
