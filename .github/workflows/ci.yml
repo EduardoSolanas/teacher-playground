@@ -28,6 +28,12 @@ jobs:
           node-version: 22.23.2
           cache: npm
 
+      # Node 22 bundles npm 10, which does not know .npmrc's min-release-age or
+      # allow-remote and silently ignores them. npm 12 enforces both, the same
+      # as a developer's machine does.
+      - name: Use npm 12
+        run: npm install -g npm@12.0.2 --ignore-scripts --loglevel=error
+
       # Lifecycle scripts are disabled so a compromised transitive package cannot
       # run install/postinstall. Allowlist: better-sqlite3 (native addon required
       # by unit tests). Rebuild that package explicitly after the ignored install.
@@ -90,6 +96,10 @@ jobs:
         with:
           node-version: 22.23.2
           cache: npm
+
+      # npm 12 enforces .npmrc; see the checks job.
+      - name: Use npm 12
+        run: npm install -g npm@12.0.2 --ignore-scripts --loglevel=error
 
       # Lifecycle scripts are disabled so a compromised transitive package cannot
       # run install/postinstall. Allowlist: Playwright browsers are installed in
@@ -238,6 +248,10 @@ jobs:
           node-version: 22.23.2
           cache: npm
 
+      # npm 12 enforces .npmrc; see the checks job.
+      - name: Use npm 12
+        run: npm install -g npm@12.0.2 --ignore-scripts --loglevel=error
+
       # Lifecycle scripts are disabled so a compromised transitive package cannot
       # run install/postinstall. This job only audits the lockfile, so no native
       # addon allowlist rebuild is required.
@@ -260,6 +274,10 @@ jobs:
         with:
           node-version: 22.23.2
           cache: npm
+
+      # npm 12 enforces .npmrc; see the checks job.
+      - name: Use npm 12
+        run: npm install -g npm@12.0.2 --ignore-scripts --loglevel=error
 
       - name: Install production dependencies
         run: npm ci --omit=dev --ignore-scripts --loglevel=error

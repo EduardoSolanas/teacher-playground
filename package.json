@@ -87,5 +87,8 @@
       "nanoid": "5.1.16",
       "@mermaid-js/parser": "1.2.0"
     }
+  },
+  "allowScripts": {
+    "better-sqlite3@12.10.0": true
   }
 }
