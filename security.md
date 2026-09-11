@@ -883,10 +883,13 @@ accidentally collecting payment or billing identity from minors.
 - [ ] Make entitlement changes idempotent and audited. Reuse the existing
   `authorization_audit` pattern: actor, reason, before/after, written in the same
   transaction as the change.
-- [ ] Propagate downgrade, cancellation, non-payment, refund, and chargeback the
-  same way revocation propagates — bump the account authorization epoch so HTTP
-  and already-open real-time connections lose the entitlement within the
-  documented bound. An expiring plan must not depend on a client asking.
+- [ ] Propagate downgrade, cancellation, non-payment, refund, and chargeback by
+  boundary-time re-evaluation: the effective-plan resolver runs with the
+  request's `now` at every boundary, so an expired grace period stops
+  entitling with no background job and no client asking. Entitlement changes
+  never bump the authorization epoch and never close an in-progress lesson;
+  account-level revocation keeps the existing epoch mechanism and its
+  documented socket bound.
 - [ ] Enforce plan limits (rooms, seats, participants, retention) server-side at
   the same boundary as the authorization matrix, not in the UI.
 - [ ] Scope billing routes to the owning account only. Reading or changing another
@@ -920,10 +923,11 @@ accidentally collecting payment or billing identity from minors.
     tutor out of rooms with already-admitted students — the cap gates *new*
     admissions only, so no lesson in progress ever breaks.
   - Residual, accepted: several children sharing one student account (bounded
-    by the 3-participants-per-room cap), and tutors making multiple tutor
-    accounts (bounded by one-Access-identity-per-account friction and the
-    per-identity trial limit above; monitored, not blocked, because stronger
-    identity proofing is disproportionate for this product).
+    by the catalog Free per-room cap, `FREE_MAX_USERS = 2`), and tutors making
+    multiple tutor accounts (bounded by one-Access-identity-per-account
+    friction, the enforced `TUTOR_ACCOUNT_CAP`, and the per-identity trial
+    limit above; monitored, not blocked, because stronger identity proofing is
+    disproportionate for this product).
   - Product note: the meter aligns the paid tier with the product's own value
     rather than fighting the user — churn destroys the "board remembers"
     retention that is the reason to use the product at all, so honest heavy
@@ -937,11 +941,20 @@ accidentally collecting payment or billing identity from minors.
 **Acceptance tests:** a forged, replayed, stale, or wrong-signature webhook
 changes nothing; a client-declared plan, tampered price, or self-granted
 entitlement is ignored; a checkout redirect alone entitles nobody; cancel,
-refund, chargeback, and failed renewal each remove access from HTTP and from an
-already-open socket within the documented bound; one account cannot read or
-modify another's billing state; plan limits are enforced server-side against a
-raw client; duplicate webhook delivery applies once; and induced processor
-errors or timeouts never leave entitlement and payment in disagreement.
+refund, chargeback, and failed renewal past grace remove entitlement from HTTP
+and from **new** room activity at the next boundary, and from already-open
+lessons at the session's next validity check; account-level revocation still
+closes sockets within the 30 s alarm bound. A chargeback suspends billing per
+D12. Tested bound: an open socket with no further HTTP activity is closed by
+the RoomDO alarm at the session's idle expiry, because the alarm reads
+`idle_expires_at` and never refreshes it; only HTTP session validation
+refreshes it, so the 12 h absolute expiry is the ceiling only while HTTP
+activity keeps refreshing idle. Accepted residual: a lapsed or disputed
+account keeps its already-admitted participants in an open lesson until that
+check. One account cannot read or modify another's billing state; plan limits
+are enforced server-side against a raw client; duplicate webhook delivery
+applies once; and induced processor errors or timeouts never leave
+entitlement and payment in disagreement.
 
 #### Proposed membership structure (Phase 7 input — awaiting owner sign-off)
 
@@ -950,15 +963,20 @@ page. The product owner can amend any number here; the *shape* (server-owned
 catalog, account-keyed entitlement, grace-then-downgrade, students never
 billable) is the part SEC-015 depends on.
 
-**Target market (owner decision, 2026-08-18).** Private tutors doing 1-to-1
-or small-group tuition (typically 1-3 students, rarely up to a small class),
-with few sessions active at once. This is *not* a school product: no seat
-pools, no rosters, no district billing, no admin consoles. That decision
-resolves the "who pays" question — the tutor pays — and permanently deprives
-the School tier of a reason to exist here. It also means the Cloudflare
-Access free tier (50 users) stretches further than a school product would
-allow: one tutor plus their students is a handful of users, so roughly a
-dozen active tutors fit before the Access plan becomes a cost question.
+**Target market (owner decision, 2026-08-18; amended 2026-09-11).** Private
+tutors doing 1-to-1 or small-group tuition (typically 1-3 students, rarely up
+to a small class), with few sessions active at once. This is *not* a school
+product: no student seats, no rosters, no LMS/SSO, no district billing, and no
+administrative control over other tutors' rooms or content. A *corporate
+account* is permitted only as a billing group of tutor accounts: a company may
+hold tutor seats, assign/revoke them, and see its own consolidated invoice, but
+it never sees or controls a member's boards, and students are never billable.
+That decision resolves the "who pays" question — the tutor pays — and
+permanently deprives the School tier of a reason to exist here. It also means
+the Cloudflare Access free tier (50 users) is the authentication budget for
+tutors: students join through the guest host, which has no Access application,
+so the app caps active tutor accounts at 50 (`TUTOR_ACCOUNT_CAP`; see the
+implementation spec §3.9).
 
 **Who is billable.** Only tutors — the accounts that create and own rooms.
 Students authenticate and join rooms but are never billable, never see payment
@@ -971,23 +989,25 @@ private 1:1 setting, not less.
 
 **Tiers (proposed).** Sized for tutoring: a room per student (or per small
 group), few concurrent sessions, value concentrated in retention, A/V, and —
-later — recording and the content library, not in seat counts. The primary
-meter is distinct admitted students (see the Free-tier metering item below),
-which room churn or board reuse cannot evade; the room cap is a secondary
-bound.
+later — recording and the content library, not in seat counts. Distinct-student
+metering (see the Free-tier metering item below) remains a separate
+workstream; until it ships, the Free tier is enforced by the catalog's
+owned-room and per-room participant caps.
 
 | | Free | Tutor Pro |
 | --- | --- | --- |
-| Distinct students admitted (rolling 30 days) | 2 | 20 |
-| Active rooms (one per student/group) | 2 | 20 |
-| Participants per room | 3 (tutor + 2 — covers 1:1 and pairs) | 10 (small group classes) |
-| Room retention after last activity | 7 days | 90 days |
+| Active owned rooms | 1 | 20 |
+| Participants per room | 2 (tutor + 1 student) | 10 (small group classes) |
+| Room retention after last activity | 90 days | 90 days |
+| Distinct students admitted (rolling 30 days) | metering deferred — separate workstream | metering deferred — separate workstream |
 | Voice & video calling | yes | yes |
 | Billing | — | monthly/annual, one price each |
 
-No School tier. The school market (seats, rosters, SSO, LMS, admin) is out of
-scope for this product by owner decision, which also confirms the low
-priority of the scheduling/SSO/LMS block in `MISSING_FEATURES.md`.
+No School tier. Student seats, rosters, SSO/LMS, district billing, and admin
+consoles remain out of scope by owner decision; a corporate account is
+permitted only as a billing group of tutor seats (see Target market above),
+which also confirms the low priority of the scheduling/SSO/LMS block in
+`MISSING_FEATURES.md`.
 
 **Plan catalog lives in code, not the database.** A static, versioned map of
 `plan_id -> limits` (max rooms, max participants, retention days) deployed with
@@ -997,12 +1017,18 @@ auditable code review.
 
 **Entitlement data model (identity store, beside `accounts`).**
 
-- `entitlements`: `account_id` (PK, FK accounts), `plan_id`, `status`
-  (`free` / `trialing` / `active` / `past_due` / `canceled`),
-  `current_period_end`, `processor_customer_id`, `processor_subscription_id`,
-  `updated_at`. One row per account; absence of a row means Free. Every write
-  bumps the account's authorization epoch (SEC-015 revocation binding) and
-  lands an `authorization_audit` row in the same transaction.
+- `entitlements`: PK `(account_id, source)` with `source` in
+  (`personal`, `company`); `plan_id`, `status` (`free` / `trialing` /
+  `active` / `past_due` / `canceled`), `grace_until`, `collection_paused`,
+  `company_id`, `current_period_end`, `processor_customer_id`,
+  `processor_subscription_id`, `updated_at`. Absence of a row means Free.
+  Company rows are materialized only by the entitlement writer after the
+  company's first paid invoice. Entitlement writes never bump the account's
+  authorization epoch: the effective-plan resolver re-evaluates at every
+  request boundary, so a downgrade takes effect without touching sessions or
+  live lessons (account revocation keeps the existing epoch mechanism). Every
+  write goes through one writer and lands exactly one `entitlement_audit` row
+  per changed subject per cause in the same transaction.
 - `billing_events`: `event_id` (PK — the processor's event id, which is the
   dedupe key), `type`, `payload_hash`, `processed_at`. Webhook handling
   inserts-or-ignores here first; a duplicate insert means a replay and is
@@ -1011,11 +1037,12 @@ auditable code review.
 **Entitlement state machine.**
 
 `free -> trialing -> active` on server-verified checkout;
-`active -> past_due` on `invoice.payment_failed` (grace: 7 days, full access,
-dunning emails are the processor's job); `past_due -> active` on recovery, or
-`past_due -> canceled` when grace lapses; `active|past_due -> canceled` on
-subscription deletion; chargeback (`charge.dispute.created`) skips grace and
-goes straight to `canceled` plus a review flag. Every transition is
+`active -> past_due` on `invoice.payment_failed` (grace: 7 days from the first
+failure's event time, full access, dunning emails are the processor's job);
+`past_due -> active` on recovery, or enforcement stops at `grace_until` when
+grace lapses; `active|past_due -> canceled` on subscription deletion; a
+chargeback opens a dispute hold that suspends collection and entitlement (D12),
+resumes when no hold remains, and cancels on `lost`. Every transition is
 webhook-driven or reconciliation-driven — never client-driven.
 
 **Downgrade semantics — never destroy data on a billing event.** Dropping to
@@ -1026,15 +1053,16 @@ so a lapsed card never silently erases a class's boards. Over-quota actions
 return the distinct "over plan limit" status from Phase 7, which must not leak
 whether other rooms exist.
 
-**Processor (proposed): Stripe, hosted surfaces only.** Stripe Checkout for
-purchase, Stripe Customer Portal for card changes/cancellation — the
-application renders links and never a card field, keeping SAQ-A scope
-(SEC-015). Webhooks consumed: `checkout.session.completed`,
-`customer.subscription.updated`, `customer.subscription.deleted`,
-`invoice.payment_failed`, `charge.dispute.created`. Reconciliation reads
-`subscriptions.list` per stored customer id on a daily alarm and alerts on
-drift. Any processor with equivalent hosted checkout + signed webhooks
-satisfies the contract; the choice is the owner's.
+**Processor (owner decision): Stripe, hosted surfaces only.** Stripe Checkout,
+Stripe Customer Portal, and Stripe-issued invoices for approved corporate
+plans — the application renders links and never a card field, keeping SAQ-A
+scope (SEC-015). Webhooks consumed: `checkout.session.completed`,
+`customer.subscription.created`, `customer.subscription.updated`,
+`customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`,
+`charge.refunded`, `charge.dispute.created`, `charge.dispute.closed`;
+ordering, dedupe, and the authoritative re-fetch are defined in the
+implementation spec §7.1. A daily reconciliation job re-reads processor state
+per stored subscription id and alerts on drift.
 
 **Public sales surface (landing page, pricing, checkout funnel).** Selling
 the service needs public pages, and public pages invert two rules the app
@@ -1069,8 +1097,9 @@ relies on, so the inversions must be explicit and scoped:
 reach a billing route (server-enforced, not hidden UI); an account with no
 entitlement row behaves exactly as Free everywhere; archive-on-downgrade is
 provably reversible by re-upgrading; the plan catalog is immutable at runtime;
-and every entitlement transition appears exactly once in `authorization_audit`
-with the processor event id as its reason.
+every authorization change appears exactly once in `authorization_audit`, and
+every entitlement transition appears exactly once per cause in
+`entitlement_audit` (with the processor event id where one exists).
 
 
 ## Implementation phases
@@ -1470,24 +1499,28 @@ off, so billing built on an unfinished authorization boundary would be a way to
 pay for access that the boundary cannot actually enforce.
 
 - [ ] Decide and record the commercial model before writing code: what a plan
-  entitles, what happens at the limit, and what the free tier is. Partly
-  decided by the owner (2026-08-18): the market is private 1:1/small-group
-  tutors, the tutor pays, and there is no school/seat model — which removes
-  seat counting from the data model entirely. A concrete proposal (tiers,
-  entitlement tables, state machine, downgrade semantics, Stripe hosted
-  surfaces) is recorded under SEC-015; what remains open is prices, trial
-  length, and final tier limits — sign-off on those completes this task.
+  entitles, what happens at the limit, and what the free tier is. Owner
+  decision (2026-09-11): private 1:1/small-group tutors, the tutor pays, no
+  student seats/rosters/LMS-SSO/district billing/admin control; a corporate
+  account is a billing group of tutor seats only. GBP prices, the code-owned
+  catalog, entitlement tables, state machine, downgrade semantics, and hosted
+  Stripe surfaces are recorded under SEC-015 and the implementation spec; any
+  later price or tier change re-opens this task.
 - [ ] Choose a payment processor with hosted checkout and record the resulting
   PCI DSS scope and the compliance obligations the deployment accepts.
-- [ ] Add entitlement tables to the identity store keyed by `account_id`, with
-  plan, status, current period, seat allocation, and an audit trail (SEC-015).
+- [ ] Add entitlement tables to the identity store keyed by `(account_id,
+  source)`, with plan, status, grace, current period, processor ids, and an
+  exactly-once-per-cause entitlement audit trail; corporate tutor seats and
+  company membership land with the corporate tables (SEC-015).
 - [ ] Implement server-side checkout session creation with a server-selected
   price, an idempotency key, and no client-supplied amounts.
 - [ ] Implement the signature-verified, deduplicated, replay-resistant webhook
   endpoint and the reconciliation job that detects missed events.
-- [ ] Bind entitlement to the authorization epoch so downgrade, cancellation,
-  non-payment, refund, and chargeback revoke access on HTTP and on already-open
-  real-time connections.
+- [ ] Enforce entitlement at the request boundary: downgrade, cancellation,
+  non-payment, refund, and chargeback stop entitling at the next boundary via
+  the effective-plan resolver; account-level revocation keeps the epoch
+  mechanism so HTTP and already-open real-time connections are still severed
+  within the documented bound.
 - [ ] Enforce plan limits at the authorization boundary and return a distinct,
   non-leaking status for "over plan limit" versus "not permitted".
 - [ ] Add the billing account-isolation, entitlement-tampering, webhook-forgery,
