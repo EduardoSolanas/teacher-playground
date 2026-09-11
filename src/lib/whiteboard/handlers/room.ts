@@ -18,8 +18,9 @@ import {
 import { internalErrorResponse } from '../../http/safeError';
 import {
   DEFAULT_MAX_USERS,
+  FREE_MAX_USERS,
   MIN_MAX_USERS,
-  maxUsersAllowedOnFreePlan,
+  maxUsersAllowedOnPlan,
   planLimitJsonResponse,
 } from '../../plan/limits';
 import { computeRoomStats } from '../roomStats';
@@ -30,11 +31,20 @@ import {
 } from '../roomLibrary';
 
 const MAX_NAME_LENGTH = 100;
+const PLAN_MAX_USERS_PARAM = 'planMaxUsers';
 
-function normalizeMaxUsers(value: unknown): number {
+function planMaxUsersCap(request: Request): number {
+  const value = new URL(request.url).searchParams.get(PLAN_MAX_USERS_PARAM);
+  if (value === null) return FREE_MAX_USERS;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < MIN_MAX_USERS) return FREE_MAX_USERS;
+  return parsed;
+}
+
+function normalizeMaxUsers(value: unknown, cap: number): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return DEFAULT_MAX_USERS;
-  return Math.max(MIN_MAX_USERS, Math.min(DEFAULT_MAX_USERS, Math.floor(parsed)));
+  return Math.max(MIN_MAX_USERS, Math.min(cap, Math.floor(parsed)));
 }
 
 function normalizeName(value: unknown): string | null {
@@ -244,13 +254,14 @@ export async function handleRoomPost(
           { status: 400 },
         );
       }
-      if (settings?.maxUsers !== undefined && !maxUsersAllowedOnFreePlan(settings.maxUsers)) {
+      const planMaxUsers = planMaxUsersCap(request);
+      if (settings?.maxUsers !== undefined && !maxUsersAllowedOnPlan(settings.maxUsers, planMaxUsers)) {
         return planLimitJsonResponse();
       }
       db.transaction(() => {
         const maxUsers = settings?.maxUsers === undefined
           ? DEFAULT_MAX_USERS
-          : normalizeMaxUsers(settings.maxUsers);
+          : normalizeMaxUsers(settings.maxUsers, planMaxUsers);
         const name = settings?.name === undefined ? null : normalizeName(settings.name);
         const hostPeerId = settings?.hostPeerId === undefined ? null : settings.hostPeerId;
         const allowFirstUserHost = settings?.allowFirstUserHost === true ? 1 : 0;
@@ -337,14 +348,15 @@ export async function handleRoomSettings(
       return Response.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    if (maxUsers !== undefined && !maxUsersAllowedOnFreePlan(maxUsers)) {
+    const planMaxUsers = planMaxUsersCap(request);
+    if (maxUsers !== undefined && !maxUsersAllowedOnPlan(maxUsers, planMaxUsers)) {
       return planLimitJsonResponse();
     }
 
     const now = Date.now();
     const normalizedMaxUsers = maxUsers === undefined
-      ? existing.max_users
-      : normalizeMaxUsers(maxUsers);
+      ? Math.min(existing.max_users, planMaxUsers)
+      : normalizeMaxUsers(maxUsers, planMaxUsers);
     const normalizedName = name === undefined
       ? existing.name
       : normalizeName(name);

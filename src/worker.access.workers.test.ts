@@ -11,6 +11,7 @@ import { resetAuthEventWriterForTests, setAuthEventWriterForTests } from './work
 import { ORPHAN_GRACE_MS } from './lib/whiteboard/orphanFiles';
 import { getFileBytesTotal, setFileBytes } from './lib/whiteboard/roomSchema';
 import { RoomDO } from './do/RoomDO';
+import { writeEntitlement } from './lib/identity/entitlementWriter';
 
 declare global {
   namespace Cloudflare {
@@ -1380,6 +1381,106 @@ describe('real local Access boundary through workerd', () => {
 
     const read = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner);
     expect(await read.json()).toMatchObject({ maxUsers: 2 });
+  });
+
+  function seedWorkerPersonalPlan(accountId: string): Promise<void> {
+    return runInDurableObject(capIdentityStub(), (instance: IdentityDO) => {
+      writeEntitlement(
+        instance.db,
+        {
+          accountId,
+          source: 'personal',
+          state: {
+            planId: 'tutor_pro_monthly',
+            status: 'active',
+            graceUntil: null,
+            collectionPaused: false,
+            companyId: null,
+            currentPeriodEnd: null,
+            processorCustomerId: `cus_${accountId}`,
+            processorSubscriptionId: `sub_${accountId}`,
+          },
+          now: Date.now(),
+        },
+        {
+          kind: 'operator',
+          id: `worker-seed-${accountId}`,
+          actor: 'test-operator',
+          reason: 'seed paid state',
+        },
+      );
+    });
+  }
+
+  it('takes room occupancy from the tutor plan on create and settings', async () => {
+    const owner = await bootstrapLocalSession(`rooms-pro-plan-${crypto.randomUUID()}`);
+    await seedWorkerPersonalPlan(owner.accountId);
+    const roomId = `pro-plan-${crypto.randomUUID()}`;
+
+    const created = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [], maxUsers: 10 }),
+    });
+    expect(created.status).toBe(200);
+    expect(await created.json()).toMatchObject({ maxUsers: 10 });
+
+    const settings = await authenticatedFetch(`/api/whiteboard/room/${roomId}/settings`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ maxUsers: 10 }),
+    });
+    expect(settings.status).toBe(200);
+    expect(await settings.json()).toMatchObject({ maxUsers: 10 });
+  });
+
+  it('does not let a client raise occupancy above its plan with a forged plan parameter', async () => {
+    const owner = await bootstrapLocalSession(`rooms-free-forge-${crypto.randomUUID()}`);
+    const roomId = `free-forge-${crypto.randomUUID()}`;
+
+    const denied = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}?planMaxUsers=10`,
+      owner,
+      {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ elements: [], maxUsers: 3 }),
+      },
+    );
+    expect(denied.status).toBe(402);
+    expect(await denied.json()).toEqual({ error: 'Plan limit reached' });
+  });
+
+  it('caps the waiting queue at the plan-derived room occupancy', async () => {
+    const owner = await bootstrapLocalSession(`rooms-queue-owner-${crypto.randomUUID()}`);
+    await seedWorkerPersonalPlan(owner.accountId);
+    const roomId = `pro-queue-${crypto.randomUUID()}`;
+
+    const created = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [], maxUsers: 3 }),
+    });
+    expect(created.status).toBe(200);
+
+    const students = [];
+    for (let i = 0; i < 4; i += 1) {
+      students.push(await bootstrapLocalSession(`rooms-queue-student-${i}-${crypto.randomUUID()}`));
+    }
+    for (const student of students.slice(0, 3)) {
+      const queued = await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, student, {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ userName: 'Student' }),
+      });
+      expect(queued.status).toBe(201);
+    }
+    const overflow = await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, students[3], {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Student' }),
+    });
+    expect(overflow.status).toBe(429);
   });
 
   it('refuses guest-verify subpath with 404 for authenticated POST', async () => {

@@ -18,8 +18,12 @@ export function canAddOwnedRoom(ownedCount: number, alreadyOwnsThisRoom: boolean
   return ownedCount < FREE_MAX_ROOMS;
 }
 
+export function maxUsersAllowedOnPlan(maxUsers: number, planMaxUsers: number): boolean {
+  return Number.isInteger(maxUsers) && maxUsers >= MIN_MAX_USERS && maxUsers <= planMaxUsers;
+}
+
 export function maxUsersAllowedOnFreePlan(maxUsers: number): boolean {
-  return Number.isInteger(maxUsers) && maxUsers >= MIN_MAX_USERS && maxUsers <= FREE_MAX_USERS;
+  return maxUsersAllowedOnPlan(maxUsers, FREE_MAX_USERS);
 }
 
 export function planLimitJsonResponse(): Response {

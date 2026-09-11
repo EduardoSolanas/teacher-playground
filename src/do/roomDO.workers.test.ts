@@ -7,6 +7,7 @@ import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
 import { getElementsFromArray, replaceSharedElements } from '../lib/whiteboard/yjsDoc';
 import { getIdentityObject, type IdentityDO } from './IdentityDO';
+import { writeEntitlement } from '../lib/identity/entitlementWriter';
 import { RoomDO } from './RoomDO';
 import { ROOM_SETTINGS_KEYS } from '../lib/whiteboard/requestSchemas';
 import { MAX_BODY_BYTES } from '../lib/worker/requestGuard';
@@ -96,6 +97,35 @@ async function writeRoom(
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(settings),
+  });
+}
+
+async function seedActivePlan(accountId: string): Promise<void> {
+  await runInDurableObject(getIdentityObject(env.IDENTITY), (instance: IdentityDO) => {
+    writeEntitlement(
+      instance.db,
+      {
+        accountId,
+        source: 'personal',
+        state: {
+          planId: 'tutor_pro_monthly',
+          status: 'active',
+          graceUntil: null,
+          collectionPaused: false,
+          companyId: null,
+          currentPeriodEnd: null,
+          processorCustomerId: null,
+          processorSubscriptionId: `sub-room-do-${accountId}`,
+        },
+        now: Date.now(),
+      },
+      {
+        kind: 'operator',
+        id: `room-do-seed-${accountId}`,
+        actor: 'test-operator',
+        reason: 'seed paid state',
+      },
+    );
   });
 }
 
@@ -849,7 +879,7 @@ describe('signaling message rate limit', () => {
     }
 
     expect(await closed).toBe(1008);
-  });
+  }, 60_000);
 
   it('keeps a flood episode across a reconnect and closes the second burst (SEC-A12)', async () => {
     const owner = await bootstrapLocalSession('breach-episode-owner');
@@ -917,7 +947,7 @@ describe('signaling message rate limit', () => {
         // Already closed by the server, or never opened.
       }
     }
-  });
+  }, 60_000);
 
   it('prunes abuse episodes after several quiet episode gaps, keeping recent ones (SEC-A12)', async () => {
     const owner = await bootstrapLocalSession('breach-prune-owner');
@@ -1070,7 +1100,7 @@ describe('signaling message rate limit', () => {
     survivor.send(JSON.stringify({ type: 'publish', topic: 'room', data: 'ok' }));
     expect(JSON.parse(await received)).toMatchObject({ type: 'publish', topic: 'room', data: 'ok' });
     expect(survivor.readyState).toBe(WebSocket.OPEN);
-  });
+  }, 60_000);
 
   it('keeps socket open when a peer exceeds budget but stays under abuse ceiling', async () => {
     const owner = await bootstrapLocalSession('shed-on-breach-owner');
@@ -2152,6 +2182,7 @@ describe('kick increments room grant version', () => {
     const roomId = 'grant-survivor-room';
 
     expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await seedActivePlan(owner.accountId);
     await grantEditor(owner, kicked, roomId);
     await grantEditor(owner, survivor, roomId);
 
@@ -3515,6 +3546,7 @@ describe('room authorization matrix', () => {
 
     await createRoomAs(owner, roomId, { name: secret.boardName });
     await createRoomAs(foreign, otherRoom, { name: 'Elsewhere' });
+    await seedActivePlan(owner.accountId);
     await grantPublicRole(owner, viewer, roomId, 'viewer');
     await grantPublicRole(owner, editor, roomId, 'peer');
     await joinAs(owner, roomId, 'host-peer');

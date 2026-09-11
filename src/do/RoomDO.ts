@@ -43,6 +43,7 @@ import { orphanKeys, referencedFileIds, type StoredFile } from '../lib/whiteboar
 import { subtractFileBytes } from '../lib/whiteboard/roomSchema';
 import { presenceSignature, sweepExpiredPresence } from '../lib/whiteboard/presence';
 import { internalErrorResponse, redactForLog } from '../lib/http/safeError';
+import { planLimitJsonResponse } from '../lib/plan/limits';
 import { encodePresenceMessage } from '../lib/whiteboard/presenceMessage';
 import { getFrameMessageType, isRelayableFrame } from '../lib/whiteboard/relayPolicy';
 import {
@@ -517,6 +518,15 @@ export class RoomDO extends DurableObject {
         const now = Date.now();
         purgeExpiredGrants(this.db, roomId, now);
         purgeExpiredRoomLifecycle(this.db, roomId, now);
+      }
+
+      if (
+        method === 'POST'
+        && stringField(body, 'action') === 'approve'
+        && (section === 'waiting' || (section === 'requests' && segments[2] !== undefined))
+      ) {
+        const admission = await this.admitWithinOwnerPlan(roomId);
+        if (admission) return admission;
       }
 
       const joiningPeerId = section === 'presence' && method === 'POST' && stringField(body, 'action') == null
@@ -1564,6 +1574,43 @@ export class RoomDO extends DurableObject {
     } catch {
       console.error('identity account rooms touch failed');
     }
+  }
+
+  private async admitWithinOwnerPlan(roomId: string): Promise<Response | null> {
+    const owner = this.db.prepare(
+      `SELECT account_id AS accountId FROM room_members
+       WHERE room_id = ? AND role = 'owner'`,
+    ).get(roomId) as { accountId: string } | undefined;
+    if (!owner) return forbidden();
+
+    let maxUsersPerRoom: number;
+    try {
+      const identity = this.roomEnv.IDENTITY.get(
+        this.roomEnv.IDENTITY.idFromName(GLOBAL_IDENTITY_OBJECT_NAME),
+      );
+      const response = await identity.fetch(new Request(
+        `https://identity/accounts/plan?accountId=${encodeURIComponent(owner.accountId)}`,
+        { method: 'GET' },
+      ));
+      if (!response.ok) return forbidden();
+      const plan = await response.json() as { limits?: { maxUsersPerRoom?: unknown } };
+      const cap = plan.limits?.maxUsersPerRoom;
+      if (typeof cap !== 'number' || !Number.isInteger(cap) || cap < 1) return forbidden();
+      maxUsersPerRoom = cap;
+    } catch {
+      return forbidden();
+    }
+
+    const held = this.db.prepare(
+      `SELECT COUNT(*) AS held FROM room_members
+       WHERE room_id = ?
+         AND (
+           role = 'owner'
+           OR (role IN ('editor', 'viewer') AND (expires_at IS NULL OR expires_at > ?))
+         )`,
+    ).get(roomId, Date.now()) as { held: number };
+    if (held.held >= maxUsersPerRoom) return planLimitJsonResponse();
+    return null;
   }
 
   /** Writes every document that has changed since the last flush. */

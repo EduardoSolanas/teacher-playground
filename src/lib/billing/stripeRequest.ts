@@ -4,8 +4,20 @@
  * here — execution is the responsibility of stripeClient.
  */
 import { STRIPE_API_VERSION } from './stripeConfig';
+import type { PlanId } from '../plan/catalog';
 
 type CollectionState = 'active' | 'paused' | 'canceled';
+
+export interface CheckoutSessionInput {
+  accountId: string;
+  planId: PlanId;
+  priceId: string;
+  operationId: string;
+  successUrl: string;
+  cancelUrl: string;
+  referralCode?: string;
+  promotionCodeId?: string;
+}
 
 function stripeHeaders(secretKey: string): Record<string, string> {
   return {
@@ -84,4 +96,64 @@ export function collectionStateRequest(
   }
   headers['Content-Type'] = 'application/x-www-form-urlencoded';
   return new Request(url, { method: 'POST', headers, body: params.toString() });
+}
+
+export function checkoutSessionRequest(
+  apiBaseUrl: string,
+  secretKey: string,
+  input: CheckoutSessionInput,
+): Request {
+  const params = new URLSearchParams();
+  params.append('mode', 'subscription');
+  params.append('line_items[0][price]', input.priceId);
+  params.append('line_items[0][quantity]', '1');
+  params.append('client_reference_id', input.accountId);
+  params.append('success_url', input.successUrl);
+  params.append('cancel_url', input.cancelUrl);
+  if (input.referralCode) {
+    params.append('metadata[referrer_code]', input.referralCode);
+    params.append('subscription_data[metadata][referrer_code]', input.referralCode);
+  }
+  if (input.promotionCodeId) {
+    params.append('discounts[0][promotion_code]', input.promotionCodeId);
+  }
+
+  const headers: Record<string, string> = {
+    ...stripeHeaders(secretKey),
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'Idempotency-Key': `op:account:${input.accountId}:${input.operationId}`,
+  };
+  return new Request(endpoint(apiBaseUrl, '/v1/checkout/sessions'), {
+    method: 'POST',
+    headers,
+    body: params.toString(),
+  });
+}
+
+export interface PortalSessionInput {
+  accountId: string;
+  processorCustomerId: string;
+  operationId: string;
+  returnUrl: string;
+}
+
+export function portalSessionRequest(
+  apiBaseUrl: string,
+  secretKey: string,
+  input: PortalSessionInput,
+): Request {
+  const params = new URLSearchParams();
+  params.append('customer', input.processorCustomerId);
+  params.append('return_url', input.returnUrl);
+
+  const headers: Record<string, string> = {
+    ...stripeHeaders(secretKey),
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'Idempotency-Key': `op:account:${input.accountId}:${input.operationId}`,
+  };
+  return new Request(endpoint(apiBaseUrl, '/v1/billing_portal/sessions'), {
+    method: 'POST',
+    headers,
+    body: params.toString(),
+  });
 }

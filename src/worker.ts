@@ -127,6 +127,8 @@ const ACCOUNT_ROOMS = '/api/whiteboard/rooms';
 const AUTH_GUEST = '/auth/guest';
 const IDENTITY_ACCOUNT_ROOMS = 'https://identity/accounts/rooms';
 const IDENTITY_GUESTS_PURGE = 'https://identity/guests/purge';
+const IDENTITY_ACCOUNT_PLAN = 'https://identity/accounts/plan';
+const PLAN_MAX_USERS_PARAM = 'planMaxUsers';
 
 /**
  * Served when the identity store refuses a brand-new tutor account at the
@@ -722,6 +724,21 @@ async function listAccountRooms(
   return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
 }
 
+async function resolvePlanMaxUsers(env: Env, accountId: string): Promise<number | null> {
+  try {
+    const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+    const response = await identity.fetch(new Request(
+      `${IDENTITY_ACCOUNT_PLAN}?accountId=${encodeURIComponent(accountId)}`,
+    ));
+    if (!response.ok) return null;
+    const body = await response.json() as { limits?: { maxUsersPerRoom?: unknown } };
+    const cap = body.limits?.maxUsersPerRoom;
+    return typeof cap === 'number' && Number.isInteger(cap) && cap > 0 ? cap : null;
+  } catch {
+    return null;
+  }
+}
+
 function syncOwnedRoom(
   env: Env,
   cookie: string,
@@ -831,6 +848,7 @@ function forward(
   url: URL,
   session: ValidatedSession | null = null,
   guest = false,
+  planMaxUsers: number | null = null,
 ): Promise<Response> {
   const target = new URL(`https://room${path}`);
   url.searchParams.forEach((value, key) => target.searchParams.set(key, value));
@@ -847,6 +865,10 @@ function forward(
     target.searchParams.delete('sessionId');
   }
   target.searchParams.set('guest', guest ? '1' : '0');
+  target.searchParams.delete(PLAN_MAX_USERS_PARAM);
+  if (planMaxUsers !== null) {
+    target.searchParams.set(PLAN_MAX_USERS_PARAM, String(planMaxUsers));
+  }
 
   const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
   const forwarded = new Request(target, request);
@@ -1743,7 +1765,26 @@ const worker = {
         && (request.method === 'POST' || request.method === 'PATCH')
         ? request.clone()
         : null;
-      const response = await forward(env, roomId, `/room${subpath}`, request, url, session, guestCaller);
+      let planMaxUsers: number | null = null;
+      if (
+        session
+        && (
+          (request.method === 'POST' && subpath === '')
+          || ((request.method === 'POST' || request.method === 'PATCH') && subpath === '/settings')
+        )
+      ) {
+        planMaxUsers = await resolvePlanMaxUsers(env, session.accountId);
+      }
+      const response = await forward(
+        env,
+        roomId,
+        `/room${subpath}`,
+        request,
+        url,
+        session,
+        guestCaller,
+        planMaxUsers,
+      );
       if (session && subpath === '') {
         const cookie = request.headers.get('cookie') ?? '';
         if (request.method === 'POST' && response.ok) {
