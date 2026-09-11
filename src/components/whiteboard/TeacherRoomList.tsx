@@ -835,8 +835,8 @@ export default function TeacherRoomList({
                       * has actually failed, where manual copying is the point.
                       */}
                     <dl className="room-share">
-                      <div className="room-share-row">
-                        <dt className="room-share-label">Join link</dt>
+                      <div className="room-share-row room-share-row--join">
+                        <dt className="room-share-label">Share</dt>
                         <dd className="room-share-value">
                           <button
                             type="button"

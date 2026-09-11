@@ -432,8 +432,12 @@ transition:background .15s}
   /* One wrapping line from sm up: the link control, the room code (when the
      room is unnamed) and the class PIN plus its actions sit side by side, and
      wrap only when the viewport is too narrow to hold them. */
-  .room-share{flex-direction:row;flex-wrap:wrap;align-items:center;gap:.5rem 1.25rem}
+  .room-share{flex-direction:row;flex-wrap:wrap;align-items:center;gap:.5rem 1rem}
   .room-share-row{flex-direction:row;align-items:center;gap:.75rem}
+  /* The share label sits above its copy button: side by side the two rows
+     needed about 20px more than the card has, which pushed the PIN and its
+     actions onto a second line. Stacked, the whole controls row fits. */
+  .room-share-row--join{flex-direction:column;align-items:flex-start;gap:.125rem}
   /* The card is only about 600px wide. The share label earns its space (it is
      the only clue what the link button copies), but a second fixed column for
      the PIN pushed the PIN and its actions onto their own line, so only the

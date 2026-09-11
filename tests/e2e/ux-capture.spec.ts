@@ -78,6 +78,20 @@ test('captures the teacher room list', async ({ page }) => {
     await expect(firstRoom).toBeVisible();
     await capture(page, 'room-list', viewport);
   }
+
+  // The widest the controls row ever gets: a live PIN plus a rotated one.
+  await page.setViewportSize(VIEWPORTS[0]);
+  const pinNew = page.locator('[data-testid^="whiteboard-room-pin-new-"]').first();
+  await pinNew.click();
+  await expect(pinNew).toHaveText(/New PIN/, { timeout: 15000 });
+  await settle(page);
+  await capture(page, 'room-list-pin-live', VIEWPORTS[0]);
+
+  await pinNew.click();
+  await expect(page.locator('[data-testid^="whiteboard-room-pin-old-"]').first())
+    .toBeVisible({ timeout: 15000 });
+  await settle(page);
+  await capture(page, 'room-list-pin-rotated', VIEWPORTS[0]);
 });
 
 test('captures the loaded room, presence, title menu and pre-join call control', async ({ page }) => {
