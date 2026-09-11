@@ -184,6 +184,29 @@ async function expectPersistedElement(page: Page, roomId: string, elementId: str
     .toContain(elementId);
 }
 
+// ── A/V Helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Asks the token route once, as an admitted member, whether LiveKit is set up.
+ *
+ * Call specs decide their skip from this before they start any
+ * `waitForResponse`: a skip thrown while such a wait is still pending ends the
+ * test under it, the wait rejects with "Test ended", and the run exits 1 with
+ * an error that belongs to no test even though everything was skipped.
+ */
+async function liveKitConfigured(page: Page, roomId: string): Promise<boolean> {
+  const params = new URLSearchParams({ roomId, name: 'probe' });
+  const response = await page.request.post(appUrl(`/api/av/token?${params.toString()}`), {
+    headers: {
+      Origin: new URL(appUrl('/')).origin,
+      'X-Requested-With': 'XMLHttpRequest',
+    },
+  });
+  if (response.status() === 503) return false;
+  expect(response.status(), 'LiveKit token probe as an admitted member').toBe(200);
+  return true;
+}
+
 // ── Waiting Room State Helpers ───────────────────────────────────────────────
 
 async function getCollabState(page: Page) {
@@ -326,4 +349,5 @@ export {
   waitForExcalidrawApi,
   excalidrawRectangle,
   appendElement,
+  liveKitConfigured,
 };

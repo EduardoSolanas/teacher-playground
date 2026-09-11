@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { newAuthenticatedContext, createRoomWithMaxUsers, expandPresenceIfCollapsed } from './helpers';
+import { newAuthenticatedContext, createRoomWithMaxUsers, liveKitConfigured } from './helpers';
 import { contrastTextOn } from '../../src/lib/whiteboard/userColor';
 import type { Page } from '@playwright/test';
 
@@ -27,7 +27,9 @@ test.describe('call identity presentation', () => {
     const page = await host.newPage();
 
     try {
-      await createRoomWithMaxUsers(page, 'CallHost', 1);
+      const roomId = await createRoomWithMaxUsers(page, 'CallHost', 1);
+      // Decided before any response wait exists; see liveKitConfigured.
+      test.skip(!(await liveKitConfigured(page, roomId)), 'LiveKit is not configured in this E2E environment.');
       const boardColor = await page.evaluate(() => localStorage.getItem('whiteboard_user_color'));
       expect(boardColor).toMatch(/^#[0-9a-f]{6}$/i);
       if (!boardColor) throw new Error('board colour was not assigned on room join');
@@ -36,11 +38,7 @@ test.describe('call identity presentation', () => {
         isAvTokenResponse(response.url(), response.request().method()),
       );
       await page.getByTestId('av-start-call').click();
-      const token = await tokenResponse;
-      if (token.status() === 503) {
-        test.skip(true, 'LiveKit is not configured in this E2E environment.');
-      }
-      expect(token.ok()).toBe(true);
+      expect((await tokenResponse).ok()).toBe(true);
       await waitForJoinedCall(page);
 
       const tile = page.locator('[data-testid^="av-tile-"]').first();

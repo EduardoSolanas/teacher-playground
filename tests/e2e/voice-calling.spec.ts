@@ -1,6 +1,12 @@
 import { test, expect } from './fixtures';
 import { Page } from '@playwright/test';
-import { newAuthenticatedContext, createRoomWithMaxUsers, joinRoomApproved, expandPresenceIfCollapsed } from './helpers';
+import {
+  newAuthenticatedContext,
+  createRoomWithMaxUsers,
+  joinRoomApproved,
+  expandPresenceIfCollapsed,
+  liveKitConfigured,
+} from './helpers';
 
 function appUrl(path: string) {
   return new URL(path, process.env.PLAYWRIGHT_BASE_URL).toString();
@@ -22,6 +28,8 @@ function isAvMuteRequest(url: string, method: string): boolean {
   return method === 'POST' && url.includes('/api/av/mute?');
 }
 
+const LIVEKIT_UNCONFIGURED = 'LiveKit is not configured in this E2E environment.';
+
 test.use({
   launchOptions: {
     args: [
@@ -35,14 +43,19 @@ async function waitForAvIdentity(page: Page): Promise<string> {
   const response = await page.waitForResponse((candidate) =>
     isAvTokenResponse(candidate.url(), candidate.request().method()),
   );
-  if (response.status() === 503) {
-    test.skip(true, 'LiveKit is not configured in this E2E environment.');
-  }
   expect(response.ok()).toBe(true);
   const body = (await response.json()) as { identity?: string };
   expect(typeof body.identity).toBe('string');
   expect(body.identity?.length).toBeGreaterThan(0);
   return body.identity as string;
+}
+
+async function startCallAsHost(hostPage: Page) {
+  const hostToken = hostPage.waitForResponse((candidate) =>
+    isAvTokenResponse(candidate.url(), candidate.request().method()),
+  );
+  await hostPage.getByTestId('av-start-call').click();
+  expect((await hostToken).ok()).toBe(true);
 }
 
 async function waitForJoinedCall(page: Page) {
@@ -62,22 +75,19 @@ async function waitForJoinedCall(page: Page) {
  * call is unconfigured depends on whether the machine running this has
  * LIVEKIT_* set, and a test that passes only on an unconfigured checkout is
  * worse than one that asks a smaller question honestly.
+ *
+ * Each test probes the token route once, before it waits on any response, and
+ * skips there when LiveKit is unset (see liveKitConfigured).
  */
 test.describe('video calling panel', () => {
   test('an admitted host can hide tiles with Hidden and return to Gallery while call controls remain', async ({ browser }) => {
     const host = await newAuthenticatedContext(browser, 'av-layout-host');
     const hostPage = await host.newPage();
 
-    await createRoomWithMaxUsers(hostPage, 'AvHost', 1);
+    const roomId = await createRoomWithMaxUsers(hostPage, 'AvHost', 1);
+    test.skip(!(await liveKitConfigured(hostPage, roomId)), LIVEKIT_UNCONFIGURED);
 
-    const hostToken = hostPage.waitForResponse((candidate) =>
-      isAvTokenResponse(candidate.url(), candidate.request().method()),
-    );
-    await hostPage.getByTestId('av-start-call').click();
-    const tokenResponse = await hostToken;
-    if (tokenResponse.status() === 503) {
-      test.skip(true, 'LiveKit is not configured in this E2E environment.');
-    }
+    await startCallAsHost(hostPage);
     await waitForJoinedCall(hostPage);
 
     await expect(hostPage.getByRole('radio', { name: 'Gallery' })).toHaveAttribute('aria-checked', 'true');
@@ -102,18 +112,12 @@ test.describe('video calling panel', () => {
     const guestPage = await guest.newPage();
 
     const roomId = await createRoomWithMaxUsers(hostPage, 'AvHost', 1);
+    test.skip(!(await liveKitConfigured(hostPage, roomId)), LIVEKIT_UNCONFIGURED);
 
     await expect(hostPage.getByTestId('av-start-call')).toBeVisible({ timeout: 15000 });
     await expect(hostPage.getByTestId('av-session-panel')).toHaveCount(0);
 
-    const hostToken = hostPage.waitForResponse((candidate) =>
-      isAvTokenResponse(candidate.url(), candidate.request().method()),
-    );
-    await hostPage.getByTestId('av-start-call').click();
-    const tokenResponse = await hostToken;
-    if (tokenResponse.status() === 503) {
-      test.skip(true, 'LiveKit is not configured in this E2E environment.');
-    }
+    await startCallAsHost(hostPage);
     await waitForJoinedCall(hostPage);
 
     await joinExistingRoom(guestPage, roomId, 'AvGuest');
@@ -131,15 +135,16 @@ test.describe('video calling panel', () => {
     const peerPage = await peer.newPage();
 
     const roomId = await createRoomWithMaxUsers(hostPage, 'Host', 2);
+    test.skip(!(await liveKitConfigured(hostPage, roomId)), LIVEKIT_UNCONFIGURED);
     await joinRoomApproved(peerPage, hostPage, roomId, 'Peer');
 
     await expect(peerPage.getByTestId('av-start-call')).toHaveCount(0);
 
-    const hostIdentityResponse = waitForAvIdentity(hostPage);
-    const peerIdentityResponse = waitForAvIdentity(peerPage);
+    const identities = Promise.all([waitForAvIdentity(hostPage), waitForAvIdentity(peerPage)]);
     await hostPage.getByTestId('av-start-call').click();
-    const hostAccountId = await hostIdentityResponse;
-    const peerAccountId = await peerIdentityResponse;
+    // Awaited together so a failure on one side does not leave the other wait
+    // pending past the end of the test.
+    const [hostAccountId, peerAccountId] = await identities;
     await waitForJoinedCall(hostPage);
     await waitForJoinedCall(peerPage);
 
@@ -190,16 +195,10 @@ test.describe('video calling panel', () => {
 
     try {
       const roomId = await createRoomWithMaxUsers(hostPage, 'EndHost', 2);
+      test.skip(!(await liveKitConfigured(hostPage, roomId)), LIVEKIT_UNCONFIGURED);
       await joinRoomApproved(peerPage, hostPage, roomId, 'EndPeer');
 
-      const hostToken = hostPage.waitForResponse((candidate) =>
-        isAvTokenResponse(candidate.url(), candidate.request().method()),
-      );
-      await hostPage.getByTestId('av-start-call').click();
-      const tokenResponse = await hostToken;
-      if (tokenResponse.status() === 503) {
-        test.skip(true, 'LiveKit is not configured in this E2E environment.');
-      }
+      await startCallAsHost(hostPage);
       await waitForJoinedCall(hostPage);
       await waitForJoinedCall(peerPage);
 
