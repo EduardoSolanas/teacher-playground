@@ -307,26 +307,92 @@ describe('TeacherRoomList', () => {
     });
 
     /*
-     * The row prints the link, and the guest-host guard applies to what is
-     * printed as much as to what is copied.
+     * The link is not printed any more: the row keeps only the copy control,
+     * which carries the same guest-host guard on the clipboard it writes.
      *
-     * It was removed from the row once as redundant -- the copy button already
-     * carried it -- which left a teacher no way to see which room they were
-     * about to share, to read the address to someone, or to notice a copy that
-     * had silently failed. Printing a teacher-origin URL would be worse than
-     * printing none: a student following it meets Cloudflare Access and cannot
-     * get in, and the link looks perfectly valid to the person who sent it.
+     * A URL left on the screen invites a teacher to read a teacher-origin
+     * address aloud or paste it somewhere the clipboard never touches, and a
+     * student following that meets Cloudflare Access. The manual-copy fallback
+     * still exists, but only after a copy has actually failed, where it is the
+     * only way to get the link out.
      */
-    it('prints the guest-host join URL in the row, never the teacher origin', () => {
+    it('keeps the raw join URL off the row and offers a named copy button', async () => {
       vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', 'join.example.com');
       render(
         <TeacherRoomList rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]} onOpen={vi.fn()} />,
       );
 
-      const printed = screen.getByTestId('whiteboard-room-url-room-alpha').textContent ?? '';
-      expect(printed).toBe('https://join.example.com/whiteboard/room-alpha');
-      expect(printed).not.toContain(window.location.origin);
-      expect(printed).not.toContain(`${window.location.host}/whiteboard/room-alpha`);
+      expect(screen.queryByTestId('whiteboard-room-url-room-alpha')).toBeNull();
+      expect(screen.queryByText('https://join.example.com/whiteboard/room-alpha')).toBeNull();
+      expect(screen.getByTestId('whiteboard-room-share-room-alpha').getAttribute('aria-label'))
+        .toBe('Copy join link for Algebra');
+
+      await copyFirstShareLink();
+      expect(screen.queryByTestId('whiteboard-room-url-room-alpha')).toBeNull();
+    });
+
+    it('reveals the guest-host join URL when the clipboard refuses the copy', async () => {
+      vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', 'join.example.com');
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: () => Promise.reject(new Error('clipboard denied')) },
+      });
+      const onOpen = vi.fn();
+      render(
+        <TeacherRoomList rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]} onOpen={onOpen} />,
+      );
+
+      expect(screen.queryByTestId('whiteboard-room-url-room-alpha')).toBeNull();
+      fireEvent.click(screen.getByTestId('whiteboard-room-share-room-alpha'));
+
+      const printed = await screen.findByTestId('whiteboard-room-url-room-alpha');
+      expect(printed.textContent).toBe('https://join.example.com/whiteboard/room-alpha');
+      expect(printed.textContent).not.toContain(window.location.origin);
+
+      // The revealed link is for copying by hand, not another way into the room.
+      fireEvent.click(printed);
+      expect(onOpen).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the whole room card', () => {
+    it('opens the room from a non-interactive area of the card', () => {
+      const onOpen = vi.fn();
+      render(
+        <TeacherRoomList rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]} onOpen={onOpen} />,
+      );
+
+      fireEvent.click(screen.getByTestId('whiteboard-room-card-room-alpha'));
+
+      expect(onOpen).toHaveBeenCalledTimes(1);
+      expect(onOpen).toHaveBeenCalledWith('room-alpha');
+    });
+
+    it('keeps the kebab menu and its items from opening the room', () => {
+      const onOpen = vi.fn();
+      render(
+        <TeacherRoomList
+          rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+          onOpen={onOpen}
+          onRename={vi.fn()}
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+      fireEvent.click(screen.getByTestId('whiteboard-room-rename-room-alpha'));
+
+      expect(onOpen).not.toHaveBeenCalled();
+    });
+
+    it('keeps the join-link copy button from opening the room', () => {
+      const onOpen = vi.fn();
+      render(
+        <TeacherRoomList rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]} onOpen={onOpen} />,
+      );
+
+      fireEvent.click(screen.getByTestId('whiteboard-room-share-room-alpha'));
+
+      expect(onOpen).not.toHaveBeenCalled();
     });
   });
 
@@ -357,6 +423,31 @@ describe('TeacherRoomList', () => {
       expect(newPinBtn.parentElement?.className).toContain('room-pin-actions');
       expect(offBtn.parentElement).toBe(newPinBtn.parentElement);
       expect(offBtn.compareDocumentPosition(newPinBtn)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+
+    it('keeps the PIN state and its guest actions in one bottom-row container', async () => {
+      ajaxFetch.mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            guestAccess: true,
+            guestPin: '968373',
+            guestPinExpiresAt: 1000,
+          }),
+      });
+
+      render(
+        <TeacherRoomList rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]} onOpen={vi.fn()} />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId('whiteboard-room-pin-new-room-alpha')).toBeTruthy();
+      });
+
+      const row = screen.getByTestId('whiteboard-room-actions-room-alpha');
+      expect(row.textContent).toContain('Expired');
+      expect(row.contains(screen.getByTestId('whiteboard-room-guest-off-room-alpha'))).toBe(true);
+      expect(row.contains(screen.getByTestId('whiteboard-room-pin-new-room-alpha'))).toBe(true);
     });
   });
 });

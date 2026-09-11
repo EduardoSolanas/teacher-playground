@@ -303,6 +303,33 @@ describe('TeacherRoomList states', () => {
     });
   });
 
+  it('does not open the room from the guest-access actions on the card', async () => {
+    const opened: string[] = [];
+    const request: AjaxFetch = async () => jsonResponse(200, {
+      guestAccess: true,
+      guestPin: '004321',
+      guestPinExpiresAt: Date.now() + 60_000,
+      lockoutUntil: null,
+    });
+
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={(roomId) => { opened.push(roomId); }}
+        request={request}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-room-guest-off-room-alpha')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-guest-off-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-pin-new-room-alpha'));
+
+    expect(opened).toEqual([]);
+  });
+
   it('shows when the room was last used, not when it was created', () => {
     const updatedAt = Date.now() - 3 * 60 * 60 * 1000;
     const createdAt = Date.now() - 30 * 24 * 60 * 60 * 1000;

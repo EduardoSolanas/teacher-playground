@@ -172,7 +172,7 @@ export default function TeacherRoomList({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [copyError, setCopyError] = useState(false);
+  const [copyFallbackId, setCopyFallbackId] = useState<string | null>(null);
   const [statsError, setStatsError] = useState(false);
   const [exportError, setExportError] = useState(false);
   const [busyExportId, setBusyExportId] = useState<string | null>(null);
@@ -341,11 +341,16 @@ export default function TeacherRoomList({
     const url = guestHostJoinUrl(roomId);
     try {
       await navigator.clipboard.writeText(url);
-      setCopyError(false);
+      /*
+       * A copy that lands removes this row's hand-copy fallback and no other:
+       * a link revealed for a different room is still the only copy of it the
+       * teacher has.
+       */
+      setCopyFallbackId((current) => (current === roomId ? null : current));
       setCopiedId(roomId);
       setTimeout(() => setCopiedId(null), 2000);
     } catch {
-      setCopyError(true);
+      setCopyFallbackId(roomId);
       setCopiedId(null);
     }
   };
@@ -649,7 +654,28 @@ export default function TeacherRoomList({
                     </div>
                   </div>
                 ) : (
-                  <div className="room-card">
+                  <div
+                    data-testid={`whiteboard-room-card-${room.roomId}`}
+                    className="room-card"
+                    onClick={(event) => {
+                      /*
+                       * The name link is stretched over the whole card, so a
+                       * click on any non-interactive part of it lands on the
+                       * link in a browser. The card owns the same behaviour for
+                       * platforms that do not route the click through the
+                       * pseudo-element; either way, controls keep their own job.
+                       */
+                      if (
+                        event.target instanceof Element
+                        && event.target.closest(
+                          'a, button, input, select, textarea, [role="menu"], [data-room-menu], [data-room-static]',
+                        )
+                      ) {
+                        return;
+                      }
+                      onOpen(room.roomId);
+                    }}
+                  >
                     {/*
                       * One row, at every width. `.row-flex` stacks on phones,
                       * which pushed the kebab onto a line of its own at the
@@ -663,6 +689,7 @@ export default function TeacherRoomList({
                       <a
                         href={`/whiteboard/${room.roomId}`}
                         data-testid={`whiteboard-room-list-item-${room.roomId}`}
+                        aria-label={`Open ${label}`}
                         onClick={(e) => {
                           e.preventDefault();
                           onOpen(room.roomId);
@@ -796,28 +823,21 @@ export default function TeacherRoomList({
                     </div>
 
                     {/*
-                      * Both identifiers, written out.
+                      * The identifiers, without printing the link.
                       *
-                      * A teacher gets a student in by sending the link or by
-                      * reading the code down a phone, and neither was on the
-                      * screen: the link existed only inside a button that said
-                      * "Copied!" and the code only as the heading of a room
-                      * nobody had named. So there was no way to check which room
-                      * was about to be shared, to read it out, to send it over a
-                      * channel the clipboard does not reach, or to notice a copy
-                      * that silently failed.
+                      * The link used to be written out here so it could be
+                      * checked, read aloud, sent over a channel the clipboard
+                      * does not reach, or copied by hand after a silent copy
+                      * failure. Printing it also handed a teacher the
+                      * teacher-host address to paste somewhere the guest-host
+                      * guard never reaches. The copy control carries the guard
+                      * on every write; the URL itself appears only when a copy
+                      * has actually failed, where manual copying is the point.
                       */}
                     <dl className="room-share">
                       <div className="room-share-row">
                         <dt className="room-share-label">Join link</dt>
                         <dd className="room-share-value">
-                          <span
-                            data-testid={`whiteboard-room-url-${room.roomId}`}
-                            className="room-url"
-                            title={joinUrl}
-                          >
-                            {joinUrl}
-                          </span>
                           <button
                             type="button"
                             data-testid={`whiteboard-room-share-${room.roomId}`}
@@ -854,6 +874,24 @@ export default function TeacherRoomList({
                               </svg>
                             )}
                           </button>
+                          {copyFallbackId === room.roomId && (
+                            <span
+                              role="alert"
+                              data-room-static
+                              data-testid={`whiteboard-room-copy-fallback-${room.roomId}`}
+                              className="room-copy-fallback"
+                            >
+                              <span className="room-pin-note">
+                                Couldn’t copy automatically — select this link and copy it by hand.{' '}
+                              </span>
+                              <span
+                                data-testid={`whiteboard-room-url-${room.roomId}`}
+                                className="room-url"
+                              >
+                                {joinUrl}
+                              </span>
+                            </span>
+                          )}
                           {guestAccessOff && (
                             <span
                               data-testid={`whiteboard-room-link-inactive-${room.roomId}`}
@@ -879,7 +917,10 @@ export default function TeacherRoomList({
                         </div>
                       )}
 
-                      <div className="room-share-row">
+                      <div
+                        className="room-share-row room-actions-row"
+                        data-testid={`whiteboard-room-actions-${room.roomId}`}
+                      >
                         <dt className="room-share-label">Class PIN</dt>
                         <dd className="room-share-value">
                           {settingsErrorRooms[room.roomId] ? (
@@ -1053,12 +1094,6 @@ export default function TeacherRoomList({
         <p role="alert" className="app-error nudge-top">
           Could not build the room data file. It may have been deleted, or the
           session may have expired — reload and try again.
-        </p>
-      )}
-
-      {copyError && (
-        <p role="alert" className="app-error nudge-top">
-          Could not copy. The join link is written out above — select it and copy it by hand.
         </p>
       )}
     </section>

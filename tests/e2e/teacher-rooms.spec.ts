@@ -124,6 +124,42 @@ test.describe('teacher room list on landing', () => {
     await expect(page.getByTestId('whiteboard-create-room-btn')).toBeDisabled();
   });
 
+  test('hides the join URL, opens from the card, and keeps card controls in place', async ({
+    page,
+  }) => {
+    await page.goto(appUrl('/whiteboard'));
+    await expectSessionCookie(page);
+    const roomId = await createRoomWithMaxUsers(page, 'CardHost', 2);
+
+    await page.goto(appUrl('/whiteboard'));
+    const card = page.getByTestId(`whiteboard-room-card-${roomId}`);
+    await expect(card).toBeVisible({ timeout: 15000 });
+
+    // The raw URL is not printed; the copy control is the only way to it, and
+    // it carries the guest-host link under an accessible name.
+    await expect(page.getByTestId(`whiteboard-room-url-${roomId}`)).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Copy join link for Untitled room' }))
+      .toBeVisible();
+    await expect(page.getByRole('link', { name: 'Open Untitled room' }))
+      .toHaveAttribute('href', `/whiteboard/${roomId}`);
+
+    // Any non-interactive part of the card -- here the name area under the
+    // stretched link -- opens the room.
+    await card.click({ position: { x: 24, y: 16 } });
+    await expect(page).toHaveURL(new RegExp(`/whiteboard/${roomId}`));
+    await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+
+    await page.getByTestId('whiteboard-back-to-rooms').click();
+    await expect(page).toHaveURL(/\/whiteboard\/?$/);
+    await expect(card).toBeVisible({ timeout: 15000 });
+
+    // The kebab opens its menu without the card navigating underneath it.
+    await page.getByTestId(`whiteboard-room-menu-${roomId}`).click();
+    await expect(page.getByRole('menu')).toBeVisible();
+    await expect(page).toHaveURL(/\/whiteboard\/?$/);
+    await page.keyboard.press('Escape');
+  });
+
   test('renames a listed room from the landing list', async ({ page }) => {
     await page.goto(appUrl('/whiteboard'));
     await expectSessionCookie(page);

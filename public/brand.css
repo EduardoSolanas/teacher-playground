@@ -306,10 +306,15 @@ font-size:1.35rem;color:var(--ink);margin:0}
 .btn-gap{display:flex;gap:.5rem}
 .room-link{display:flex;flex-direction:column;justify-content:center;gap:.125rem;min-width:0;flex:1;
 padding:.5rem .625rem;text-decoration:none}
+/* The name link is the card's one link, stretched over the whole card so any
+   non-interactive part of the row opens the room. The pseudo-element is the
+   cover rather than the anchor itself, so the link's own box stays over its
+   name and a click aimed at the link lands on it rather than on the cover. */
+.room-link::after{content:"";position:absolute;inset:0;z-index:0}
 .room-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.95rem;font-weight:600;color:var(--ink)}
 .room-date{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.75rem;color:var(--mut)}
-/* Wraps rather than ellipsizes: the printed link is the manual-copy fallback,
-   and a truncated URL on a phone cannot be selected and copied by hand. */
+/* Wraps rather than ellipsizes: when a copy fails this is the manual-copy
+   fallback, and a truncated URL on a phone cannot be selected by hand. */
 .room-url{overflow-wrap:anywhere;white-space:normal;padding:0 .625rem .25rem;
 font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.75rem;color:var(--mut)}
 .room-menu{position:absolute;right:0;top:100%;z-index:10;margin-top:.375rem;min-width:10rem;
@@ -409,14 +414,18 @@ transition:background .15s}
 .btn-danger:hover{background:var(--red-d)}
 
 /* ---- app: the room row -------------------------------------------------
- * A room row is a share card, not a file-manager row. What a teacher needs
- * to start a lesson -- the link and the code -- is printed rather than kept
- * behind a control, so it can be read down a phone, checked before it is
- * sent, and copied by hand when the clipboard refuses. The label column is
- * fixed so the two values line up and the eye can tell them apart at a
- * glance; below the breakpoint the labels sit above their values instead,
+ * A room row is a share card, not a file-manager row. The whole card opens
+ * the room; the link itself stays behind a copy control until a copy fails,
+ * when it is written out so it can be copied by hand. The code is printed for
+ * a room nobody has named, and the label column keeps the values lined up at
+ * a glance; below the breakpoint the labels sit above their values instead,
  * because a fixed column would leave a monospace URL nothing to sit in. */
-.room-card{display:flex;flex-direction:column;gap:.5rem;padding:.25rem}
+.room-card{position:relative;display:flex;flex-direction:column;gap:.5rem;padding:.25rem}
+/* Controls ride above the stretched link, and the kebab above the rest, so its
+   menu is never painted under the join-link or PIN controls. */
+.room-card [data-room-menu]{position:relative;z-index:2}
+.room-card .copy-icon-btn,
+.room-card .room-pin-actions{position:relative;z-index:1}
 .room-share{display:flex;flex-direction:column;gap:.375rem;margin:.125rem 0 0;padding:0 .625rem .25rem}
 .room-share-row{display:flex;flex-direction:column;gap:.125rem;min-width:0}
 @media(min-width:640px){
@@ -432,6 +441,9 @@ text-transform:uppercase;color:var(--mut)}
    mistake this line must not invite. The note is pushed onto its own line by
    taking the full basis. */
 .room-share-value{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin:0;min-width:0;flex:1}
+/* The PIN state and the controls that change it are one bottom action row,
+   which wraps instead of overflowing when the viewport is narrow. */
+.room-actions-row{flex-wrap:wrap}
 .room-share-value .room-pin-note{font-size:.8rem;color:var(--mut);white-space:nowrap}
 .room-share-value .room-pin-block{flex:1 0 100%;font-size:.8rem;color:var(--mut);margin-top:.125rem}
 .room-pin-actions{display:flex;align-items:center;gap:.5rem;margin-left:auto;flex-shrink:0}
@@ -439,6 +451,10 @@ text-transform:uppercase;color:var(--mut)}
    under it; at 2.75rem it keeps the touch target the rest of the app uses. */
 .room-share-value .copy-icon-btn{height:2.75rem;width:2.75rem}
 .room-share-value .room-url{flex:1;min-width:0;padding:0;font-size:.8rem;color:var(--ink2)}
+/* The hand-copy fallback after a failed copy: raised above the stretched link
+   so the URL can be selected instead of opening the room. */
+.room-copy-fallback{position:relative;z-index:1;display:flex;flex-wrap:wrap;align-items:center;
+gap:.25rem;flex:1 0 100%}
 /* The code is read aloud and typed in by hand, so it is never truncated:
    an ellipsis in the middle of an identifier is worse than a second line. */
 .room-code{flex:1;min-width:0;overflow-wrap:anywhere;
