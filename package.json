@@ -23,7 +23,9 @@
     "access:branding": "node scripts/cloudflare-access.mjs apply-branding",
     "test:watch": "vitest",
     "test:e2e": "node scripts/run-e2e.mjs",
-    "test:e2e:ui": "node scripts/run-e2e.mjs --ui"
+    "test:e2e:ui": "node scripts/run-e2e.mjs --ui",
+    "test:e2e:coverage": "node scripts/run-e2e.mjs --coverage",
+    "coverage:e2e": "node scripts/e2e-coverage-report.mjs"
   },
   "dependencies": {
     "@livekit/components-react": "^2.9.24",
@@ -57,6 +59,7 @@
     "eslint": "^9.39.1",
     "eslint-config-next": "^16.3.1",
     "jsdom": "^29.1.1",
+    "monocart-coverage-reports": "^2.13.0",
     "playwright": "^1.60.0",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.3",

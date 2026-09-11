@@ -24,6 +24,9 @@ function guestHostnameFromWranglerConfig() {
 const nextConfig = {
   output: 'export',
   images: { unoptimized: true },
+  // Coverage runs (E2E_COVERAGE=1) map V8 coverage of the minified bundle back
+  // to src/ through these; ordinary builds never emit them.
+  productionBrowserSourceMaps: process.env.E2E_COVERAGE === '1',
   env: {
     NEXT_PUBLIC_GUEST_HOSTNAME:
       process.env.NEXT_PUBLIC_GUEST_HOSTNAME ?? guestHostnameFromWranglerConfig(),

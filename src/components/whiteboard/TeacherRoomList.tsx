@@ -895,7 +895,7 @@ export default function TeacherRoomList({
                           {guestAccessOff && (
                             <span
                               data-testid={`whiteboard-room-link-inactive-${room.roomId}`}
-                              className="room-pin-note"
+                              className="room-pin-note room-pin-block"
                             >
                               Create a PIN to let students use this link.
                             </span>
@@ -977,7 +977,7 @@ export default function TeacherRoomList({
                                   </span>
                                   <CopyButton value={roomSettings.guestPin} label={`class PIN for ${label}`} />
                                   {expiryLabel && !previousPin && (
-                                    <span className="room-pin-note">
+                                    <span className="room-pin-note room-pin-block">
                                       Stops working {expiryLabel}
                                     </span>
                                   )}

@@ -132,7 +132,13 @@ async function waitForProxy(accessProxyPort, upstreamPort, token, proxy, upstrea
 
 const appPort = process.env.E2E_PORT || String(await getAvailablePort());
 const skipBuild = process.argv.includes('--skip-build') || Boolean(process.env.E2E_SKIP_BUILD);
-const playwrightArgs = process.argv.slice(2).filter((argument) => argument !== '--skip-build');
+// --coverage: the build emits browser source maps and every test records its
+// V8 coverage (tests/e2e/coverage.ts). Both read E2E_COVERAGE from the env the
+// children inherit. A --skip-build run reuses whatever out/ holds, maps or not.
+if (process.argv.includes('--coverage')) process.env.E2E_COVERAGE = '1';
+const playwrightArgs = process.argv
+  .slice(2)
+  .filter((argument) => argument !== '--skip-build' && argument !== '--coverage');
 const accessPort = await getAvailablePort();
 const upstreamPort = await getAvailablePort();
 const accessProxyPort = Number(appPort);

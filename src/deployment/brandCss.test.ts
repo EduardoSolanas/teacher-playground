@@ -165,4 +165,11 @@ describe('src/app/globals.css contract', () => {
     expect(phoneBlock).toContain('.tp-board-footer');
     expect(phoneBlock).toContain('display: none');
   });
+
+  it('lays the join link, room code and class PIN on one wrapping row from sm up', () => {
+    const css = readRepositoryFile(brandCssPath);
+
+    expect(css).toMatch(/\.room-share\{flex-direction:row;flex-wrap:wrap;align-items:center/);
+    expect(ruleFor(css, '.room-share')).toMatch(/flex-direction:column/);
+  });
 });
