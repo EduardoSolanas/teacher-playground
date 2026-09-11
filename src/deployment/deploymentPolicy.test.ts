@@ -414,6 +414,16 @@ describe('production deployment policy', () => {
     // Deploy job must have a conditional that checks CI success
     expect(deploymentWorkflow).toMatch(/if:\s*github\.event\.workflow_run\.conclusion\s*==\s*['"]success['"]/);
 
+    // ...for the commit it deploys. The default checkout of a workflow_run is
+    // main's tip, which is not the tested commit when something was pushed
+    // while CI ran; the job must skip then. Checking out workflow_run.head_sha
+    // instead would run the triggering code with deploy secrets.
+    const jobCondition = /^ {4}if:\s*(.+)$/m.exec(deploymentWorkflow)?.[1] ?? '';
+    expect(jobCondition, 'deploy job condition').toContain(
+      'github.event.workflow_run.head_sha == github.sha',
+    );
+    expect(deploymentWorkflow).not.toMatch(/ref:\s*\$\{\{\s*github\.event\.workflow_run\.head_sha/);
+
     // Deploy must NOT trigger directly on push to main
     expect(deploymentWorkflow).not.toMatch(/^\s+push:\s*\n\s+branches:\s+\[main\]/m);
   });
