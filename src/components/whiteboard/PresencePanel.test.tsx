@@ -149,7 +149,7 @@ describe('PresencePanel name discriminators', () => {
     expect(
       screen.getByTestId('whiteboard-user-peer-waiting').querySelector('button'),
     ).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Let in' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Let in HostBadgePeer' })).toBeTruthy();
   });
 
   it('does not show discs when names are unique', () => {
@@ -196,6 +196,237 @@ describe('PresencePanel name discriminators', () => {
 
     expect(screen.queryByTestId('whiteboard-user-disc-peer-owner')).toBeNull();
     expect(screen.queryByTestId('whiteboard-user-disc-peer-impostor')).toBeNull();
+  });
+});
+
+describe('PresencePanel avatar contrast', () => {
+  it('switches initials to dark ink on a light user colour', () => {
+    renderPanel([makeUser({ peerId: 'peer-1', userName: 'Alice', color: '#f1c40f' })]);
+
+    expect(screen.getByTestId('whiteboard-user-avatar-peer-1').style.color).toBe('rgb(15, 23, 42)');
+  });
+
+  it('keeps white initials on a dark user colour', () => {
+    renderPanel([makeUser({ peerId: 'peer-2', userName: 'Bob', color: '#9b59b6' })]);
+
+    expect(screen.getByTestId('whiteboard-user-avatar-peer-2').style.color).toBe('rgb(255, 255, 255)');
+  });
+});
+
+describe('PresencePanel style contracts', () => {
+  it('styles the hand-raised chip as plain text, without the old pill and pulse', () => {
+    renderPanel([
+      makeUser({ peerId: 'peer-local', userName: 'Me' }),
+      makeUser({ peerId: 'peer-student', userName: 'Student', handRaised: true }),
+    ]);
+
+    const chip = screen.getByTestId('whiteboard-user-hand-peer-student');
+    expect(chip.className).not.toContain('animate-pulse');
+    expect(chip.className).not.toContain('border');
+    expect(chip.className).not.toContain('shadow');
+    expect(chip.className).not.toContain('rounded-full');
+  });
+
+  it('keeps the speaking ring off under reduced motion', () => {
+    renderPanel([makeUser({ peerId: 'peer-1', userName: 'Alice' })], {
+      speakingPeerIds: new Set(['peer-1']),
+    });
+
+    expect(screen.getByTestId('whiteboard-user-speaking-peer-1').className).toContain(
+      'motion-reduce:animate-none',
+    );
+  });
+
+  it('pads the mobile roster sheet for the home indicator', () => {
+    renderPanel([makeUser({ peerId: 'peer-1', userName: 'Alice' })]);
+
+    expect(screen.getByTestId('whiteboard-presence-panel').className).toContain(
+      'pb-[env(safe-area-inset-bottom)]',
+    );
+    expect(screen.getByTestId('whiteboard-presence-panel').getAttribute('role')).toBe('region');
+  });
+
+  function classTokens(testId: string): string[] {
+    return screen.getByTestId(testId).className.split(/\s+/);
+  }
+
+  it('raises the collapse toggle and kebab to a 44px hit area on coarse pointers', () => {
+    renderPanel(
+      [
+        makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true }),
+        makeUser({ peerId: 'peer-student', userName: 'Student' }),
+      ],
+      { localPeerId: 'peer-owner', isLocalHost: true },
+    );
+
+    const toggle = classTokens('whiteboard-presence-toggle');
+    expect(toggle).toContain('h-6');
+    expect(toggle).toContain('w-6');
+    expect(toggle).toContain('pointer-coarse:h-11');
+    expect(toggle).toContain('pointer-coarse:w-11');
+
+    const kebab = classTokens('whiteboard-user-options-peer-student');
+    expect(kebab).toContain('h-6');
+    expect(kebab).toContain('w-6');
+    expect(kebab).toContain('pointer-coarse:h-11');
+    expect(kebab).toContain('pointer-coarse:w-11');
+  });
+
+  it('raises the raise-hand control to a 44px hit area on coarse pointers', () => {
+    render(
+      <PresencePanel
+        users={[makeUser({ peerId: 'peer-local', userName: 'Me' })]}
+        waitingPeers={[]}
+        localPeerId="peer-local"
+        isLocalHost={false}
+        collapsed={false}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+        onRaiseHand={noop}
+      />,
+    );
+
+    const tokens = classTokens('whiteboard-raise-hand');
+    expect(tokens).toContain('pointer-coarse:min-h-11');
+    expect(tokens).not.toContain('min-h-11');
+  });
+
+  it('raises Let in and the moderation menu items to a 44px hit area on coarse pointers', () => {
+    render(
+      <PresencePanel
+        users={[makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true })]}
+        waitingPeers={[makeUser({ peerId: 'peer-waiting', userName: 'Charlie', isWaiting: true })]}
+        localPeerId="peer-owner"
+        isLocalHost={true}
+        collapsed={false}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+      />,
+    );
+
+    const letIn = classTokens('whiteboard-approve-peer-waiting');
+    expect(letIn).toContain('pointer-coarse:min-h-11');
+    expect(letIn).not.toContain('min-h-11');
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-options-peer-waiting'));
+    const menuLetIn = classTokens('whiteboard-context-let-in');
+    expect(menuLetIn).toContain('pointer-coarse:min-h-11');
+    expect(menuLetIn).not.toContain('min-h-11');
+    const menuReject = classTokens('whiteboard-context-reject');
+    expect(menuReject).toContain('pointer-coarse:min-h-11');
+    expect(menuReject).not.toContain('min-h-11');
+  });
+
+  it('uses an AA-contrast emerald for Let in and keeps it on hover', () => {
+    renderPanel(
+      [makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true })],
+      {
+        isLocalHost: true,
+        waitingPeers: [makeUser({ peerId: 'peer-waiting', userName: 'Charlie', isWaiting: true })],
+      },
+    );
+
+    const letIn = screen.getByTestId('whiteboard-approve-peer-waiting');
+    expect(letIn.className).toContain('bg-emerald-700');
+    expect(letIn.className).toContain('hover:bg-emerald-800');
+    expect(letIn.className).not.toContain('bg-emerald-500');
+    expect(letIn.className).not.toContain('hover:bg-emerald-600');
+  });
+
+  it('keeps the context-menu Let in hover AA-contrast on an emerald background', () => {
+    renderPanel(
+      [makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true })],
+      {
+        isLocalHost: true,
+        waitingPeers: [makeUser({ peerId: 'peer-waiting', userName: 'Charlie', isWaiting: true })],
+      },
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-options-peer-waiting'));
+
+    const tokens = screen.getByTestId('whiteboard-context-let-in').className.split(/\s+/);
+    expect(tokens).toContain('hover:bg-emerald-800');
+    expect(tokens).not.toContain('hover:bg-emerald-600');
+  });
+
+  it('uses the one in-room dropdown recipe for the moderation menu (UX-B6)', () => {
+    renderPanel(
+      [
+        makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true }),
+        makeUser({ peerId: 'peer-student', userName: 'Student' }),
+      ],
+      { localPeerId: 'peer-owner', isLocalHost: true },
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-options-peer-student'));
+
+    const menu = screen.getByTestId('whiteboard-context-kick').closest('[role="menu"]');
+    expect(menu).toBeTruthy();
+    const tokens = (menu as HTMLElement).className.split(/\s+/);
+    expect(tokens).toContain('bg-slate-800');
+    expect(tokens).toContain('border-slate-700');
+    expect(tokens).toContain('rounded-xl');
+    expect(tokens).toContain('shadow-slate-950/40');
+    expect(tokens).not.toContain('rounded-lg');
+    expect(tokens).not.toContain('shadow-slate-950/30');
+  });
+
+  it('keeps the kick and suspend menu hovers at AA contrast (UX-B6)', () => {
+    renderPanel(
+      [
+        makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true }),
+        makeUser({ peerId: 'peer-student', userName: 'Student' }),
+      ],
+      { localPeerId: 'peer-owner', isLocalHost: true },
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-options-peer-student'));
+
+    const kick = screen.getByTestId('whiteboard-context-kick').className.split(/\s+/);
+    expect(kick).toContain('hover:bg-red-700');
+    expect(kick).not.toContain('hover:bg-red-600');
+
+    const suspend = screen.getByTestId('whiteboard-context-suspend').className.split(/\s+/);
+    expect(suspend).toContain('hover:bg-amber-700');
+    expect(suspend).toContain('hover:text-white');
+    expect(suspend).not.toContain('hover:bg-amber-600');
+  });
+
+  it('keeps the reject menu hover at AA contrast (UX-B6)', () => {
+    renderPanel(
+      [makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true })],
+      {
+        isLocalHost: true,
+        waitingPeers: [makeUser({ peerId: 'peer-waiting', userName: 'Charlie', isWaiting: true })],
+      },
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-options-peer-waiting'));
+
+    const reject = screen.getByTestId('whiteboard-context-reject').className.split(/\s+/);
+    expect(reject).toContain('hover:bg-red-700');
+    expect(reject).not.toContain('hover:bg-red-600');
+  });
+
+  it('uses AA-contrast text for the Host chip and waiting labels', () => {
+    renderPanel(
+      [makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true })],
+      {
+        isLocalHost: true,
+        waitingPeers: [makeUser({ peerId: 'peer-waiting', userName: 'Charlie', isWaiting: true })],
+      },
+    );
+
+    expect(screen.getByTestId('whiteboard-user-host-peer-owner').className).toContain('text-emerald-700');
+    const waitingSection = screen.getByTestId('whiteboard-waiting-section');
+    expect(waitingSection.querySelector('.text-amber-700')).toBeTruthy();
+    expect(waitingSection.querySelector('.text-amber-500, .text-amber-600')).toBeNull();
   });
 });
 
@@ -402,6 +633,76 @@ describe('PresencePanel moderation menu', () => {
   });
 });
 
+describe('PresencePanel moderation menu semantics', () => {
+  function renderHostPanel() {
+    return render(
+      <PresencePanel
+        users={[
+          makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true }),
+          makeUser({
+            peerId: 'peer-student',
+            userName: 'Peer',
+            isHost: false,
+            accountId: 'acct-peer',
+          }),
+        ]}
+        waitingPeers={[]}
+        localPeerId="peer-owner"
+        isLocalHost={true}
+        collapsed={false}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+      />,
+    );
+  }
+
+  it('names the kebab for the participant and exposes its expanded state', () => {
+    renderHostPanel();
+
+    const kebab = screen.getByTestId('whiteboard-user-options-peer-student');
+    expect(kebab.getAttribute('aria-label')).toBe('Options for Peer');
+    expect(kebab.getAttribute('aria-haspopup')).toBe('menu');
+    expect(kebab.getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.click(kebab);
+    expect(kebab.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('moves focus to the first menu item on open and returns it on Escape', () => {
+    renderHostPanel();
+
+    const kebab = screen.getByTestId('whiteboard-user-options-peer-student');
+    fireEvent.click(kebab);
+
+    const menu = screen.getByTestId('whiteboard-context-suspend').closest('[role="menu"]');
+    expect(menu).toBeTruthy();
+    expect(screen.getByTestId('whiteboard-context-suspend').getAttribute('role')).toBe('menuitem');
+    expect(screen.getByTestId('whiteboard-context-kick').getAttribute('role')).toBe('menuitem');
+    expect(document.activeElement).toBe(screen.getByTestId('whiteboard-context-suspend'));
+
+    fireEvent.keyDown(screen.getByTestId('whiteboard-context-suspend'), { key: 'Escape' });
+
+    expect(screen.queryByTestId('whiteboard-context-kick')).toBeNull();
+    expect(kebab.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(kebab);
+  });
+
+  it('gives roster rows a keyboard path to the same moderation menu', () => {
+    renderHostPanel();
+
+    const row = screen.getByTestId('whiteboard-user-peer-student');
+    const openButton = row.querySelector<HTMLButtonElement>('[data-testid^="whiteboard-roster-open-"]');
+    expect(openButton).toBeTruthy();
+    expect(openButton?.getAttribute('aria-haspopup')).toBe('menu');
+
+    fireEvent.click(openButton!);
+    expect(screen.getByTestId('whiteboard-context-kick')).toBeTruthy();
+  });
+});
+
 describe('PresencePanel raise hand', () => {
   it('shows a Raise hand control for the local admitted user', () => {
     const onRaiseHand = vi.fn();
@@ -557,7 +858,7 @@ describe('PresencePanel collapsed state', () => {
     expect(count.textContent).toBe('2/30');
   });
 
-  it('aria-controls on handle matches the expanded panel id', () => {
+  it('collapsed handle does not reference a panel that is not mounted', () => {
     render(
       <PresencePanel
         users={[
@@ -576,8 +877,8 @@ describe('PresencePanel collapsed state', () => {
     );
 
     const button = screen.getByTestId('whiteboard-presence-toggle');
-    const ariaControls = button.getAttribute('aria-controls');
-    expect(ariaControls).toBe('whiteboard-presence-panel');
+    expect(button.getAttribute('aria-controls')).toBeNull();
+    expect(document.getElementById('whiteboard-presence-panel')).toBeNull();
   });
 
   it('aria-controls remains when expanded', () => {
@@ -825,6 +1126,46 @@ describe('PresencePanel collapsed state', () => {
     );
 
     expect(screen.getByTestId('whiteboard-presence-toggle')).toBeTruthy();
+  });
+});
+
+describe('PresencePanel waiting live region', () => {
+  const waitingPeers = [
+    makeUser({ peerId: 'peer-waiting', userName: 'Charlie', isWaiting: true }),
+  ];
+
+  it('keeps the live region mounted while the panel is expanded and empty', () => {
+    renderPanel([makeUser({ peerId: 'peer-1', userName: 'Alice' })], { isLocalHost: true });
+
+    const liveRegion = screen.getByTestId('whiteboard-presence-waiting-live');
+    expect(liveRegion.getAttribute('aria-live')).toBe('polite');
+    expect(liveRegion.textContent).toBe('');
+  });
+
+  it('announces arrivals while the panel is expanded', () => {
+    // Auto-expansion on the first knock used to take the live region out of the
+    // document, so every later arrival with the panel open was silent.
+    const { rerender } = renderPanel([makeUser({ peerId: 'peer-1', userName: 'Alice' })], {
+      isLocalHost: true,
+    });
+
+    rerender(
+      <PresencePanel
+        users={[makeUser({ peerId: 'peer-1', userName: 'Alice' })]}
+        waitingPeers={waitingPeers}
+        localPeerId="peer-local"
+        isLocalHost={true}
+        collapsed={false}
+        onToggle={noop}
+        onApprove={noop}
+        onReject={noop}
+        onKick={noop}
+        onSuspend={noop}
+      />,
+    );
+
+    const liveRegion = screen.getByTestId('whiteboard-presence-waiting-live');
+    expect(liveRegion.textContent).toBe('1 person waiting to be let in');
   });
 });
 

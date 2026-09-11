@@ -44,6 +44,47 @@ describe('RaisedHandCue', () => {
     vi.useRealTimers();
   });
 
+  it('keeps a persistent live region and announces a full sentence', () => {
+    const host = makeUser({ peerId: 'host', userName: 'Host', isHost: true });
+    const student = makeUser({ peerId: 'ada', userName: 'Ada', handRaised: false });
+    const { rerender } = render(
+      <RaisedHandCue users={[host, student]} localPeerId="host" isLocalHost />,
+    );
+
+    const live = screen.getByTestId('whiteboard-raised-hand-live');
+    expect(live.getAttribute('role')).toBe('status');
+    expect(live.textContent).toBe('');
+
+    rerender(
+      <RaisedHandCue
+        users={[host, { ...student, handRaised: true }]}
+        localPeerId="host"
+        isLocalHost
+      />,
+    );
+
+    expect(screen.getByTestId('whiteboard-raised-hand-live').textContent).toBe('Ada raised their hand');
+  });
+
+  it('hides the animated visual from assistive technology', () => {
+    const host = makeUser({ peerId: 'host', userName: 'Host', isHost: true });
+    const student = makeUser({ peerId: 'ada', userName: 'Ada', handRaised: false });
+    const { rerender } = render(
+      <RaisedHandCue users={[host, student]} localPeerId="host" isLocalHost />,
+    );
+
+    rerender(
+      <RaisedHandCue
+        users={[host, { ...student, handRaised: true }]}
+        localPeerId="host"
+        isLocalHost
+      />,
+    );
+
+    const cue = screen.getByTestId('whiteboard-raised-hand-cue');
+    expect(cue.closest('[aria-hidden="true"]')).toBeTruthy();
+  });
+
   it('does not show the cue on a student screen', () => {
     render(
       <RaisedHandCue

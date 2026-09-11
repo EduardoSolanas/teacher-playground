@@ -77,4 +77,11 @@ describe('AccessSessionBootstrap', () => {
     expect(screen.getByText('ready')).toBeTruthy();
     expect(screen.queryByText(/secure session is unavailable/i)).toBeNull();
   });
+
+  it('renders the loading copy with a real ellipsis character', async () => {
+    render(<AccessSessionBootstrap>ready</AccessSessionBootstrap>);
+
+    expect(screen.getByRole('status').textContent).toBe('Loading secure session…');
+    await screen.findByRole('alert');
+  });
 });

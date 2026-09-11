@@ -846,5 +846,93 @@ describe('server-side y-websocket sync', () => {
     sender.close();
     receiver.close();
   });
+
+  /*
+   * UX-L10: the owned-room list sorts and labels rows by `updated_at`, and
+   * board edits never pass through the Worker's scene route. These drive the
+   * real socket -> flush -> identity-object path the product uses.
+   */
+  describe('owned-room last-used freshness (UX-L10)', () => {
+    const AGED_AT = 1_000;
+
+    async function ageOwnedRoom(roomId: string, accountId: string): Promise<void> {
+      await runInDurableObject(
+        getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>),
+        (instance: IdentityDO) => {
+          instance.db.prepare(
+            `UPDATE account_rooms SET updated_at = ?
+             WHERE account_id = ? AND room_id = ?`,
+          ).run(AGED_AT, accountId, roomId);
+        },
+      );
+    }
+
+    async function ownedRoomRow(who: LocalAuthSession, roomId: string) {
+      const res = await authenticatedFetch('/api/whiteboard/rooms', who);
+      const body = await res.json() as {
+        rooms?: Array<{ roomId: string; updatedAt: number }>;
+      };
+      return body.rooms?.find((room) => room.roomId === roomId);
+    }
+
+    async function waitForOwnedRoomUpdatedAfter(
+      who: LocalAuthSession,
+      roomId: string,
+      after: number,
+    ) {
+      let last: { roomId: string; updatedAt: number } | undefined;
+      const deadline = Date.now() + 5_000;
+      for (;;) {
+        last = await ownedRoomRow(who, roomId);
+        if (last && last.updatedAt > after) return last;
+        if (Date.now() > deadline) return last;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+
+    it('advances the owned-room last-used time when the board is edited', async () => {
+      const roomId = `last-used-edit-${crypto.randomUUID()}`;
+      const peer = await connect(roomId);
+      await ageOwnedRoom(roomId, session.accountId);
+
+      peer.send(boardUpdateFrame([{ id: 'edit-1', type: 'rectangle', x: 1, y: 2 }]));
+      await settle();
+      await runDurableObjectAlarm(roomStub(roomId));
+
+      const room = await waitForOwnedRoomUpdatedAfter(session, roomId, AGED_AT);
+      expect(room?.updatedAt).toBeGreaterThan(AGED_AT);
+      peer.close();
+    });
+
+    it('does not advance the owner last-used time for a read-only viewer', async () => {
+      const roomId = `last-used-viewer-${crypto.randomUUID()}`;
+      const viewerSession = await bootstrapLocalSession(`last-used-viewer-${crypto.randomUUID()}`);
+      expect((await createRoom(roomId)).status).toBe(200);
+      expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, viewerSession, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ userName: 'Viewer' }),
+      })).status).toBe(201);
+      expect((await authenticatedFetch(
+        `/api/whiteboard/room/${roomId}/requests/${viewerSession.accountId}`,
+        session,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'approve', role: 'viewer' }),
+        },
+      )).status).toBe(200);
+      await ageOwnedRoom(roomId, session.accountId);
+
+      const viewer = await openSocketAs(viewerSession, roomId);
+      viewer.send(boardUpdateFrame([{ id: 'viewer-write', type: 'line', x: 1, y: 2 }]));
+      await settle();
+      await runDurableObjectAlarm(roomStub(roomId));
+
+      const room = await ownedRoomRow(session, roomId);
+      expect(room?.updatedAt).toBe(AGED_AT);
+      viewer.close();
+    });
+  });
 });
 

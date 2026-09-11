@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
 
 import { useAvSession } from './useAvSession';
+import AvSessionPanel from '@/components/av/AvSessionPanel';
 import { LiveKitProvider } from '@/lib/av/livekitProvider';
 
 /*
@@ -47,6 +48,25 @@ const options = {
   identity: 'peer-1',
   displayName: 'Teacher',
 };
+
+function encodeJwtSegment(value: unknown): string {
+  return btoa(JSON.stringify(value)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function liveKitToken(grant: Record<string, unknown>): string {
+  return [
+    encodeJwtSegment({ alg: 'HS256', typ: 'JWT' }),
+    encodeJwtSegment({ video: grant }),
+    'signature',
+  ].join('.');
+}
+
+function tokenResponse(token: string): Response {
+  return new Response(JSON.stringify({ token, url: 'wss://livekit.test' }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
 
 describe('useAvSession', () => {
   it('asks for no token while the call has not been asked for', async () => {
@@ -446,6 +466,125 @@ describe('useAvSession', () => {
     await waitFor(() => expect(result.current.status).toBe('joined'));
     expect(result.current.room).not.toBeNull();
     expect(connect).toHaveBeenCalledWith('token-1', 'wss://livekit.test');
+
+    disconnect.mockRestore();
+    connect.mockRestore();
+  });
+
+  it('retries the join after the token request fails', async () => {
+    // A failed token or refused join left the panel dead with no way to ask
+    // again -- the only path back was for the room call state to change, which
+    // for a retrying host is to say there is nothing to retry.
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'nope' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(tokenResponse('token-2'));
+    const connect = vi.spyOn(LiveKitProvider.prototype, 'connect').mockResolvedValue();
+    const disconnect = vi.spyOn(LiveKitProvider.prototype, 'disconnect').mockImplementation(() => {});
+
+    const { result } = renderHook(() => useAvSession({ ...options, enabled: true }));
+    await waitFor(() => expect(result.current.status).toBe('error'));
+    expect(tokenRequests()).toHaveLength(1);
+
+    act(() => result.current.retry());
+
+    await waitFor(() => expect(result.current.status).toBe('joined'));
+    expect(tokenRequests()).toHaveLength(2);
+    expect(connect).toHaveBeenLastCalledWith('token-2', 'wss://livekit.test');
+
+    disconnect.mockRestore();
+    connect.mockRestore();
+  });
+
+  it('offers a way back after the socket drops the call entirely', async () => {
+    // The LiveKit token lasts an hour. When it runs out the SDK disconnects
+    // and says nothing: before this the panel sat there with a live-looking
+    // header over a call that no longer existed. Rejoin asks the server for a
+    // fresh token.
+    fetchMock
+      .mockResolvedValueOnce(tokenResponse('token-1'))
+      .mockResolvedValueOnce(tokenResponse('token-2'));
+    const connect = vi.spyOn(LiveKitProvider.prototype, 'connect').mockResolvedValue();
+    const disconnect = vi.spyOn(LiveKitProvider.prototype, 'disconnect').mockImplementation(() => {});
+    const providerEmitters: Array<{ onDisconnected?: () => void }> = [];
+    const onEvents = vi.spyOn(LiveKitProvider.prototype, 'onEvents').mockImplementation(function (events) {
+      providerEmitters.push(events as { onDisconnected?: () => void });
+    });
+
+    const { result } = renderHook(() => useAvSession({ ...options, enabled: true }));
+    await waitFor(() => expect(result.current.status).toBe('joined'));
+
+    act(() => {
+      providerEmitters[0]?.onDisconnected?.();
+    });
+    await waitFor(() => expect(result.current.status).toBe('idle'));
+
+    act(() => result.current.retry());
+
+    await waitFor(() => expect(result.current.status).toBe('joined'));
+    expect(tokenRequests()).toHaveLength(2);
+
+    onEvents.mockRestore();
+    disconnect.mockRestore();
+    connect.mockRestore();
+  });
+
+  it('offers Rejoin in the wired panel when a disconnect retains the room', async () => {
+    /*
+     * The verifier's probe: onDisconnected leaves status idle but the hook
+     * keeps the Room instance, and the panel used to key its recovery on the
+     * room being absent -- so the exact state a token expiry produces was the
+     * one state with no way back. This renders the real hook and the real
+     * panel together rather than handing the panel a made-up `room: null`.
+     */
+    fetchMock.mockResolvedValueOnce(tokenResponse('token-1'));
+    const connect = vi.spyOn(LiveKitProvider.prototype, 'connect').mockResolvedValue();
+    const disconnect = vi.spyOn(LiveKitProvider.prototype, 'disconnect').mockImplementation(() => {});
+    const providerEmitters: Array<{ onDisconnected?: () => void }> = [];
+    const onEvents = vi.spyOn(LiveKitProvider.prototype, 'onEvents').mockImplementation(function (events) {
+      providerEmitters.push(events as { onDisconnected?: () => void });
+    });
+
+    function WiredPanel() {
+      const av = useAvSession({ ...options, enabled: true });
+      return <AvSessionPanel av={av} localIdentity={options.identity} />;
+    }
+
+    render(<WiredPanel />);
+    await waitFor(() => expect(screen.getByTestId('av-call-status').textContent).toContain('live'));
+    expect(providerEmitters.length).toBeGreaterThan(0);
+
+    act(() => {
+      providerEmitters[0]?.onDisconnected?.();
+    });
+
+    // The room is deliberately retained; recovery must not depend on it being
+    // gone.
+    const retry = await screen.findByTestId('av-call-retry');
+    expect(retry.textContent).toContain('Rejoin');
+
+    onEvents.mockRestore();
+    disconnect.mockRestore();
+    connect.mockRestore();
+  });
+
+  it('reads the publish grant from the token so a viewer can be told', async () => {
+    // Viewer tokens cannot publish, so the mic and camera offered to them are
+    // controls that can only fail. The grant travels in the token's own
+    // payload; decoding it is what lets the UI say "View-only access" instead
+    // of letting a child press buttons that silently do nothing.
+    fetchMock.mockResolvedValueOnce(tokenResponse(liveKitToken({ canPublish: false })));
+    const connect = vi.spyOn(LiveKitProvider.prototype, 'connect').mockResolvedValue();
+    const disconnect = vi.spyOn(LiveKitProvider.prototype, 'disconnect').mockImplementation(() => {});
+
+    const { result } = renderHook(() => useAvSession({ ...options, enabled: true }));
+    await waitFor(() => expect(result.current.status).toBe('joined'));
+
+    expect(result.current.canPublish).toBe(false);
 
     disconnect.mockRestore();
     connect.mockRestore();

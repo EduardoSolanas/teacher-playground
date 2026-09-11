@@ -264,6 +264,33 @@ describe('LiveKitProvider speaking state', () => {
     });
   });
 
+  it('reports a refused camera as a soft error instead of swallowing it', async () => {
+    // The camera failure at join used to be swallowed, so a browser that
+    // refused the camera looked exactly like one with the camera switched off
+    // -- and an unreadable device surfaced nothing a person could act on.
+    // The call stays up; the report is the point.
+    livekit.setCameraEnabled.mockRejectedValueOnce(
+      Object.assign(new Error('Could not start video source'), {
+        name: 'NotReadableError',
+      }),
+    );
+    livekit.localParticipant.isCameraEnabled = false;
+
+    const provider = new LiveKitProvider();
+    const errors: Array<{ kind: string; message: string }> = [];
+    const cameras: boolean[] = [];
+    provider.onEvents({
+      onError: (error) => errors.push(error),
+      onLocalCamera: (on) => cameras.push(on),
+    });
+
+    await provider.connect('token', 'wss://livekit.test');
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0].kind).toBe('device-busy');
+    expect(cameras).toContain(false);
+  });
+
   it('reports a dropped socket as reconnecting and its recovery as reconnected', async () => {
     // The SDK re-establishes the socket on its own; what the session needs is
     // the news, not a teardown. The old wiring only knew Disconnected, whose

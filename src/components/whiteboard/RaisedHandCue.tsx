@@ -75,26 +75,40 @@ export default function RaisedHandCue({
     return () => window.clearTimeout(timer);
   }, [cue]);
 
-  if (!isLocalHost || cue === null) return null;
+  if (!isLocalHost) return null;
 
   return (
-    <div
-      className="pointer-events-none fixed inset-0 z-[1300]"
-      aria-live="polite"
-    >
-      <div
-        key={cue.key}
+    <>
+      {/*
+        The live region stays mounted for the host and only its text changes.
+        A role="status" inserted together with its message is not announced,
+        and the cue itself is decorative: the sentence below is the whole
+        announcement, so the animation is aria-hidden to avoid double speech.
+      */}
+      <span
+        data-testid="whiteboard-raised-hand-live"
         role="status"
-        data-testid="whiteboard-raised-hand-cue"
-        data-phasing="out"
-        className="raised-hand-cue absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center"
-        onAnimationEnd={() => setCue(null)}
+        aria-live="polite"
+        className="sr-only"
       >
-        <RaisedHandIcon className="raised-hand-cue-icon h-48 w-48 sm:h-64 sm:w-64" />
-        <p className="mt-3 rounded-full bg-slate-900/75 px-5 py-1.5 text-base sm:text-lg font-semibold text-amber-100 shadow-xl backdrop-blur-sm">
-          {cue.name}
-        </p>
-      </div>
-    </div>
+        {cue !== null ? `${cue.name} raised their hand` : ''}
+      </span>
+      {cue !== null && (
+        <div className="pointer-events-none fixed inset-0 z-[1300]" aria-hidden="true">
+          <div
+            key={cue.key}
+            data-testid="whiteboard-raised-hand-cue"
+            data-phasing="out"
+            className="raised-hand-cue absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center"
+            onAnimationEnd={() => setCue(null)}
+          >
+            <RaisedHandIcon className="raised-hand-cue-icon h-48 w-48 sm:h-64 sm:w-64" />
+            <p className="mt-3 rounded-full bg-slate-900/75 px-5 py-1.5 text-base sm:text-lg font-semibold text-amber-100 shadow-xl backdrop-blur-sm">
+              {cue.name}
+            </p>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

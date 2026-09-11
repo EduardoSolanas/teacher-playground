@@ -197,12 +197,18 @@ describe('WhiteboardRoute room list', () => {
     expect(push).not.toHaveBeenCalled();
   });
 
-  it('keeps Create Room enabled while the room list is still loading', () => {
+  /*
+   * Create is held back until the first rooms read resolves. While the list is
+   * unknown, the page cannot know whether the free room is already taken, and
+   * an enabled Create would walk the teacher into a 402 for a room they
+   * already own.
+   */
+  it('disables Create Room while the room list is still loading', () => {
     ajaxFetch.mockImplementation(() => new Promise(() => {}));
 
     render(<WhiteboardRoute />);
 
-    expect(screen.getByTestId('whiteboard-create-room-btn')).toHaveProperty('disabled', false);
+    expect(screen.getByTestId('whiteboard-create-room-btn')).toHaveProperty('disabled', true);
   });
 
   it('creates a room then assigns the real room URL', async () => {
@@ -240,6 +246,13 @@ describe('WhiteboardRoute room list', () => {
     expect(people.value).toBe('2');
     expect(people.max).toBe('2');
     expect(screen.getByRole('button', { name: 'More people' })).toHaveProperty('disabled', true);
+    /*
+     * The server enforces one owned room with the host plus one student
+     * (FREE_MAX_ROOMS / FREE_MAX_USERS), so the form states that before the
+     * click rather than letting the 402 explain it after the fact.
+     */
+    expect(screen.getByTestId('whiteboard-free-plan-note').textContent)
+      .toMatch(/one room with one student/i);
   });
 
   // Naming is the teacher's choice now. Auto-naming every room after the
@@ -273,12 +286,13 @@ describe('WhiteboardRoute room list', () => {
       expect(assign).toHaveBeenCalledWith('/whiteboard/new-room');
     });
 
-    const settingsCall = ajaxFetch.mock.calls.find(
-      (call) => typeof call[0] === 'string' && String(call[0]).endsWith('/settings'),
+    const createCall = ajaxFetch.mock.calls.find(
+      (call) => call[0] === '/api/whiteboard/room/new-room'
+        && (call[1] as RequestInit | undefined)?.method === 'POST',
     );
     // The key is absent, not null: roomSettingsSchema types name as a
     // non-empty string, so a null or '' would fail the whole create.
-    const body = JSON.parse(String(settingsCall?.[1]?.body));
+    const body = JSON.parse(String(createCall?.[1]?.body));
     expect(body.maxUsers).toBe(2);
     expect('name' in body).toBe(false);
   });
@@ -313,10 +327,11 @@ describe('WhiteboardRoute room list', () => {
       expect(assign).toHaveBeenCalledWith('/whiteboard/new-room');
     });
 
-    const settingsCall = ajaxFetch.mock.calls.find(
-      (call) => typeof call[0] === 'string' && String(call[0]).endsWith('/settings'),
+    const createCall = ajaxFetch.mock.calls.find(
+      (call) => call[0] === '/api/whiteboard/room/new-room'
+        && (call[1] as RequestInit | undefined)?.method === 'POST',
     );
-    expect(JSON.parse(String(settingsCall?.[1]?.body))).toMatchObject({
+    expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({
       maxUsers: 2,
       name: 'Tuesday algebra',
     });
@@ -351,10 +366,11 @@ describe('WhiteboardRoute room list', () => {
       expect(assign).toHaveBeenCalledWith('/whiteboard/new-room');
     });
 
-    const settingsCall = ajaxFetch.mock.calls.find(
-      (call) => typeof call[0] === 'string' && String(call[0]).endsWith('/settings'),
+    const createCall = ajaxFetch.mock.calls.find(
+      (call) => call[0] === '/api/whiteboard/room/new-room'
+        && (call[1] as RequestInit | undefined)?.method === 'POST',
     );
-    expect('name' in JSON.parse(String(settingsCall?.[1]?.body))).toBe(false);
+    expect('name' in JSON.parse(String(createCall?.[1]?.body))).toBe(false);
   });
 
   it('posts maxUsers 2 when creating a room', async () => {
@@ -378,10 +394,11 @@ describe('WhiteboardRoute room list', () => {
       expect(assign).toHaveBeenCalledWith('/whiteboard/new-room');
     });
 
-    const settingsCall = ajaxFetch.mock.calls.find(
-      (call) => typeof call[0] === 'string' && String(call[0]).endsWith('/settings'),
+    const createCall = ajaxFetch.mock.calls.find(
+      (call) => call[0] === '/api/whiteboard/room/new-room'
+        && (call[1] as RequestInit | undefined)?.method === 'POST',
     );
-    expect(JSON.parse(String(settingsCall?.[1]?.body))).toMatchObject({ maxUsers: 2 });
+    expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({ maxUsers: 2 });
   });
 
   it('disables creating another room when the free plan already has one', async () => {

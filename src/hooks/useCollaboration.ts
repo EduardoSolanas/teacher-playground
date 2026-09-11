@@ -88,6 +88,8 @@ export function useCollaboration(
   const [roomName, setRoomName] = useState<string | null>(null);
   const [waitingPeers, setWaitingPeers] = useState<WhiteboardUser[]>([]);
   const [isWaiting, setIsWaiting] = useState(false);
+  /** The waiting queue itself is over capacity; there is no position to show. */
+  const [queueFull, setQueueFull] = useState(false);
   // Bumped when the room must be re-read, e.g. after the host admits this peer.
   const [roomReloadKey, setRoomReloadKey] = useState(0);
   const wasWaitingRef = useRef(false);
@@ -570,6 +572,7 @@ export function useCollaboration(
     setWasKicked(false);
     setWasRejected(false);
     setWasSuspended(false);
+    setQueueFull(false);
     setLocalUserName(name);
     collaborationRef.current?.setLocalUserName(name);
     collaborationRef.current?.setLocalCursor(0, 0);
@@ -713,6 +716,7 @@ export function useCollaboration(
           hasJoinedRef.current = false;
           setHasJoined(false);
           setIsWaiting(false);
+          setQueueFull(false);
           if (rejectedFromQueue) setWasRejected(true);
           else setWasKicked(true);
           setUsers([]);
@@ -720,7 +724,17 @@ export function useCollaboration(
           return;
         }
 
+        if (!cancelled && presenceAdmission === 'queue_full') {
+          // Refused because the queue is over capacity, not queued: there is no
+          // waiting_peers row, so any position would be invented by the client.
+          setQueueFull(true);
+          setIsWaiting(true);
+          setWaitingPeers([]);
+          return;
+        }
+
         if (!cancelled && presenceAdmission === 'waiting') {
+          setQueueFull(false);
           setIsWaiting(true);
           return;
         }
@@ -736,6 +750,7 @@ export function useCollaboration(
         }
 
         if (!cancelled && presenceAdmission === 'ok') {
+          setQueueFull(false);
           consecutivePresenceErrorsRef.current = 0;
           const collab = collaborationRef.current;
           if (isYjsProviderConnected(collab?.provider)) {
@@ -956,7 +971,7 @@ export function useCollaboration(
 
   const approvePeer = useCallback(async (peerId: string, accountId?: string | null) => {
     try {
-      await ajaxFetch(`/api/whiteboard/room/${roomId}/waiting`, {
+      const res = await ajaxFetch(`/api/whiteboard/room/${roomId}/waiting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -965,15 +980,24 @@ export function useCollaboration(
           action: 'approve',
         }),
       });
+      /*
+       * ajaxFetch resolves for 403/404/409, so a refused approve looks exactly
+       * like an admitted one unless the status is read. The reload runs either
+       * way: while the refusal stands, the server still holds the row, and
+       * re-reading is what keeps it on screen.
+       */
+      setModerationError(res.ok ? null : 'Could not let that person in. Please try again.');
       await reloadPresence();
+      return res.ok;
     } catch {
-      // silently fail
+      setModerationError('Could not let that person in. Please try again.');
+      return false;
     }
   }, [roomId, reloadPresence]);
 
   const rejectPeer = useCallback(async (peerId: string, accountId?: string | null) => {
     try {
-      await ajaxFetch(`/api/whiteboard/room/${roomId}/waiting`, {
+      const res = await ajaxFetch(`/api/whiteboard/room/${roomId}/waiting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -982,9 +1006,12 @@ export function useCollaboration(
           action: 'reject',
         }),
       });
+      setModerationError(res.ok ? null : 'Could not decline that person. Please try again.');
       await reloadPresence();
+      return res.ok;
     } catch {
-      // silently fail
+      setModerationError('Could not decline that person. Please try again.');
+      return false;
     }
   }, [roomId, reloadPresence]);
 
@@ -1115,6 +1142,7 @@ export function useCollaboration(
     collaboration: collaborationEpoch >= 0 ? collaborationRef.current : null,
     waitingPeers,
     isWaiting,
+    queueFull,
     wasKicked,
     wasRejected,
     wasSuspended,

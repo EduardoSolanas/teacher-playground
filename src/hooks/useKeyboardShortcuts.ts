@@ -125,6 +125,9 @@ export function useKeyboardShortcuts() {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable]')) return;
+
       /*
        * "?" is not this hook's any more. It used to toggle a sheet of
        * accelerators; the only "?" in the room now is the support button, and
@@ -220,7 +223,8 @@ export function useKeyboardShortcuts() {
 
     // Capture phase: once the Excalidraw canvas has focus (i.e. after drawing)
     // it consumes keys it recognises, which silently killed these shortcuts.
-    // Text entry is still respected via the INPUT/TEXTAREA guard above.
+    // Text entry is respected by the input/textarea/contenteditable guard at
+    // the top of the handler.
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, []);

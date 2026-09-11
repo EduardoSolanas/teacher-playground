@@ -1,19 +1,21 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import { guestHostJoinUrl } from '@/lib/whiteboard/guestJoinUrl';
 import { saveBlob } from '@/lib/whiteboard/saveBlob';
 import { boardFileName, buildExcalidrawContainer, exportableElements, referencedFileIds, withResolvableImages } from '@/lib/whiteboard/boardExport';
 import { collectBoardFiles, elementsFromSceneResponse } from '@/lib/whiteboard/boardDownload';
 import { isGuestJoinLockedOut } from '@/lib/whiteboard/guestPin';
+import { ROOM_IDLE_TTL_MS } from '@/lib/whiteboard/roomSchema';
+import type { AjaxFetch, TeacherRoomSummary } from '@/lib/whiteboard/teacherRooms';
 import CopyButton from './CopyButton';
 
-export type TeacherRoomSummary = {
-  roomId: string;
-  name?: string | null;
-  createdAt?: number;
-};
+export type { TeacherRoomSummary };
+
+/** The idle retention the server actually enforces, in whole days. */
+const ROOM_IDLE_TTL_DAYS = Math.round(ROOM_IDLE_TTL_MS / (24 * 60 * 60 * 1000));
 
 /** Shown for a room nobody has named yet. */
 export const UNNAMED_ROOM_TITLE = 'Untitled room';
@@ -70,15 +72,30 @@ function parseGuestSettings(payload: unknown): {
 
 const ICON_BUTTON = 'icon-btn';
 
-/** Guest settings for one room, or the closed state if they cannot be read. */
-async function readGuestSettings(roomId: string) {
-  const closed = { guestAccess: false, guestPin: null, guestPinExpiresAt: null, lockoutUntil: null };
+export type GuestSettings = {
+  guestAccess: boolean;
+  guestPin: string | null;
+  guestPinExpiresAt: number | null;
+  lockoutUntil: number | null;
+};
+
+/**
+ * Guest settings for one room, or null when they could not be read.
+ *
+ * "Could not read" is not "guest access is off". Treating the failure as off
+ * tells a teacher their room is closed when it may be open, and offers to
+ * switch it on for a room that already is.
+ */
+export async function readGuestSettings(
+  request: AjaxFetch,
+  roomId: string,
+): Promise<GuestSettings | null> {
   try {
-    const response = await ajaxFetch(`/api/whiteboard/room/${roomId}/settings`);
-    if (!response.ok) return closed;
+    const response = await request(`/api/whiteboard/room/${roomId}/settings`);
+    if (!response.ok) return null;
     return parseGuestSettings(await response.json());
   } catch {
-    return closed;
+    return null;
   }
 }
 
@@ -131,18 +148,27 @@ export function formatGuestPin(pin: string): string {
 export default function TeacherRoomList({
   rooms,
   loading = false,
+  error = false,
+  onRetry,
   onOpen,
   onRename,
   onDelete,
+  request = ajaxFetch,
 }: {
   rooms: TeacherRoomSummary[];
   loading?: boolean;
+  /** The last read of the room list failed. */
+  error?: boolean;
+  onRetry?: () => void;
   onOpen: (roomId: string) => void;
-  onRename?: (roomId: string, nextName: string) => void;
+  onRename?: (roomId: string, nextName: string) => void | boolean | Promise<void | boolean>;
   onDelete?: (roomId: string) => void;
+  /** Injected so tests can drive this with real responses. */
+  request?: AjaxFetch;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -159,8 +185,12 @@ export default function TeacherRoomList({
    * than one room.
    */
   const [settingsByRoom, setSettingsByRoom] = useState<
-    Record<string, ReturnType<typeof parseGuestSettings>>
+    Record<string, GuestSettings>
   >({});
+  const [settingsErrorRooms, setSettingsErrorRooms] = useState<Record<string, true>>({});
+  const [settingsActionError, setSettingsActionError] = useState<
+    { roomId: string; body: Record<string, boolean> } | null
+  >(null);
   const [pinBusyId, setPinBusyId] = useState<string | null>(null);
   /*
    * Session-only, and deliberately not persisted: a struck-through PIN is
@@ -175,6 +205,10 @@ export default function TeacherRoomList({
    * different string on each side.
    */
   const [now, setNow] = useState<number | null>(null);
+  // One row menu is open at a time, so one menu ref and one trigger map cover
+  // focus-on-open, the arrow walk and the focus handback on close.
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   useEffect(() => {
     const tick = () => setNow(Date.now());
@@ -183,26 +217,44 @@ export default function TeacherRoomList({
     return () => window.clearInterval(id);
   }, []);
 
+  const loadGuestSettings = useCallback(async (roomId: string) => {
+    const loaded = await readGuestSettings(request, roomId);
+    if (loaded === null) {
+      setSettingsErrorRooms((current) => (
+        current[roomId] ? current : { ...current, [roomId]: true }
+      ));
+      return;
+    }
+    setSettingsErrorRooms((current) => {
+      if (!current[roomId]) return current;
+      const { [roomId]: _dropped, ...rest } = current;
+      return rest;
+    });
+    setSettingsByRoom((current) => (current[roomId] ? current : { ...current, [roomId]: loaded }));
+  }, [request]);
+
   /*
    * A PIN expires on its own, so the row has to know the state of every room
    * up front rather than when a panel is opened. Rooms already held are not
    * refetched: a rotate writes the fresh value back through patchGuestSettings,
-   * and refetching on every render would undo it with a stale read.
+   * and refetching on every render would undo it with a stale read. Rooms whose
+   * read failed are not refetched either — they wait for the teacher's Retry,
+   * so a failing endpoint cannot turn the list into a request loop.
    */
   useEffect(() => {
-    let cancelled = false;
     for (const room of rooms) {
-      if (settingsByRoom[room.roomId]) continue;
-      void (async () => {
-        const loaded = await readGuestSettings(room.roomId);
-        if (cancelled) return;
-        setSettingsByRoom((current) => (
-          current[room.roomId] ? current : { ...current, [room.roomId]: loaded }
-        ));
-      })();
+      if (settingsByRoom[room.roomId] || settingsErrorRooms[room.roomId]) continue;
+      void loadGuestSettings(room.roomId);
     }
-    return () => { cancelled = true; };
-  }, [rooms, settingsByRoom]);
+  }, [rooms, settingsByRoom, settingsErrorRooms, loadGuestSettings]);
+
+  const retryGuestSettings = (roomId: string) => {
+    setSettingsErrorRooms((current) => {
+      if (!current[roomId]) return current;
+      const { [roomId]: _dropped, ...rest } = current;
+      return rest;
+    });
+  };
 
   useEffect(() => {
     if (!menuOpenId) return;
@@ -213,7 +265,10 @@ export default function TeacherRoomList({
       setMenuOpenId(null);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMenuOpenId(null);
+      if (event.key !== 'Escape') return;
+      setMenuOpenId(null);
+      /* The menu took focus on open; closing it hands focus back. */
+      menuTriggerRefs.current[menuOpenId]?.focus();
     };
     document.addEventListener('pointerdown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
@@ -223,17 +278,62 @@ export default function TeacherRoomList({
     };
   }, [menuOpenId]);
 
+  /* Focus enters with the menu, the way `role="menu"` says it will. */
+  useEffect(() => {
+    if (!menuOpenId) return;
+    menuRef.current
+      ?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')
+      ?.focus();
+  }, [menuOpenId]);
+
+  const onRowMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const items = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])'),
+    );
+    if (items.length === 0) return;
+    const current = items.indexOf(document.activeElement as HTMLElement);
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      items[current === -1 ? 0 : (current + 1) % items.length]?.focus();
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      items[current === -1 ? items.length - 1 : (current - 1 + items.length) % items.length]?.focus();
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      items[0]?.focus();
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      items[items.length - 1]?.focus();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      setMenuOpenId(null);
+      if (menuOpenId) menuTriggerRefs.current[menuOpenId]?.focus();
+    } else if (event.key === 'Tab') {
+      // A menu is not a form: Tab leaves it rather than walking its items.
+      setMenuOpenId(null);
+    }
+  };
+
   /**
    * Save a rename, or do nothing.
    *
    * A room name is a non-empty string or absent — roomSettingsSchema enforces
    * that, so a blank save would 400 and be swallowed by the caller, leaving a
    * Save button that looks live and does nothing.
+   *
+   * The editor only closes when the caller reports the save landed. Closing it
+   * first would erase the typed name from the screen while the room still has
+   * the old one, which reads as success.
    */
-  const commitRename = (roomId: string) => {
+  const commitRename = async (roomId: string) => {
     const next = draftName.trim();
     if (!next) return;
-    onRename?.(roomId, next);
+    setRenameError(null);
+    const saved = await onRename?.(roomId, next);
+    if (saved === false) {
+      setRenameError('Could not rename that room. Check your connection and try again.');
+      return;
+    }
     setEditingId(null);
   };
 
@@ -252,15 +352,24 @@ export default function TeacherRoomList({
 
   const patchGuestSettings = async (roomId: string, body: Record<string, boolean>) => {
     setPinBusyId(roomId);
+    setSettingsActionError((current) => (current?.roomId === roomId ? null : current));
     try {
-      const response = await ajaxFetch(`/api/whiteboard/room/${roomId}/settings`, {
+      const response = await request(`/api/whiteboard/room/${roomId}/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      if (!response.ok) return;
+      if (!response.ok) {
+        setSettingsActionError({ roomId, body });
+        return;
+      }
       const next = parseGuestSettings(await response.json());
       const replaced = replacedPin(settingsByRoom[roomId]?.guestPin, next.guestPin);
+      setSettingsErrorRooms((current) => {
+        if (!current[roomId]) return current;
+        const { [roomId]: _dropped, ...rest } = current;
+        return rest;
+      });
       setSettingsByRoom((current) => ({ ...current, [roomId]: next }));
       setReplacedPinByRoom((current) => {
         if (!replaced) {
@@ -270,6 +379,8 @@ export default function TeacherRoomList({
         }
         return { ...current, [roomId]: replaced };
       });
+    } catch {
+      setSettingsActionError({ roomId, body });
     } finally {
       setPinBusyId((current) => (current === roomId ? null : current));
     }
@@ -284,10 +395,10 @@ export default function TeacherRoomList({
    * later will not have a session for the bucket they came from.
    */
   const loadBoard = async (roomId: string) => {
-    const response = await ajaxFetch(`/api/whiteboard/room/${roomId}`);
+    const response = await request(`/api/whiteboard/room/${roomId}`);
     if (!response.ok) return null;
     const elements = exportableElements(elementsFromSceneResponse(await response.json()));
-    const files = await collectBoardFiles(roomId, referencedFileIds(elements), ajaxFetch);
+    const files = await collectBoardFiles(roomId, referencedFileIds(elements), request);
     /*
      * An image whose bytes did not come is dropped with them. Keeping the
      * element would write a file naming a picture that exists nowhere, and a
@@ -363,7 +474,7 @@ export default function TeacherRoomList({
   const downloadDiagnostics = async (roomId: string) => {
     setStatsError(false);
     try {
-      const response = await ajaxFetch(`/api/whiteboard/room/${roomId}/stats`);
+      const response = await request(`/api/whiteboard/room/${roomId}/stats`);
       if (!response.ok) {
         setStatsError(true);
         return;
@@ -374,7 +485,7 @@ export default function TeacherRoomList({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `room-${roomId}-diagnostics.json`;
+      a.download = `room-${roomId}-data.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -384,9 +495,33 @@ export default function TeacherRoomList({
     }
   };
 
+  const copiedRoom = copiedId ? rooms.find((room) => room.roomId === copiedId) : undefined;
+
   return (
     <section className="w-full text-left">
       <h2 className="rooms-h2">Your rooms</h2>
+      <p
+        data-testid="whiteboard-rooms-retention"
+        className="app-small"
+      >
+        Boards are kept for {ROOM_IDLE_TTL_DAYS} days after they were last used.
+      </p>      {error && !loading && (
+        <p
+          data-testid="whiteboard-room-list-error"
+          role="alert"
+          className="callout app-error"
+        >
+          Could not load your rooms.{' '}
+          <button
+            type="button"
+            data-testid="whiteboard-room-list-retry"
+            onClick={() => onRetry?.()}
+            className="btn-outline btn-small"
+          >
+            Retry
+          </button>
+        </p>
+      )}
       {loading ? (
         <p
           data-testid="whiteboard-room-list-loading"
@@ -395,12 +530,14 @@ export default function TeacherRoomList({
           Loading rooms…
         </p>
       ) : rooms.length === 0 ? (
-        <p
-          data-testid="whiteboard-room-list-empty"
-          className="callout quiet"
-        >
-          No rooms yet. Create one below.
-        </p>
+        error ? null : (
+          <p
+            data-testid="whiteboard-room-list-empty"
+            className="app-small"
+          >
+            No rooms yet. Create one below.
+          </p>
+        )
       ) : (
         <ul data-testid="whiteboard-room-list" className="room-list">
           {rooms.map((room) => {
@@ -410,8 +547,10 @@ export default function TeacherRoomList({
             const copied = copiedId === room.roomId;
             const confirmingDelete = confirmDeleteId === room.roomId;
             const joinUrl = guestHostJoinUrl(room.roomId);
+            const lastUsedAt = room.updatedAt ?? room.createdAt;
             const roomSettings = settingsByRoom[room.roomId];
             const pinState = guestPinState(roomSettings, now);
+            const guestAccessOff = roomSettings !== undefined && !roomSettings.guestAccess;
             const pinBusy = pinBusyId === room.roomId;
             const previousPin = replacedPinByRoom[room.roomId];
             const lockedOut = roomSettings !== undefined && now !== null
@@ -431,44 +570,62 @@ export default function TeacherRoomList({
                 className="room-row"
               >
                 {editing ? (
-                  <div className="row-flex">
-                    <input
-                      data-testid={`whiteboard-room-name-input-${room.roomId}`}
-                      value={draftName}
-                      maxLength={100}
-                      onChange={(e) => setDraftName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          commitRename(room.roomId);
-                        }
-                        if (e.key === 'Escape') setEditingId(null);
-                      }}
-                      autoFocus
-                      className="field-input editing"
-                    />
-                    <div className="btn-gap">
-                      <button
-                        type="button"
-                        data-testid={`whiteboard-room-name-save-${room.roomId}`}
-                        disabled={!draftName.trim()}
-                        onClick={() => commitRename(room.roomId)}
-                        className="btn btn-small"
-                      >
-                        Save
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEditingId(null)}
-                        className="btn-outline"
-                      >
-                        Cancel
-                      </button>
+                  <div>
+                    <div className="row-flex">
+                      <input
+                        data-testid={`whiteboard-room-name-input-${room.roomId}`}
+                        value={draftName}
+                        maxLength={100}
+                        aria-label={`Room name for ${label}`}
+                        onChange={(e) => setDraftName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            void commitRename(room.roomId);
+                          }
+                          if (e.key === 'Escape') {
+                            setEditingId(null);
+                            setRenameError(null);
+                          }
+                        }}
+                        autoFocus
+                        className="field-input editing"
+                      />
+                      <div className="btn-gap">
+                        <button
+                          type="button"
+                          data-testid={`whiteboard-room-name-save-${room.roomId}`}
+                          disabled={!draftName.trim()}
+                          onClick={() => { void commitRename(room.roomId); }}
+                          className="btn btn-small"
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingId(null);
+                            setRenameError(null);
+                          }}
+                          className="btn-outline"
+                        >
+                          Cancel
+                        </button>
+                      </div>
                     </div>
+                    {renameError && (
+                      <p
+                        role="alert"
+                        data-testid={`whiteboard-room-rename-error-${room.roomId}`}
+                        className="app-error"
+                      >
+                        {renameError}
+                      </p>
+                    )}
                   </div>
                 ) : confirmingDelete ? (
                   <div className="row-flex">
-                    <p className="room-name confirming">
-                      Delete “{label}”?
+                    <p className="room-name confirming whitespace-normal">
+                      Delete “{label}”? This permanently deletes the board.
                     </p>
                     <div className="btn-gap">
                       <button
@@ -478,7 +635,7 @@ export default function TeacherRoomList({
                           setConfirmDeleteId(null);
                           onDelete?.(room.roomId);
                         }}
-                        className="btn h-11 flex-1 rounded-[0.125rem] px-4 py-0 text-sm sm:flex-none"
+                        className="btn btn-danger h-11 flex-1 rounded-[0.125rem] px-4 py-0 text-sm sm:flex-none"
                       >
                         Delete
                       </button>
@@ -493,7 +650,16 @@ export default function TeacherRoomList({
                   </div>
                 ) : (
                   <div className="room-card">
-                    <div className="row-flex">
+                    {/*
+                      * One row, at every width. `.row-flex` stacks on phones,
+                      * which pushed the kebab onto a line of its own at the
+                      * left; the menu is right-anchored to the kebab, so it
+                      * then hung off the left edge of the screen.
+                      */}
+                    <div
+                      data-testid={`whiteboard-room-row-${room.roomId}`}
+                      className="flex min-w-0 flex-row items-center gap-2 px-1 py-1"
+                    >
                       <a
                         href={`/whiteboard/${room.roomId}`}
                         data-testid={`whiteboard-room-list-item-${room.roomId}`}
@@ -506,9 +672,19 @@ export default function TeacherRoomList({
                         <span className="room-name">
                           {label}
                         </span>
-                        {room.createdAt && (
-                          <span className="room-date">
-                            {formatDate(room.createdAt)}
+                        {lastUsedAt !== undefined && (
+                          <span
+                            data-testid={`whiteboard-room-date-${room.roomId}`}
+                            className="room-date"
+                          >
+                            {/*
+                              * The row is sorted by `updated_at`, so that is the
+                              * date it has to show. Printing `createdAt` put a
+                              * room created last month above one used this
+                              * morning while claiming the older date was newer
+                              * information.
+                              */}
+                            Last used {formatDate(lastUsedAt)}
                           </span>
                         )}
                       </a>
@@ -516,6 +692,9 @@ export default function TeacherRoomList({
                       <div className="btn-gap">
                         <div className="relative shrink-0" data-room-menu>
                           <button
+                            ref={(element) => {
+                              menuTriggerRefs.current[room.roomId] = element;
+                            }}
                             type="button"
                             data-testid={`whiteboard-room-menu-${room.roomId}`}
                             aria-label={`More actions for ${label}`}
@@ -528,7 +707,7 @@ export default function TeacherRoomList({
                               aria-hidden="true"
                               viewBox="0 0 24 24"
                               fill="currentColor"
-                              className="h-5 w-5"
+                              className="h-3.5 w-3.5"
                             >
                               <circle cx="5" cy="12" r="1.75" />
                               <circle cx="12" cy="12" r="1.75" />
@@ -538,8 +717,10 @@ export default function TeacherRoomList({
 
                           {menuOpen && (
                             <div
+                              ref={menuRef}
                               role="menu"
-                              className="room-menu"
+                              onKeyDown={onRowMenuKeyDown}
+                              className="room-menu max-w-[calc(100vw-2rem)]"
                             >
                               <button
                                 type="button"
@@ -548,6 +729,7 @@ export default function TeacherRoomList({
                                 onClick={() => {
                                   setEditingId(room.roomId);
                                   setDraftName(room.name?.trim() ?? '');
+                                  setRenameError(null);
                                   setMenuOpenId(null);
                                 }}
                                 className="menu-item"
@@ -584,13 +766,14 @@ export default function TeacherRoomList({
                                 type="button"
                                 role="menuitem"
                                 data-testid={`whiteboard-room-stats-${room.roomId}`}
+                                title="A JSON copy of the room's saved board and settings, for troubleshooting."
                                 onClick={() => {
                                   void downloadDiagnostics(room.roomId);
                                   setMenuOpenId(null);
                                 }}
                                 className="menu-item"
                               >
-                                Download diagnostics
+                                Download room data
                               </button>
                               {onDelete && (
                                 <button
@@ -638,9 +821,10 @@ export default function TeacherRoomList({
                           <button
                             type="button"
                             data-testid={`whiteboard-room-share-${room.roomId}`}
+                            disabled={guestAccessOff}
                             onClick={() => copyShareLink(room.roomId)}
-                            title={copied ? 'Copied' : 'Copy join link'}
-                            aria-label={copied ? 'Join link copied' : 'Copy join link'}
+                            title={copied ? 'Copied' : `Copy join link for ${label}`}
+                            aria-label={copied ? `Join link copied for ${label}` : `Copy join link for ${label}`}
                             className={copied ? 'copy-icon-btn copied' : 'copy-icon-btn'}
                           >
                             {copied ? (
@@ -670,13 +854,50 @@ export default function TeacherRoomList({
                               </svg>
                             )}
                           </button>
+                          {guestAccessOff && (
+                            <span
+                              data-testid={`whiteboard-room-link-inactive-${room.roomId}`}
+                              className="room-pin-note"
+                            >
+                              Create a PIN to let students use this link.
+                            </span>
+                          )}
                         </dd>
                       </div>
+
+                      {!room.name?.trim() && (
+                        <div className="room-share-row">
+                          <dt className="room-share-label">Room code</dt>
+                          <dd className="room-share-value">
+                            <span
+                              data-testid={`whiteboard-room-code-${room.roomId}`}
+                              className="room-code"
+                            >
+                              {room.roomId}
+                            </span>
+                          </dd>
+                        </div>
+                      )}
 
                       <div className="room-share-row">
                         <dt className="room-share-label">Class PIN</dt>
                         <dd className="room-share-value">
-                          {pinState === 'unknown' ? (
+                          {settingsErrorRooms[room.roomId] ? (
+                            <span
+                              data-testid={`whiteboard-room-settings-error-${room.roomId}`}
+                              className="room-pin-note"
+                            >
+                              Couldn’t check the class PIN.{' '}
+                              <button
+                                type="button"
+                                data-testid={`whiteboard-room-settings-retry-${room.roomId}`}
+                                onClick={() => retryGuestSettings(room.roomId)}
+                                className="btn-outline btn-small"
+                              >
+                                Retry
+                              </button>
+                            </span>
+                          ) : pinState === 'unknown' ? (
                             <span className="room-pin-note">Checking…</span>
                           ) : (
                             <>
@@ -713,7 +934,7 @@ export default function TeacherRoomList({
                                   >
                                     {formatGuestPin(roomSettings.guestPin)}
                                   </span>
-                                  <CopyButton value={roomSettings.guestPin} label="class PIN" />
+                                  <CopyButton value={roomSettings.guestPin} label={`class PIN for ${label}`} />
                                   {expiryLabel && !previousPin && (
                                     <span className="room-pin-note">
                                       Stops working {expiryLabel}
@@ -760,6 +981,27 @@ export default function TeacherRoomList({
                                 </button>
                               </div>
 
+                              {settingsActionError?.roomId === room.roomId && (
+                                <span
+                                  role="alert"
+                                  data-testid={`whiteboard-room-pin-error-${room.roomId}`}
+                                  className="room-pin-block room-pin-warn"
+                                >
+                                  Couldn’t change guest access.{' '}
+                                  <button
+                                    type="button"
+                                    data-testid={`whiteboard-room-pin-retry-${room.roomId}`}
+                                    disabled={pinBusy}
+                                    onClick={() => {
+                                      void patchGuestSettings(room.roomId, settingsActionError.body);
+                                    }}
+                                    className="btn-outline btn-small"
+                                  >
+                                    Try again
+                                  </button>
+                                </span>
+                              )}
+
                               {previousPin && pinState === 'live' && (
                                 <span className="room-pin-block">
                                   Anyone holding the old PIN is locked out — send this one.
@@ -786,6 +1028,20 @@ export default function TeacherRoomList({
         </ul>
       )}
 
+      {/*
+        * The tick on the copy button is a visual confirmation. This region
+        * exists only for assistive technology: it is always mounted, so a
+        * change from empty to "Link copied" is announced rather than being a
+        * bare icon swap nobody hears.
+        */}
+      <p
+        role="status"
+        data-testid="whiteboard-room-copy-status"
+        className="sr-only"
+      >
+        {copiedRoom ? `Link copied for ${teacherRoomTitle(copiedRoom)}` : ''}
+      </p>
+
       {exportError && (
         <p role="alert" className="app-error nudge-top">
           Could not build that download. The room may have been deleted, or the session may
@@ -795,7 +1051,7 @@ export default function TeacherRoomList({
 
       {statsError && (
         <p role="alert" className="app-error nudge-top">
-          Could not build the diagnostics for that room. It may have been deleted, or the
+          Could not build the room data file. It may have been deleted, or the
           session may have expired — reload and try again.
         </p>
       )}

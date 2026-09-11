@@ -1251,6 +1251,90 @@ describe('real local Access boundary through workerd', () => {
     expect(named).toEqual(expect.objectContaining({ roomId, name: 'Algebra' }));
   });
 
+  it('creates a room with its owner settings in one request and lists the name', async () => {
+    const owner = await bootstrapLocalSession('rooms-atomic-create');
+    const roomId = `atomic-create-${crypto.randomUUID()}`;
+
+    const created = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        elements: [],
+        name: 'Algebra',
+        maxUsers: 2,
+        hostPeerId: 'peer-host',
+        allowFirstUserHost: true,
+      }),
+    });
+    expect(created.status).toBe(200);
+    expect(await created.json()).toMatchObject({
+      success: true,
+      name: 'Algebra',
+      maxUsers: 2,
+      hostPeerId: 'peer-host',
+      allowFirstUserHost: true,
+      hasCreatorGrant: true,
+    });
+
+    const listed = await waitForTeacherRooms(owner);
+    expect(listed.status).toBe(200);
+    const rooms = (listed.body as { rooms: Array<{ roomId: string; name: unknown }> }).rooms;
+    expect(rooms.find((room) => room.roomId === roomId)?.name).toBe('Algebra');
+  });
+
+  it('refuses non-owner settings sent through the create route and keeps the room settings', async () => {
+    const owner = await bootstrapLocalSession('rooms-create-authz-owner');
+    const editor = await bootstrapLocalSession('rooms-create-authz-editor');
+    const roomId = `create-authz-${crypto.randomUUID()}`;
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [], name: 'Original', maxUsers: 2 }),
+    })).status).toBe(200);
+
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, editor, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ userName: 'Ed' }),
+    })).status).toBe(201);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/requests/${editor.accountId}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', role: 'peer' }),
+      },
+    )).status).toBe(200);
+
+    const denied = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, editor, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [{ id: 'stolen' }], name: 'Stolen', maxUsers: 2 }),
+    });
+    expect(denied.status).toBe(403);
+
+    const read = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner);
+    expect(await read.json()).toMatchObject({ name: 'Original', elements: [] });
+  });
+
+  it('rejects occupancy above the free plan on create and lists no room', async () => {
+    const owner = await bootstrapLocalSession('rooms-create-plan-limit');
+    const roomId = `create-plan-${crypto.randomUUID()}`;
+
+    const denied = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [], maxUsers: 3 }),
+    });
+    expect(denied.status).toBe(402);
+    expect(await denied.json()).toEqual({ error: 'Plan limit reached' });
+
+    const listed = await waitForTeacherRooms(owner);
+    expect(teacherRoomIds(listed.body)).not.toContain(roomId);
+  });
+
   it('rejects a second owned room with the plan-limit status and does not create it', async () => {
     const owner = await bootstrapLocalSession('rooms-plan-second');
     const firstId = `plan-room-a-${crypto.randomUUID()}`;

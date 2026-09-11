@@ -7,17 +7,27 @@
  * colour here and it changes everywhere.
  *
  * Palette (also usable from Tailwind arbitrary values, e.g.
- * bg-[var(--paper)] text-[var(--ink)]):
+ * bg-[var(--paper)] text-[var(--ink)]) — every decorative value in this file
+ * is a token, so nothing here is an orphan:
  *   paper  #faf7f0  page background (warm paper)
  *   paper2 #f3eee2  recessed strips (footer)
  *   ink    #26241f  primary text
  *   ink2   #4b4740  secondary text
- *   mut    #7a756b  muted text
+ *   ink-d  #000000  deepest ink (alt-button hover)
+ *   mut    #6b665c  muted text (4.9:1 on paper2, 5.3:1 on paper)
  *   rule   #c9d6ea  blue rules / underlines
  *   blue   #2a5db0  primary actions, links
  *   blue-d #1e4685  primary hover
+ *   blue-shadow rgba(42,93,176,.22)  blue-tinted Pro-tier card shadow
  *   red    #c0392b  accents: topline, emphasis, destructive
+ *   red-d  #a43225  destructive hover
+ *   amber  #b45309  waiting queue (amber-700; 5.0:1 on white)
  *   line   #e6e0d2  hairline borders on paper
+ *   tape   #e8e0c9cc  translucent tape fill · tape-edge #d9cfb2  its hairline
+ *
+ * The inline SVG artwork in public/index.html cannot read custom properties
+ * from its presentation attributes, so its two decorative blues (#dde6f2
+ * grid, #dbe7f7 avatar tint) are kept in sync with this palette by hand.
  */
 
 /*
@@ -37,8 +47,10 @@
 @layer base {
 
 :root{
---paper:#faf7f0;--paper2:#f3eee2;--ink:#26241f;--ink2:#4b4740;--mut:#7a756b;
---rule:#c9d6ea;--blue:#2a5db0;--blue-d:#1e4685;--red:#c0392b;--line:#e6e0d2;
+--paper:#faf7f0;--paper2:#f3eee2;--ink:#26241f;--ink2:#4b4740;--ink-d:#000;--mut:#6b665c;
+--rule:#c9d6ea;--blue:#2a5db0;--blue-d:#1e4685;--blue-shadow:rgba(42,93,176,.22);
+--red:#c0392b;--red-d:#a43225;--amber:#b45309;--line:#e6e0d2;
+--tape:#e8e0c9cc;--tape-edge:#d9cfb2;
 }
 
 /* ---- base ------------------------------------------------------------- */
@@ -65,9 +77,16 @@ svg{max-width:100%;height:auto}
 .nav nav{display:flex;align-items:center;gap:1.8rem;font-size:.92rem}
 .nav nav a{color:var(--ink2)}
 .nav nav a:hover{color:var(--ink)}
-.nav a.signin{border:1.5px solid var(--ink);border-radius:0.125rem;padding:.45rem 1.05rem;
+.nav a.signin{border:1.5px solid var(--ink);border-radius:0.125rem;padding:.55rem 1.05rem;
 font-weight:600;color:var(--ink)}
 .nav a.signin:hover{background:var(--ink);color:var(--paper)}
+/* Below 480px the bar runs out of room: let the links drop to their own row
+   rather than squeezing the brand, and keep the pill on one line. */
+@media(max-width:480px){
+.nav{flex-wrap:wrap;row-gap:.75rem}
+.nav nav{gap:1rem}
+.nav a.signin{white-space:nowrap}
+}
 
 /* ---- buttons ------------------------------------------------------------ */
 
@@ -75,7 +94,7 @@ font-weight:600;color:var(--ink)}
 padding:.85rem 1.6rem;border-radius:0.125rem;box-shadow:0.15625rem 0.15625rem 0 var(--ink)}
 .btn:hover{background:var(--blue-d)}
 .btn.alt{background:var(--ink)}
-.btn.alt:hover{background:#000}
+.btn.alt:hover{background:var(--ink-d)}
 .btn:disabled{background:var(--mut);box-shadow:none;cursor:wait;opacity:.85}
 .aside-link{font-size:.95rem;font-weight:600;color:var(--blue);border-bottom:1.5px solid var(--rule)}
 .aside-link:hover{border-color:var(--blue)}
@@ -102,8 +121,8 @@ font-size:clamp(2.5rem,5.4vw,3.9rem);line-height:1.06;letter-spacing:-.015em;mar
 .sheet .paper{background:#fff;border:1px solid var(--line);border-radius:0.1875rem;
 box-shadow:0 0.0625rem 0 var(--line),0.5rem 0.625rem 0 rgba(38,36,31,.08);padding:.6rem}
 .sheet .tape{position:absolute;top:-.85rem;left:50%;width:6.5rem;height:1.7rem;
-transform:translateX(-50%) rotate(-2deg);background:#e8e0c9cc;border-left:1px solid #d9cfb2;
-border-right:1px solid #d9cfb2}
+transform:translateX(-50%) rotate(-2deg);background:var(--tape);border-left:1px solid var(--tape-edge);
+border-right:1px solid var(--tape-edge)}
 
 /* ---- chapters / ledger / steps -------------------------------------------- */
 
@@ -163,11 +182,11 @@ footer{border-top:1px solid var(--line);background:var(--paper2)}
 @media(min-width:820px){.tiers{grid-template-columns:1fr 1fr}}
 .tier{position:relative;background:#fff;border:1px solid var(--line);border-radius:0.1875rem;
 padding:2.2rem 2.3rem;box-shadow:0.3125rem 0.375rem 0 rgba(38,36,31,.06);display:flex;flex-direction:column}
-.tier.pro{border:1.5px solid var(--ink);box-shadow:0.375rem 0.4375rem 0 rgba(42,93,176,.22)}
+.tier.pro{border:1.5px solid var(--ink);box-shadow:0.375rem 0.4375rem 0 var(--blue-shadow)}
 .tier .corner{position:absolute;top:-.7rem;right:1.6rem;background:var(--red);color:#fff;
 font-size:.72rem;font-weight:650;letter-spacing:.08em;text-transform:uppercase;
 padding:.3rem .8rem;transform:rotate(1.5deg)}
-.tier h3{font-family:Georgia,serif;font-weight:400;font-size:1.6rem}
+.tier h2{font-family:Georgia,serif;font-weight:400;font-size:1.6rem}
 .tier .price{margin-top:.2rem;font-size:.92rem;color:var(--mut)}
 .tier .tag{margin-top:1rem;color:var(--ink2);font-size:.98rem}
 .tier ul{list-style:none;margin:1.5rem 0 0;padding:1.2rem 0 0;border-top:1px solid var(--line);flex:1}
@@ -182,6 +201,8 @@ padding:.3rem .8rem;transform:rotate(1.5deg)}
 .prose h1{font-family:Georgia,serif;font-weight:400;color:var(--ink);font-size:2.1rem;margin-top:1.4rem}
 .prose h2{font-family:Georgia,serif;font-weight:400;font-size:1.35rem;margin-top:2.1rem;color:var(--ink)}
 .prose p{margin-top:.8rem}
+.prose ul{margin-top:.8rem;padding-left:1.25rem}
+.prose li{margin-top:.35rem}
 .prose a{color:var(--blue);border-bottom:1px solid var(--rule)}
 .draft{margin-top:1.8rem;padding:.75rem 1.05rem;border-left:3px solid var(--red);
 background:#fff;border-top:1px solid var(--line);border-right:1px solid var(--line);
@@ -287,7 +308,9 @@ font-size:1.35rem;color:var(--ink);margin:0}
 padding:.5rem .625rem;text-decoration:none}
 .room-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.95rem;font-weight:600;color:var(--ink)}
 .room-date{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.75rem;color:var(--mut)}
-.room-url{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 .625rem .25rem;
+/* Wraps rather than ellipsizes: the printed link is the manual-copy fallback,
+   and a truncated URL on a phone cannot be selected and copied by hand. */
+.room-url{overflow-wrap:anywhere;white-space:normal;padding:0 .625rem .25rem;
 font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.75rem;color:var(--mut)}
 .room-menu{position:absolute;right:0;top:100%;z-index:10;margin-top:.375rem;min-width:10rem;
 overflow:hidden;border:1px solid var(--line);border-radius:0.125rem;background:#fff;
@@ -344,12 +367,21 @@ font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:1.5rem;letter-
 .spinner-page{width:3rem;height:3rem;flex-shrink:0;border-radius:50%;
 border:3px solid var(--line);border-top-color:var(--blue);
 animation:whiteboard-spin .8s linear infinite}
-.spinner-page.waiting{width:4rem;height:4rem;border-top-color:var(--red)}
+.spinner-page.waiting{width:4rem;height:4rem;border-top-color:var(--amber)}
 
-.modal-overlay{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;
-justify-content:center;padding:1.5rem;background:rgba(38,36,31,.55)}
-.modal-card{width:100%;max-width:22rem;background:#fff;border:1px solid var(--line);
-border-radius:0.1875rem;padding:2rem;box-shadow:0.3125rem 0.375rem 0 rgba(38,36,31,.12)}
+.modal-overlay{position:fixed;inset:0;z-index:1600;display:flex;align-items:center;
+justify-content:center;padding:1.5rem;overflow-y:auto;overscroll-behavior:contain;
+background:rgba(38,36,31,.55)}
+/* The in-room modal recipe: the same card ConfirmDialog draws in Tailwind
+   (bg-white rounded-xl p-8 shadow-xl), so the join gates and every other room
+   dialog read as one surface rather than two products. */
+.modal-card{width:100%;max-width:22rem;max-height:100dvh;margin:auto;background:#fff;border:1px solid var(--line);
+border-radius:0.75rem;padding:2rem;box-shadow:0 1.25rem 1.5625rem -0.3125rem rgba(15,23,42,.1),0 0.5rem 0.625rem -0.375rem rgba(15,23,42,.1)}
+/* A short viewport — a landscape phone, or the height an on-screen keyboard
+   leaves — clips the top of a centred card taller than the screen, putting the
+   submit control out of reach. From the start edge the overlay scrolls through
+   the whole card; the card's auto margins still centre it when it fits. */
+@media(max-height:480px){.modal-overlay{align-items:flex-start}}
 .modal-title{font-family:Georgia,'Iowan Old Style','Times New Roman',serif;font-weight:400;
 font-size:1.35rem;color:var(--ink);margin:0}
 .modal-text{margin:.35rem 0 1.25rem;font-size:.85rem;line-height:1.6;color:var(--ink2)}
@@ -360,10 +392,8 @@ font-size:1.35rem;color:var(--ink);margin:0}
 .queue-card{margin-top:1.75rem;min-width:16rem;background:#fff;border:1px solid var(--line);
 border-radius:0.1875rem;box-shadow:0.3125rem 0.375rem 0 rgba(38,36,31,.06);padding:1.75rem 2rem;text-align:center}
 .queue-number{font-family:Georgia,'Iowan Old Style','Times New Roman',serif;font-weight:400;
-font-size:3rem;line-height:1;color:var(--red);margin:0}
+font-size:3rem;line-height:1;color:var(--amber);margin:0}
 .queue-label{margin:.4rem 0 0;font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--mut)}
-.queue-code{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:1rem;
-font-weight:600;color:var(--ink2)}
 /* A label that opens a card heads it, rather than captioning the line above. */
 .queue-card .queue-label:first-child{margin:0 0 .35rem}
 .session-note{max-width:24rem}
@@ -376,8 +406,7 @@ transition:background .15s}
 
 .btn-row{display:flex;flex-wrap:wrap;justify-content:center;gap:.75rem;margin-top:1.75rem}
 .btn-danger{background:var(--red)}
-.btn-danger:hover{background:#a43225}
-}
+.btn-danger:hover{background:var(--red-d)}
 
 /* ---- app: the room row -------------------------------------------------
  * A room row is a share card, not a file-manager row. What a teacher needs
@@ -408,7 +437,7 @@ text-transform:uppercase;color:var(--mut)}
 .room-pin-actions{display:flex;align-items:center;gap:.5rem;margin-left:auto;flex-shrink:0}
 /* The copy control is a hairline square that sits with the value rather than
    under it; at 2.75rem it keeps the touch target the rest of the app uses. */
-.room-share-value .copy-icon-btn{height:2.25rem;width:2.25rem}
+.room-share-value .copy-icon-btn{height:2.75rem;width:2.75rem}
 .room-share-value .room-url{flex:1;min-width:0;padding:0;font-size:.8rem;color:var(--ink2)}
 /* The code is read aloud and typed in by hand, so it is never truncated:
    an ellipsis in the middle of an identifier is worse than a second line. */
@@ -431,3 +460,4 @@ font-size:.9rem;letter-spacing:.08em;color:var(--red);text-decoration:line-throu
    it cannot be hit while reaching for New PIN. */
 .room-pin-off{margin-left:auto}
 .room-pin-warn{color:var(--red)}
+}

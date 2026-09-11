@@ -1,5 +1,72 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 import { createPortal } from 'react-dom';
+
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(', ');
+
+/**
+ * The focus half of the ConfirmDialog pattern, for dialogs that live in a
+ * different shell. ConfirmDialog itself owns the Escape/backdrop behaviour; the
+ * join gates are deliberately non-dismissable and only need focus contained.
+ *
+ * Focus moves to the initial target (or the first focusable) when the caller
+ * mounts, and Tab/Shift+Tab wrap at the dialog's edges so nothing behind it
+ * becomes reachable. The element focused before mounting gets focus back on
+ * unmount.
+ */
+export function useDialogFocusTrap(
+  dialogRef: RefObject<HTMLElement | null>,
+  initialFocusRef?: RefObject<HTMLElement | null>,
+) {
+  const previousActiveElementRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const previous = document.activeElement;
+    previousActiveElementRef.current = previous instanceof HTMLElement ? previous : null;
+    const target =
+      initialFocusRef?.current ??
+      dialogRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR) ??
+      null;
+    target?.focus();
+    return () => {
+      previousActiveElementRef.current?.focus();
+    };
+  }, [dialogRef, initialFocusRef]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusables = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (!dialog.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [dialogRef]);
+}
 
 type ConfirmDialogProps = {
   isOpen: boolean;
@@ -112,25 +179,25 @@ export default function ConfirmDialog({
   return createPortal(
     <div
       onClick={handleBackdropClick}
-      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[1000]"
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[1600]"
     >
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="bg-slate-800 rounded-xl p-6 max-w-[25rem] w-[90%] border border-slate-700 shadow-2xl"
+        className="bg-white rounded-xl p-8 max-w-[25rem] w-[90%] shadow-xl"
       >
-        <h3 id={titleId} className="m-0 mb-3 text-lg font-semibold text-slate-100">
+        <h3 id={titleId} className="m-0 mb-3 text-lg font-semibold text-slate-900">
           {title}
         </h3>
-        <p className="m-0 mb-6 text-sm text-slate-400 leading-relaxed">{body}</p>
+        <p className="m-0 mb-6 text-sm text-slate-500 leading-relaxed">{body}</p>
         <div className="flex gap-3 justify-end">
           <button
             ref={cancelBtnRef}
             data-testid={`${testIdPrefix}-cancel-btn`}
             onClick={onCancel}
-            className="px-5 py-2 border border-slate-600 rounded-lg bg-transparent text-slate-300 cursor-pointer text-sm"
+            className="px-5 py-2 border border-slate-300 rounded-lg bg-transparent text-slate-600 cursor-pointer text-sm"
           >
             {cancelLabel}
           </button>

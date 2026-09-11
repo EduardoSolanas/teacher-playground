@@ -3,6 +3,8 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { Room, Track, RemoteParticipant } from 'livekit-client';
 
 import AvSessionPanel from './AvSessionPanel';
+import { CALL_RAIL_WIDTH } from '@/lib/av/callRail';
+import { contrastTextOn } from '@/lib/whiteboard/userColor';
 import type { UseAvSessionResult } from '@/hooks/useAvSession';
 import type { DeviceKind, AvDevice } from '@/lib/av/avSession';
 
@@ -47,6 +49,7 @@ function makeAv(overrides: AvOverrides = {}): UseAvSessionResult {
     status: 'joined',
     error: null,
     unavailableReason: null,
+    canPublish: true,
     room: realRoom,
     participants: [],
     local: { micMuted: false, camOn: true, isScreenSharing: false, ...local },
@@ -57,6 +60,7 @@ function makeAv(overrides: AvOverrides = {}): UseAvSessionResult {
     toggleScreenShare: vi.fn().mockResolvedValue(undefined),
     selectDevice: vi.fn(),
     requestMute: vi.fn(),
+    retry: vi.fn(),
     leave: vi.fn(),
     ...rest,
   };
@@ -196,7 +200,7 @@ describe('AvSessionPanel', () => {
     expect(av.toggleCamera).toHaveBeenCalledTimes(1);
   });
 
-  it('defaults to rail mode and offers accessible rail, focus and off controls', () => {
+  it('defaults to rail mode and offers accessible gallery, focus and hidden controls', () => {
     const av = makeAv({
       participants: [
         { identity: 'me', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
@@ -206,10 +210,38 @@ describe('AvSessionPanel', () => {
     render(<AvSessionPanel av={av} localIdentity="me" />);
 
     expect(screen.getByRole('radiogroup', { name: 'Video layout' })).toBeTruthy();
-    expect(screen.getByRole('radio', { name: 'Rail' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('radio', { name: 'Gallery' }).getAttribute('aria-checked')).toBe('true');
     expect(screen.getByRole('radio', { name: 'Focus' }).getAttribute('aria-checked')).toBe('false');
-    expect(screen.getByRole('radio', { name: 'Off' }).getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByRole('radio', { name: 'Hidden' }).getAttribute('aria-checked')).toBe('false');
     expect(screen.getByTestId('av-tiles-rail')).toBeTruthy();
+  });
+
+  it('moves between layouts with the arrow keys', () => {
+    // role="radio" without arrow keys is a fiction: a screen reader announces
+    // a radio group and then the keys that operate one do nothing.
+    const av = makeAv({
+      participants: [
+        { identity: 'me', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
+        { identity: 'peer-1', micMuted: false, micPresent: true, camOn: true, isSpeaking: false },
+      ],
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    const group = screen.getByRole('radiogroup', { name: 'Video layout' });
+    const checked = () => screen.getAllByRole('radio').find((radio) => radio.getAttribute('aria-checked') === 'true')?.textContent;
+
+    expect(checked()).toBe('Gallery');
+
+    fireEvent.keyDown(group, { key: 'ArrowRight' });
+    expect(checked()).toBe('Focus');
+
+    fireEvent.keyDown(group, { key: 'ArrowRight' });
+    expect(checked()).toBe('Hidden');
+
+    fireEvent.keyDown(group, { key: 'ArrowLeft' });
+    expect(checked()).toBe('Focus');
+
+    fireEvent.keyDown(group, { key: 'Home' });
+    expect(checked()).toBe('Gallery');
   });
 
   it('turns tiles off without ending the call controls, and can return to rail', () => {
@@ -221,12 +253,12 @@ describe('AvSessionPanel', () => {
     });
     render(<AvSessionPanel av={av} localIdentity="me" />);
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Off' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Hidden' }));
     expect(screen.queryByTestId('av-tile-me')).toBeNull();
     expect(screen.queryByTestId('av-tile-peer-1')).toBeNull();
     expect(screen.getByTestId('av-call-controls')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Rail' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Gallery' }));
     expect(screen.getByTestId('av-tile-me')).toBeTruthy();
     expect(screen.getByTestId('av-tile-peer-1')).toBeTruthy();
   });
@@ -244,7 +276,7 @@ describe('AvSessionPanel', () => {
     // §3.7: Assert that no manual <audio> elements are rendered
     expect(document.querySelectorAll('audio')).toHaveLength(0);
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Off' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Hidden' }));
 
     expect(screen.queryByTestId('av-tile-me')).toBeNull();
     expect(screen.queryByTestId('av-tile-peer-1')).toBeNull();
@@ -553,7 +585,14 @@ describe('AvSessionPanel', () => {
     expect(panel.className).toContain('sm:top-12');
     expect(panel.className).toContain('sm:bottom-0');
     expect(panel.className).toContain('sm:rounded-none');
-    expect(panel.className).toContain('sm:w-[clamp(11rem,18vw,15rem)]');
+    /*
+     * The width arrives through the --call-rail-w variable rather than an
+     * interpolated arbitrary value: a class built by string interpolation is
+     * invisible to Tailwind's source scan, and the canvas reservation on the
+     * other side already reads the same variable.
+     */
+    expect(panel.className).toContain('sm:w-[var(--call-rail-w)]');
+    expect((panel as HTMLElement).style.getPropertyValue('--call-rail-w')).toBe(CALL_RAIL_WIDTH);
 
     // No gutter parking it away from the edge.
     expect(panel.className).not.toContain('sm:right-2');
@@ -731,8 +770,8 @@ describe('AvSessionPanel', () => {
     const speakingTile = screen.getByTestId('av-tile-me');
     const silentTile = screen.getByTestId('av-tile-peer-1');
 
-    expect(speakingTile.className).toContain('ring-2 ring-emerald-400');
-    expect(silentTile.className).not.toContain('ring-2 ring-emerald-400');
+    expect(speakingTile.className).toContain('ring-2 ring-[var(--blue)]');
+    expect(silentTile.className).not.toContain('ring-2 ring-[var(--blue)]');
   });
 
   it('displays connection quality warning when quality is poor or lost', () => {
@@ -947,11 +986,13 @@ describe('AvSessionPanel', () => {
     expect(meTile.textContent).toContain('Teacher (you)');
   });
 
-  it('falls back to the first initial in their own colour', () => {
+  it('keeps the ring in their own colour and uses legible ink for the initial', () => {
     /*
      * The colour is the one their cursor already uses on the board, so a
      * student's pointer and their tile are the same colour rather than two
-     * unrelated palettes.
+     * unrelated palettes. White initials on that palette fail contrast on
+     * most of it -- yellow worst of all -- so the foreground is chosen for the
+     * colour it sits on.
      */
     const av = makeAv({
       participants: [
@@ -963,8 +1004,10 @@ describe('AvSessionPanel', () => {
 
     const avatar = screen.getByTestId('av-avatar-peer-alice');
     expect(avatar.textContent).toBe('A');
-    expect(avatar.style.color).toBe('rgb(52, 152, 219)');
     expect(avatar.style.borderColor).toBe('rgb(52, 152, 219)');
+    const expectedInk = document.createElement('span');
+    expectedInk.style.color = contrastTextOn('#3498db');
+    expect(avatar.style.color).toBe(expectedInk.style.color);
   });
 
   it('leaves an unknown participant a neutral avatar', () => {
@@ -1070,6 +1113,178 @@ describe('AvSessionPanel', () => {
     const panel = screen.getByTestId('av-session-panel');
     expect(panel.className).toContain('max-h-');
     expect(panel.className).toContain('overflow-y-auto');
+  });
+
+  it('caps the mobile sheet so it leaves the waiting list reachable', () => {
+    /*
+     * On a short phone the call strip ran to 70dvh and covered the presence
+     * sheet's header and its "Let in" buttons, so a teacher had to hide the
+     * call before admitting a student who had knocked.
+     */
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    const panel = screen.getByTestId('av-session-panel');
+    expect(panel.className).toContain('max-h-[40dvh]');
+    expect(panel.className).toContain('sm:max-h-none');
+  });
+
+  it('keeps clear of the safe areas on the wide-screen rail', () => {
+    // A landscape notch clips the rail's bottom-right corner without this.
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    const panel = screen.getByTestId('av-session-panel');
+    expect(panel.className).toContain('env(safe-area-inset-bottom)');
+    expect(panel.className).toContain('env(safe-area-inset-right)');
+  });
+
+  it('moves focus into the panel when it opens and back to the pill when it hides', () => {
+    /*
+     * The panel is fixed and its DOM position follows the roster, so without
+     * this a keyboard user was left with focus on the Hide button after the
+     * panel had gone -- or tabbing through the page to find the call.
+     */
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+
+    fireEvent.click(screen.getByTestId('av-panel-collapse'));
+    expect(document.activeElement).toBe(screen.getByTestId('av-panel-open'));
+
+    fireEvent.click(screen.getByTestId('av-panel-open'));
+    expect(document.activeElement).toBe(screen.getByTestId('av-session-panel'));
+  });
+
+  it('lets a transient error banner be dismissed', () => {
+    const av = makeAv({ error: { kind: 'unknown', message: 'A temporary glitch' } });
+    const { rerender } = render(<AvSessionPanel av={av} localIdentity="me" />);
+    expect(screen.getByTestId('av-status-message')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('av-status-dismiss'));
+    expect(screen.queryByTestId('av-status-message')).toBeNull();
+
+    // A different failure is news again.
+    rerender(
+      <AvSessionPanel
+        av={makeAv({ error: { kind: 'network', message: 'The socket dropped' } })}
+        localIdentity="me"
+      />,
+    );
+    expect(screen.getByTestId('av-status-message')).toBeTruthy();
+  });
+
+  it('offers a way to retry a failed join and to rejoin an ended call', () => {
+    const retry = vi.fn();
+    const { rerender } = render(
+      <AvSessionPanel
+        av={makeAv({ status: 'error', error: { kind: 'network', message: 'No connection' }, retry })}
+        localIdentity="me"
+      />,
+    );
+    fireEvent.click(screen.getByTestId('av-call-retry'));
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('av-call-retry').textContent).toContain('Try again');
+
+    rerender(<AvSessionPanel av={makeAv({ status: 'idle', room: null, retry })} localIdentity="me" />);
+    expect(screen.getByTestId('av-call-retry').textContent).toContain('Rejoin');
+  });
+
+  it('does not offer a retry for a deployment that has no call configured', () => {
+    // Retrying a 503 only repeats it; the person needs to know it is not
+    // something on their side.
+    render(
+      <AvSessionPanel
+        av={makeAv({ status: 'idle', room: null, unavailableReason: 'unconfigured' })}
+        localIdentity="me"
+      />,
+    );
+    expect(screen.queryByTestId('av-call-retry')).toBeNull();
+  });
+
+  it('hides Picture-in-Picture on tiles with no video yet', () => {
+    // The button was drawn on avatar tiles where there is no <video> to send
+    // to PiP, so pressing it silently did nothing.
+    const av = makeAv({
+      participants: [
+        { identity: 'me', micMuted: false, micPresent: true, camOn: false, isSpeaking: false },
+      ],
+      local: { micMuted: false, camOn: false },
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    expect(screen.queryByTestId('av-pip-me')).toBeNull();
+    expect(screen.getByTestId('av-fullscreen-me')).toBeTruthy();
+  });
+
+  it('renders inline SVG icons rather than emoji glyphs', () => {
+    const av = makeAv({
+      participants: [
+        { identity: 'peer-teacher', micMuted: false, micPresent: true, camOn: false, isSpeaking: false },
+      ],
+    });
+    const users = [
+      { peerId: 'peer-teacher', userName: 'Teacher', isHost: true, handRaised: true },
+    ];
+    render(<AvSessionPanel av={av} localIdentity="me" users={users} />);
+
+    expect(screen.getByTestId('av-hand-raised-peer-teacher').querySelector('svg')).toBeTruthy();
+    expect(screen.getByTestId('av-hand-raised-peer-teacher').textContent).not.toContain('✋');
+    expect(screen.getByTestId('av-host-badge-peer-teacher').querySelector('svg')).toBeTruthy();
+    expect(screen.getByTestId('av-fullscreen-peer-teacher').querySelector('svg')).toBeTruthy();
+  });
+
+  it('renders the camera-off placeholder as a flat surface', () => {
+    const av = makeAv({ local: { micMuted: false, camOn: false } });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    expect(screen.getByTestId('av-tile-me').innerHTML).not.toContain('bg-gradient');
+  });
+
+  it('says the call is view-only when the token cannot publish', () => {
+    const av = makeAv({ canPublish: false });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    expect(screen.getByTestId('av-view-only')).toBeTruthy();
+    expect(screen.getByTestId('av-view-only').textContent).toContain('View-only');
+    expect(screen.getByTestId('av-toggle-mic').hasAttribute('disabled')).toBe(true);
+    expect(screen.getByTestId('av-toggle-cam').hasAttribute('disabled')).toBe(true);
+  });
+
+  it('leaves the device selects to the global focus-visible ring (UX-B12)', () => {
+    const spk = (deviceId: string, label = `Speaker ${deviceId}`) => ({ deviceId, label });
+    const av = makeAv({
+      devices: {
+        microphone: [mic('mic-1'), mic('mic-2')],
+        camera: [cam('cam-1'), cam('cam-2')],
+        speaker: [spk('spk-1'), spk('spk-2')],
+      },
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+
+    for (const testId of ['av-device-mic', 'av-device-cam', 'av-device-speaker']) {
+      const select = screen.getByTestId(testId);
+      expect(select.className).not.toContain('outline-none');
+      expect(select.className).not.toContain('focus:ring');
+      expect(select.className).not.toContain('focus:border');
+    }
+  });
+
+  it('raises PiP, fullscreen and Hide to a 44px hit area on coarse pointers (UX-N1)', () => {
+    const room = new Room();
+    addTrackPublication(room.localParticipant, Track.Source.Camera);
+    const av = makeAv({ room, local: { micMuted: false, camOn: true } });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+
+    const pip = screen.getByTestId('av-pip-me').className.split(/\s+/);
+    expect(pip).toContain('min-h-9');
+    expect(pip).toContain('min-w-9');
+    expect(pip).toContain('pointer-coarse:min-h-11');
+    expect(pip).toContain('pointer-coarse:min-w-11');
+
+    const fullscreen = screen.getByTestId('av-fullscreen-me').className.split(/\s+/);
+    expect(fullscreen).toContain('min-h-9');
+    expect(fullscreen).toContain('min-w-9');
+    expect(fullscreen).toContain('pointer-coarse:min-h-11');
+    expect(fullscreen).toContain('pointer-coarse:min-w-11');
+
+    const hide = screen.getByTestId('av-panel-collapse').className.split(/\s+/);
+    expect(hide).toContain('min-h-9');
+    expect(hide).toContain('pointer-coarse:min-h-11');
   });
 
   describe('device selection with unrecognized active device', () => {

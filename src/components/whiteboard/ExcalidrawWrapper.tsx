@@ -1264,15 +1264,16 @@ export default function ExcalidrawWrapper({
   }, []);
 
   if (!isClient) {
-    return <div className="w-full h-full min-h-[25rem]" />;
+    return <div className="w-full h-full min-h-0" />;
   }
 
   return (
     <div
-      className="w-full h-full min-h-[25rem]"
+      className="w-full h-full min-h-0"
       data-whiteboard-role={isLocalHost ? 'host' : 'peer'}
     >
       <Excalidraw
+        langCode="en"
         excalidrawAPI={handleAPI}
         onChange={(el, appState, files) => { handleElementsChange(el, appState, files); }}
         onPointerUpdate={handlePointerUpdate}

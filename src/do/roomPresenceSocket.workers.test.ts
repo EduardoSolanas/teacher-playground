@@ -449,3 +449,38 @@ describe('presence broadcast over WebSocket', () => {
     editorSocket.close();
   });
 });
+
+describe('waiting queue capacity over HTTP', () => {
+  it('refuses an over-cap waiter with a queue-full status, not a rate limit', async () => {
+    const owner = await bootstrapLocalSession('queue-full-owner');
+    const first = await bootstrapLocalSession('queue-full-first');
+    const second = await bootstrapLocalSession('queue-full-second');
+    const third = await bootstrapLocalSession('queue-full-third');
+    const roomId = 'queue-full-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/settings`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ maxUsers: 2 }),
+    })).status).toBe(200);
+
+    const join = (who: LocalAuthSession, peerId: string) => authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/presence`,
+      who,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ peerId, userName: peerId, color: '#3498db' }),
+      },
+    );
+
+    expect((await join(first, 'first-peer')).status).toBe(200);
+    expect((await join(second, 'second-peer')).status).toBe(200);
+
+    const overflow = await join(third, 'third-peer');
+    expect(overflow.status).toBe(409);
+    expect(overflow.status).not.toBe(429);
+    expect(await overflow.json()).toMatchObject({ error: 'Waiting queue is full' });
+  });
+});

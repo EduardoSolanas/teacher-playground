@@ -4,6 +4,7 @@ import {
   DEFAULT_USER_COLOR,
   USER_COLORS,
   USER_COLOR_STORAGE_KEY,
+  contrastTextOn,
   generateUserColor,
   resolveUserColor,
 } from './userColor';
@@ -48,5 +49,27 @@ describe('resolveUserColor', () => {
 
   it('falls back to the default when there is no name either', () => {
     expect(resolveUserColor('')).toBe(DEFAULT_USER_COLOR);
+  });
+});
+
+describe('contrastTextOn', () => {
+  it('uses dark ink on the yellow palette colour, where white fails', () => {
+    expect(contrastTextOn('#f1c40f')).toBe('#0f172a');
+  });
+
+  it('keeps white on the purple palette colour, where it wins', () => {
+    expect(contrastTextOn('#9b59b6')).toBe('#ffffff');
+  });
+
+  it('uses dark ink on white', () => {
+    expect(contrastTextOn('#ffffff')).toBe('#0f172a');
+  });
+
+  it('uses white on black', () => {
+    expect(contrastTextOn('#000000')).toBe('#ffffff');
+  });
+
+  it('defaults to white when the input is not a colour', () => {
+    expect(contrastTextOn('not-a-colour')).toBe('#ffffff');
   });
 });

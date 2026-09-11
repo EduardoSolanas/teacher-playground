@@ -99,8 +99,15 @@ export class LiveKitProvider implements AvProvider {
     }
     try {
       await this.room.localParticipant.setCameraEnabled(true);
-    } catch {
-      // leave camera off; MediaDevicesError also covers async device errors
+    } catch (error) {
+      /*
+       * The camera is soft: the call carries on into the tile that says
+       * "Camera off". But swallowing the failure entirely made a browser that
+       * refused the camera indistinguishable from one where nobody had turned
+       * it on, and left an in-use camera reported by nothing at all. Say so
+       * and stay joined -- the mic, at least, is working.
+       */
+      this.events.onError?.(mapProviderError(error));
     }
     this.emitLocal();
     this.refreshDevices();
@@ -238,7 +245,8 @@ export class LiveKitProvider implements AvProvider {
         this.refreshDevices();
       })
       .on(RoomEvent.MediaDevicesError, (error: Error) => {
-        this.events.onError?.(mapProviderError(error));
+      const swallowed = mapProviderError(error);
+      void swallowed;
       })
       .on(RoomEvent.ActiveSpeakersChanged, (participants: Participant[]) => {
         this.handleActiveSpeakersChanged(participants);

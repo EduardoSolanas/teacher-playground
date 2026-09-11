@@ -20,14 +20,18 @@ waiting or raising hands.
 Every surface (marketing pages AND app pages) inherits these tokens from
 `public/brand.css`; consume from Tailwind as `bg-[var(--paper)]` etc:
 - paper `#faf7f0` page background (warm paper) · paper2 `#f3eee2` recessed strips
-- ink `#26241f` primary text · ink2 `#4b4740` secondary · mut `#7a756b` muted
+- ink `#26241f` primary text · ink2 `#4b4740` secondary · mut `#6b665c` muted
 - rule `#c9d6ea` blue rules · line `#e6e0d2` hairlines on paper
 - blue `#2a5db0` primary actions/links · blue-d `#1e4685` hover
-- red `#c0392b` accents: topline, emphasis, destructive
+- red `#c0392b` accents: topline, emphasis, destructive · red-d `#a43225` destructive hover
+- amber `#b45309` waiting queue and other attention states
+- decorative-only tokens: ink-d `#000` alt-button hover, tape `#e8e0c9cc` /
+  tape-edge `#d9cfb2` sheet tape, blue-shadow `rgba(42,93,176,.22)` Pro-tier card shadow
 
 Shared component classes live in the same file: `.btn` (blue, 2px radius,
-hard `2.5px 2.5px 0` ink shadow, `:disabled` greyed), `.brand-topline` (4px red
-bar), `.serif` (Georgia headings), `.wrap`/`.narrow`, `.note-block`/`.draft`
+hard `2.5px 2.5px 0` ink shadow, `:disabled` greyed), `.topline` (marketing
+pages) / `.app-topline` (app screens) — the 4px red bar — `.serif` (Georgia
+headings), `.wrap`/`.narrow`, `.note-block`/`.draft`
 cards. Cards are white with a `var(--line)` hairline, 2–3px radius and a hard
 offset shadow (`5px 6px 0 rgba(38,36,31,.06)`) — never soft blurred shadows.
 Serif (Georgia, weight 400) is the heading voice on every page.
@@ -110,13 +114,20 @@ at micro sizes — this scale is the contract:
 - One-shot cues (raised hand): keyframed `transform`+`opacity` only, with a
   soft glow `drop-shadow`; ~2.8s total, forwards fill
 - No scroll-triggered animation, no parallax, no spring libraries
+- `prefers-reduced-motion: reduce` neutralizes every animation and transition
+  app-wide (near-zero single iteration, see `src/app/globals.css`)
 
 ## 7. Z-index & stacking (the scale — no ad-hoc values)
 
-`z-[200]` bottom controls → `z-[400]` alerts → `z-[1000]` modals/prompts →
-`z-[1100]` fixed nav links → `z-[1200]` presence rail → `z-[1250]` menus
-opened from the rail → `z-[1300]` transient full-screen cues. Nothing above
-1300. Focus ring `:focus-visible` is always visible (indigo, 2px, offset 2).
+`z-[400]` inline alerts (moderation error) → `z-[1000]` full-screen states
+(loading, waiting room) → `z-[1050]` support button → `z-[1100]` fixed nav
+links (back link, rooms-page top bar) → `z-[1200]` presence rail/handle and
+room title menu → `z-[1250]` menus opened from the rail → `z-[1300]` room top
+nav and raised-hand cue → `z-[1400]` call rail and mobile call pill →
+`z-[1450]` sync-degraded notice → `z-[1500]` connection-lost notice →
+`z-[1600]` modals and prompts (`ConfirmDialog`, `.modal-overlay` join gates).
+Modals sit above all chrome; nothing above 1600. Focus ring `:focus-visible` is
+always visible (indigo, 2px, offset 2).
 
 ## 8. Accessibility contract
 

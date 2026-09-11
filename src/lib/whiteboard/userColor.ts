@@ -49,3 +49,48 @@ export function resolveUserColor(name: string): string {
   }
   return name ? generateUserColor(name) : DEFAULT_USER_COLOR;
 }
+
+const DARK_FOREGROUND = '#0f172a';
+const LIGHT_FOREGROUND = '#ffffff';
+
+/** WCAG 2.x relative luminance, or null when the input is not a hex colour. */
+function relativeLuminance(color: string): number | null {
+  const match = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim());
+  if (!match) return null;
+  const digits =
+    match[1].length === 3
+      ? match[1]
+          .split('')
+          .map((digit) => digit + digit)
+          .join('')
+      : match[1];
+  const [r, g, b] = [0, 2, 4].map((offset) => {
+    const channel = parseInt(digits.slice(offset, offset + 2), 16) / 255;
+    return channel <= 0.03928
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contrastRatio(a: number, b: number): number {
+  const lighter = Math.max(a, b);
+  const darker = Math.min(a, b);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+/**
+ * The foreground that reads best on a user colour.
+ *
+ * Avatar initials used to be unconditionally white, which fails WCAG AA on
+ * most of the palette -- yellow is 1.66:1. Pick whichever of the two house
+ * foregrounds has the higher contrast ratio, and fall back to white when the
+ * colour cannot be parsed so an unknown value never renders dark-on-dark.
+ */
+export function contrastTextOn(backgroundColor: string): '#ffffff' | '#0f172a' {
+  const background = relativeLuminance(backgroundColor);
+  if (background === null) return LIGHT_FOREGROUND;
+  const onDark = contrastRatio(background, relativeLuminance(DARK_FOREGROUND)!);
+  const onLight = contrastRatio(background, relativeLuminance(LIGHT_FOREGROUND)!);
+  return onDark >= onLight ? DARK_FOREGROUND : LIGHT_FOREGROUND;
+}

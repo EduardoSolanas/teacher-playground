@@ -1531,6 +1531,41 @@ export class RoomDO extends DurableObject {
     }
   }
 
+  /**
+   * Moves the owning account's "last used" stamp after the board changed.
+   *
+   * The list reads this timestamp, and board edits reach storage through this
+   * object rather than the Worker's scene route, so without this the list
+   * would only ever see create and rename. One ping per snapshot flush keeps
+   * it bounded by {@link RoomDO.FLUSH_INTERVAL_MS} rather than by strokes.
+   */
+  private async touchOwnerRoomActivity(roomId: string): Promise<void> {
+    try {
+      const owner = this.db.prepare(
+        `SELECT account_id AS accountId FROM room_members
+         WHERE room_id = ? AND role = 'owner'`,
+      ).get(roomId) as { accountId: string } | undefined;
+      if (!owner) return;
+
+      const identity = this.roomEnv.IDENTITY.get(
+        this.roomEnv.IDENTITY.idFromName(GLOBAL_IDENTITY_OBJECT_NAME),
+      );
+      const response = await identity.fetch(new Request(
+        'https://identity/accounts/rooms/touch',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ accountId: owner.accountId, roomId }),
+        },
+      ));
+      if (!response.ok) {
+        console.error('identity account rooms touch failed', response.status);
+      }
+    } catch {
+      console.error('identity account rooms touch failed');
+    }
+  }
+
   /** Writes every document that has changed since the last flush. */
   private async flushDirtyDocs(): Promise<void> {
     for (const roomId of this.dirtyRooms) {
@@ -1589,6 +1624,11 @@ export class RoomDO extends DurableObject {
          */
         this.db.prepare(`UPDATE rooms SET updated_at = ? WHERE room_id = ?`)
           .run(Date.now(), roomId);
+
+        // The board changed, so the owner's "last used" moves too. Bounded by
+        // this flush, not by strokes, and best-effort: a stored board must not
+        // be reported as failed because the list's timestamp was not synced.
+        await this.touchOwnerRoomActivity(roomId);
 
         this.dirtyRooms.delete(roomId);
         this.projectionDirtyRooms.add(roomId);

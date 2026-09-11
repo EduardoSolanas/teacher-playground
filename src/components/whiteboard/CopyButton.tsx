@@ -69,6 +69,19 @@ export default function CopyButton({
         {/* The state a sighted user reads from the tick, for everyone else. */}
         <span className="sr-only">{copied ? 'Copied' : 'Copy'}</span>
       </button>
+      {/*
+        Persistent and empty until it fires: a status region inserted with its
+        message is not announced. The tick is the sighted confirmation; this
+        is the same fact for a screen reader, which never saw the icon swap.
+      */}
+      <span
+        data-testid="whiteboard-copy-status"
+        role="status"
+        aria-live="polite"
+        className="sr-only"
+      >
+        {copied ? `${label} copied` : ''}
+      </span>
       {failed && (
         <p role="alert" data-testid="whiteboard-copy-error" className="app-error">
           Could not copy. Select the text and copy it manually.

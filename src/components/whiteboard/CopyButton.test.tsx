@@ -34,6 +34,18 @@ describe('CopyButton', () => {
     await waitFor(() => expect(screen.getByTestId('whiteboard-copy-btn').textContent).toContain('Copied'));
   });
 
+  it('announces the copy from a persistent status region', async () => {
+    render(<CopyButton value="123456" label="class PIN" />);
+
+    const status = screen.getByTestId('whiteboard-copy-status');
+    expect(status.getAttribute('role')).toBe('status');
+    expect(status.textContent).toBe('');
+
+    fireEvent.click(screen.getByTestId('whiteboard-copy-btn'));
+
+    await waitFor(() => expect(status.textContent).toBe('class PIN copied'));
+  });
+
   it('names what it copies, so two of them are told apart', () => {
     // Two copy buttons sit in the same panel, one for the link and one for the
     // PIN. A bare "Copy" gives a screen reader no way to tell which is which.

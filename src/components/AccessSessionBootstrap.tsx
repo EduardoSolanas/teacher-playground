@@ -74,7 +74,7 @@ export function AccessSessionBootstrap({ children }: { children: React.ReactNode
   if (state === 'loading') {
     return (
       <div role="status" aria-live="polite" className="session-screen">
-        Loading secure sessionâ€¦
+        Loading secure session…
       </div>
     );
   }

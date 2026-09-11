@@ -42,11 +42,21 @@ import type { ParticipantState } from '@/lib/av/avSession';
 import type { WhiteboardUser } from '@/types/whiteboard';
 import type { CallState } from '@/lib/whiteboard/callMessage';
 
+/**
+ * The placeholder while the editor chunk loads.
+ *
+ * `h-full min-h-0`, not a 25rem floor: the room shell already owns a
+ * `calc(100dvh - ...)` height and clips its overflow, so a taller placeholder
+ * pushed the toolbar, zoom and footer off the bottom on short or landscape
+ * viewports before the board had even drawn.
+ */
+export const EXCALIDRAW_LOADING_CLASS = 'w-full h-full min-h-0';
+
 const ExcalidrawWrapper = dynamic(
   () => import('@/components/whiteboard/ExcalidrawWrapper'),
   {
     ssr: false,
-    loading: () => <div className="w-full h-full min-h-[25rem]" />,
+    loading: () => <div className={EXCALIDRAW_LOADING_CLASS} />,
   },
 );
 
@@ -60,7 +70,7 @@ const ExcalidrawWrapper = dynamic(
  * so collapsing it resized the canvas under a lesson in progress.
  */
 export const ROOM_CANVAS_CLASS =
-  'absolute inset-x-0 bottom-0 overflow-hidden bg-slate-50';
+  'absolute inset-x-0 bottom-0 overflow-hidden bg-[var(--paper)]';
 
 /**
  * How much of the canvas the call rail takes, if it is showing.
@@ -153,16 +163,106 @@ export function resolveAvTargetAccountId(
   return users.find((user) => user.peerId === peerId)?.accountId ?? null;
 }
 
+/**
+ * What the join prompt says when a peer was removed from the room.
+ *
+ * Kick and reject return to the prompt by clearing the stored name, which
+ * used to happen silently -- a student was typing and then simply back at the
+ * name field, with no way to tell whether they had been removed or had
+ * crashed. The waiting-room branch owns the suspend copy, but the wording
+ * lives here too so the three outcomes are described in one place.
+ */
+export function evictionNoticeCopy(flags: {
+  wasKicked: boolean;
+  wasRejected: boolean;
+  wasSuspended: boolean;
+}): string | null {
+  if (flags.wasKicked) return 'You were removed from the room.';
+  if (flags.wasRejected) return "Your teacher didn't let you in.";
+  if (flags.wasSuspended) return 'Moved back to the waiting room.';
+  return null;
+}
+
 export function shouldShowStartCall({
   isHost,
   avAllowed,
   avEnabled,
+  callActive,
 }: {
   isHost: boolean;
   avAllowed: boolean;
   avEnabled: boolean;
+  /**
+   * The room's call is already running. Then the control is a rejoin for
+   * anybody admitted, not a start for the host alone -- a student who left a
+   * live call has to be able to get back into it.
+   */
+  callActive: boolean;
 }): boolean {
-  return isHost && avAllowed && !avEnabled;
+  return avAllowed && !avEnabled && (isHost || callActive);
+}
+
+/**
+ * When the host's "start" may be announced to the room.
+ *
+ * Not when the button is pressed: on an unconfigured deployment the token
+ * request fails and every peer would be told to open a call that does not
+ * exist. The broadcast waits for this caller to be joined, which is the first
+ * moment the room knows a call is actually up. `alreadyBroadcast` keeps a
+ * reconnect from re-announcing the same call.
+ */
+export function shouldBroadcastCallStart({
+  isHost,
+  callWanted,
+  callActive,
+  avStatus,
+  alreadyBroadcast,
+}: {
+  isHost: boolean;
+  callWanted: boolean;
+  callActive: boolean;
+  avStatus: string;
+  alreadyBroadcast: boolean;
+}): boolean {
+  return isHost && callWanted && !callActive && avStatus === 'joined' && !alreadyBroadcast;
+}
+
+/**
+ * Whether a peer should be told the room's call has finished.
+ *
+ * The notice is for the people who were in the call when it ended, not for
+ * the host who pressed the button -- they know. `wasActive` is the previous
+ * room-call state, so an initial `false` on mount is not an ending.
+ */
+export function shouldAnnounceCallEnded({
+  isLocalHost,
+  wasActive,
+  isActive,
+}: {
+  isLocalHost: boolean;
+  wasActive: boolean;
+  isActive: boolean;
+}): boolean {
+  return !isLocalHost && wasActive && !isActive;
+}
+
+/**
+ * The position to show on the waiting screen.
+ *
+ * A peer whose row has not arrived yet has no position, and `waitingCount + 1`
+ * is a reasonable stand-in -- except when the queue is full or the peer was
+ * just suspended, where there is no line at all and a fabricated number is a
+ * lie the waiting screen has to undo. In those states the real value is 0 and
+ * the screen hides it.
+ */
+export function resolveWaitingPosition(
+  position: number,
+  waitingCount: number,
+  queueFull: boolean,
+  suspended: boolean,
+): number {
+  if (queueFull || suspended) return position;
+  return position || waitingCount + 1;
 }
 
 /*
@@ -179,6 +279,24 @@ export function shouldPeerEnterCall({
   avAllowed: boolean;
 }): boolean {
   return Boolean(callActive && avAllowed);
+}
+
+/**
+ * The placement flags for the support pill.
+ *
+ * The pill sits on the same right edge as the docked call rail, and while the
+ * rail is open it has to step left of it. The flag is the rail's own
+ * visibility -- `avAllowed && avEnabled && callRailOpen` -- not merely whether
+ * a call is switched on: a rail that is hidden gives the edge back to the pill.
+ */
+export function supportButtonProps({
+  presenceCollapsed,
+  callRailVisible,
+}: {
+  presenceCollapsed: boolean;
+  callRailVisible: boolean;
+}): { rosterExpanded: boolean; callRailOpen: boolean } {
+  return { rosterExpanded: !presenceCollapsed, callRailOpen: callRailVisible };
 }
 
 export function shouldShowSyncDegradedNotice({
@@ -259,6 +377,7 @@ function RoomContent({ roomId }: { roomId: string }) {
     provider,
     waitingPeers,
     isWaiting,
+    queueFull,
     wasKicked,
     wasRejected,
     wasSuspended,
@@ -333,8 +452,50 @@ function RoomContent({ roomId }: { roomId: string }) {
 
   const handleStartCall = useCallback(() => {
     setCallWanted(true);
-    sendCallMessage({ active: true, hostAccountId: localUser?.accountId ?? '', startedAt: Date.now() });
-  }, [sendCallMessage, localUser?.accountId]);
+  }, []);
+
+  /*
+   * Announced to the room only once this caller is actually joined, which the
+   * effect below does. Pressing the button is a local wish, not news.
+   */
+  const callStartBroadcastRef = useRef(false);
+  useEffect(() => {
+    if (!callWanted) {
+      callStartBroadcastRef.current = false;
+      return;
+    }
+    if (
+      shouldBroadcastCallStart({
+        isHost: isLocalHost,
+        callWanted,
+        callActive: remoteCallActive,
+        avStatus: av.status,
+        alreadyBroadcast: callStartBroadcastRef.current,
+      })
+    ) {
+      callStartBroadcastRef.current = true;
+      sendCallMessage({ active: true, hostAccountId: localUser?.accountId ?? '', startedAt: Date.now() });
+    }
+  }, [av.status, callWanted, isLocalHost, localUser?.accountId, remoteCallActive, sendCallMessage]);
+
+  /*
+   * "End for everyone" unmounts the panel on every peer in the room. Without
+   * this the call just vanishes -- the faces, the audio, the header -- with
+   * nothing said, and the next thing that happens is a student asking whether
+   * their internet broke. Say it, then let the notice go.
+   */
+  const [callEndedNotice, setCallEndedNotice] = useState(false);
+  const previousRemoteCallActiveRef = useRef(remoteCallActive);
+  useEffect(() => {
+    const previous = previousRemoteCallActiveRef.current;
+    previousRemoteCallActiveRef.current = remoteCallActive;
+    if (!shouldAnnounceCallEnded({ isLocalHost, wasActive: previous, isActive: remoteCallActive })) {
+      return;
+    }
+    setCallEndedNotice(true);
+    const timer = window.setTimeout(() => setCallEndedNotice(false), 6000);
+    return () => window.clearTimeout(timer);
+  }, [isLocalHost, remoteCallActive]);
 
   /*
    * Leaving and ending are different things, and only the host can do the
@@ -624,6 +785,12 @@ function RoomContent({ roomId }: { roomId: string }) {
   const waitingPosition = isWaiting
     ? waitingPeers.findIndex((p) => p.peerId === localPeerId) + 1
     : 0;
+  const displayedWaitingPosition = resolveWaitingPosition(
+    waitingPosition,
+    waitingPeers.length,
+    queueFull,
+    wasSuspended,
+  );
 
   // A student knocking is the one event a collapsed roster hides that the
   // teacher has to act on, and the admit button lives inside the panel. Open it
@@ -642,6 +809,23 @@ function RoomContent({ roomId }: { roomId: string }) {
     if (!guestHostReady) {
       return <LoadingScreen />;
     }
+    const evictionNotice = evictionNoticeCopy({ wasKicked, wasRejected, wasSuspended });
+    /*
+     * Rendered after the prompt and at the same documented z-index: the prompt
+     * overlay is z-[1600] and full-screen, and a sibling that follows it in
+     * the DOM paints above it without reaching past the design system's
+     * ceiling. Announced, because a student returned to the name field has no
+     * other way to learn why they are there.
+     */
+    const evictionBanner = evictionNotice ? (
+      <p
+        role="status"
+        data-testid="whiteboard-eviction-notice"
+        className="fixed left-1/2 top-[max(0.75rem,env(safe-area-inset-top))] z-[1600] -translate-x-1/2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[0.8125rem] font-medium text-amber-900 shadow-lg"
+      >
+        {evictionNotice}
+      </p>
+    ) : null;
     if (guestHost) {
       return (
         <>
@@ -658,6 +842,7 @@ function RoomContent({ roomId }: { roomId: string }) {
               void reloadPresence();
             }}
           />
+          {evictionBanner}
         </>
       );
     }
@@ -669,7 +854,13 @@ function RoomContent({ roomId }: { roomId: string }) {
           onNavigate={handleBackToRooms}
           rosterExpanded={false}
         />
-        <UserNamePrompt onJoin={handleJoin} roomId={roomId} />
+        {/*
+          * The prompt names no room id: a thirty-two character hexadecimal
+          * string is noise to a child and names a room only in a form no UI
+          * accepts. The room is already implicit in the URL they arrived on.
+          */}
+        <UserNamePrompt onJoin={handleJoin} />
+        {evictionBanner}
       </>
     );
   }
@@ -685,8 +876,9 @@ function RoomContent({ roomId }: { roomId: string }) {
         />
         <WaitingRoom
           userName={userName}
-          roomCode={roomId}
-          waitingPosition={waitingPosition || waitingPeers.length + 1}
+          waitingPosition={displayedWaitingPosition}
+          queueFull={queueFull}
+          suspended={wasSuspended}
           onWait={reloadPresence}
           onLeave={() => {
             clearSession();
@@ -737,13 +929,22 @@ function RoomContent({ roomId }: { roomId: string }) {
           <div className="flex items-center gap-2 min-w-0">
             <RoomTitleMenu
               name={roomName}
+              roomId={roomId}
               canManage={isRoomOwner}
               onRename={handleRenameRoom}
               onSaveAs={handleSaveAs}
               onOpenLibrary={handleOpenLibrary}
             />
-            {shouldShowStartCall({ isHost: isLocalHost, avAllowed, avEnabled }) && (
-              <StartCallButton onStart={handleStartCall} />
+            {shouldShowStartCall({
+              isHost: isLocalHost,
+              avAllowed,
+              avEnabled,
+              callActive: remoteCallActive,
+            }) && (
+              <StartCallButton
+                onStart={handleStartCall}
+                label={remoteCallActive ? 'Rejoin call' : 'Start call'}
+              />
             )}
           </div>
         }
@@ -775,7 +976,7 @@ function RoomContent({ roomId }: { roomId: string }) {
       </div>
       {connectionLost && <ConnectionLostNotice />}
       {shouldShowSyncDegradedNotice({ syncDegraded, connectionLost }) && <SyncDegradedNotice />}
-      <SupportButton rosterExpanded={!presenceCollapsed} />
+      <SupportButton {...supportButtonProps({ presenceCollapsed, callRailVisible })} />
       <RaisedHandCue users={users} localPeerId={localPeerId} isLocalHost={isLocalHost} />
       <PresencePanel
         users={users}
@@ -818,6 +1019,15 @@ function RoomContent({ roomId }: { roomId: string }) {
           onLeaveCall={handleLeaveCall}
           onEndCallForEveryone={isLocalHost ? handleEndCallForEveryone : undefined}
         />
+      )}
+      {callEndedNotice && (
+        <div
+          role="status"
+          data-testid="whiteboard-call-ended"
+          className="fixed left-1/2 top-[max(0.75rem,env(safe-area-inset-top))] z-[1400] -translate-x-1/2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[0.8125rem] font-medium text-amber-900 shadow-lg"
+        >
+          The teacher ended the call.
+        </div>
       )}
       {shouldOverlayConnectingScreen({ boardEverShown, isSynced }) && <LoadingScreen />}
       {/* Stacked above the mobile tool bar; centred on its own row from sm: up. */}

@@ -9,7 +9,8 @@ import { Track } from 'livekit-client';
 
 import CallControls from './CallControls';
 import type { UseAvSessionResult } from '@/hooks/useAvSession';
-import type { AvDevice, ParticipantState } from '@/lib/av/avSession';
+import type { AvSessionStatus, AvDevice, ParticipantState } from '@/lib/av/avSession';
+import { contrastTextOn } from '@/lib/whiteboard/userColor';
 
 export type AvPanelMode = 'rail' | 'focus' | 'off';
 
@@ -56,15 +57,19 @@ function errorCopy(av: UseAvSessionResult): string | null {
   if (av.unavailableReason === 'unconfigured') {
     return 'Video calling is not configured on this server.';
   }
-  if (av.unavailableReason === 'waiting') {
-    return 'Join the room to enable camera and mic.';
-  }
-  if (av.unavailableReason === 'forbidden') {
-    return 'You do not have access to video in this room.';
-  }
+  /*
+   * 'waiting' and 'forbidden' are not rendered here. The panel only mounts for
+   * an admitted participant with the call switched on, so those two states are
+   * unreachable from this surface -- the waiting room and the join gates own
+   * their own copy, and a branch here would be dead words pretending to be a
+   * fallback.
+   */
   if (!av.error) return null;
   if (av.error.kind === 'permission-denied') {
     return 'Camera or microphone permission was denied.';
+  }
+  if (av.error.kind === 'device-busy') {
+    return 'That camera or microphone is in use by another app. Close the other app and try again.';
   }
   if (av.error.kind === 'device-missing') {
     /*
@@ -116,11 +121,99 @@ function selectedDeviceValue(devices: readonly AvDevice[], activeId: string | un
   return devices.some((device) => device.deviceId === activeId) ? activeId : '';
 }
 
+/*
+ * Icons, inline SVG only -- DESIGN.md §8: no emoji as UI icons. They are
+ * currentColor strokes so the button's own colour drives them, and aria-hidden
+ * because every one sits inside a control that already carries a name.
+ */
+function IconSpeaker({ className }: { readonly className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M11 5L6 9H3v6h3l5 4V5z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15.5 8.5a5 5 0 010 7M18.5 5.5a9 9 0 010 13" />
+    </svg>
+  );
+}
+
+function IconHand({ className }: { readonly className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M7 11V6.5a1.5 1.5 0 013 0V11m0-1.5a1.5 1.5 0 013 0V11m0-1a1.5 1.5 0 013 0v5a5 5 0 01-5 5h-1.5a5.5 5.5 0 01-5.5-5.5V12a1.5 1.5 0 013 0v1" />
+    </svg>
+  );
+}
+
+function IconScreen({ className }: { readonly className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 5h18v11H3V5zM9 20h6m-3-4v4" />
+    </svg>
+  );
+}
+
+function IconCrown({ className }: { readonly className?: string }) {
+  return (
+    <svg className={className} fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 8l4.5 3.5L12 5l4.5 6.5L21 8l-1.5 10h-15L3 8z" />
+    </svg>
+  );
+}
+
+function IconPictureInPicture({ className }: { readonly className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 5h18v14H3V5z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 11h6v5h-6v-5z" />
+    </svg>
+  );
+}
+
+function IconFullscreen({ className }: { readonly className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" />
+    </svg>
+  );
+}
+
+/**
+ * What, if anything, the panel can offer after a call stops working.
+ *
+ * A refusal is worth another try; a token that expired or a socket that closed
+ * needs a fresh join. Both mean asking the server again. A deployment with no
+ * LiveKit configured is not retryable -- the answer will be 503 again -- so it
+ * gets the explanation and no button.
+ *
+ * Any `idle` status qualifies, whether or not the hook still holds a Room:
+ * `onDisconnected` deliberately leaves the Room instance in place (only
+ * `leave()` clears it), so keying this on the room being absent missed exactly
+ * the token-expiry and socket-close states it existed for.
+ */
+function callRecoveryAction(
+  status: AvSessionStatus,
+  unavailableReason: UseAvSessionResult['unavailableReason'],
+): 'retry' | 'rejoin' | null {
+  if (unavailableReason === 'unconfigured') return null;
+  if (status === 'error') return 'retry';
+  if (status === 'idle') return 'rejoin';
+  return null;
+}
+
 function modeButtonClass(active: boolean): string {
   return active
-    ? 'rounded-lg bg-slate-800 px-3 py-1 text-[0.6875rem] font-semibold text-white shadow-sm border border-slate-700/80 transition-all'
-    : 'rounded-lg px-3 py-1 text-[0.6875rem] font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 transition-all';
+    ? 'rounded-lg bg-slate-800 px-3 py-1 text-[0.6875rem] font-semibold text-white shadow-sm border border-slate-700/80 transition-colors duration-150'
+    : 'rounded-lg px-3 py-1 text-[0.6875rem] font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 transition-colors duration-150';
 }
+
+/*
+ * Plain-language layout names. "Rail" described where the thing sat; "Off"
+ * read as ending the call, when the call carries on behind a hidden panel.
+ */
+const LAYOUT_OPTIONS: readonly { value: AvPanelMode; label: string }[] = [
+  { value: 'rail', label: 'Gallery' },
+  { value: 'focus', label: 'Focus' },
+  { value: 'off', label: 'Hidden' },
+];
 
 function AudioPlaybackBanner({ room }: { readonly room: Room }) {
   const { canPlayAudio, startAudio } = useAudioPlayback(room);
@@ -130,9 +223,9 @@ function AudioPlaybackBanner({ room }: { readonly room: Room }) {
       type="button"
       data-testid="av-audio-unlock"
       onClick={() => void startAudio()}
-      className="mb-2.5 flex w-full items-center justify-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/20 px-3 py-1.5 text-center text-[0.6875rem] font-semibold text-amber-200 shadow-sm transition-all hover:bg-amber-500/30"
+      className="mb-2.5 flex w-full items-center justify-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/20 px-3 py-1.5 text-center text-[0.6875rem] font-semibold text-amber-200 shadow-sm transition-colors duration-150 hover:bg-amber-500/30"
     >
-      <span className="animate-bounce">🔊</span> Audio blocked by browser. Click to enable sound.
+      <IconSpeaker className="h-3.5 w-3.5 shrink-0" /> Audio blocked by browser. Click to enable sound.
     </button>
   );
 }
@@ -283,8 +376,8 @@ function ParticipantTile({
     <div
       ref={tileRef}
       data-testid={`av-tile-${participant.identity}`}
-      className={`group relative aspect-video overflow-hidden rounded-xl border border-slate-700/60 bg-slate-950/80 shadow-md transition-all [&:fullscreen]:aspect-auto [&:fullscreen]:h-screen [&:fullscreen]:w-screen [&:fullscreen]:rounded-none [&:fullscreen_video]:object-contain ${
-        participant.isSpeaking ? 'ring-2 ring-emerald-400 ring-offset-2 ring-offset-slate-900 shadow-lg shadow-emerald-500/20' : ''
+      className={`group relative aspect-video overflow-hidden rounded-xl border border-slate-700/60 bg-slate-950/80 shadow-md transition-colors duration-150 [&:fullscreen]:aspect-auto [&:fullscreen]:h-screen [&:fullscreen]:w-screen [&:fullscreen]:rounded-none [&:fullscreen_video]:object-contain ${
+        participant.isSpeaking ? 'ring-2 ring-[var(--blue)] ring-offset-2 ring-offset-slate-900 shadow-lg' : ''
       }`}
     >
       {av.room && trackRef && (participant.camOn || isScreenShare) ? (
@@ -295,11 +388,19 @@ function ParticipantTile({
         />
       ) : null}
       {!participant.camOn && !isScreenShare && (
-        <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-gradient-to-b from-slate-800/90 to-slate-950/95 p-2 pb-7 text-slate-300">
+        <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-slate-950/90 p-2 pb-7 text-slate-300">
           <div
             data-testid={`av-avatar-${participant.identity}`}
-            className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-slate-600/60 bg-slate-700/60 text-base font-semibold text-slate-200 shadow-inner"
-            style={{ color: color ?? undefined, borderColor: color ?? undefined }}
+            className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-slate-600/60 bg-slate-800/80 text-base font-semibold shadow-inner"
+            /*
+             * The ring is the person's own board colour; the letter picks the
+             * ink that reads on it. White on the palette's yellow is 1.66:1,
+             * so an unconditional white was unreadable for parts of the class.
+             */
+            style={{
+              borderColor: color ?? undefined,
+              color: color ? contrastTextOn(color) : undefined,
+            }}
           >
             {firstInitial}
           </div>
@@ -323,51 +424,58 @@ function ParticipantTile({
         {handRaised && (
           <div
             data-testid={`av-hand-raised-${participant.identity}`}
-            className="flex items-center gap-1 rounded-md bg-amber-500/90 px-1.5 py-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-slate-950 shadow-md animate-pulse"
+            className="flex items-center gap-1 rounded-md bg-amber-500/90 px-1.5 py-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-slate-950 shadow-md"
           >
-            <span>✋</span> Hand raised
+            <IconHand className="h-3 w-3" /> Hand raised
           </div>
         )}
         {isScreenShare && (
           <div
             data-testid={`av-screenshare-badge-${participant.identity}`}
-            className="flex items-center gap-1 rounded-md bg-emerald-500/90 px-1.5 py-0.5 text-[0.625rem] font-semibold text-white shadow-md backdrop-blur-sm"
+            className="flex items-center gap-1 rounded-md bg-[var(--blue)] px-1.5 py-0.5 text-[0.625rem] font-semibold text-white shadow-md"
           >
-            <span>🖥️</span> Screen
+            <IconScreen className="h-3 w-3" /> Screen
           </div>
         )}
         {(participant.quality === 'poor' || participant.quality === 'lost') && !handRaised && (
           <div
             data-testid={`av-quality-${participant.identity}`}
             className={`flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[0.625rem] font-medium text-white shadow-md backdrop-blur-sm ${
-              participant.quality === 'lost' ? 'bg-rose-600/90' : 'bg-amber-600/90'
+              participant.quality === 'lost' ? 'bg-red-600/90' : 'bg-amber-600/90'
             }`}
           >
-            <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />
+            <span className="h-1.5 w-1.5 rounded-full bg-white" />
             {participant.quality === 'lost' ? 'Lost connection' : 'Poor connection'}
           </div>
         )}
       </div>
       <div className="absolute right-1.5 top-1.5 flex items-center gap-1 opacity-90 transition-opacity group-hover:opacity-100">
-        <button
-          type="button"
-          data-testid={`av-pip-${participant.identity}`}
-          onClick={togglePictureInPicture}
-          title="Picture in Picture"
-          aria-label={`Picture in picture ${isLocal ? 'your camera' : displayName}`}
-          className="rounded-md border border-white/10 bg-slate-950/70 p-1 text-[0.6875rem] text-slate-200 backdrop-blur-md transition-all hover:bg-slate-800 hover:text-white shadow-sm"
-        >
-          ⧉
-        </button>
+        {/*
+          * No video, no picture-in-picture. The button used to render on the
+          * camera-off avatar tiles where there is no <video> to send, so
+          * pressing it silently did nothing.
+          */}
+        {(participant.camOn || isScreenShare) && (
+          <button
+            type="button"
+            data-testid={`av-pip-${participant.identity}`}
+            onClick={togglePictureInPicture}
+            title="Picture in Picture"
+            aria-label={`Picture in picture ${isLocal ? 'your camera' : displayName}`}
+            className="inline-flex min-h-9 min-w-9 pointer-coarse:min-h-11 pointer-coarse:min-w-11 items-center justify-center rounded-md border border-white/10 bg-slate-950/70 p-1.5 text-slate-200 backdrop-blur-md transition-colors duration-150 hover:bg-slate-800 hover:text-white shadow-sm"
+          >
+            <IconPictureInPicture className="h-4 w-4" />
+          </button>
+        )}
         <button
           type="button"
           data-testid={`av-fullscreen-${participant.identity}`}
           onClick={toggleFullscreen}
           title="Fullscreen"
           aria-label={`Fullscreen ${isLocal ? 'your camera' : displayName}`}
-          className="rounded-md border border-white/10 bg-slate-950/70 p-1 text-[0.6875rem] text-slate-200 backdrop-blur-md transition-all hover:bg-slate-800 hover:text-white shadow-sm"
+          className="inline-flex min-h-9 min-w-9 pointer-coarse:min-h-11 pointer-coarse:min-w-11 items-center justify-center rounded-md border border-white/10 bg-slate-950/70 p-1.5 text-slate-200 backdrop-blur-md transition-colors duration-150 hover:bg-slate-800 hover:text-white shadow-sm"
         >
-          ⛶
+          <IconFullscreen className="h-4 w-4" />
         </button>
       </div>
       <div className="absolute bottom-1.5 left-1.5 right-1.5 flex items-center justify-between gap-1">
@@ -384,11 +492,12 @@ function ParticipantTile({
           {isHost && (
             <span
               data-testid={`av-host-badge-${participant.identity}`}
+              className="inline-flex shrink-0 items-center text-emerald-400"
               role="img"
               aria-label="Host"
               title="Host"
             >
-              👑
+              <IconCrown className="h-3 w-3" />
             </span>
           )}
           <span className="truncate">
@@ -401,9 +510,9 @@ function ParticipantTile({
             type="button"
             onClick={onFocus}
             aria-label={`Focus ${displayName}`}
-            className={`rounded-md px-2 py-0.5 text-[0.6875rem] font-medium transition-all shadow-sm ${
+            className={`rounded-md px-2 py-0.5 text-[0.6875rem] font-semibold transition-colors duration-150 shadow-sm ${
               pinned
-                ? 'bg-sky-500 text-white shadow-sky-500/30 font-semibold'
+                ? 'bg-[var(--blue)] text-white'
                 : 'border border-white/10 bg-slate-950/75 text-slate-200 backdrop-blur-md hover:bg-slate-800 hover:text-white'
             }`}
           >
@@ -462,6 +571,8 @@ export default function AvSessionPanel({
   onEndCallForEveryone,
 }: AvSessionPanelProps) {
   const message = errorCopy(av);
+  const [dismissedMessage, setDismissedMessage] = useState<string | null>(null);
+  const visibleMessage = message !== null && message !== dismissedMessage ? message : null;
   const tiles = useMemo(
     () => (av.participants.length > 0
       ? av.participants
@@ -479,6 +590,24 @@ export default function AvSessionPanel({
     onOpenChange?.(open);
   }, [open, onOpenChange]);
   const panelRef = useRef<HTMLDivElement>(null);
+  const openButtonRef = useRef<HTMLButtonElement>(null);
+  const didMountRef = useRef(false);
+
+  /*
+   * Opening the call takes focus into it, hiding it gives focus back to the
+   * pill. The panel is fixed and its DOM position follows the roster, so a
+   * keyboard user who hid it was left focused on a button that had just been
+   * removed. The first render is skipped: the starting state comes from a
+   * stored preference, and page load must not steal focus from the board.
+   */
+  useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      return;
+    }
+    if (open) panelRef.current?.focus();
+    else openButtonRef.current?.focus();
+  }, [open]);
 
   /*
    * Docked, not placed by hand. A right rail on a wide screen, a strip along
@@ -496,10 +625,18 @@ export default function AvSessionPanel({
      * presence roster owns the bottom edge -- it is `bottom-0 inset-x-0` there.
      * Putting the call at the bottom too laid it straight over the roster's
      * moderation buttons and swallowed the clicks.
+     *
+     * The wide-screen rail pads itself clear of the safe areas: a landscape
+     * notch cuts the bottom-right corner off a full-bleed side panel.
      */
     'inset-x-0 top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)] w-auto '
-    + 'sm:inset-x-auto sm:right-0 sm:top-12 sm:bottom-0 sm:pb-3 '
-    + `sm:w-[${CALL_RAIL_WIDTH}]`;
+    + 'sm:inset-x-auto sm:right-0 sm:top-12 sm:bottom-0 '
+    + 'sm:pb-[max(0.75rem,env(safe-area-inset-bottom))] '
+    + 'sm:pr-[max(0.75rem,env(safe-area-inset-right))] '
+    // The width reaches CSS through the --call-rail-w variable, set inline
+    // below: an interpolated arbitrary class is invisible to Tailwind's scan.
+    + 'sm:w-[var(--call-rail-w)]';
+  const recovery = callRecoveryAction(av.status, av.unavailableReason);
   const focusTile = pinnedIdentity
     ? tiles.find((participant) => participant.identity === pinnedIdentity) ?? null
     : tiles.find((participant) => participant.isSpeaking) ?? tiles[0] ?? null;
@@ -516,6 +653,30 @@ export default function AvSessionPanel({
   const selectMode = (nextMode: AvPanelMode) => {
     setMode(nextMode);
     if (nextMode !== 'focus') setPinnedIdentity(null);
+  };
+
+  /*
+   * A radio group's keys: arrows move the selection and the focus together,
+   * Home and End jump to the ends. Without this the ring of buttons announces
+   * itself as radios and then ignores the keys that operate radios.
+   */
+  const handleLayoutKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const currentIndex = LAYOUT_OPTIONS.findIndex((option) => option.value === mode);
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      nextIndex = (currentIndex + 1) % LAYOUT_OPTIONS.length;
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      nextIndex = (currentIndex - 1 + LAYOUT_OPTIONS.length) % LAYOUT_OPTIONS.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = LAYOUT_OPTIONS.length - 1;
+    }
+    if (nextIndex === null) return;
+    event.preventDefault();
+    selectMode(LAYOUT_OPTIONS[nextIndex].value);
+    const radios = event.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]');
+    radios[nextIndex]?.focus();
   };
 
   const focusParticipant = (identity: string) => {
@@ -546,6 +707,7 @@ export default function AvSessionPanel({
           </RoomContext.Provider>
         )}
         <button
+          ref={openButtonRef}
           type="button"
           data-testid="av-panel-open"
           onClick={() => { setOpen(true); writeCallHidden(false); }}
@@ -562,13 +724,15 @@ export default function AvSessionPanel({
     <div
       ref={panelRef}
       data-testid="av-session-panel"
+      tabIndex={-1}
+      style={{ ['--call-rail-w' as string]: CALL_RAIL_WIDTH } as React.CSSProperties}
       /*
        * Above the room's furniture, because it can be dragged over all of it:
        * the top nav (1100), the presence panel (1200, 1250 for its outside
        * layer) and the raised-hand cue (1300). The library and the shortcuts
        * sheet (10001) stay above -- those take the screen over on purpose.
        */
-      className={`fixed z-[1400] flex flex-col rounded-b-2xl border-b border-slate-700/70 bg-slate-900/95 backdrop-blur-xl p-3 shadow-2xl shadow-slate-950/60 max-h-[70dvh] overflow-y-auto sm:max-h-none sm:rounded-none sm:border-b-0 sm:border-l sm:shadow-none ${placement}`}
+      className={`fixed z-[1400] flex flex-col rounded-b-2xl border-b border-slate-700/70 bg-slate-900/95 backdrop-blur-xl p-3 shadow-2xl shadow-slate-950/60 max-h-[40dvh] overflow-y-auto sm:max-h-none sm:rounded-none sm:border-b-0 sm:border-l sm:shadow-none ${placement}`}
     >
       <div className="mb-2.5 flex items-center justify-between gap-2 px-0.5">
         <div className="flex items-center gap-1.5">
@@ -577,25 +741,27 @@ export default function AvSessionPanel({
             data-testid="av-panel-collapse"
             onClick={() => { setOpen(false); writeCallHidden(true); }}
             aria-label="Hide the call"
-            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[0.6875rem] font-medium uppercase tracking-wider text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200"
+            className="inline-flex min-h-9 pointer-coarse:min-h-11 items-center gap-1 rounded-lg px-2 py-1 text-[0.6875rem] font-semibold uppercase tracking-wider text-slate-400 transition-colors duration-150 hover:bg-slate-800 hover:text-slate-200"
           >
             Hide
           </button>
           <div
             role="radiogroup"
             aria-label="Video layout"
+            onKeyDown={handleLayoutKeyDown}
             className="inline-flex items-center gap-0.5 rounded-xl border border-slate-800 bg-slate-950/60 p-0.5 shadow-inner"
           >
-            {(['rail', 'focus', 'off'] as const).map((option) => (
+            {LAYOUT_OPTIONS.map((option) => (
               <button
-                key={option}
+                key={option.value}
                 type="button"
                 role="radio"
-                aria-checked={mode === option}
-                onClick={() => selectMode(option)}
-                className={modeButtonClass(mode === option)}
+                aria-checked={mode === option.value}
+                tabIndex={mode === option.value ? 0 : -1}
+                onClick={() => selectMode(option.value)}
+                className={modeButtonClass(mode === option.value)}
               >
-                {option[0].toUpperCase() + option.slice(1)}
+                {option.label}
               </button>
             ))}
           </div>
@@ -603,13 +769,36 @@ export default function AvSessionPanel({
 
       </div>
 
-      {message && (
-        <div data-testid="av-status-message" className="mb-2.5 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-amber-200 shadow-sm leading-relaxed">
-          <svg className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      {visibleMessage && (
+        <div data-testid="av-status-message" role="alert" className="mb-2.5 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-amber-200 shadow-sm leading-relaxed">
+          <svg className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
           </svg>
-          <span>{message}</span>
+          <span className="min-w-0 flex-1">{visibleMessage}</span>
+          <button
+            type="button"
+            data-testid="av-status-dismiss"
+            aria-label="Dismiss message"
+            title="Dismiss"
+            onClick={() => setDismissedMessage(visibleMessage)}
+            className="inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center rounded-lg text-amber-300 transition-colors duration-150 hover:bg-amber-500/20 hover:text-amber-100"
+          >
+            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
         </div>
+      )}
+
+      {recovery && (
+        <button
+          type="button"
+          data-testid="av-call-retry"
+          onClick={av.retry}
+          className="mb-2.5 w-full rounded-xl border border-[var(--blue)]/50 bg-[var(--blue)]/15 px-3 py-2 text-[0.6875rem] font-semibold text-white shadow-sm transition-colors duration-150 hover:bg-[var(--blue)]/25"
+        >
+          {recovery === 'retry' ? 'Try again' : 'Rejoin'}
+        </button>
       )}
 
       {/*
@@ -708,7 +897,7 @@ export default function AvSessionPanel({
                 data-testid="av-leave-call"
                 onClick={onLeaveCall}
                 title="Leave the call. It carries on for everyone else."
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-500/40 bg-slate-500/15 px-2.5 py-1 text-[0.6875rem] font-medium text-slate-200 transition-all shadow-sm hover:bg-slate-500/25 hover:border-slate-500/60 shrink-0"
+                className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg border border-slate-500/40 bg-slate-500/15 px-3 text-[0.6875rem] font-semibold text-slate-200 shadow-sm transition-colors duration-150 hover:bg-slate-500/25 hover:border-slate-500/60 sm:min-h-8"
               >
                 Leave
               </button>
@@ -720,7 +909,7 @@ export default function AvSessionPanel({
                 data-testid="av-end-call-everyone"
                 onClick={() => setEndCallConfirmOpen(true)}
                 title="End the call for everyone in the room"
-                className="ml-auto inline-flex items-center gap-1 rounded-lg border border-rose-500 bg-rose-600 px-2.5 py-1 text-[0.6875rem] font-medium text-white transition-all shadow-sm hover:bg-rose-500 shrink-0"
+                className="ml-auto inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg border border-red-500 bg-red-600 px-3 text-[0.6875rem] font-semibold text-white shadow-sm transition-colors duration-150 hover:bg-red-500 sm:min-h-8"
               >
                 End for all
               </button>
@@ -736,7 +925,7 @@ export default function AvSessionPanel({
               <span className="w-14 shrink-0 text-[0.6875rem] font-semibold uppercase tracking-wider text-slate-400">Mic</span>
               <select
                 data-testid="av-device-mic"
-                className="min-w-0 flex-1 truncate rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-1 text-xs text-slate-200 shadow-sm transition-colors hover:border-slate-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer"
+                className="min-w-0 flex-1 truncate rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-1 text-xs text-slate-200 shadow-sm transition-colors hover:border-slate-600 cursor-pointer"
                 onChange={(event) => void av.selectDevice('microphone', event.target.value)}
                 value={selectedDeviceValue(av.devices.microphone, av.activeDevices.microphone)}
               >
@@ -756,7 +945,7 @@ export default function AvSessionPanel({
               <span className="w-14 shrink-0 text-[0.6875rem] font-semibold uppercase tracking-wider text-slate-400">Cam</span>
               <select
                 data-testid="av-device-cam"
-                className="min-w-0 flex-1 truncate rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-1 text-xs text-slate-200 shadow-sm transition-colors hover:border-slate-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer"
+                className="min-w-0 flex-1 truncate rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-1 text-xs text-slate-200 shadow-sm transition-colors hover:border-slate-600 cursor-pointer"
                 onChange={(event) => void av.selectDevice('camera', event.target.value)}
                 value={selectedDeviceValue(av.devices.camera, av.activeDevices.camera)}
               >
@@ -776,7 +965,7 @@ export default function AvSessionPanel({
               <span className="w-14 shrink-0 text-[0.6875rem] font-semibold uppercase tracking-wider text-slate-400">Speaker</span>
               <select
                 data-testid="av-device-speaker"
-                className="min-w-0 flex-1 truncate rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-1 text-xs text-slate-200 shadow-sm transition-colors hover:border-slate-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer"
+                className="min-w-0 flex-1 truncate rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-1 text-xs text-slate-200 shadow-sm transition-colors hover:border-slate-600 cursor-pointer"
                 onChange={(event) => void av.selectDevice('speaker', event.target.value)}
                 value={selectedDeviceValue(av.devices.speaker ?? [], av.activeDevices.speaker)}
               >

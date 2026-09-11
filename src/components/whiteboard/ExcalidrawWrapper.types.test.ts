@@ -26,4 +26,18 @@ describe('ExcalidrawWrapper type boundary', () => {
 
     expect(explicitAnyNodes, 'explicit any type nodes').toHaveLength(0);
   });
+
+  it('fills the room shell instead of flooring its own height', () => {
+    // min-h-[25rem] inside a `calc(100dvh - ...)` overflow-hidden shell clips
+    // the bottom of the board -- and with it the toolbar, zoom and footer --
+    // on short or landscape viewports. The shell owns the height.
+    const source = readFileSync(wrapperPath, 'utf8');
+    expect(source).not.toContain('min-h-[25rem]');
+    expect(source).toContain('h-full min-h-0');
+  });
+
+  it('renders Excalidraw chrome in the same language as the document', () => {
+    const source = readFileSync(wrapperPath, 'utf8');
+    expect(source).toMatch(/langCode="en"/);
+  });
 });

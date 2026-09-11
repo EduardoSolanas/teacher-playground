@@ -79,6 +79,23 @@ export interface Env {
 const ROOM_PAGE = /^\/whiteboard\/[^/]+\/?$/;
 const ROOM_PLACEHOLDER = '/whiteboard/_room';
 
+/**
+ * Exact shapes the marketing host hands to the teacher host.
+ *
+ * The grammar is `isValidRoomId`/`ROOM_ID_RE` -- the same one the route gate,
+ * the room page and the join links use -- so the redirect cannot be stricter
+ * than the product and 404 a room that exists. Kept to an exact path with one
+ * segment: no suffix, query or traversal surface may become a redirect, and
+ * the target host comes from env, never from the request. `_room` is the
+ * static-export placeholder, never a room a caller names.
+ */
+function isMarketingRoomRedirectPath(pathname: string): boolean {
+  if (pathname === '/whiteboard') return true;
+  if (pathname === ROOM_PLACEHOLDER) return false;
+  const match = /^\/whiteboard\/([^/]+)$/.exec(pathname);
+  return match !== null && isValidRoomId(match[1]);
+}
+
 const ROOM_API = /^\/api\/whiteboard\/room\/([^/]+)(\/.*)?$/;
 const BOARD_FILE_API = /^\/api\/whiteboard\/room\/([^/]+)\/files\/([^/]+)$/;
 const AV_TOKEN = '/api/av/token';
@@ -677,8 +694,9 @@ async function reserveOwnedRoomSlot(
   env: Env,
   cookie: string,
   roomId: string,
+  name: string | null = null,
 ): Promise<Response> {
-  return syncOwnedRoom(env, cookie, 'POST', { roomId, name: null });
+  return syncOwnedRoom(env, cookie, 'POST', { roomId, name });
 }
 
 async function releaseOwnedRoomSlot(
@@ -905,10 +923,9 @@ const worker = {
       // The landing page links to /whiteboard with relative hrefs so the HTML
       // stays host-agnostic. Send those to the teacher hostname rather than
       // 404ing them. The target comes from env, never from the request, and
-      // only these two exact shapes redirect, so this cannot be turned into an
-      // open redirect.
-      const signInPath = url.pathname === '/whiteboard'
-        || /^\/whiteboard\/[a-f0-9]{32}$/.test(url.pathname);
+      // only the exact shapes `isMarketingRoomRedirectPath` accepts redirect,
+      // so this cannot be turned into an open redirect.
+      const signInPath = isMarketingRoomRedirectPath(url.pathname);
       if (
         signInPath
         && env.TEACHER_HOSTNAME
@@ -1343,14 +1360,22 @@ const worker = {
         const cookie = request.headers.get('cookie') ?? '';
         if (request.method === 'POST' && response.ok) {
           let hasCreatorGrant = false;
+          // Creation carries the owner settings, so the name the teacher
+          // typed is already in this response. The owned-room index is what
+          // the list reads, so the name has to travel with the reservation.
+          let roomName: string | null = null;
           try {
-            const payload = await response.clone().json() as { hasCreatorGrant?: unknown };
+            const payload = await response.clone().json() as {
+              hasCreatorGrant?: unknown;
+              name?: unknown;
+            };
             hasCreatorGrant = payload.hasCreatorGrant === true;
+            roomName = typeof payload.name === 'string' ? payload.name : null;
           } catch {
             hasCreatorGrant = false;
           }
           if (hasCreatorGrant) {
-            const recorded = await reserveOwnedRoomSlot(env, cookie, roomId);
+            const recorded = await reserveOwnedRoomSlot(env, cookie, roomId, roomName);
             if (!recorded.ok) {
               await forward(
                 env,

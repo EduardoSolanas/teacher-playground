@@ -1368,6 +1368,23 @@ describe('public marketing surface (SEC-015)', () => {
     expect(res.headers.get('X-Robots-Tag')).toBeNull();
   });
 
+  it('serves the shared brand stylesheet with no credential (UX-V1)', async () => {
+    /*
+     * The marketing HTML links /brand.css, and '/', '/pricing' and the legal
+     * pages are served from this teacher host too. Without this path in the
+     * public allowlist the stylesheet is refused before Access and the landing
+     * page renders unstyled here while looking fine on the marketing host.
+     */
+    const res = await SELF.fetch(`${BASE}/brand.css`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/css');
+  });
+
+  it('does not make anything else public under the brand-stylesheet name', async () => {
+    const res = await SELF.fetch(`${BASE}/api/brand.css`);
+    expect(res.status).toBe(404);
+  });
+
   it('still gates the app: /whiteboard/<room> requires Access', async () => {
     const res = await SELF.fetch(`${BASE}/whiteboard/${'c'.repeat(32)}`);
     expect(res.status).toBe(401);
@@ -3242,11 +3259,13 @@ describe('room authorization matrix', () => {
     expect(scene.status).toBe(200);
 
     const beforeSettings = await roomTables(roomId);
+    // Settings on the create route are owner-creation only. For a non-owner
+    // the answer is the authorization one, and nothing is applied.
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, editor, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ elements: [{ id: 'rect' }], name: 'Stolen', maxUsers: 9 }),
-    })).status).toBe(400);
+    })).status).toBe(403);
     expect(await roomTables(roomId)).toEqual(beforeSettings);
 
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/settings`, editor, {
@@ -3355,10 +3374,18 @@ describe('room authorization matrix', () => {
     expect(scene.status).toBe(200);
 
     const beforeMix = await roomTables(roomId);
+    // A non-owner sending settings to the create route is refused as
+    // unauthorized; the owner sending settings to the scene route is refused
+    // for breaking the update split. Neither changes any room table.
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, editor, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ maxUsers: 9 }),
+    })).status).toBe(403);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [], name: 'Nope' }),
     })).status).toBe(400);
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}/settings`, owner, {
       method: 'POST',

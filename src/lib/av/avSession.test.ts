@@ -20,6 +20,7 @@ interface FakeAvProvider extends AvProvider {
     detachTrack: string[];
   };
   connectError: Error | null;
+  selectDeviceError: Error | null;
   cameraDenied: boolean;
   emit: AvProviderEvents;
 }
@@ -38,6 +39,7 @@ function makeProvider(): FakeAvProvider {
   const provider: FakeAvProvider = {
     calls,
     connectError: null,
+    selectDeviceError: null,
     cameraDenied: false,
     emit: {},
     async connect(token, url) {
@@ -62,6 +64,7 @@ function makeProvider(): FakeAvProvider {
     },
     async selectDevice(kind, deviceId) {
       calls.selectDevice.push(`${kind}:${deviceId}`);
+      if (provider.selectDeviceError) throw provider.selectDeviceError;
       events.onDevices?.(kind, [{ deviceId, label: `${kind} ${deviceId}` }]);
     },
     attachTrack(identity, kind, element) {
@@ -318,6 +321,52 @@ describe('createAvSession', () => {
     expect(provider.calls.setMicrophone).toEqual([true]);
   });
 
+  it('keeps the call joined when a device switch is refused', async () => {
+    // Switching to a laptop dock's camera and having the browser refuse it is
+    // not the call ending. It used to set status='error', which disabled the
+    // mic and the camera and left the whole panel saying the call had failed
+    // over a camera that was simply not there.
+    const provider = makeProvider();
+    provider.selectDeviceError = Object.assign(new Error('Could not start video source'), {
+      name: 'NotReadableError',
+    });
+    const session = createAvSession(provider);
+    await session.join('token', 'url');
+
+    await session.selectDevice('camera', 'cam-2');
+
+    expect(session.status).toBe('joined');
+    expect(session.error?.kind).toBe('device-busy');
+  });
+
+  it('clears a transient error after a later successful action', async () => {
+    // A one-off glitch used to leave the banner up for the rest of the lesson,
+    // with no way to dismiss it and no later success able to take it down.
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+    await session.join('token', 'url');
+    provider.emit.onError?.({ kind: 'unknown', message: 'temporary glitch' });
+    expect(session.error).not.toBeNull();
+
+    session.toggleMicrophone();
+
+    expect(session.error).toBeNull();
+  });
+
+  it('clears a transient error after the socket comes back', async () => {
+    const provider = makeProvider();
+    const session = createAvSession(provider);
+    await session.join('token', 'url');
+    provider.emit.onReconnecting?.();
+    provider.emit.onError?.({ kind: 'network', message: 'socket hiccup' });
+    expect(session.error).not.toBeNull();
+
+    provider.emit.onReconnected?.();
+
+    expect(session.status).toBe('joined');
+    expect(session.error).toBeNull();
+  });
+
   it('attachTrack and detachTrack forward to the provider', async () => {
     const provider = makeProvider();
     const session = createAvSession(provider);
@@ -428,6 +477,29 @@ describe('mapProviderError', () => {
   });
   it('classifies network errors', () => {
     expect(mapProviderError(new Error('connect timeout')).kind).toBe('network');
+  });
+  it('classifies a device held by another app as busy', () => {
+    // getUserMedia says NotReadableError when a camera or mic is already in
+    // use elsewhere, and AbortError when the browser gives up starting the
+    // track. Both used to fall through to 'unknown', which put raw browser
+    // text in the banner and told the person nothing they could act on.
+    const busy = Object.assign(new Error('Could not start video source'), {
+      name: 'NotReadableError',
+    });
+    expect(mapProviderError(busy).kind).toBe('device-busy');
+
+    const aborted = Object.assign(new Error('Starting videoinput failed'), {
+      name: 'AbortError',
+    });
+    expect(mapProviderError(aborted).kind).toBe('device-busy');
+  });
+  it('still classifies a missing device as missing, not busy', () => {
+    // "The device is in use" also contains "device"; the busy check has to
+    // come first or a genuine NotFoundError would be reported as busy.
+    const missing = Object.assign(new Error('Requested device not found'), {
+      name: 'NotFoundError',
+    });
+    expect(mapProviderError(missing).kind).toBe('device-missing');
   });
   it('defaults unknown errors to unknown', () => {
     expect(mapProviderError(new Error('something else entirely')).kind).toBe('unknown');

@@ -36,11 +36,11 @@ async function getCollabState(page: Page) {
   });
 }
 
-async function expectWaiting(page: Page) {
+async function expectWaiting(page: Page, heading: RegExp = /Room is Full/) {
   await expect
     .poll(async () => (await getCollabState(page)).isWaiting, { timeout: 15000 })
     .toBe(true);
-  await expect(page.getByRole('heading', { name: /Room is Full/ })).toBeVisible({ timeout: 15000 });
+  await expect(page.getByRole('heading', { name: heading })).toBeVisible({ timeout: 15000 });
 }
 
 async function expectNotWaiting(page: Page) {
@@ -258,6 +258,9 @@ test.describe('Waiting Room', () => {
     await page1.getByTestId('whiteboard-context-reject').click();
 
     await expectNotWaiting(page2);
+    await expect(page2.getByTestId('whiteboard-eviction-notice')).toContainText(
+      "Your teacher didn't let you in.",
+    );
     await expect(page2.getByTestId('whiteboard-username-input')).toBeVisible({ timeout: 10000 });
 
     // No more Accept/Reject buttons for the rejected peer
@@ -341,9 +344,12 @@ test.describe('Waiting Room', () => {
 
     await page1.getByTestId(`whiteboard-user-options-${peerId}`).click();
     await expect(page1.getByTestId('whiteboard-context-kick')).toBeVisible();
-    await page1.getByRole('button', { name: 'Kick from Room' }).click({ force: true });
+    await page1.getByRole('menuitem', { name: 'Kick from Room' }).click({ force: true });
 
     await expectNotWaiting(page2);
+    await expect(page2.getByTestId('whiteboard-eviction-notice')).toContainText(
+      'You were removed from the room.',
+    );
     await expect(page2.getByTestId('whiteboard-username-input')).toBeVisible({ timeout: 10000 });
 
     // No approve buttons should remain for this peer
@@ -371,9 +377,9 @@ test.describe('Waiting Room', () => {
 
     await page1.getByTestId(`whiteboard-user-options-${peerId}`).click();
     await expect(page1.getByTestId('whiteboard-context-suspend')).toBeVisible();
-    await page1.getByRole('button', { name: 'Send to Waiting Room' }).click({ force: true });
+    await page1.getByRole('menuitem', { name: 'Send to Waiting Room' }).click({ force: true });
 
-    await expectWaiting(page2);
+    await expectWaiting(page2, /Your teacher moved you back to the waiting room/);
 
     await expect(page1.getByTestId(`whiteboard-user-${peerId}`)).toContainText('Waiting', { timeout: 10000 });
     await expect(page1.getByTestId(`whiteboard-user-options-${peerId}`)).toBeVisible();
@@ -398,7 +404,7 @@ test.describe('Waiting Room', () => {
 
     await page1.getByTestId(`whiteboard-user-options-${peerId}`).click();
     await expect(page1.getByTestId('whiteboard-context-kick')).toBeVisible();
-    await page1.getByRole('button', { name: 'Kick from Room' }).click({ force: true });
+    await page1.getByRole('menuitem', { name: 'Kick from Room' }).click({ force: true });
 
     await expectNotWaiting(page2);
 
@@ -572,7 +578,7 @@ test.describe('Waiting Room', () => {
     await hostPage.getByTestId(`whiteboard-user-options-${peerId}`).click();
     await expect(hostPage.getByTestId('whiteboard-context-let-in')).toHaveCount(0);
     await expect(hostPage.getByTestId('whiteboard-context-kick')).toBeVisible({ timeout: 10000 });
-    await hostPage.getByRole('button', { name: 'Kick from Room' }).click({ force: true });
+    await hostPage.getByRole('menuitem', { name: 'Kick from Room' }).click({ force: true });
     await expectNotWaiting(peerPage);
     await expect(peerPage.getByTestId('whiteboard-username-input')).toBeVisible({ timeout: 10000 });
 
@@ -708,6 +714,54 @@ test.describe('Waiting Room', () => {
     await expect(hostPage.getByTestId('whiteboard-support-email')).toBeVisible();
     await hostPage.getByTestId('whiteboard-support-close').click();
     await expect(hostPage.getByTestId('whiteboard-support-panel')).toHaveCount(0);
+
+    await context1.close();
+    await context2.close();
+  });
+
+  test('a refused approve reports the failure and keeps the waiting row', async ({ browser }) => {
+    const context1 = await newAuthenticatedContext(browser);
+    const context2 = await newAuthenticatedContext(browser);
+
+    const hostPage = await context1.newPage();
+    const peerPage = await context2.newPage();
+
+    const roomId = await createRoomWithMaxUsers(hostPage, 'RefusedApproveHost', 1);
+
+    await joinExistingRoom(peerPage, roomId, 'RefusedApprovePeer');
+    await expectWaiting(peerPage);
+
+    /*
+     * Fault injection on the real network path, registered before the click:
+     * the approve POST never reaches the server, so the waiting row the host
+     * is looking at is still the server's row when the request is refused.
+     */
+    const approveRoute = '**/api/whiteboard/room/*/waiting';
+    await hostPage.route(approveRoute, (route) =>
+      route.fulfill({ status: 403, contentType: 'application/json', body: '{"error":"no"}' }),
+    );
+
+    const peerId = await openFirstWaitingPeerMenu(hostPage);
+    await hostPage.getByRole('menuitem', { name: /let in/i }).click();
+
+    const moderationError = hostPage.getByTestId('whiteboard-moderation-error');
+    await expect(moderationError).toBeVisible({ timeout: 10000 });
+    await expect(moderationError).toHaveText('Could not let that person in. Please try again.');
+
+    // The refusal leaves the row in place and the student in the queue; an
+    // approve that silently vanished would have hidden both.
+    await expect(hostPage.getByTestId(`whiteboard-user-${peerId}`)).toBeVisible({ timeout: 10000 });
+    await expect(peerPage.getByTestId('whiteboard-canvas-area')).toHaveCount(0);
+    await expectWaiting(peerPage);
+
+    // Lifting the fault lets the same row finish the approval.
+    await hostPage.unroute(approveRoute);
+    await openFirstWaitingPeerMenu(hostPage);
+    await hostPage.getByRole('menuitem', { name: /let in/i }).click();
+
+    await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+    await expectNotWaiting(peerPage);
+    await expect(moderationError).toHaveCount(0);
 
     await context1.close();
     await context2.close();

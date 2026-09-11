@@ -173,6 +173,28 @@ textarea {
   }
 }
 
+/* UX-V5: below ~900px there is not enough width for the fixed toolbar island
+   and the footer row to sit side by side, and the island drew over the room's
+   Clear/Guide controls (Playwright could not click Clear at 768px). Lift the
+   footer row above the island while the width is tight; wider screens have the
+   space and keep the footer on the bottom edge. */
+@media (min-width: 640px) and (max-width: 900px) {
+  .excalidraw .layer-ui__wrapper__footer {
+    margin-bottom: 4.25rem;
+  }
+}
+
+/* UX-V8: the phone control model, stated rather than implied. Below sm: the
+   fork owns the bottom edge with its own toolbar, the board is pinch-zoom
+   only, and the room's Clear/Guide footer is omitted rather than drawn under
+   the island where it cannot be reached. Clear is owner-only and remains on
+   the desktop layout. */
+@media (max-width: 639px) {
+  .excalidraw .tp-board-footer {
+    display: none;
+  }
+}
+
 /* The room's own controls, as one of Excalidraw's footer islands.
    Its zoom and undo clusters are a rounded panel carrying the background and
    the hairline, with square borderless buttons sitting flush inside. These two
@@ -210,11 +232,13 @@ textarea {
   height: var(--lg-icon-size);
 }
 
-/* Guiding is a mode that stays on, so it has to look held down. */
+/* Guiding is a mode that stays on, so it has to look held down. The brand blue
+   is the app's primary-action token; Excalidraw's own --color-primary is
+   violet, which is not in this palette. */
 .excalidraw .tp-board-footer .tp-board-footer__button--active,
 .excalidraw .tp-board-footer .tp-board-footer__button--active:hover {
-  background-color: var(--color-primary);
-  color: var(--color-primary-contrast, #fff);
+  background-color: var(--blue);
+  color: #fff;
 }
 
 .excalidraw .tp-board-footer .tp-board-footer__button--danger:hover {
@@ -265,4 +289,20 @@ textarea {
   bottom: 100%;
   margin-top: 0;
   margin-bottom: 0.375rem;
+}
+
+/* UX-A20: honour the OS reduce-motion preference across the app. The one-shot
+   raised-hand cue, the waiting/status pulses and the panel slides all set
+   their own durations, so the neutralisation has to be global and !important:
+   a near-zero single iteration lands keyframes on their end state instead of
+   removing the animation (which would leave `forwards` cues stuck visible). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

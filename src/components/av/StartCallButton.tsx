@@ -12,21 +12,32 @@
  * appear, so pressing it feels like opening that panel rather than summoning
  * one from somewhere else on the screen.
  */
-export default function StartCallButton({ onStart }: { readonly onStart: () => void }) {
+export default function StartCallButton({
+  onStart,
+  label = 'Start call',
+}: {
+  readonly onStart: () => void;
+  /**
+   * "Rejoin call" when a call is already running. A host who stepped out of
+   * it must not be offered a fresh start over a live call.
+   */
+  readonly label?: string;
+}) {
   return (
     <button
       type="button"
       data-testid="av-start-call"
-      aria-label="Start call"
+      aria-label={label}
       onClick={onStart}
-      className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1 text-xs font-medium text-emerald-300 shadow-sm transition-all hover:border-emerald-500/60 hover:bg-emerald-500/25 active:scale-95"
+      className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-full border border-[var(--blue)]/50 bg-[var(--blue)]/25 px-3 text-xs font-semibold text-slate-100 shadow-sm transition-colors duration-150 hover:border-[var(--blue)] hover:bg-[var(--blue)]/40 sm:min-h-8"
     >
       <svg
-        className="h-3.5 w-3.5 text-emerald-400 shrink-0"
+        className="h-3.5 w-3.5 shrink-0 text-slate-100"
         fill="none"
         viewBox="0 0 24 24"
         stroke="currentColor"
         strokeWidth={2}
+        aria-hidden="true"
       >
         <path
           strokeLinecap="round"
@@ -34,7 +45,7 @@ export default function StartCallButton({ onStart }: { readonly onStart: () => v
           d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
         />
       </svg>
-      <span className="hidden sm:inline">Start call</span>
+      <span className="hidden sm:inline">{label}</span>
     </button>
   );
 }

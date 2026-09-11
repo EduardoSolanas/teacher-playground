@@ -249,6 +249,178 @@ describe('room allowFirstUserHost setting', () => {
   });
 });
 
+describe('create room with owner settings (UX-N2)', () => {
+  function countRows(
+    db: ReturnType<typeof getRoomDb>,
+    table: 'rooms' | 'room_members',
+    roomId: string,
+  ): number {
+    return (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE room_id = ?`).get(roomId) as { n: number }).n;
+  }
+
+  it('applies the owner settings in the create POST and returns them', async () => {
+    const db = getRoomDb();
+    const roomId = `room-create-settings-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    const response = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', {
+        elements: [],
+        name: 'Algebra',
+        maxUsers: 2,
+        hostPeerId: 'host-peer',
+        allowFirstUserHost: true,
+      }, owner),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      success: true,
+      name: 'Algebra',
+      maxUsers: 2,
+      hostPeerId: 'host-peer',
+      allowFirstUserHost: true,
+      hasCreatorGrant: true,
+    });
+    expect(getRoomHostPeerId(db, roomId)).toBe('host-peer');
+    expect(getRoomAllowFirstUserHost(db, roomId)).toBe(true);
+  });
+
+  it('issues the guest PIN in the create response when guest access is enabled', async () => {
+    const db = getRoomDb();
+    const roomId = `room-create-guest-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    const response = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [], guestAccess: true }, owner),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { guestAccess: boolean; guestPin: string };
+    expect(body.guestAccess).toBe(true);
+    expect(body.guestPin).toMatch(/^\d{6}$/);
+    expect(verifyGuestPin(db, roomId, body.guestPin, Date.now()).ok).toBe(true);
+  });
+
+  it('refuses create-path settings from a non-owner on an existing room', async () => {
+    const db = getRoomDb();
+    const roomId = `room-create-authz-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const editor = `acc-editor-${crypto.randomUUID()}`;
+
+    await handleRoomPost(db, roomId, postRequest('', { elements: [{ id: 'original' }] }, owner));
+    await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { name: 'Original', maxUsers: 2 }, owner),
+    );
+    requestAccess(db, { roomId, accountId: editor, userName: 'Ed' });
+    approveAccount(db, roomId, editor, { role: 'editor' });
+
+    const denied = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [{ id: 'stolen' }], name: 'Stolen', maxUsers: 9 }, editor),
+    );
+    expect(denied.status).toBe(403);
+
+    const read = await handleRoomGet(
+      db,
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`),
+    );
+    expect(await read.json()).toMatchObject({
+      name: 'Original',
+      maxUsers: 2,
+      elements: [{ id: 'original' }],
+    });
+  });
+
+  it('rejects the plan-limit occupancy on create and persists no room or owner row', async () => {
+    const db = getRoomDb();
+    const roomId = `room-create-plan-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    const response = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [], maxUsers: 3 }, owner),
+    );
+
+    expect(response.status).toBe(402);
+    expect(await response.json()).toEqual({ error: 'Plan limit reached' });
+    expect(countRows(db, 'rooms', roomId)).toBe(0);
+    expect(countRows(db, 'room_members', roomId)).toBe(0);
+  });
+
+  it('persists nothing when the create settings are invalid', async () => {
+    const db = getRoomDb();
+    const roomId = `room-create-invalid-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    const response = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [], name: 'Algebra', guestPin: '000000' }, owner),
+    );
+
+    expect(response.status).toBe(400);
+    expect(countRows(db, 'rooms', roomId)).toBe(0);
+    expect(countRows(db, 'room_members', roomId)).toBe(0);
+  });
+
+  it('refuses create settings without an account and persists nothing', async () => {
+    const db = getRoomDb();
+    const roomId = `room-create-anon-${crypto.randomUUID()}`;
+
+    const response = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [], name: 'Anon', maxUsers: 2 }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(countRows(db, 'rooms', roomId)).toBe(0);
+    expect(countRows(db, 'room_members', roomId)).toBe(0);
+  });
+
+  it('rolls the room and owner grant back when the create transaction fails', async () => {
+    const inner = getRoomDb();
+    const roomId = `room-create-rollback-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    const db = {
+      prepare(sql: string) {
+        const stmt = inner.prepare(sql);
+        if (sql.includes('INSERT INTO room_members')) {
+          return {
+            run() {
+              throw new Error('injected');
+            },
+          };
+        }
+        return stmt;
+      },
+      exec: inner.exec.bind(inner),
+      transaction: inner.transaction.bind(inner),
+    };
+
+    const response = await handleRoomPost(
+      db as never,
+      roomId,
+      postRequest('', { elements: [], name: 'Algebra', maxUsers: 2 }, owner),
+    );
+
+    expect(response.status).toBe(500);
+    expect(countRows(inner, 'rooms', roomId)).toBe(0);
+    expect(countRows(inner, 'room_members', roomId)).toBe(0);
+  });
+});
+
 describe('duplicate room creation', () => {
   it('does not transfer ownership when a second account posts a scene to an existing room', async () => {
     const db = getRoomDb();

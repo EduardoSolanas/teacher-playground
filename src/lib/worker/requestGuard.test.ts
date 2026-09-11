@@ -70,6 +70,17 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(isRouteAllowedOnHost('/', 'POST', 'teacher')).toBe(true);
     });
 
+    it('/brand.css is teacher-only (UX-V1)', () => {
+      /*
+       * The teacher host serves the marketing pages, so the stylesheet they
+       * link must pass the route gate there. The guest host is not a marketing
+       * surface and denies it.
+       */
+      expect(isRouteAllowedOnHost('/brand.css', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/brand.css', 'HEAD', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/brand.css', 'GET', 'guest')).toBe(false);
+    });
+
     it('/pricing is teacher-only', () => {
       expect(isRouteAllowedOnHost('/pricing', 'GET', 'teacher')).toBe(true);
       expect(isRouteAllowedOnHost('/pricing', 'GET', 'guest')).toBe(false);
@@ -143,6 +154,37 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
     it('GET /whiteboard/_room is denied (placeholder is Worker-internal)', () => {
       expect(isRouteAllowedOnHost('/whiteboard/_room', 'GET', 'teacher')).toBe(false);
       expect(isRouteAllowedOnHost('/whiteboard/_room', 'GET', 'guest')).toBe(false);
+    });
+
+    it('accepts the canonical room-id grammar the app itself validates (UX-L14)', () => {
+      /*
+       * `isValidRoomId` / `ROOM_ID_RE` is the one grammar the app uses, and the
+       * room page and the join links are built to it. The route gate was
+       * stricter -- 32 lowercase hex only -- so every room id outside that
+       * shape 404'd at the edge with no page, and the waiting screen printed a
+       * code nothing could accept.
+       */
+      for (const roomId of ['room-alpha', 'room_123-ABC', 'a', 'A'.repeat(64)]) {
+        expect(isRouteAllowedOnHost(`/whiteboard/${roomId}`, 'GET', 'teacher'), roomId).toBe(true);
+        expect(isRouteAllowedOnHost(`/whiteboard/${roomId}`, 'GET', 'guest'), roomId).toBe(true);
+        expect(isRouteAllowedOnHost(`/whiteboard/${roomId}`, 'HEAD', 'teacher'), roomId).toBe(true);
+        expect(isRouteAllowedOnHost(`/whiteboard/${roomId}`, 'HEAD', 'guest'), roomId).toBe(true);
+      }
+    });
+
+    it('rejects anything outside the canonical room-id grammar', () => {
+      for (const pathname of [
+        '/whiteboard/',
+        '/whiteboard/room.alpha',
+        '/whiteboard/room alpha',
+        '/whiteboard/room%2Falpha',
+        '/whiteboard/a/b',
+        `/whiteboard/${'a'.repeat(65)}`,
+        '/whiteboard/../room-alpha',
+      ]) {
+        expect(isRouteAllowedOnHost(pathname, 'GET', 'teacher'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'GET', 'guest'), pathname).toBe(false);
+      }
     });
 
     it('POST /whiteboard/<roomId> is not allowed', () => {
@@ -756,6 +798,34 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
   });
 
   describe('isPublicPath (SEC-015 marketing exemption)', () => {
+    it('serves the shared brand stylesheet without a credential (UX-V1)', () => {
+      /*
+       * The marketing HTML links /brand.css directly, and the teacher host
+       * serves the same page at '/'. Without this one exact entry the sheet
+       * 404s there (or is refused before Access), and the landing page renders
+       * completely unstyled while looking fine on the marketing host.
+       */
+      expect(isPublicPath('/brand.css')).toBe(true);
+    });
+
+    it('keeps the brand-stylesheet exemption exact and out of the guarded families', () => {
+      for (const pathname of [
+        '/api/brand.css',
+        '/auth/brand.css',
+        '/whiteboard/brand.css',
+        '/signaling/brand.css',
+        '/brand.css/',
+        '/brand.cssx',
+        '/api/whiteboard/rooms',
+        '/auth/session',
+        '/whiteboard/' + 'a'.repeat(32),
+        '/signaling',
+      ]) {
+        expect(isPublicPath(pathname), pathname).toBe(false);
+      }
+      expect(isPublicPath('/brand.css/../api/whiteboard/rooms')).toBe(false);
+    });
+
     it('accepts exactly the marketing pages', () => {
       for (const page of MARKETING_PAGES) {
         expect(isPublicPath(page)).toBe(true);

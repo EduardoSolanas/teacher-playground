@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures';
 import { newAuthenticatedContext, createRoomWithMaxUsers, expandPresenceIfCollapsed } from './helpers';
+import { contrastTextOn } from '../../src/lib/whiteboard/userColor';
 import type { Page } from '@playwright/test';
 
 function isAvTokenResponse(url: string, method: string): boolean {
@@ -68,8 +69,18 @@ test.describe('call identity presentation', () => {
         probe.style.color = color;
         return probe.style.color;
       }, boardColor);
-      await expect.poll(() => avatar.evaluate((element) => element.style.color)).toBe(expectedColor);
       await expect.poll(() => avatar.evaluate((element) => element.style.borderColor)).toBe(expectedColor);
+      /*
+       * The ring is the board colour; the initial is the ink that reads on it.
+       * White failed contrast on most of the palette, yellow worst of all, so
+       * the foreground is computed rather than fixed.
+       */
+      const expectedInk = await page.evaluate((color) => {
+        const probe = document.createElement('span');
+        probe.style.color = color;
+        return probe.style.color;
+      }, contrastTextOn(boardColor));
+      await expect.poll(() => avatar.evaluate((element) => element.style.color)).toBe(expectedInk);
       await expect(video).toHaveCount(0);
       await expect(nameLabel.getByRole('img', { name: 'Host' })).toBeVisible();
     } finally {

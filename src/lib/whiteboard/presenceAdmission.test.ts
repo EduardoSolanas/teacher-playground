@@ -2,8 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { admissionFromPresenceStatus } from './presenceAdmission';
 
 describe('admissionFromPresenceStatus', () => {
-  it('treats a missing room or full queue as waiting, not a live board', () => {
+  it('treats a missing room or a rate limit as waiting, not a live board', () => {
     expect(admissionFromPresenceStatus(404)).toBe('waiting');
+    expect(admissionFromPresenceStatus(429)).toBe('waiting');
+  });
+
+  it('separates a full waiting list from a rate limit', () => {
+    expect(admissionFromPresenceStatus(409)).toBe('queue_full');
     expect(admissionFromPresenceStatus(429)).toBe('waiting');
   });
 

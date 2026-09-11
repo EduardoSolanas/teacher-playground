@@ -21,6 +21,7 @@ export type AvSessionStatus = 'idle' | 'connecting' | 'joined' | 'reconnecting' 
 export type AvErrorKind =
   | 'permission-denied'
   | 'device-missing'
+  | 'device-busy'
   | 'not-configured'
   | 'network'
   | 'unsupported'
@@ -144,13 +145,39 @@ export interface AvSession {
 
 export function mapProviderError(error: unknown): AvError {
   const message = error instanceof Error ? error.message : String(error ?? 'unknown error');
-  const lower = message.toLowerCase();
+  // The name carries as much as the message does: getUserMedia rejects with
+  // NotReadableError/AbortError, and their messages vary between browsers --
+  // the name is the stable half, so both are searched.
+  const name = error instanceof Error ? error.name : '';
+  const lower = `${name} ${message}`.toLowerCase();
   let kind: AvErrorKind = 'unknown';
-  if (lower.includes('permission') || lower.includes('denied')) kind = 'permission-denied';
-  else if (lower.includes('device') || lower.includes('notfound') || lower.includes('overconstrained')) {
+  if (lower.includes('permission') || lower.includes('denied') || lower.includes('notallowed')) {
+    kind = 'permission-denied';
+  } else if (
+    lower.includes('notreadable') ||
+    lower.includes('aborterror') ||
+    lower.includes('could not start') ||
+    lower.includes('starting ') ||
+    lower.includes('failed to start') ||
+    lower.includes('in use')
+  ) {
+    /*
+     * A camera or microphone another application already holds. The browser
+     * refuses to share it, and the only fix is to close that other app -- so
+     * this is a separate kind with its own copy rather than one more flavour
+     * of 'unknown' that prints raw browser text at a teacher.
+     *
+     * Ahead of the device-missing branch on purpose: "the device is in use"
+     * contains the word "device", and an in-use device is not a missing one.
+     */
+    kind = 'device-busy';
+  } else if (lower.includes('device') || lower.includes('notfound') || lower.includes('overconstrained')) {
     kind = 'device-missing';
-  } else if (lower.includes('config') || lower.includes('not configured')) kind = 'not-configured';
-  else if (lower.includes('network') || lower.includes('timeout') || lower.includes('connect')) kind = 'network';
+  } else if (lower.includes('config') || lower.includes('not configured')) {
+    kind = 'not-configured';
+  } else if (lower.includes('network') || lower.includes('timeout') || lower.includes('connect')) {
+    kind = 'network';
+  }
   return { kind, message };
 }
 
@@ -266,6 +293,8 @@ export function createAvSession(provider: AvProvider): AvSession {
     },
     onReconnected() {
       if (status === 'reconnecting') status = 'joined';
+      // The socket is back, so whatever the drop reported is no longer news.
+      error = null;
       emitChange();
     },
     onDisconnected() {
@@ -280,8 +309,10 @@ export function createAvSession(provider: AvProvider): AvSession {
       error = err;
       // A refused device during a live call is worth saying, but it is not the
       // call failing: leaving 'joined' would take the working half of the call
-      // (the mic, when it was the camera that was refused) away as well.
-      if (status !== 'joined') status = 'error';
+      // (the mic, when it was the camera that was refused) away as well. The
+      // same reasoning covers reconnecting: the SDK is already bringing the
+      // socket back, and an error mid-drop must not turn that into an ending.
+      if (status !== 'joined' && status !== 'reconnecting') status = 'error';
       emitChange();
     },
     onDevices(kind, list) {
@@ -348,6 +379,9 @@ export function createAvSession(provider: AvProvider): AvSession {
     local.micMuted = !local.micMuted;
     try {
       provider.setMicrophone(local.micMuted);
+      // The action went through, so a transient error from a moment ago has
+      // been answered. A later async failure re-raises its own.
+      error = null;
     } catch (err) {
       error = mapProviderError(err);
       status = 'error';
@@ -361,6 +395,7 @@ export function createAvSession(provider: AvProvider): AvSession {
     local.camOn = !local.camOn;
     try {
       provider.setCamera(local.camOn);
+      error = null;
     } catch (err) {
       error = mapProviderError(err);
       status = 'error';
@@ -390,9 +425,19 @@ export function createAvSession(provider: AvProvider): AvSession {
         devices[kind].push({ deviceId, label: '' });
       }
       writeDevicePreference(kind, deviceId);
+      // The switch went through; the banner was about the previous pick.
+      error = null;
     } catch (err) {
+      /*
+       * A refused switch is not a failed call. Setting status='error' here --
+       * which it used to do -- disabled the mic and camera and told everyone
+       * the call had broken because the browser would not hand over one
+       * device. Stay joined and say what happened to the picker instead; the
+       * active device is whatever the provider still reports, so the control
+       * springs back to the device that does work.
+       */
+      if (status !== 'joined' && status !== 'reconnecting') status = 'error';
       error = mapProviderError(err);
-      status = 'error';
     }
     emitChange();
   }

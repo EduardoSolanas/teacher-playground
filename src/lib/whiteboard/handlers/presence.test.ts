@@ -287,6 +287,44 @@ describe('room presence API', () => {
     ]);
   });
 
+  it('refuses an over-cap waiter with a queue-full signal, not a rate limit', async () => {
+    const roomId = `presence-queue-full-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+    await handleRoomSettings(
+      getRoomDb(),
+      roomId,
+      new Request(accountUrl(roomId, '/settings', owner), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxUsers: 2, hostPeerId: 'peer-host' }),
+      }),
+    );
+
+    const first = await postPresence(roomId, `acc-first-${crypto.randomUUID()}`, {
+      peerId: 'peer-first',
+      userName: 'First',
+      color: '#3498db',
+    });
+    const second = await postPresence(roomId, `acc-second-${crypto.randomUUID()}`, {
+      peerId: 'peer-second',
+      userName: 'Second',
+      color: '#e74c3c',
+    });
+    expect(first.response.status).toBe(200);
+    expect(second.response.status).toBe(200);
+
+    const overflow = await postPresence(roomId, `acc-third-${crypto.randomUUID()}`, {
+      peerId: 'peer-third',
+      userName: 'Third',
+      color: '#2ecc71',
+    });
+
+    expect(overflow.response.status).toBe(409);
+    expect(overflow.response.status).not.toBe(429);
+    expect(overflow.data.error).toMatch(/waiting queue is full/i);
+  });
+
   it('removes a user when they leave presence', async () => {
     const roomId = `presence-leave-${crypto.randomUUID()}`;
     const owner = `acc-owner-${crypto.randomUUID()}`;

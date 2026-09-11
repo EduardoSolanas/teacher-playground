@@ -33,13 +33,46 @@ export interface UseAvSessionResult {
   readonly devices: Readonly<Record<DeviceKind, readonly AvDevice[]>>;
   readonly activeDevices: Readonly<Record<DeviceKind, string | undefined>>;
   readonly unavailableReason: 'unconfigured' | 'forbidden' | 'waiting' | null;
+  /**
+   * Whether this session's token allows publishing. False is a viewer, whose
+   * mic and camera buttons could only ever fail; null means the grant could
+   * not be read, which is treated as "allowed" so a decode quirk never locks
+   * a teacher out of their own call.
+   */
+  readonly canPublish: boolean | null;
   readonly room: Room | null;
   readonly toggleMicrophone: () => void;
   readonly toggleCamera: () => void;
   readonly toggleScreenShare: () => Promise<void>;
   readonly selectDevice: (kind: DeviceKind, deviceId: string) => Promise<void>;
   readonly requestMute: (identity: string, kind?: 'audio' | 'video') => Promise<void>;
+  /** Retry a failed join, or rejoin after the token or socket dropped it. */
+  readonly retry: () => void;
   readonly leave: () => void;
+}
+
+/**
+ * The publish grant, read from the LiveKit token's own payload.
+ *
+ * The endpoint does not echo the role, but it does not need to: the JWT is in
+ * hand and its `video.canPublish` claim is the same one the media server will
+ * enforce. The payload is not secret and this does not verify the signature --
+ * it is a UI hint, and the server remains the authority. A token that cannot
+ * be read returns null, which the UI treats as publishable rather than using a
+ * parse failure to take away somebody's mic.
+ */
+export function readCanPublishFromToken(token: string): boolean | null {
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return null;
+    const base64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=');
+    const decoded = JSON.parse(atob(padded)) as { video?: { canPublish?: unknown } };
+    const canPublish = decoded?.video?.canPublish;
+    return typeof canPublish === 'boolean' ? canPublish : null;
+  } catch {
+    return null;
+  }
 }
 
 
@@ -71,6 +104,8 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
   const [session, setSession] = useState<AvSession | null>(null);
   const [room, setRoom] = useState<Room | null>(null);
   const [startupError, setStartupError] = useState<AvError | null>(null);
+  const [canPublish, setCanPublish] = useState<boolean | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [unavailableReason, setUnavailableReason] = useState<
     'unconfigured' | 'forbidden' | 'waiting' | null
   >(null);
@@ -92,6 +127,7 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
     setRoom(null);
     providerRef.current = null;
     setStartupError(null);
+    setCanPublish(null);
     setUnavailableReason(null);
   }, []);
 
@@ -151,6 +187,7 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
       setSession(session);
       setRoom(provider.getRoom());
       setStartupError(null);
+      setCanPublish(readCanPublishFromToken(body.token));
       setUnavailableReason(null);
 
       await session.join(body.token, body.url);
@@ -197,7 +234,7 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
       leave();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- renaming updates participant name directly to avoid tearing down the call
-  }, [enabled, roomId, identity, leave]);
+  }, [enabled, roomId, identity, leave, attempt]);
 
   useEffect(() => {
     if (room && displayName) {
@@ -238,6 +275,10 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
     [roomId],
   );
 
+  const retry = useCallback(() => {
+    setAttempt((current) => current + 1);
+  }, []);
+
   return useMemo<UseAvSessionResult>(
     () => ({
       status: state.status,
@@ -247,12 +288,14 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
       devices: state.devices,
       activeDevices: state.activeDevices,
       unavailableReason,
+      canPublish,
       room,
       toggleMicrophone,
       toggleCamera,
       toggleScreenShare,
       selectDevice,
       requestMute,
+      retry,
       leave,
     }),
     [
@@ -263,12 +306,14 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
       state.devices,
       state.activeDevices,
       unavailableReason,
+      canPublish,
       room,
       toggleMicrophone,
       toggleCamera,
       toggleScreenShare,
       selectDevice,
       requestMute,
+      retry,
       leave,
     ],
   );

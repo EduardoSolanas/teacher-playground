@@ -34,5 +34,20 @@ describe('StartCallButton', () => {
     const button = screen.getByRole('button', { name: 'Start call' });
     expect(button).toBeTruthy();
   });
+
+  it('says rejoin when the room call is already running', () => {
+    // A host who stepped out of a live call used to get "Start call" again,
+    // which reads as a fresh call and broadcasts a fresh start. The call is
+    // already there; going back into it is a rejoin.
+    const onStart = vi.fn();
+    render(<StartCallButton onStart={onStart} label="Rejoin call" />);
+
+    const button = screen.getByTestId('av-start-call');
+    expect(button.getAttribute('aria-label')).toBe('Rejoin call');
+    expect(button.textContent).toContain('Rejoin call');
+
+    fireEvent.click(button);
+    expect(onStart).toHaveBeenCalledTimes(1);
+  });
 });
 

@@ -64,7 +64,7 @@ async function waitForJoinedCall(page: Page) {
  * worse than one that asks a smaller question honestly.
  */
 test.describe('video calling panel', () => {
-  test('an admitted host can hide tiles with Off and return to Rail while call controls remain', async ({ browser }) => {
+  test('an admitted host can hide tiles with Hidden and return to Gallery while call controls remain', async ({ browser }) => {
     const host = await newAuthenticatedContext(browser, 'av-layout-host');
     const hostPage = await host.newPage();
 
@@ -80,18 +80,18 @@ test.describe('video calling panel', () => {
     }
     await waitForJoinedCall(hostPage);
 
-    await expect(hostPage.getByRole('radio', { name: 'Rail' })).toHaveAttribute('aria-checked', 'true');
+    await expect(hostPage.getByRole('radio', { name: 'Gallery' })).toHaveAttribute('aria-checked', 'true');
     const tiles = hostPage.locator('[data-testid^="av-tile-"]');
     await expect(tiles.first()).toBeVisible({ timeout: 15000 });
 
-    await hostPage.getByRole('radio', { name: 'Off' }).click();
+    await hostPage.getByRole('radio', { name: 'Hidden' }).click();
     await expect(hostPage.getByTestId('av-call-controls')).toBeVisible({ timeout: 15000 });
     await expect(hostPage.getByTestId('av-toggle-mic')).toBeVisible({ timeout: 15000 });
     await expect(hostPage.getByTestId('av-toggle-cam')).toBeVisible({ timeout: 15000 });
     await expect(tiles).toHaveCount(0);
 
-    await hostPage.getByRole('radio', { name: 'Rail' }).click();
-    await expect(hostPage.getByRole('radio', { name: 'Rail' })).toHaveAttribute('aria-checked', 'true');
+    await hostPage.getByRole('radio', { name: 'Gallery' }).click();
+    await expect(hostPage.getByRole('radio', { name: 'Gallery' })).toHaveAttribute('aria-checked', 'true');
     await expect(tiles.first()).toBeVisible({ timeout: 15000 });
   });
 
@@ -180,5 +180,45 @@ test.describe('video calling panel', () => {
         return peerUser?.peerId ?? null;
       }, { timeout: 15000, message: 'peer never appeared in the host roster payload' })
       .not.toBe(peerAccountId);
+  });
+
+  test('ending the call for everyone tells the peers the teacher ended it', async ({ browser }) => {
+    const host = await newAuthenticatedContext(browser, 'av-end-host');
+    const peer = await newAuthenticatedContext(browser, 'av-end-peer');
+    const hostPage = await host.newPage();
+    const peerPage = await peer.newPage();
+
+    try {
+      const roomId = await createRoomWithMaxUsers(hostPage, 'EndHost', 2);
+      await joinRoomApproved(peerPage, hostPage, roomId, 'EndPeer');
+
+      const hostToken = hostPage.waitForResponse((candidate) =>
+        isAvTokenResponse(candidate.url(), candidate.request().method()),
+      );
+      await hostPage.getByTestId('av-start-call').click();
+      const tokenResponse = await hostToken;
+      if (tokenResponse.status() === 503) {
+        test.skip(true, 'LiveKit is not configured in this E2E environment.');
+      }
+      await waitForJoinedCall(hostPage);
+      await waitForJoinedCall(peerPage);
+
+      await hostPage.getByTestId('av-end-call-everyone').click();
+      await hostPage.getByTestId('av-end-call-confirm-confirm-btn').click();
+
+      /*
+       * The peer's panel unmounts when the room call ends. Without the notice
+       * the call simply vanished with no explanation; the point of this test
+       * is that something says so.
+       */
+      await expect(peerPage.getByTestId('whiteboard-call-ended')).toContainText(
+        'The teacher ended the call',
+        { timeout: 15000 },
+      );
+      await expect(peerPage.getByTestId('av-session-panel')).toHaveCount(0);
+    } finally {
+      await host.close();
+      await peer.close();
+    }
   });
 });

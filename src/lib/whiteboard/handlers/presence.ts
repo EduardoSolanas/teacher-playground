@@ -227,7 +227,7 @@ export async function handlePresencePost(
     });
     if (!requested.ok) {
       if (requested.reason === 'queue_full') {
-        return Response.json({ error: 'Waiting queue is full' }, { status: 429 });
+        return Response.json({ error: 'Waiting queue is full' }, { status: 409 });
       }
       return Response.json({ error: 'Forbidden' }, { status: 403 });
     }
@@ -240,7 +240,7 @@ export async function handlePresencePost(
       now,
     });
     if (!queued.ok) {
-      return Response.json({ error: 'Waiting queue is full' }, { status: 429 });
+      return Response.json({ error: 'Waiting queue is full' }, { status: 409 });
     }
     return Response.json(presencePayload(db, roomId, request, { isWaiting: true, peerId: pId }));
   } catch (e) {

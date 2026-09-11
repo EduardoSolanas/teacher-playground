@@ -4,6 +4,7 @@ import type { WhiteboardUser } from '@/types/whiteboard';
 
 import {
   ROOM_CANVAS_CLASS,
+  EXCALIDRAW_LOADING_CLASS,
   roomCanvasRightClass,
   roomCanvasRailStyle,
   mapAvPeerIds,
@@ -13,6 +14,11 @@ import {
   shouldShowStartCall,
   shouldPeerEnterCall,
   shouldShowSyncDegradedNotice,
+  shouldBroadcastCallStart,
+  shouldAnnounceCallEnded,
+  resolveWaitingPosition,
+  evictionNoticeCopy,
+  supportButtonProps,
 } from './RoomClient';
 
 function makeUser(overrides: Partial<WhiteboardUser> = {}): WhiteboardUser {
@@ -31,6 +37,14 @@ describe('room canvas responsive top offset', () => {
     expect(roomCanvasTopClass(true)).toBe('top-0 sm:top-12');
     expect(roomCanvasTopClass(false)).toBe('top-[calc(3rem+env(safe-area-inset-top))] sm:top-12');
   });
+
+  it('does not floor the board height inside a shell that owns the viewport', () => {
+    // A 25rem minimum inside an overflow-hidden 100dvh shell clipped the
+    // bottom of the board on short and landscape viewports.
+    expect(EXCALIDRAW_LOADING_CLASS).toContain('h-full');
+    expect(EXCALIDRAW_LOADING_CLASS).toContain('min-h-0');
+    expect(EXCALIDRAW_LOADING_CLASS).not.toContain('min-h-[25rem]');
+  });
 });
 
 describe('room canvas width', () => {
@@ -43,6 +57,13 @@ describe('room canvas width', () => {
     expect(ROOM_CANVAS_CLASS).toContain('inset-x-0');
     expect(ROOM_CANVAS_CLASS).not.toContain('sm:left-14');
     expect(ROOM_CANVAS_CLASS).not.toContain('100vw');
+  });
+
+  it('paints the canvas with the paper token rather than slate-50 (UX-B20)', () => {
+    // The canvas background is the brand `--paper` token (DESIGN.md §2), so
+    // the board sits on the same warm surface as the room shell.
+    expect(ROOM_CANVAS_CLASS).toContain('bg-[var(--paper)]');
+    expect(ROOM_CANVAS_CLASS).not.toContain('bg-slate-50');
   });
 
   it('ends where the call rail begins, and only while the rail is there', () => {
@@ -212,19 +233,130 @@ describe('resolveAvTargetAccountId', () => {
 
 describe('shouldShowStartCall', () => {
   it('returns true only for the host when call is allowed and not yet started', () => {
-    expect(shouldShowStartCall({ isHost: true, avAllowed: true, avEnabled: false })).toBe(true);
+    expect(
+      shouldShowStartCall({ isHost: true, avAllowed: true, avEnabled: false, callActive: false }),
+    ).toBe(true);
   });
 
-  it('returns false for a non-host peer even if admitted and call is allowed', () => {
-    expect(shouldShowStartCall({ isHost: false, avAllowed: true, avEnabled: false })).toBe(false);
+  it('returns false for a non-host peer even if admitted and no call is running', () => {
+    expect(
+      shouldShowStartCall({ isHost: false, avAllowed: true, avEnabled: false, callActive: false }),
+    ).toBe(false);
+  });
+
+  it('offers an admitted peer a way back into a call that is already running', () => {
+    // A student who left a live call could not re-enter it: the peer-follow
+    // effect only fires when the room call state changes, and it had not.
+    expect(
+      shouldShowStartCall({ isHost: false, avAllowed: true, avEnabled: false, callActive: true }),
+    ).toBe(true);
   });
 
   it('returns false when a call is already active', () => {
-    expect(shouldShowStartCall({ isHost: true, avAllowed: true, avEnabled: true })).toBe(false);
+    expect(
+      shouldShowStartCall({ isHost: true, avAllowed: true, avEnabled: true, callActive: true }),
+    ).toBe(false);
   });
 
   it('returns false when av is not allowed', () => {
-    expect(shouldShowStartCall({ isHost: true, avAllowed: false, avEnabled: false })).toBe(false);
+    expect(
+      shouldShowStartCall({ isHost: true, avAllowed: false, avEnabled: false, callActive: false }),
+    ).toBe(false);
+  });
+});
+
+describe('shouldBroadcastCallStart', () => {
+  const base = {
+    isHost: true,
+    callWanted: true,
+    callActive: false,
+    avStatus: 'joined' as const,
+    alreadyBroadcast: false,
+  };
+
+  it('broadcasts only once the presser is actually in the call', () => {
+    // Starting used to broadcast `{active:true}` before a token had even been
+    // requested. On an unconfigured deployment that told every peer to open a
+    // call panel that could never join.
+    expect(shouldBroadcastCallStart(base)).toBe(true);
+    expect(shouldBroadcastCallStart({ ...base, avStatus: 'connecting' })).toBe(false);
+    expect(shouldBroadcastCallStart({ ...base, avStatus: 'idle' })).toBe(false);
+    expect(shouldBroadcastCallStart({ ...base, avStatus: 'error' })).toBe(false);
+  });
+
+  it('never re-broadcasts a call that is already running', () => {
+    expect(shouldBroadcastCallStart({ ...base, callActive: true })).toBe(false);
+  });
+
+  it('broadcasts once per start', () => {
+    expect(shouldBroadcastCallStart({ ...base, alreadyBroadcast: true })).toBe(false);
+  });
+
+  it('is host-only', () => {
+    expect(shouldBroadcastCallStart({ ...base, isHost: false })).toBe(false);
+  });
+});
+
+describe('shouldAnnounceCallEnded', () => {
+  it('announces when a peer is in a call that stops being active', () => {
+    // "End for everyone" leaves the panel gone and the call over with nothing
+    // said. The peer learns the lesson call finished from the silence.
+    expect(shouldAnnounceCallEnded({ isLocalHost: false, wasActive: true, isActive: false })).toBe(true);
+  });
+
+  it('stays quiet for the host ending their own call', () => {
+    expect(shouldAnnounceCallEnded({ isLocalHost: true, wasActive: true, isActive: false })).toBe(false);
+  });
+
+  it('stays quiet when there was no call to end', () => {
+    expect(shouldAnnounceCallEnded({ isLocalHost: false, wasActive: false, isActive: false })).toBe(false);
+    expect(shouldAnnounceCallEnded({ isLocalHost: false, wasActive: true, isActive: true })).toBe(false);
+  });
+});
+
+describe('resolveWaitingPosition', () => {
+  it('does not fabricate a position when the queue is full or the peer was suspended', () => {
+    // A full queue used to fall through to "waitingPeers.length + 1", which
+    // showed "number 4 in line" when the queue is shut and there is no line to
+    // be in. The real position is 0 and the waiting screen hides it.
+    expect(resolveWaitingPosition(0, 3, true, false)).toBe(0);
+    expect(resolveWaitingPosition(0, 3, false, true)).toBe(0);
+  });
+
+  it('still fills in a position while a normal queue is settling', () => {
+    expect(resolveWaitingPosition(0, 3, false, false)).toBe(4);
+    expect(resolveWaitingPosition(2, 3, false, false)).toBe(2);
+  });
+});
+
+describe('evictionNoticeCopy', () => {
+  it('names the outcome instead of silently returning to the name prompt', () => {
+    expect(evictionNoticeCopy({ wasKicked: true, wasRejected: false, wasSuspended: false }))
+      .toBe('You were removed from the room.');
+    expect(evictionNoticeCopy({ wasKicked: false, wasRejected: true, wasSuspended: false }))
+      .toBe("Your teacher didn't let you in.");
+    expect(evictionNoticeCopy({ wasKicked: false, wasRejected: false, wasSuspended: true }))
+      .toBe('Moved back to the waiting room.');
+    expect(evictionNoticeCopy({ wasKicked: false, wasRejected: false, wasSuspended: false }))
+      .toBeNull();
+  });
+});
+
+describe('supportButtonProps', () => {
+  it('gives the support pill the same call-rail flag the rail itself uses', () => {
+    /*
+     * The pill sits on the right edge, under the docked call rail when the
+     * rail is open. It was never told the rail existed, so the Support "?"
+     * was drawn underneath it. The flag has to be the rail's own visibility,
+     * not merely whether a call is enabled.
+     */
+    expect(supportButtonProps({ presenceCollapsed: false, callRailVisible: true }))
+      .toEqual({ rosterExpanded: true, callRailOpen: true });
+  });
+
+  it('leaves the support pill un-offset while the rail is hidden', () => {
+    expect(supportButtonProps({ presenceCollapsed: true, callRailVisible: false }))
+      .toEqual({ rosterExpanded: false, callRailOpen: false });
   });
 });
 

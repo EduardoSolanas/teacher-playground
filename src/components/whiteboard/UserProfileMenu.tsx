@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useId, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import { completeSignOut } from '@/lib/identity/completeSignOut';
@@ -32,9 +33,15 @@ export function UserProfileMenu({
   const [confirmText, setConfirmText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const labelId = useId();
   const label = displayName?.trim() || 'Account';
+  // The menu role is only true while menu items are what the container holds.
+  // The name and delete forms replace them, and a role="menu" wrapping a form
+  // promises arrow-key navigation over children that are not menu items.
+  const showMenuItems = !editing && !deleting;
 
   useEffect(() => {
     setDraftName(displayName ?? '');
@@ -43,13 +50,19 @@ export function UserProfileMenu({
   useEffect(() => {
     if (!open) return;
     const onPointer = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setOpen(false);
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setOpen(false);
         setEditing(false);
         setDeleting(false);
+        /*
+         * The menu promised focus-within, so closing it has to give focus
+         * back. Without this Escape dropped focus on the body and keyboard
+         * users lost their place in the header.
+         */
+        triggerRef.current?.focus();
       }
     };
     document.addEventListener('mousedown', onPointer);
@@ -59,6 +72,44 @@ export function UserProfileMenu({
       document.removeEventListener('keydown', onKey);
     };
   }, [open]);
+
+  /* Focus enters with the menu, the way `role="menu"` says it will. */
+  useEffect(() => {
+    if (!open || !showMenuItems) return;
+    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+  }, [open, showMenuItems]);
+
+  const onMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!showMenuItems) return;
+    const items = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+    );
+    if (items.length === 0) return;
+    const current = items.indexOf(document.activeElement as HTMLElement);
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      items[(current + 1) % items.length]?.focus();
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      items[(current - 1 + items.length) % items.length]?.focus();
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      items[0]?.focus();
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      items[items.length - 1]?.focus();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      setOpen(false);
+      setEditing(false);
+      setDeleting(false);
+      triggerRef.current?.focus();
+    } else if (event.key === 'Tab') {
+      setOpen(false);
+      setEditing(false);
+      setDeleting(false);
+    }
+  };
 
   const handleSignOut = async () => {
     await completeSignOut({
@@ -123,14 +174,16 @@ export function UserProfileMenu({
   };
 
   return (
-    <div ref={menuRef} className="relative">
+    <div ref={rootRef} className="relative">
       <button
+        ref={triggerRef}
         type="button"
         data-testid="whiteboard-profile-btn"
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={labelId}
         aria-label={`Open profile for ${label}`}
+        title={label}
         onClick={() => {
           setOpen((current) => !current);
           setEditing(false);
@@ -150,13 +203,15 @@ export function UserProfileMenu({
 
       {open && (
         <div
+          ref={menuRef}
           id={labelId}
-          role="menu"
-          className="absolute right-0 z-30 mt-2 w-64 overflow-hidden rounded-2xl bg-white text-slate-900 shadow-[0_1.125rem_3.125rem_rgba(15,23,42,0.28)] ring-1 ring-slate-200"
+          role={showMenuItems ? 'menu' : undefined}
+          onKeyDown={onMenuKeyDown}
+          className="absolute right-0 z-30 mt-2 w-64 overflow-hidden rounded-xl border border-slate-700 bg-slate-800 text-slate-200 shadow-xl shadow-slate-950/40"
         >
           {!editing && !deleting && (
             <div className="p-1.5">
-              <p className="truncate px-3 py-2 text-[0.6875rem] font-semibold uppercase tracking-[0.14em] text-slate-400">
+              <p className="truncate px-3 py-2 text-[0.6875rem] font-semibold uppercase tracking-wider text-slate-400">
                 Profile
               </p>
               <button
@@ -167,7 +222,7 @@ export function UserProfileMenu({
                   setEditing(true);
                   setError(null);
                 }}
-                className="flex w-full items-center rounded-xl px-3 py-2.5 text-left text-sm font-medium text-slate-800 hover:bg-slate-50"
+                className="flex w-full items-center rounded-md px-3 py-2.5 text-left text-sm font-medium text-slate-200 transition-colors hover:bg-slate-700"
               >
                 Change name
               </button>
@@ -178,7 +233,7 @@ export function UserProfileMenu({
                 onClick={() => {
                   void handleSignOut();
                 }}
-                className="flex w-full items-center rounded-xl px-3 py-2.5 text-left text-sm font-medium text-slate-800 hover:bg-slate-50"
+                className="flex w-full items-center rounded-md px-3 py-2.5 text-left text-sm font-medium text-slate-200 transition-colors hover:bg-slate-700"
               >
                 Sign out
               </button>
@@ -191,7 +246,7 @@ export function UserProfileMenu({
                   setConfirmText('');
                   setError(null);
                 }}
-                className="flex w-full items-center rounded-xl px-3 py-2.5 text-left text-sm font-medium text-red-700 hover:bg-red-50"
+                className="flex w-full items-center rounded-md px-3 py-2.5 text-left text-sm font-medium text-red-400 transition-colors hover:bg-red-500/15"
               >
                 Delete account
               </button>
@@ -206,7 +261,7 @@ export function UserProfileMenu({
                 void handleSaveName();
               }}
             >
-              <label htmlFor="whiteboard-profile-name" className="block text-[0.8125rem] font-semibold text-slate-600">
+              <label htmlFor="whiteboard-profile-name" className="block text-[0.8125rem] font-semibold text-slate-300">
                 Display name
               </label>
               <input
@@ -215,14 +270,14 @@ export function UserProfileMenu({
                 value={draftName}
                 maxLength={100}
                 onChange={(event) => setDraftName(event.target.value)}
-                className="mt-1.5 h-11 w-full rounded-xl border-2 border-slate-200 px-3 text-sm text-slate-900 outline-none focus:border-indigo-500"
+                className="mt-1.5 h-11 w-full rounded-md border border-slate-600 bg-slate-900 px-3 text-sm text-slate-100"
               />
-              {error && <p role="alert" className="mt-2 text-[0.75rem] font-medium text-red-700">{error}</p>}
+              {error && <p role="alert" className="mt-2 text-[0.75rem] font-medium text-red-400">{error}</p>}
               <div className="mt-3 flex gap-2">
                 <button
                   type="button"
                   onClick={() => setEditing(false)}
-                  className="h-10 flex-1 rounded-xl border border-slate-200 text-sm font-semibold text-slate-600"
+                  className="h-10 flex-1 rounded-md border border-slate-600 text-sm font-semibold text-slate-300"
                 >
                   Cancel
                 </button>
@@ -230,7 +285,7 @@ export function UserProfileMenu({
                   type="submit"
                   data-testid="whiteboard-profile-name-save"
                   disabled={busy || !draftName.trim()}
-                  className="h-10 flex-1 rounded-xl bg-slate-900 text-sm font-semibold text-white disabled:opacity-50"
+                  className="h-10 flex-1 rounded-md bg-slate-700 text-sm font-semibold text-white transition-colors hover:bg-slate-600 disabled:opacity-50"
                 >
                   Save
                 </button>
@@ -246,23 +301,24 @@ export function UserProfileMenu({
                 void handleDelete();
               }}
             >
-              <p className="text-sm font-semibold text-slate-900">Delete this account?</p>
-              <p className="mt-1 text-[0.8125rem] leading-relaxed text-slate-500">
+              <p className="text-sm font-semibold text-slate-100">Delete this account?</p>
+              <p className="mt-1 text-[0.8125rem] leading-relaxed text-slate-400">
                 Rooms you own will be removed. Type DELETE to confirm.
               </p>
               <input
                 data-testid="whiteboard-profile-delete-confirm-input"
+                aria-label="Type DELETE to confirm"
                 value={confirmText}
                 onChange={(event) => setConfirmText(event.target.value)}
                 autoComplete="off"
-                className="mt-3 h-11 w-full rounded-xl border-2 border-slate-200 px-3 text-sm text-slate-900 outline-none focus:border-red-500"
+                className="mt-3 h-11 w-full rounded-md border border-slate-600 bg-slate-900 px-3 text-sm text-slate-100"
               />
-              {error && <p role="alert" className="mt-2 text-[0.75rem] font-medium text-red-700">{error}</p>}
+              {error && <p role="alert" className="mt-2 text-[0.75rem] font-medium text-red-400">{error}</p>}
               <div className="mt-3 flex gap-2">
                 <button
                   type="button"
                   onClick={() => setDeleting(false)}
-                  className="h-10 flex-1 rounded-xl border border-slate-200 text-sm font-semibold text-slate-600"
+                  className="h-10 flex-1 rounded-md border border-slate-600 text-sm font-semibold text-slate-300"
                 >
                   Cancel
                 </button>
@@ -270,7 +326,7 @@ export function UserProfileMenu({
                   type="submit"
                   data-testid="whiteboard-profile-delete-confirm"
                   disabled={busy || confirmText !== 'DELETE'}
-                  className="h-10 flex-1 rounded-xl bg-red-700 text-sm font-semibold text-white disabled:opacity-40"
+                  className="h-10 flex-1 rounded-md bg-red-700 text-sm font-semibold text-white disabled:opacity-40"
                 >
                   Delete
                 </button>

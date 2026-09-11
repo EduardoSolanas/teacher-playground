@@ -146,7 +146,7 @@ function applyGuestSettings(
   }
 }
 
-// POST /api/whiteboard/room/[roomId] - create room and/or save scene
+// POST /api/whiteboard/room/[roomId] - create room with owner settings and/or save scene
 export async function handleRoomPost(
   db: RoomDatabase,
   roomId: string,
@@ -161,22 +161,29 @@ export async function handleRoomPost(
     }
 
     const raw = jsonObject(body);
-    if (hasRoomSettingsIntent(raw)) {
-      return Response.json(
-        { error: 'Settings fields are not allowed on the scene route' },
-        { status: 400 },
-      );
-    }
+    /*
+     * Settings may ride the create request. Creation is one transaction --
+     * room row, owner grant and settings together -- so a client needs one
+     * request and a failure leaves no half-built room behind. Once the room
+     * exists this is an update, and updates keep the scene/settings split:
+     * only the creator changes settings, and only through the settings route.
+     */
+    const settingsIntent = hasRoomSettingsIntent(raw);
 
-    const parseResult = parseBody(roomSceneSchema, body);
-    if (!parseResult.ok) {
-      return Response.json({ error: parseResult.error }, { status: 400 });
+    const sceneResult = parseBody(roomSceneSchema, body);
+    if (!sceneResult.ok) {
+      return Response.json({ error: sceneResult.error }, { status: 400 });
+    }
+    const settingsResult = settingsIntent ? parseBody(roomSettingsSchema, body) : null;
+    if (settingsResult && !settingsResult.ok) {
+      return Response.json({ error: settingsResult.error }, { status: 400 });
     }
 
     const tombstone = assertNotTombstoned(createSqlTombstoneStore(db), roomId);
     if (!tombstone.ok) return tombstonedJsonResponse();
 
-    const { elements, viewport } = parseResult.data;
+    const { elements, viewport } = sceneResult.data;
+    const settings = settingsResult?.ok ? settingsResult.data : null;
     const accountId = verifiedAccountId(request);
 
     const now = Date.now();
@@ -191,6 +198,15 @@ export async function handleRoomPost(
     const role = getGrantRole(db, roomId, accountId);
 
     if (existing) {
+      if (settings) {
+        if (accountId && !isOwnerRole(role)) {
+          return Response.json({ error: 'Forbidden' }, { status: 403 });
+        }
+        return Response.json(
+          { error: 'Settings fields are not allowed on the scene route' },
+          { status: 400 },
+        );
+      }
       // Room ids are share/display identifiers. Authorization is the
       // room_members grant, not a second capability code minted here.
       if (accountId && !canWriteBoard(role)) {
@@ -221,7 +237,24 @@ export async function handleRoomPost(
         ).run(...values, now, roomId);
       }
     } else {
+      // There is no creator to own the settings without an account.
+      if (settings && !accountId) {
+        return Response.json(
+          { error: 'Settings require a room owner' },
+          { status: 400 },
+        );
+      }
+      if (settings?.maxUsers !== undefined && !maxUsersAllowedOnFreePlan(settings.maxUsers)) {
+        return planLimitJsonResponse();
+      }
       db.transaction(() => {
+        const maxUsers = settings?.maxUsers === undefined
+          ? DEFAULT_MAX_USERS
+          : normalizeMaxUsers(settings.maxUsers);
+        const name = settings?.name === undefined ? null : normalizeName(settings.name);
+        const hostPeerId = settings?.hostPeerId === undefined ? null : settings.hostPeerId;
+        const allowFirstUserHost = settings?.allowFirstUserHost === true ? 1 : 0;
+
         db.prepare(
           `INSERT INTO rooms (room_id, elements, viewport, max_users, host_peer_id, name,
                               allow_first_user_host, created_at, updated_at)
@@ -230,26 +263,34 @@ export async function handleRoomPost(
           roomId,
           elementsJson,
           viewportJson,
-          DEFAULT_MAX_USERS,
-          null,
-          null,
-          0,
+          maxUsers,
+          hostPeerId,
+          name,
+          allowFirstUserHost,
           now,
           now,
         );
 
         if (accountId) {
           insertOwner(db, roomId, accountId, now);
-          hasCreatorGrant = true;
+        }
+        if (settings) {
+          applyGuestSettings(db, roomId, now, settings.guestAccess, settings.rotateGuestPin);
         }
       })();
+      if (accountId) hasCreatorGrant = true;
     }
 
-    const settings = readRoomSettings(db, roomId);
-    if (!settings) {
+    const result = readRoomSettings(db, roomId);
+    if (!result) {
       return Response.json({ error: 'Failed to save' }, { status: 500 });
     }
-    return roomSettingsResponse(settings, { hasCreatorGrant });
+    return roomSettingsResponse(
+      result,
+      settings
+        ? { hasCreatorGrant, ...guestSettingsExtra(db, roomId) }
+        : { hasCreatorGrant },
+    );
   } catch (e) {
     if (isUniqueConstraint(e)) {
       return Response.json({ error: 'Room already exists' }, { status: 409 });

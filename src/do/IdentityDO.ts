@@ -15,6 +15,7 @@ import {
   resolveAccountForSubject,
   readPreferredDisplayName,
   setPreferredDisplayName,
+  touchOwnedRoom,
 } from '../lib/identity/identityStore';
 import {
   SessionUnauthorizedError,
@@ -64,6 +65,7 @@ const PENDING_ERASURES_PATH = '/accounts/pending-erasures';
 const CLEAR_ERASURE_PATH = '/accounts/clear-erasure';
 const ACCOUNT_PROFILE_PATH = '/accounts/profile';
 const ACCOUNT_ROOMS_PATH = '/accounts/rooms';
+const ACCOUNT_ROOMS_TOUCH_PATH = '/accounts/rooms/touch';
 const REVOKE_ALL_PATH = '/accounts/revoke-all';
 const DISABLE_ACCOUNT_PATH = '/accounts/disable';
 const ENABLE_ACCOUNT_PATH = '/accounts/enable';
@@ -175,6 +177,24 @@ function isOwnedRoomBody(value: unknown): value is {
     return false;
   }
   return true;
+}
+
+function isTouchOwnedRoomBody(value: unknown): value is {
+  accountId: string;
+  roomId: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 2 &&
+    typeof body.roomId === 'string' &&
+    isValidRoomId(body.roomId) &&
+    typeof body.accountId === 'string' &&
+    body.accountId.length >= 1 &&
+    body.accountId.length <= 128
+  );
 }
 
 function isGuestIssueBody(value: unknown): value is {
@@ -489,6 +509,26 @@ export class IdentityDO extends DurableObject {
       if ('response' in parsed) return parsed.response;
       clearErasureTarget(this.db, session.accountId, parsed.body.roomId);
       return Response.json({ ok: true }, { headers: noStore() });
+    }
+
+    /*
+     * Internal: the room object moves the owner's "last used" stamp after a
+     * board edit. Board edits travel as Yjs updates to the room object and
+     * never pass through the Worker's public API, so the room is the only
+     * caller. It advances only a row that already exists -- an active
+     * non-owner cannot add the room to their list through it.
+     */
+    if (url.pathname === ACCOUNT_ROOMS_TOUCH_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readExactJson(request, isTouchOwnedRoomBody);
+      if ('response' in parsed) return parsed.response;
+      const touched = touchOwnedRoom(
+        this.db,
+        parsed.body.accountId,
+        parsed.body.roomId,
+        Date.now(),
+      );
+      return Response.json({ ok: true, touched }, { headers: noStore() });
     }
 
     if (url.pathname === ACCOUNT_ROOMS_PATH) {

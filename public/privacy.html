@@ -11,7 +11,7 @@
 <div class="topline"></div>
 <div class="wrap"><header class="nav">
 <a class="brand" href="/"><span class="mark"><u>Teacher</u> Playground</span></a>
-<nav><a href="/pricing">Pricing</a><a class="signin" href="/whiteboard">Sign in</a></nav>
+<nav aria-label="Primary"><a href="/pricing">Pricing</a><a class="signin" href="/whiteboard">Sign in</a></nav>
 </header></div>
 <main class="narrow prose">
 <div class="draft">Draft — written to match what the software actually does. It
@@ -71,16 +71,15 @@ into the room.</p>
 
 <h2>How long we keep things</h2>
 <p>These periods are enforced by the software, not by policy alone:</p>
-<p><strong>Waiting-room requests</strong> — deleted after 24 hours.<br>
-<strong>Removed participants</strong> — record kept 30 days so a removal cannot
-be undone by rejoining.<br>
-<strong>Class PINs</strong> — expire 12 hours after they are issued.<br>
-<strong>Guest sessions</strong> — expire after 4 hours.<br>
-<strong>Teacher sessions</strong> — expire after 30 minutes idle, 12 hours
-maximum.<br>
-<strong>Idle rooms</strong> — deleted after 90 days without use.<br>
-<strong>Deleted-room markers</strong> — a record that a room existed is kept for
-365 days so a deleted room's link cannot be reused.</p>
+<ul>
+<li><strong>Waiting-room requests</strong> — deleted after 24 hours.</li>
+<li><strong>Removed participants</strong> — record kept 30 days so a removal cannot be undone by rejoining.</li>
+<li><strong>Class PINs</strong> — expire 12 hours after they are issued.</li>
+<li><strong>Guest sessions</strong> — expire after 4 hours.</li>
+<li><strong>Teacher sessions</strong> — expire after 30 minutes idle, 12 hours maximum.</li>
+<li><strong>Idle rooms</strong> — deleted after 90 days without use.</li>
+<li><strong>Deleted-room markers</strong> — a record that a room existed is kept for 365 days so a deleted room's link cannot be reused.</li>
+</ul>
 <p>Deleting a room deletes its board content, its participant list, and its
 waiting queue.</p>
 
@@ -111,7 +110,7 @@ details on the main site.</p>
 </main>
 <footer><div class="wrap foot">
 <span class="mark">Teacher Playground</span>
-<nav><a href="/pricing">Pricing</a><a href="/terms">Terms</a><a href="/privacy">Privacy</a></nav>
+<nav aria-label="Footer"><a href="/pricing">Pricing</a><a href="/terms">Terms</a><a href="/privacy">Privacy</a></nav>
 </div></footer>
 </body>
 </html>

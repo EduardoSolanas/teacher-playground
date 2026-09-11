@@ -589,6 +589,27 @@ export function listOwnedRooms(
   }));
 }
 
+/**
+ * Advances a room's last-used stamp without creating an owned-room row.
+ *
+ * Board activity happens in the room object, which knows the room's owner but
+ * not the account's list. This is the one write the list needs from it. An
+ * UPDATE rather than the record upsert on purpose: someone who does not own
+ * the room must not acquire it by being active in it.
+ */
+export function touchOwnedRoom(
+  db: RoomDatabase,
+  accountId: string,
+  roomId: string,
+  now: number,
+): boolean {
+  requireValidRoomId(roomId);
+  return db.prepare(
+    `UPDATE account_rooms SET updated_at = ?
+     WHERE account_id = ? AND room_id = ?`,
+  ).run(now, accountId, roomId).changes > 0;
+}
+
 export function ownedRoomExists(
   db: RoomDatabase,
   accountId: string,

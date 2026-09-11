@@ -82,6 +82,10 @@ export function isRouteAllowedOnHost(
     pathname === '/pricing' ||
     pathname === '/terms' ||
     pathname === '/privacy' ||
+    // The stylesheet the marketing HTML links; the teacher host serves those
+    // pages, the guest host does not. `isPublicPath` then lets it through
+    // without an Access credential.
+    pathname === '/brand.css' ||
     pathname === '/whiteboard' ||
     pathname === '/auth/session' ||
     pathname.startsWith('/auth/session/') ||
@@ -134,9 +138,21 @@ export function isRouteAllowedOnHost(
     return hostKind === 'guest' && method === 'POST';
   }
 
-  // GET/HEAD /whiteboard/<roomId> (32 lowercase hex chars) on both hosts
-  const whiteboardRoomMatch = /^\/whiteboard\/([a-f0-9]{32})$/.exec(pathname);
-  if (whiteboardRoomMatch) {
+  /*
+   * GET/HEAD /whiteboard/<roomId> on both hosts.
+   *
+   * The grammar is ROOM_ID_RE -- the same one `isValidRoomId` and the client's
+   * room-path parser use. The edge gate used to be stricter (32 lowercase hex
+   * only), so every room id outside that shape 404'd with no page while the
+   * product, the join links and the waiting screen all agreed on the wider
+   * shape. `_room` is the static-export placeholder, never a real room.
+   */
+  const whiteboardRoomMatch = /^\/whiteboard\/([^/]+)$/.exec(pathname);
+  if (
+    whiteboardRoomMatch
+    && whiteboardRoomMatch[1] !== '_room'
+    && isValidRoomId(whiteboardRoomMatch[1])
+  ) {
     return method === 'GET' || method === 'HEAD';
   }
 
@@ -345,6 +361,13 @@ export function isPublicPath(pathname: string): boolean {
   if (pathname.includes('..')) return false;
   if ((MARKETING_PAGES as readonly string[]).includes(pathname)) return true;
   if (pathname === '/favicon.ico') return true;
+  /*
+   * The one stylesheet the marketing HTML links. It is a static file shipped
+   * with the site, says nothing about a room, an account or a session, and the
+   * exact match keeps the exemption to that single path — `/api/brand.css`,
+   * `/auth/brand.css` and every other suffix stay behind Access.
+   */
+  if (pathname === '/brand.css') return true;
   /*
    * Excalidraw's typefaces and their metadata.
    *
