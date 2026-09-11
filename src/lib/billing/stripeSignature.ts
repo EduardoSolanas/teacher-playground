@@ -26,15 +26,30 @@ function toHex(bytes: ArrayBuffer | Uint8Array): string {
   ).join('');
 }
 
-async function hmacSha256Hex(secret: string, data: BufferSource): Promise<string> {
+function hexToBytes(hex: string): Uint8Array<ArrayBuffer> | null {
+  if (hex.length === 0 || hex.length % 2 !== 0 || !/^[0-9a-f]+$/.test(hex)) {
+    return null;
+  }
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let index = 0; index < hex.length; index += 2) {
+    bytes[index / 2] = Number.parseInt(hex.slice(index, index + 2), 16);
+  }
+  return bytes;
+}
+
+async function verifyHmacSha256(
+  secret: string,
+  data: BufferSource,
+  signature: Uint8Array<ArrayBuffer>,
+): Promise<boolean> {
   const key = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(secret),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
-    ['sign'],
+    ['verify'],
   );
-  return toHex(await crypto.subtle.sign('HMAC', key, data));
+  return crypto.subtle.verify('HMAC', key, signature, data);
 }
 
 async function sha256Hex(input: string): Promise<string> {
@@ -86,11 +101,13 @@ export async function verifyStripeSignature(
     return { valid: false, reason: 'no_matching_secret' };
   }
 
-  const message = `${timestamp}.${rawBody}`;
+  const message = new TextEncoder().encode(`${timestamp}.${rawBody}`);
   for (const secret of secrets) {
-    const expected = await hmacSha256Hex(secret, new TextEncoder().encode(message));
-    if (v1Signatures.includes(expected)) {
-      return { valid: true, payloadHash: await sha256Hex(rawBody) };
+    for (const v1 of v1Signatures) {
+      const signature = hexToBytes(v1);
+      if (signature !== null && (await verifyHmacSha256(secret, message, signature))) {
+        return { valid: true, payloadHash: await sha256Hex(rawBody) };
+      }
     }
   }
   return { valid: false, reason: 'mismatch' };

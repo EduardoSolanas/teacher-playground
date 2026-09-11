@@ -705,6 +705,72 @@ describe('identity /billing/events/apply: reversed delivery and class-2 effects'
       expect(redemption.confirmed_at).toBe(300);
     });
   });
+
+  it('does not re-open grace when payment_failed arrives after the recovering invoice.paid', async () => {
+    const accountId = await newAccount('billing-payment-failed-reversed');
+    const sub21 = 'sub_payment_failed_reversed';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        currentPeriodEnd: 300,
+        processorCustomerId: 'cus_payment_failed_reversed',
+        processorSubscriptionId: sub21,
+      });
+    });
+
+    const paid = await postApply(
+      applyBody(
+        { id: 'evt_payment_failed_paid', type: 'invoice.paid', created: 400 },
+        {
+          subscription: subscriptionBody(sub21, 'active', {
+            customer: 'cus_payment_failed_reversed',
+            currentPeriodEnd: 700,
+          }),
+          invoice: invoiceBody('in_payment_failed_paid', {
+            customer: 'cus_payment_failed_reversed',
+            amountPaid: 1500,
+            paymentIntent: 'pi_payment_failed_paid',
+            subscription: sub21,
+          }),
+        },
+      ),
+    );
+    expect(paid.status).toBe(200);
+
+    const failed = await postApply(
+      applyBody(
+        { id: 'evt_payment_failed_failed', type: 'invoice.payment_failed', created: 500 },
+        {
+          subscription: subscriptionBody(sub21, 'active', {
+            customer: 'cus_payment_failed_reversed',
+            currentPeriodEnd: 700,
+          }),
+          invoice: invoiceBody('in_payment_failed_failed', {
+            customer: 'cus_payment_failed_reversed',
+            status: 'open',
+            subscription: sub21,
+          }),
+        },
+      ),
+    );
+    expect(failed.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const ent = readEntitlement(instance, accountId);
+      expect(ent?.status).toBe('active');
+      expect(ent?.grace_until).toBeNull();
+      const effectCount = (
+        instance.db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM billing_effects
+             WHERE effect_kind = 'invoice_payment_failed' AND object_id = ?`,
+          )
+          .get('in_payment_failed_failed') as { n: number }
+      ).n;
+      expect(effectCount).toBe(1);
+    });
+  });
 });
 
 describe('identity /billing/events/apply: dispute holds and desired collection', () => {
@@ -1229,6 +1295,63 @@ describe('identity /billing/operations: subscription-collection executor', () =>
       expect(row?.desired_version).toBe(2);
       expect(row?.applied_version).toBe(2);
       expect(row?.in_flight_version).toBeNull();
+    });
+  });
+
+  it('settles a pause retry after a newer resume wins: the retry is never sent', async () => {
+    const accountId = await newAccount('billing-coll-resume-race');
+    const sub21 = 'sub_coll_resume_race';
+    await seedPausedDesire(accountId, sub21);
+
+    const claim = await postOperations(
+      JSON.stringify({
+        subjectKind: 'account',
+        subjectId: accountId,
+        operationId: 'op_coll_pause_retry',
+        kind: 'subscription-collection',
+      }),
+    );
+    expect(claim.status).toBe(201);
+    const claimBody = (await claim.json()) as { claim: { inFlightVersion: number } };
+    expect(claimBody.claim.inFlightVersion).toBe(1);
+
+    await postApply(
+      applyBody(
+        { id: 'evt_coll_resume_race', type: 'charge.dispute.closed', created: 200 },
+        {
+          dispute: {
+            id: `dp_claim_${sub21}`,
+            status: 'won',
+            created: 200,
+            charge: { id: `ch_dp_${sub21}`, customer: `cus_${sub21}` },
+          },
+        },
+      ),
+    );
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const resumed = readSubOrdering(instance, sub21);
+      expect(resumed?.desired_collection).toBe('active');
+      expect(resumed?.desired_version).toBe(2);
+    });
+
+    const settle = await postSettle(
+      JSON.stringify({
+        subjectKind: 'account',
+        subjectId: accountId,
+        operationId: 'op_coll_pause_retry',
+        success: true,
+        expectedVersion: claimBody.claim.inFlightVersion,
+      }),
+    );
+    expect(settle.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const row = readSubOrdering(instance, sub21);
+      expect(row?.desired_collection).toBe('active');
+      expect(row?.applied_version).toBe(1);
+      expect(row?.in_flight_version).toBe(2);
+      expect(row?.in_flight_state).toBe('active');
     });
   });
 });
