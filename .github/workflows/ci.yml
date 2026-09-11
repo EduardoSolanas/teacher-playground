@@ -60,6 +60,9 @@ jobs:
   e2e:
     name: E2E tests
     runs-on: ubuntu-24.04
+    # A green run takes about 12 minutes. Without a limit, a hung run holds
+    # the runner for GitHub's default of six hours.
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -109,6 +112,17 @@ jobs:
         with:
           name: test-results
           path: test-results/
+          retention-days: 7
+
+      # When wrangler dies it prints an empty ERROR and writes the reason only
+      # to its own log file, which is otherwise lost with the runner.
+      - name: Upload wrangler logs
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wrangler-logs
+          path: ~/.config/.wrangler/logs/
+          if-no-files-found: ignore
           retention-days: 7
 
   sast:

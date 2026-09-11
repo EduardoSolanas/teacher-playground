@@ -267,7 +267,30 @@ try {
         },
       },
     );
-    result = await waitForChild(playwrightProcess);
+    /*
+     * The servers are checked before the run, and have to be watched during
+     * it. When wrangler died mid-suite in CI, nothing noticed: every remaining
+     * test waited out its own timeout against a dead port, retried, and waited
+     * again, and the job hung for 26 minutes until someone cancelled it. A
+     * server that exits ends the run, and says which one it was.
+     */
+    const serverExit = (name, child) => new Promise((resolveExit) => {
+      child.once('exit', (code, signal) => resolveExit({ server: name, code, signal }));
+    });
+    const outcome = await Promise.race([
+      waitForChild(playwrightProcess).then((code) => ({ playwright: code })),
+      serverExit('wrangler', wranglerProcess),
+      serverExit('local Access proxy', accessProxyProcess),
+    ]);
+    if ('playwright' in outcome) {
+      result = outcome.playwright;
+    } else {
+      console.error(
+        `\n${outcome.server} exited during the E2E run (code ${outcome.code}, signal ${outcome.signal}); `
+        + 'stopping Playwright instead of letting every remaining test time out.',
+      );
+      result = 1;
+    }
   }
 } finally {
   process.removeListener('SIGINT', stopOnSignal);
