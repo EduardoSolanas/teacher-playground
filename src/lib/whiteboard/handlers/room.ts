@@ -23,6 +23,7 @@ import {
   maxUsersAllowedOnPlan,
   planLimitJsonResponse,
 } from '../../plan/limits';
+import { PLAN_MAX_USERS_PARAM } from '../planMaxUsers';
 import { computeRoomStats } from '../roomStats';
 import {
   MAX_LIBRARY_BYTES,
@@ -31,7 +32,6 @@ import {
 } from '../roomLibrary';
 
 const MAX_NAME_LENGTH = 100;
-const PLAN_MAX_USERS_PARAM = 'planMaxUsers';
 
 function planMaxUsersCap(request: Request): number {
   const value = new URL(request.url).searchParams.get(PLAN_MAX_USERS_PARAM);

@@ -56,6 +56,7 @@ import {
   isAllowedMimeType,
   buildR2ObjectKey,
 } from './lib/whiteboard/boardFileRoutes';
+import { applyPlanMaxUsersParam } from './lib/whiteboard/planMaxUsers';
 import { readBillingEnv, type BillingEnv } from './lib/billing/stripeConfig';
 import { verifyStripeSignature } from './lib/billing/stripeSignature';
 import { eventsFetchMapRequest } from './lib/billing/stripeRequest';
@@ -128,7 +129,6 @@ const AUTH_GUEST = '/auth/guest';
 const IDENTITY_ACCOUNT_ROOMS = 'https://identity/accounts/rooms';
 const IDENTITY_GUESTS_PURGE = 'https://identity/guests/purge';
 const IDENTITY_ACCOUNT_PLAN = 'https://identity/accounts/plan';
-const PLAN_MAX_USERS_PARAM = 'planMaxUsers';
 
 /**
  * Served when the identity store refuses a brand-new tutor account at the
@@ -865,10 +865,7 @@ function forward(
     target.searchParams.delete('sessionId');
   }
   target.searchParams.set('guest', guest ? '1' : '0');
-  target.searchParams.delete(PLAN_MAX_USERS_PARAM);
-  if (planMaxUsers !== null) {
-    target.searchParams.set(PLAN_MAX_USERS_PARAM, String(planMaxUsers));
-  }
+  applyPlanMaxUsersParam(target, planMaxUsers);
 
   const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
   const forwarded = new Request(target, request);
