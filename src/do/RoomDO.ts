@@ -246,6 +246,22 @@ function isEmptyUpdate(update: Uint8Array): boolean {
 }
 
 
+function isArchivedRoomWrite(
+  section: string,
+  method: string,
+  segments: string[],
+): boolean {
+  if (section === '' || section === 'clear') return method === 'POST';
+  if (section === 'settings') return method === 'POST' || method === 'PATCH';
+  if (section === 'library') return method === 'POST';
+  if (section === 'files') {
+    const action = segments[2] ?? '';
+    if (action === 'authorize-write') return true;
+    return (action === 'reserve' || action === 'settle') && method === 'POST';
+  }
+  return false;
+}
+
 function forbidden(message = 'Forbidden'): Response {
   return Response.json(
     { error: message },
@@ -521,15 +537,11 @@ export class RoomDO extends DurableObject {
       }
 
       /*
-       * Archived rooms stay readable but stop accepting board writes. The
-       * owner's effective plan is re-read at this boundary, so the archive
-       * follows a downgrade and a re-upgrade without any stored flag.
+       * Archived rooms stay readable but stop accepting writes. The owner's
+       * effective plan is re-read at this boundary, so the archive follows a
+       * downgrade and a re-upgrade without any stored flag.
        */
-      if (
-        method === 'POST'
-        && roomExists(this.db, roomId)
-        && (section === '' || section === 'clear')
-      ) {
+      if (roomExists(this.db, roomId) && isArchivedRoomWrite(section, method, segments)) {
         const archived = await this.archivedRoomRefusal(roomId);
         if (archived) return archived;
       }

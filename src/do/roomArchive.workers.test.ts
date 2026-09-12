@@ -4,6 +4,7 @@ import { runInDurableObject } from 'cloudflare:test';
 import { getIdentityObject, type IdentityDO } from './IdentityDO';
 import { RoomDO } from './RoomDO';
 import { applyIdentitySchema, recordOwnedRoom } from '../lib/identity/identityStore';
+import { getFileBytesTotal } from '../lib/whiteboard/roomSchema';
 import { writeEntitlement } from '../lib/identity/entitlementWriter';
 import { PLAN_LIMIT_ERROR, PLAN_LIMIT_STATUS } from '../lib/plan/limits';
 import {
@@ -114,6 +115,29 @@ function writeScene(
 
 function readRoom(roomId: string, who: LocalAuthSession): Promise<Response> {
   return authenticatedFetch(`/api/whiteboard/room/${roomId}`, who);
+}
+
+function fileAction(
+  roomId: string,
+  accountId: string,
+  action: string,
+  method: 'GET' | 'POST',
+  body?: unknown,
+): Promise<Response> {
+  const query = new URLSearchParams({ roomId, accountId });
+  return env.ROOMS.get(env.ROOMS.idFromName(roomId)).fetch(
+    `https://room/room/files/${action}?${query.toString()}`,
+    {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    },
+  );
+}
+
+function fileBytesTotal(roomId: string): Promise<number> {
+  const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+  return runInDurableObject(stub, (instance: RoomDO) => getFileBytesTotal(instance.db, roomId));
 }
 
 async function joinPresence(
@@ -259,6 +283,180 @@ describe('an over-quota room after a plan downgrade', () => {
     );
     expect(cleared.status).toBe(PLAN_LIMIT_STATUS);
     expect(await cleared.json()).toEqual({ error: PLAN_LIMIT_ERROR });
+  });
+
+  it('refuses an owner saving settings on an archived room and saves again after re-upgrade', async () => {
+    const { owner, archivedRoomId } = await seedDowngradedOwner();
+
+    const refused = await authenticatedFetch(
+      `/api/whiteboard/room/${archivedRoomId}/settings`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'archived-settings' }),
+      },
+    );
+    expect(refused.status).toBe(PLAN_LIMIT_STATUS);
+    expect(await refused.json()).toEqual({ error: PLAN_LIMIT_ERROR });
+
+    const readable = await authenticatedFetch(
+      `/api/whiteboard/room/${archivedRoomId}/settings`,
+      owner,
+    );
+    expect(readable.status).toBe(200);
+
+    await seedPaidPlan(owner.accountId);
+
+    const saved = await authenticatedFetch(
+      `/api/whiteboard/room/${archivedRoomId}/settings`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'restored-settings' }),
+      },
+    );
+    expect(saved.status).toBe(200);
+
+    const afterRestore = await authenticatedFetch(
+      `/api/whiteboard/room/${archivedRoomId}/settings`,
+      owner,
+    );
+    expect((await afterRestore.json() as { name: string }).name).toBe('restored-settings');
+  });
+
+  it('refuses an owner saving the library on an archived room and saves again after re-upgrade', async () => {
+    const { owner, archivedRoomId } = await seedDowngradedOwner();
+
+    const refused = await authenticatedFetch(
+      `/api/whiteboard/room/${archivedRoomId}/library`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ items: [{ id: 'archived-shape', elements: [] }] }),
+      },
+    );
+    expect(refused.status).toBe(PLAN_LIMIT_STATUS);
+    expect(await refused.json()).toEqual({ error: PLAN_LIMIT_ERROR });
+
+    const readable = await authenticatedFetch(
+      `/api/whiteboard/room/${archivedRoomId}/library`,
+      owner,
+    );
+    expect(readable.status).toBe(200);
+
+    await seedPaidPlan(owner.accountId);
+
+    const saved = await authenticatedFetch(
+      `/api/whiteboard/room/${archivedRoomId}/library`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ items: [{ id: 'restored-shape', elements: [] }] }),
+      },
+    );
+    expect(saved.status).toBe(200);
+
+    const afterRestore = await authenticatedFetch(
+      `/api/whiteboard/room/${archivedRoomId}/library`,
+      owner,
+    );
+    const items = (await afterRestore.json() as { items: Array<{ id: string }> }).items;
+    expect(items.map((item) => item.id)).toEqual(['restored-shape']);
+  });
+
+  it('refuses a file reservation on an archived room and reserves again after re-upgrade', async () => {
+    const { owner, archivedRoomId } = await seedDowngradedOwner();
+
+    const refused = await fileAction(archivedRoomId, owner.accountId, 'reserve', 'POST', {
+      bytes: 1024,
+    });
+    expect(refused.status).toBe(PLAN_LIMIT_STATUS);
+    expect(await refused.json()).toEqual({ error: PLAN_LIMIT_ERROR });
+    expect(await fileBytesTotal(archivedRoomId)).toBe(0);
+
+    await seedPaidPlan(owner.accountId);
+
+    const reserved = await fileAction(archivedRoomId, owner.accountId, 'reserve', 'POST', {
+      bytes: 1024,
+    });
+    expect(reserved.status).toBe(200);
+    expect(await fileBytesTotal(archivedRoomId)).toBe(1024);
+  });
+
+  it('refuses a file settlement on an archived room and settles again after re-upgrade', async () => {
+    const { owner, archivedRoomId } = await seedDowngradedOwner();
+
+    const refused = await fileAction(archivedRoomId, owner.accountId, 'settle', 'POST', {
+      reserved: 0,
+      actual: 1024,
+    });
+    expect(refused.status).toBe(PLAN_LIMIT_STATUS);
+    expect(await refused.json()).toEqual({ error: PLAN_LIMIT_ERROR });
+    expect(await fileBytesTotal(archivedRoomId)).toBe(0);
+
+    await seedPaidPlan(owner.accountId);
+
+    const settled = await fileAction(archivedRoomId, owner.accountId, 'settle', 'POST', {
+      reserved: 0,
+      actual: 1024,
+    });
+    expect(settled.status).toBe(200);
+    expect(await fileBytesTotal(archivedRoomId)).toBe(1024);
+  });
+
+  it('refuses a file write authorization on an archived room while the read stays open', async () => {
+    const { owner, archivedRoomId } = await seedDowngradedOwner();
+
+    const refused = await fileAction(archivedRoomId, owner.accountId, 'authorize-write', 'GET');
+    expect(refused.status).toBe(PLAN_LIMIT_STATUS);
+    expect(await refused.json()).toEqual({ error: PLAN_LIMIT_ERROR });
+
+    const readable = await fileAction(archivedRoomId, owner.accountId, 'authorize-read', 'GET');
+    expect(readable.status).toBe(200);
+
+    await seedPaidPlan(owner.accountId);
+
+    const authorized = await fileAction(archivedRoomId, owner.accountId, 'authorize-write', 'GET');
+    expect(authorized.status).toBe(200);
+  });
+
+  it('refuses a PATCH settings write on an archived room and saves again after re-upgrade', async () => {
+    const { owner, archivedRoomId } = await seedDowngradedOwner();
+
+    const refused = await authenticatedFetch(
+      `/api/whiteboard/room/${archivedRoomId}/settings`,
+      owner,
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'patched-settings' }),
+      },
+    );
+    expect(refused.status).toBe(PLAN_LIMIT_STATUS);
+    expect(await refused.json()).toEqual({ error: PLAN_LIMIT_ERROR });
+
+    await seedPaidPlan(owner.accountId);
+
+    const saved = await authenticatedFetch(
+      `/api/whiteboard/room/${archivedRoomId}/settings`,
+      owner,
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'patched-settings' }),
+      },
+    );
+    expect(saved.status).toBe(200);
+
+    const afterRestore = await authenticatedFetch(
+      `/api/whiteboard/room/${archivedRoomId}/settings`,
+      owner,
+    );
+    expect((await afterRestore.json() as { name: string }).name).toBe('patched-settings');
   });
 
   it('fails closed on writes when the archive-state read fails', async () => {
