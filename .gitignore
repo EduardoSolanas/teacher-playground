@@ -65,3 +65,6 @@ coverage-e2e/
 
 # Throwaway agent worktrees, each with its own node_modules and build output.
 .claude/worktrees/
+
+# Stryker mutation-testing work dir (reports land in coverage/, already ignored)
+.stryker-tmp/

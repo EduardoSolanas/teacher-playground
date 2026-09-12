@@ -25,6 +25,7 @@ repository. Do not skip tests to save time.
 | `npm run coverage:unit` / `coverage:workers` | Branch coverage of `src/` from each vitest suite (`coverage/unit`, `coverage/workers`) |
 | `npm run test:e2e:coverage` then `coverage:e2e` | Per-test browser branch coverage of the e2e suite; `--without=` shows what removing tests would lose |
 | `npm run coverage:layers` | The three side by side, per directory |
+| `npm run mutation` | Stryker mutation testing over `src/lib/**/*.ts` (mandatory for lib changes; scope with `npx stryker run --mutate <path>`) |
 
 Worker tests require exported HTML in `out/`; run `npm run build` first in a
 fresh checkout or when build inputs change. The worker runner checks for
@@ -101,8 +102,13 @@ reusing an id across an admission or suspend boundary.
 ## Mutation testing
 
 This repo treats mutation testing as proof that a test would fail if the guard
-were removed. Automated Stryker is optional; **targeted mutants are required**
-for authorization, origin/CSRF, session, and request-boundary checks.
+were removed. **Stryker is mandatory** for changes under `src/lib/**/*.ts`
+that unit tests cover: run `npm run mutation` (full) or, for one change,
+`npx stryker run --mutate <path>` and kill every mutant on the lines you
+touched. A surviving mutant in changed code means the work is not done.
+**Targeted mutants are also required** for the guards Stryker cannot reach:
+authorization, origin/CSRF, session, request-boundary, and Durable
+Object/worker checks (those live in `*.workers.test.ts`, which needs workerd).
 
 For each new or changed guard:
 
@@ -124,8 +130,12 @@ For each new or changed guard:
 Do not mutation-test formatting, TypeScript types, or test-only helpers.
 Mutate one guard at a time so the failing test is attributable.
 
-If you add `@stryker-mutator` later, keep mutating `src/lib/**/*.ts` that have
-unit tests; do not point Stryker at `*.workers.test.ts` (those need workerd).
+`stryker.config.json` binds the vitest runner to `vitest.config.mts` with
+per-test coverage and mutates `src/lib/**/*.ts`. Never point Stryker at
+`*.workers.test.ts` (those need workerd) and never at e2e-only code. Full runs
+write the HTML report to `coverage/mutation/`. Run the scope that covers your
+change before every checkpoint; the `security.md` phrase "mutation-tested" is
+only accurate when the surviving set for the changed lines is empty.
 
 ## Commits
 

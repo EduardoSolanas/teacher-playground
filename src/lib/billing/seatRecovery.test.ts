@@ -99,6 +99,10 @@ describe('seat-change 24-hour-window recovery (spec §3.2 step 4)', () => {
     ).toEqual({ kind: 'retry' });
   });
 
+  it('pins the idempotency window to its literal duration', () => {
+    expect(STRIPE_IDEMPOTENCY_WINDOW_MS).toBe(86_400_000);
+  });
+
   it('treats the exact window boundary as outside and the millisecond before as inside', () => {
     expect(seatChangeAttemptWithinWindow(NOW - STRIPE_IDEMPOTENCY_WINDOW_MS + 1, NOW)).toBe(true);
     expect(seatChangeAttemptWithinWindow(NOW - STRIPE_IDEMPOTENCY_WINDOW_MS, NOW)).toBe(false);
