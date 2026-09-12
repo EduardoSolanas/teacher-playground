@@ -3,7 +3,7 @@ import { env } from 'cloudflare:workers';
 import { runInDurableObject } from 'cloudflare:test';
 import { getIdentityObject, type IdentityDO } from './IdentityDO';
 import { RoomDO } from './RoomDO';
-import { recordOwnedRoom } from '../lib/identity/identityStore';
+import { applyIdentitySchema, recordOwnedRoom } from '../lib/identity/identityStore';
 import { writeEntitlement } from '../lib/identity/entitlementWriter';
 import { PLAN_LIMIT_ERROR, PLAN_LIMIT_STATUS } from '../lib/plan/limits';
 import {
@@ -280,6 +280,37 @@ describe('an over-quota room after a plan downgrade', () => {
       },
     ));
     expect(refused.status).toBe(403);
+  });
+
+  it('fails closed on writes when the archive-state entitlements read throws', async () => {
+    const { owner, archivedRoomId } = await seedDowngradedOwner();
+
+    await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+      instance.db.exec('DROP TABLE entitlements');
+    });
+
+    /*
+     * The dropped table makes the identity object throw while the room object
+     * is failing the write closed, so workerd reports that expected fault as
+     * an unhandled rejection. Vitest skips reporting an unhandled error when
+     * user code listens for it, so this keeps the deliberate fault from
+     * failing the run while the 403 assertion below still proves the guard.
+     */
+    const swallowExpectedFault = () => {};
+    process.on('unhandledRejection', swallowExpectedFault);
+    try {
+      const refused = await writeScene(archivedRoomId, owner, [
+        { id: 'after-entitlements-fault', type: 'rectangle' },
+      ]);
+      expect(refused.status).toBe(403);
+    } finally {
+      // Worker-test storage is shared per file; re-apply the schema the DO
+      // applies at startup so later tests can still seed entitlements.
+      await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+        applyIdentitySchema(instance.db);
+      });
+      process.off('unhandledRejection', swallowExpectedFault);
+    }
   });
 
   it('rejects malformed archive-state requests', async () => {
