@@ -200,6 +200,25 @@ const hits = new Map();
 for (const set of covered.values()) for (const key of set) hits.set(key, (hits.get(key) ?? 0) + 1);
 const totalCovered = hits.size;
 
+/*
+ * Every test's counts summed into one file of the same shape. It is what CI
+ * keeps: a few MB, where the raw per-test data is hundreds, and all that
+ * scripts/coverage-layers.mjs needs for the suite-wide column.
+ */
+const merged = {};
+for (const t of tests) {
+  for (const [file, { branchMap, b }] of Object.entries(t.coverage)) {
+    const m = merged[file] ?? (merged[file] = { branchMap, b: {} });
+    for (const [id, counts] of Object.entries(b)) {
+      const into = m.b[id] ?? (m.b[id] = counts.map(() => 0));
+      counts.forEach((n, arm) => { into[arm] = (into[arm] ?? 0) + n; });
+    }
+  }
+}
+writeFileSync(join(RAW_DIR, 'merged.json'), JSON.stringify({
+  testId: 'merged', file: '(all specs)', title: `${tests.length} tests`, status: 'merged', coverage: merged,
+}));
+
 console.log(`\nE2E browser branch coverage of src/ (${tests.length} tests)`);
 console.log(`  arms covered: ${totalCovered} / ${universe.size} seen in loaded bundles = ${pct(totalCovered, universe.size)}`);
 

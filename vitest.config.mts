@@ -31,11 +31,13 @@ export default defineConfig({
       "tests/e2e",
       "**/*.workers.test.ts",
     ],
-    // `npm run coverage:unit`. Test files and setup are not the code under test.
+    // `npm run coverage:unit`, or COVERAGE=1 (CI sets it on the unchanged
+    // `npm test` step). Test files and setup are not the code under test.
     coverage: {
+      enabled: process.env.COVERAGE === "1",
       provider: "v8",
       reportsDirectory: "coverage/unit",
-      reporter: ["text-summary", "json", "json-summary"],
+      reporter: ["text-summary", "json", "json-summary", "html"],
       include: ["src/**"],
       exclude: ["**/*.test.ts", "**/*.test.tsx", "src/test/**", "**/*.d.ts"],
       reportOnFailure: true,
