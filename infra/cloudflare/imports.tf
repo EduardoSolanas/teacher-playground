@@ -20,15 +20,20 @@
 # The id format is PER RESOURCE, and the shapes are opposites. There is no rule
 # to infer; each was learned from the provider refusing the other:
 #
-#   R2 bucket      "<account_id>/<bucket_name>/<jurisdiction>"  no discriminator
-#   Access app     "accounts/<account_id>/<app_id>"             discriminator required
-#   Access policy  "accounts/<account_id>/<policy_id>"
-#   Ruleset        "zones/<zone_id>/<ruleset_id>"
+#   R2 bucket      "<account_id>/<bucket_name>/<jurisdiction>"
+#   Access app     "accounts/<account_id>/<app_id>"
+#   Access policy  "<account_id>/<policy_id>"
+#   Ruleset        "zones/<zone_id>/<ruleset_id>"   (still unverified)
 #
-# The Access resources take "accounts" or "zones" first because they can be
-# scoped either way, and a missing one is reported as "invalid discriminator
-# segment". R2 has no such choice and reads a leading "accounts" as the account
-# id, which produced a 404 on /accounts/accounts/r2/buckets/<account id>.
+# Three different shapes across four resources, including two that sit in the
+# same file and describe the same account. The application takes the
+# discriminator; the policy right next to it does not.
+#
+# The application takes "accounts" or "zones" first because it can be scoped
+# either way, and a missing one is reported as "invalid discriminator segment".
+# R2 reads a leading "accounts" as the account id, which produced a 404 on
+# /accounts/accounts/r2/buckets/<account id>. The policy rejects the prefix
+# outright: expected urlencoded segments "<account_id>/<policy_id>".
 #
 # Only a real plan against the real API establishes any of this.
 #
@@ -43,7 +48,7 @@ import {
 import {
   for_each = var.adopt_access_policy_id == null ? {} : { this = var.adopt_access_policy_id }
   to       = cloudflare_zero_trust_access_policy.allow_teachers
-  id       = "accounts/${local.account_id}/${each.value}"
+  id       = "${local.account_id}/${each.value}"
 }
 
 # R2 takes a THIRD segment, the jurisdiction. "default" is the ordinary one; a
