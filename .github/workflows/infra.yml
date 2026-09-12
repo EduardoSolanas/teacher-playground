@@ -72,10 +72,6 @@ jobs:
       # Terraform reads the Cloudflare token from the environment; it is never
       # written to a file, and no value is ever echoed.
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      # Addresses the teacher Access policy admits. Personal data, so it is a
-      # secret rather than a manifest value, and it has no default: a run that
-      # cannot see it fails instead of planning a policy that admits nobody.
-      TF_VAR_teacher_allowed_emails: ${{ secrets.TEACHER_ALLOWED_EMAILS }}
       # State lives in a private R2 bucket over the S3-compatible endpoint.
       # These are R2 API token credentials, not AWS ones -- the S3 backend just
       # reads them under these names.

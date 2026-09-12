@@ -22,30 +22,28 @@ resource "cloudflare_zero_trust_access_policy" "allow_teachers" {
   name       = "Allow signed-in teachers"
   decision   = "allow"
 
-  # An explicit allowlist of addresses -- NOT `everyone`.
+  # Anyone who completes one of the organization's configured identity providers.
   #
-  # This said `everyone = {}` until the live policy was read: production allows
-  # exactly one address. `everyone` means anyone who completes any configured
-  # identity provider, so applying that would have opened the teacher surface to
-  # every person on the internet with a Google account. Terraform would have
-  # reported it as a one-line change to an `include` rule.
+  # This is deliberate, and it moves the boundary rather than removing it.
+  # Production ran an email allowlist of one address while the product was being
+  # built; that is a closed front door, not a design. The application behind it
+  # is built for open tutor sign-up: IdentityDO creates an account for whatever
+  # Access subject appears, TUTOR_ACCOUNT_CAP refuses a BRAND-NEW account once
+  # active accounts reach the cap (never an existing one), and the Worker serves
+  # a "Tutor sign-ups are paused" page when it does. None of that machinery
+  # means anything if a human has to add each address in the dashboard first.
   #
-  # The addresses are personal data, so they are not in this repository: they
-  # arrive as TF_VAR_teacher_allowed_emails, the same way every other credential
-  # reaches this stack. The tracked files never hold one, and the secret scan
-  # keeps it that way.
-  include = [
-    for address in var.teacher_allowed_emails : {
-      email = { email = address }
-    }
-  ]
-
-  lifecycle {
-    precondition {
-      condition     = length(var.teacher_allowed_emails) > 0
-      error_message = "teacher_allowed_emails is empty. An Access policy with no include rule is not 'open to nobody' -- refuse to build one rather than risk the meaning of an empty allowlist."
-    }
-  }
+  # So Access answers "is this a real, authenticated person", and the product
+  # answers "may this person have a tutor account" -- the cap, the plan, and
+  # billing. Those are enforced in code, with tests, which the dashboard rule
+  # never was.
+  #
+  # The consequence is worth stating plainly: with `everyone`, the cap is the
+  # only thing between the internet and a tutor account. If the cap is ever
+  # raised or bypassed, this rule is not a second line of defence.
+  include = [{
+    everyone = {}
+  }]
 }
 
 resource "cloudflare_zero_trust_access_application" "teacher" {
