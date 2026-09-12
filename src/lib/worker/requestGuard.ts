@@ -80,6 +80,10 @@ export function isRouteAllowedOnHost(
     return hostKind === 'teacher' && method === 'POST';
   }
 
+  if (pathname === BILLING_CHECKOUT_PATH || pathname === BILLING_PORTAL_PATH) {
+    return hostKind === 'teacher' && method === 'POST';
+  }
+
   // Teacher-only paths: allow on teacher host, deny on guest host
   const isTeacherOnlyPath =
     pathname === '/' ||
@@ -243,6 +247,10 @@ export const ROOM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 export const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 export const BILLING_WEBHOOK_PATH = '/api/billing/webhook';
+
+export const BILLING_CHECKOUT_PATH = '/api/billing/checkout';
+
+export const BILLING_PORTAL_PATH = '/api/billing/portal';
 
 export const BILLING_WEBHOOK_MAX_BODY_BYTES = 1024 * 1024;
 

@@ -895,4 +895,34 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(isOriginGuardedPath('/api/billing/checkout', 'POST')).toBe(true);
     });
   });
+
+  describe('billing checkout and portal route boundary (spec ┬º6.1)', () => {
+    it('allows only POST /api/billing/checkout and POST /api/billing/portal on the teacher host', () => {
+      for (const pathname of ['/api/billing/checkout', '/api/billing/portal']) {
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'teacher'), pathname).toBe(true);
+        expect(isRouteAllowedOnHost(pathname, 'GET', 'teacher'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'HEAD', 'teacher'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'PUT', 'teacher'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'DELETE', 'teacher'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'guest'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'marketing'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'unknown'), pathname).toBe(false);
+      }
+    });
+
+    it('keeps suffix and prefix variants of checkout and portal out of the allowance', () => {
+      for (const pathname of [
+        '/api/billing/checkout/',
+        '/api/billing/checkout/extra',
+        '/api/billing/checkoutX',
+        '/api/billing/checkouts',
+        '/api/billing/portal/',
+        '/api/billing/portal/extra',
+        '/api/billing/portals',
+        '/api/billing/portals/me',
+      ]) {
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'teacher'), pathname).toBe(false);
+      }
+    });
+  });
 });

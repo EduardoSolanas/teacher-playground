@@ -39,6 +39,7 @@ jobs:
   staging:
     name: Real test-mode billing round trip
     runs-on: ubuntu-24.04
+    environment: staging
     # The local E2E job (ci.yml) runs in ~12 minutes; the staging run drives
     # hosted Checkout, the Customer Portal, disputes, and Test Clocks on top.
     timeout-minutes: 60
@@ -63,6 +64,32 @@ jobs:
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
+
+      - name: Validate Stripe API base input (SEC-A17)
+        if: ${{ inputs.stripe-api-base != '' }}
+        env:
+          STRIPE_API_BASE_INPUT: ${{ inputs.stripe-api-base }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+        run: |
+          node -e '
+            const raw = process.env.STRIPE_API_BASE_INPUT ?? "";
+            const key = process.env.STRIPE_SECRET_KEY ?? "";
+            let url;
+            try { url = new URL(raw); } catch { url = null; }
+            const invalid = !url
+              || url.protocol !== "https:"
+              || url.username !== ""
+              || url.password !== "";
+            if (invalid) {
+              console.error("::error::STRIPE_API_BASE must be an absolute https URL");
+              process.exit(1);
+            }
+            if (url.host === "api.stripe.com") process.exit(0);
+            if (url.hostname.includes("api.stripe.com") || !key.startsWith("sk_test_")) {
+              console.error("::error::STRIPE_API_BASE may only leave api.stripe.com for a sk_test_ key");
+              process.exit(1);
+            }
+          '
 
       # The worker and e2e assets must exist in out/ before the runner starts,
       # and the build changes with every billing phase, so it is never cached.

@@ -43,6 +43,8 @@ import {
   MARKETING_PAGES,
   BILLING_WEBHOOK_PATH,
   BILLING_WEBHOOK_MAX_BODY_BYTES,
+  BILLING_CHECKOUT_PATH,
+  BILLING_PORTAL_PATH,
   routeHostKind,
   stripForwardedIdentityHeaders,
   connectSrcForPageOrigin,
@@ -57,9 +59,14 @@ import {
   buildR2ObjectKey,
 } from './lib/whiteboard/boardFileRoutes';
 import { applyPlanMaxUsersParam } from './lib/whiteboard/planMaxUsers';
+import { PLAN_CATALOG, type PlanId } from './lib/plan/catalog';
 import { readBillingEnv, type BillingEnv } from './lib/billing/stripeConfig';
 import { verifyStripeSignature } from './lib/billing/stripeSignature';
-import { eventsFetchMapRequest } from './lib/billing/stripeRequest';
+import {
+  checkoutSessionRequest,
+  eventsFetchMapRequest,
+  portalSessionRequest,
+} from './lib/billing/stripeRequest';
 import { executeStripeRequest } from './lib/billing/stripeClient';
 
 export interface Env {
@@ -129,6 +136,16 @@ const AUTH_GUEST = '/auth/guest';
 const IDENTITY_ACCOUNT_ROOMS = 'https://identity/accounts/rooms';
 const IDENTITY_GUESTS_PURGE = 'https://identity/guests/purge';
 const IDENTITY_ACCOUNT_PLAN = 'https://identity/accounts/plan';
+const IDENTITY_BILLING_OPERATIONS = 'https://identity/billing/operations';
+const IDENTITY_BILLING_RATE_LIMIT = 'https://identity/billing/rate-limit';
+const IDENTITY_BILLING_CUSTOMER = 'https://identity/billing/customer';
+
+const PERSONAL_PAID_PLANS: ReadonlySet<string> = new Set([
+  'tutor_pro_monthly',
+  'tutor_pro_annual',
+]);
+const BILLING_OPERATION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const BILLING_REFERRAL_CODE_RE = /^[A-Za-z0-9-]{6,32}$/;
 
 /**
  * Served when the identity store refuses a brand-new tutor account at the
@@ -1132,6 +1149,7 @@ async function fetchWebhookObjects(
   billing: BillingEnv,
   event: StripeWebhookEvent,
 ): Promise<Record<string, unknown> | null> {
+  if (!billing.apiBaseAllowed) return null;
   const request = eventsFetchMapRequest(
     billing.apiBaseUrl,
     billing.secretKey ?? '',
@@ -1273,6 +1291,302 @@ async function handleStripeWebhook(env: Env, request: Request): Promise<Response
     event,
     Object.keys(objects).length > 0 ? objects : undefined,
   );
+}
+
+function billingEnvFor(env: Env): BillingEnv {
+  return readBillingEnv({
+    STRIPE_API_BASE: env.STRIPE_API_BASE,
+    STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
+    STRIPE_WEBHOOK_SECRET: env.STRIPE_WEBHOOK_SECRET,
+  });
+}
+
+function billingPriceId(env: Env, planId: PlanId): string | null {
+  const priceEnv = PLAN_CATALOG[planId].priceEnv;
+  if (priceEnv === null) return null;
+  const value = (env as unknown as Record<string, unknown>)[priceEnv];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function isBillingCheckoutBody(value: unknown): value is {
+  planId: PlanId;
+  operationId: string;
+  referralCode?: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  if (typeof body.planId !== 'string' || !PERSONAL_PAID_PLANS.has(body.planId)) return false;
+  if (typeof body.operationId !== 'string' || !BILLING_OPERATION_ID_RE.test(body.operationId)) {
+    return false;
+  }
+  if (body.referralCode !== undefined) {
+    if (
+      typeof body.referralCode !== 'string'
+      || !BILLING_REFERRAL_CODE_RE.test(body.referralCode)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isBillingPortalBody(value: unknown): value is { operationId: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  return typeof body.operationId === 'string' && BILLING_OPERATION_ID_RE.test(body.operationId);
+}
+
+async function readBillingJsonBody(
+  request: Request,
+): Promise<{ ok: true; body: unknown } | { ok: false; response: Response }> {
+  if (bodyTooLarge(request.headers.get('content-length'))) {
+    return {
+      ok: false,
+      response: withSecurityHeaders(new Response('Body too large', { status: 413 })),
+    };
+  }
+  if (!isJsonContentType(request.headers.get('content-type'))) {
+    return {
+      ok: false,
+      response: withSecurityHeaders(
+        new Response('Content type must be application/json', { status: 415 }),
+      ),
+    };
+  }
+  const bounded = await readBoundedJsonBody(request);
+  if (!bounded.ok) {
+    return {
+      ok: false,
+      response: withSecurityHeaders(new Response('Body too large', { status: 413 })),
+    };
+  }
+  try {
+    return { ok: true, body: JSON.parse(new TextDecoder().decode(bounded.buffer)) };
+  } catch {
+    return {
+      ok: false,
+      response: withSecurityHeaders(Response.json({ error: 'Invalid JSON body' }, { status: 400 })),
+    };
+  }
+}
+
+function billingUnavailable(): Response {
+  return withSecurityHeaders(Response.json(
+    { error: 'Billing unavailable' },
+    { status: 503, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+function stripeRequestFailed(): Response {
+  return withSecurityHeaders(Response.json(
+    { error: 'Stripe request failed' },
+    { status: 502, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+function billingNoSubscription(): Response {
+  return withSecurityHeaders(Response.json(
+    { error: 'No subscription' },
+    { status: 409, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+function billingConflict(): Response {
+  return withSecurityHeaders(Response.json(
+    { error: 'Conflict' },
+    { status: 409, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+async function billingRateLimit(env: Env, request: Request): Promise<Response | null> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const result = await identity.fetch(new Request(IDENTITY_BILLING_RATE_LIMIT, {
+    method: 'POST',
+    headers: { cookie: request.headers.get('cookie') ?? '' },
+  }));
+  if (!result.ok) {
+    return withSecurityHeaders(new Response(result.body, {
+      status: result.status,
+      headers: result.headers,
+    }));
+  }
+  const body = (await result.json()) as { allowed?: unknown; retryAfterMs?: unknown };
+  if (body.allowed === true) return null;
+  const retryAfterMs = typeof body.retryAfterMs === 'number' && Number.isFinite(body.retryAfterMs)
+    ? body.retryAfterMs
+    : 0;
+  return rateLimited(env, retryAfterMs);
+}
+
+async function recordBillingOperation(
+  env: Env,
+  session: ValidatedSession,
+  operationId: string,
+  kind: 'checkout' | 'portal',
+  details?: {
+    planId?: PlanId;
+    referralCode?: string;
+    successUrl?: string;
+    cancelUrl?: string;
+    returnUrl?: string;
+  },
+): Promise<Response | null> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const result = await identity.fetch(new Request(IDENTITY_BILLING_OPERATIONS, internalJson({
+    subjectKind: 'account',
+    subjectId: session.accountId,
+    operationId,
+    kind,
+    ...details,
+  })));
+  if (result.status === 409) return billingConflict();
+  if (!result.ok) {
+    return withSecurityHeaders(new Response(result.body, {
+      status: result.status,
+      headers: result.headers,
+    }));
+  }
+  return null;
+}
+
+function stripeSessionUrl(json: unknown): string | null {
+  const record = recordOf(json);
+  const url = record?.url;
+  if (typeof url !== 'string' || url.length === 0) return null;
+  try {
+    return new URL(url).protocol === 'https:' ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+async function executeBillingSession(
+  billing: BillingEnv,
+  request: Request,
+): Promise<Response> {
+  const secretKey = billing.secretKey;
+  if (secretKey === null) return billingUnavailable();
+  let result;
+  try {
+    result = await executeStripeRequest(request, secretKey);
+  } catch {
+    return stripeRequestFailed();
+  }
+  if (!result.ok) return stripeRequestFailed();
+  const url = stripeSessionUrl(result.json);
+  if (url === null) return stripeRequestFailed();
+  return withSecurityHeaders(Response.json(
+    { url },
+    { status: 200, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+async function billingCheckout(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const limited = await billingRateLimit(env, request);
+  if (limited) return limited;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+  if (!isBillingCheckoutBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  const { planId, operationId, referralCode } = read.body;
+  const billing = billingEnvFor(env);
+  const priceId = billingPriceId(env, planId);
+  if (!billing.apiBaseAllowed || billing.secretKey === null || priceId === null) {
+    return billingUnavailable();
+  }
+  const origin = new URL(request.url).origin;
+  const successUrl = `${origin}/whiteboard?billing=success`;
+  const cancelUrl = `${origin}/pricing?billing=cancelled`;
+  const recorded = await recordBillingOperation(env, outcome.session, operationId, 'checkout', {
+    planId,
+    referralCode,
+    successUrl,
+    cancelUrl,
+  });
+  if (recorded) return recorded;
+
+  const stripeRequest = checkoutSessionRequest(billing.apiBaseUrl, billing.secretKey, {
+    accountId: outcome.session.accountId,
+    planId,
+    priceId,
+    operationId,
+    successUrl,
+    cancelUrl,
+    referralCode,
+  });
+  return executeBillingSession(billing, stripeRequest);
+}
+
+async function billingPortal(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const limited = await billingRateLimit(env, request);
+  if (limited) return limited;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+  if (!isBillingPortalBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  const { operationId } = read.body;
+  const billing = billingEnvFor(env);
+  if (!billing.apiBaseAllowed || billing.secretKey === null) {
+    return billingUnavailable();
+  }
+
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const customerResponse = await identity.fetch(new Request(IDENTITY_BILLING_CUSTOMER, {
+    method: 'GET',
+    headers: { cookie: request.headers.get('cookie') ?? '' },
+  }));
+  if (!customerResponse.ok) {
+    return withSecurityHeaders(new Response(customerResponse.body, {
+      status: customerResponse.status,
+      headers: customerResponse.headers,
+    }));
+  }
+  const customer = (await customerResponse.json()) as { processorCustomerId?: unknown };
+  const processorCustomerId = customer.processorCustomerId;
+  if (typeof processorCustomerId !== 'string' || processorCustomerId.length === 0) {
+    return billingNoSubscription();
+  }
+
+  const origin = new URL(request.url).origin;
+  const returnUrl = `${origin}/whiteboard?billing=portal`;
+  const recorded = await recordBillingOperation(env, outcome.session, operationId, 'portal', {
+    returnUrl,
+  });
+  if (recorded) return recorded;
+
+  const stripeRequest = portalSessionRequest(billing.apiBaseUrl, billing.secretKey, {
+    accountId: outcome.session.accountId,
+    processorCustomerId,
+    operationId,
+    returnUrl,
+  });
+  return executeBillingSession(billing, stripeRequest);
 }
 
 function hostNotFound(): Response {
@@ -1451,6 +1765,12 @@ const worker = {
       }
       if (url.pathname === ACCOUNT_ROOMS) {
         return listAccountRooms(env, request, principal);
+      }
+      if (url.pathname === BILLING_CHECKOUT_PATH) {
+        return billingCheckout(env, request, principal);
+      }
+      if (url.pathname === BILLING_PORTAL_PATH) {
+        return billingPortal(env, request, principal);
       }
     }
 

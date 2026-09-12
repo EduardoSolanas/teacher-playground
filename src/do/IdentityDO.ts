@@ -98,7 +98,52 @@ const BILLING_APPLY_PATH = '/billing/events/apply';
 const BILLING_STATUS_PATH = '/billing/events/status';
 const BILLING_OPERATIONS_PATH = '/billing/operations';
 const BILLING_SETTLE_PATH = '/billing/operations/settle';
+const BILLING_RATE_LIMIT_PATH = '/billing/rate-limit';
+const BILLING_CUSTOMER_PATH = '/billing/customer';
 export const GLOBAL_IDENTITY_OBJECT_NAME = 'global';
+
+export const BILLING_OPERATION_RATE_MAX = 10;
+export const BILLING_OPERATION_RATE_WINDOW_MS = 60 * 60 * 1000;
+
+function applyBillingRateLimitSchema(db: RoomDatabase): void {
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS billing_rate_counters (
+       subject_id TEXT PRIMARY KEY,
+       window_start INTEGER NOT NULL,
+       count INTEGER NOT NULL CHECK (count >= 0)
+     )`,
+  );
+}
+
+function takeBillingOperationSlot(
+  db: RoomDatabase,
+  subjectId: string,
+  now: number,
+): { allowed: boolean; retryAfterMs: number } {
+  const row = db
+    .prepare(
+      `SELECT window_start, count FROM billing_rate_counters WHERE subject_id = ?`,
+    )
+    .get(subjectId) as { window_start: number; count: number } | undefined;
+  if (!row || now - row.window_start >= BILLING_OPERATION_RATE_WINDOW_MS) {
+    db.prepare(
+      `INSERT INTO billing_rate_counters (subject_id, window_start, count)
+       VALUES (?, ?, 1)
+       ON CONFLICT(subject_id) DO UPDATE SET
+         window_start = excluded.window_start,
+         count = excluded.count`,
+    ).run(subjectId, now);
+    return { allowed: true, retryAfterMs: BILLING_OPERATION_RATE_WINDOW_MS };
+  }
+  const retryAfterMs = row.window_start + BILLING_OPERATION_RATE_WINDOW_MS - now;
+  if (row.count < BILLING_OPERATION_RATE_MAX) {
+    db.prepare(
+      `UPDATE billing_rate_counters SET count = count + 1 WHERE subject_id = ?`,
+    ).run(subjectId);
+    return { allowed: true, retryAfterMs };
+  }
+  return { allowed: false, retryAfterMs };
+}
 
 /**
  * Internal marker the Worker uses to turn a refused session mint into its
@@ -494,6 +539,7 @@ export class IdentityDO extends DurableObject {
     this.tutorAccountCap = configuredTutorAccountCap(env);
     this.db = new DODatabase(ctx.storage.sql, ctx.storage);
     applyIdentitySchema(this.db);
+    applyBillingRateLimitSchema(this.db);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -1080,6 +1126,31 @@ export class IdentityDO extends DurableObject {
         );
         return Response.json({ error: 'settle_failed' }, { status: 500, headers: noStore() });
       }
+    }
+
+    if (url.pathname === BILLING_RATE_LIMIT_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      if (request.body !== null) {
+        return Response.json({ error: 'Invalid body' }, { status: 400 });
+      }
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      const outcome = takeBillingOperationSlot(this.db, session.accountId, Date.now());
+      return Response.json(outcome, { headers: noStore() });
+    }
+
+    if (url.pathname === BILLING_CUSTOMER_PATH) {
+      if (request.method !== 'GET') return methodNotAllowed('GET');
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      const personal = readEntitlementsForAccount(this.db, session.accountId)
+        .find((row) => row.source === 'personal');
+      return Response.json(
+        { processorCustomerId: personal?.processorCustomerId ?? null },
+        { headers: noStore() },
+      );
     }
 
     return Response.json({ error: 'Not found' }, { status: 404 });
