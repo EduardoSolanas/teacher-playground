@@ -132,7 +132,10 @@ Mutate one guard at a time so the failing test is attributable.
 
 `stryker.config.json` binds the vitest runner to `vitest.config.mts` with
 per-test coverage and mutates `src/lib/**/*.ts`. Never point Stryker at
-`*.workers.test.ts` (those need workerd) and never at e2e-only code. Full runs
+`*.workers.test.ts` or e2e: the cloudflare vitest pool cannot start inside
+Stryker's sandbox (tried; the dry run fails with "Failed to start
+cloudflare-pool worker"), and Playwright costs minutes per mutant. Those layers
+are covered by the mandatory targeted mutants above instead. Full runs
 write the HTML report to `coverage/mutation/`. Run the scope that covers your
 change before every checkpoint; the `security.md` phrase "mutation-tested" is
 only accurate when the surviving set for the changed lines is empty.
