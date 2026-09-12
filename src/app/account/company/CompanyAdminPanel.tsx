@@ -5,11 +5,12 @@ import { useCallback, useEffect, useState } from 'react';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import type { AjaxFetch } from '@/lib/whiteboard/teacherRooms';
 import CopyButton from '@/components/whiteboard/CopyButton';
-import InertConfirmDialog from './InertConfirmDialog';
+import ConfirmDialog from './ConfirmDialog';
 import {
+  inviteTokenHash,
   parseCompanySummary,
   readInviteToken,
-  readMintedToken,
+  readMintedInvite,
   type CompanySummary,
 } from './companySummary';
 
@@ -17,27 +18,32 @@ type DestructiveActionId = 'transfer' | 'rename' | 'disable';
 
 const DESTRUCTIVE_ACTIONS: Record<
   DestructiveActionId,
-  { title: string; body: string; confirmLabel: string; note: string }
+  { title: string; body: string; confirmLabel: string }
 > = {
   transfer: {
     title: 'Transfer ownership',
-    body: 'Ownership moves to another admin, who becomes the owner. The current owner becomes an admin.',
+    body: 'Ownership moves to the member you choose, who becomes the owner. The current owner becomes an admin.',
     confirmLabel: 'Transfer ownership',
-    note: 'Transfer is not available from this page yet.',
   },
   rename: {
     title: 'Rename company',
     body: 'The new name appears on invoices and on every member’s plan.',
     confirmLabel: 'Rename company',
-    note: 'Renaming is not available from this page yet.',
   },
   disable: {
     title: 'Disable company',
     body: 'Every member loses their company seat. Rooms and boards are not deleted.',
     confirmLabel: 'Disable company',
-    note: 'Disabling is not available from this page yet.',
   },
 };
+
+async function actionErrorMessage(response: Response, fallback: string): Promise<string> {
+  const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
+  if (body && typeof body.error === 'string' && body.error.trim().length > 0) {
+    return body.error;
+  }
+  return fallback;
+}
 
 export default function CompanyAdminPanel({
   request = ajaxFetch,
@@ -48,9 +54,11 @@ export default function CompanyAdminPanel({
   const [loadFailed, setLoadFailed] = useState(false);
   const [refused, setRefused] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [disabled, setDisabled] = useState(false);
   const [inviteToken, setInviteToken] = useState<string | null>(() =>
     typeof window === 'undefined' ? null : readInviteToken(window.location.hash),
   );
+  const [mintedInviteHash, setMintedInviteHash] = useState<string | null>(null);
   const [inviteRole, setInviteRole] = useState<'member' | 'admin'>('member');
   const [minting, setMinting] = useState(false);
   const [revoking, setRevoking] = useState(false);
@@ -61,6 +69,10 @@ export default function CompanyAdminPanel({
   const [seatError, setSeatError] = useState<string | null>(null);
   const [seatStatus, setSeatStatus] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<DestructiveActionId | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [renameName, setRenameName] = useState('');
+  const [transferTarget, setTransferTarget] = useState('');
 
   const refreshSummary = useCallback(async () => {
     try {
@@ -199,6 +211,17 @@ export default function CompanyAdminPanel({
     );
   }
 
+  if (disabled) {
+    return (
+      <section data-testid="company-disabled" className="callout">
+        <h2 className="app-h2">Company disabled</h2>
+        <p className="app-small">
+          Every member lost their company seat. Rooms and boards were not deleted.
+        </p>
+      </section>
+    );
+  }
+
   if (loadFailed || summary === null) {
     return (
       <div>
@@ -219,6 +242,8 @@ export default function CompanyAdminPanel({
     );
   }
 
+  const transferCandidates = summary.members.filter((member) => member.role !== 'owner');
+
   const handleMint = async () => {
     setMinting(true);
     setInviteError(null);
@@ -232,13 +257,14 @@ export default function CompanyAdminPanel({
         setInviteError('Could not create an invite link. Try again.');
         return;
       }
-      const token = readMintedToken(await response.json());
-      if (token === null) {
+      const minted = readMintedInvite(await response.json());
+      if (minted === null) {
         setInviteError('Could not create an invite link. Try again.');
         return;
       }
       setInviteStatus('Invite link created. Share it now; it is shown once.');
-      setInviteToken(token);
+      setInviteToken(minted.token);
+      setMintedInviteHash(minted.inviteHash);
     } catch {
       setInviteError('Could not create an invite link. Try again.');
     } finally {
@@ -252,16 +278,18 @@ export default function CompanyAdminPanel({
     setInviteError(null);
     setInviteStatus(null);
     try {
+      const inviteHash = mintedInviteHash ?? (await inviteTokenHash(inviteToken));
       const response = await request('/api/company/invites', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: inviteToken }),
+        body: JSON.stringify({ inviteHash }),
       });
       if (!response.ok) {
         setInviteError('Could not revoke the invite link. Try again.');
         return;
       }
       setInviteToken(null);
+      setMintedInviteHash(null);
       setInviteStatus('Invite revoked.');
       if (typeof window !== 'undefined') {
         window.history.replaceState({}, '', '/account/company');
@@ -284,7 +312,7 @@ export default function CompanyAdminPanel({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          targetQuantity: pending.quantity,
+          quantity: pending.quantity,
           operationId: pending.operationId,
         }),
       });
@@ -302,6 +330,91 @@ export default function CompanyAdminPanel({
       setSeatError('Could not settle the seat change. Try again.');
     } finally {
       setSeatBusy(false);
+    }
+  };
+
+  const openAction = (action: DestructiveActionId) => {
+    setActionError(null);
+    setPendingAction(action);
+    if (action === 'rename') {
+      setRenameName(summary.name);
+    }
+    if (action === 'transfer') {
+      setTransferTarget(
+        summary.members.find((member) => member.role !== 'owner')?.accountId ?? '',
+      );
+    }
+  };
+
+  const closeAction = () => {
+    setPendingAction(null);
+    setActionError(null);
+  };
+
+  const handleTransfer = async () => {
+    if (transferTarget === '') return;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      const response = await request('/api/company/owner', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: transferTarget }),
+      });
+      if (!response.ok) {
+        setActionError(
+          await actionErrorMessage(response, 'Could not transfer ownership. Try again.'),
+        );
+        return;
+      }
+      closeAction();
+      await loadSummary();
+    } catch {
+      setActionError('Could not transfer ownership. Try again.');
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleRename = async () => {
+    const name = renameName.trim();
+    if (name.length === 0) return;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      const response = await request('/api/company', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (!response.ok) {
+        setActionError(await actionErrorMessage(response, 'Could not rename the company. Try again.'));
+        return;
+      }
+      closeAction();
+      await loadSummary();
+    } catch {
+      setActionError('Could not rename the company. Try again.');
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleDisable = async () => {
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      const response = await request('/api/company', { method: 'DELETE' });
+      if (!response.ok) {
+        setActionError(await actionErrorMessage(response, 'Could not disable the company. Try again.'));
+        return;
+      }
+      closeAction();
+      setDisabled(true);
+    } catch {
+      setActionError('Could not disable the company. Try again.');
+    } finally {
+      setActionBusy(false);
     }
   };
 
@@ -343,23 +456,10 @@ export default function CompanyAdminPanel({
         <p role="status" data-testid="company-seat-status" className="app-small">
           {seatStatus ?? ''}
         </p>
-        {summary.invoiceUrl !== null && (
-          <p className="app-small">
-            <a
-              data-testid="company-invoice-link"
-              href={summary.invoiceUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="underline"
-            >
-              View invoice
-            </a>
-          </p>
-        )}
         <ul className="mt-3">
           {summary.members.map((member) => (
             <li key={member.accountId} data-testid={`company-member-${member.accountId}`} className="app-small">
-              {member.displayName} · {member.role} · joined{' '}
+              {member.accountId} · {member.role} · joined{' '}
               {member.joinedAt === null ? 'unknown' : new Date(member.joinedAt).toLocaleDateString()}
             </li>
           ))}
@@ -436,7 +536,7 @@ export default function CompanyAdminPanel({
             <button
               type="button"
               data-testid="company-transfer"
-              onClick={() => setPendingAction('transfer')}
+              onClick={() => openAction('transfer')}
               className="btn"
             >
               Transfer ownership
@@ -445,30 +545,105 @@ export default function CompanyAdminPanel({
           <button
             type="button"
             data-testid="company-rename"
-            onClick={() => setPendingAction('rename')}
+            onClick={() => openAction('rename')}
             className="btn"
           >
             Rename company
           </button>
-          <button
-            type="button"
-            data-testid="company-disable"
-            onClick={() => setPendingAction('disable')}
-            className="btn"
-          >
-            Disable company
-          </button>
+          {summary.role === 'owner' && (
+            <button
+              type="button"
+              data-testid="company-disable"
+              onClick={() => openAction('disable')}
+              className="btn"
+            >
+              Disable company
+            </button>
+          )}
         </div>
       </section>
 
-      {pendingAction !== null && (
-        <InertConfirmDialog
-          title={DESTRUCTIVE_ACTIONS[pendingAction].title}
-          body={DESTRUCTIVE_ACTIONS[pendingAction].body}
-          confirmLabel={DESTRUCTIVE_ACTIONS[pendingAction].confirmLabel}
-          note={DESTRUCTIVE_ACTIONS[pendingAction].note}
-          testIdPrefix={`company-${pendingAction}`}
-          onCancel={() => setPendingAction(null)}
+      {pendingAction === 'transfer' && (
+        <ConfirmDialog
+          title={DESTRUCTIVE_ACTIONS.transfer.title}
+          body={DESTRUCTIVE_ACTIONS.transfer.body}
+          confirmLabel={DESTRUCTIVE_ACTIONS.transfer.confirmLabel}
+          testIdPrefix="company-transfer"
+          busy={actionBusy}
+          error={actionError}
+          confirmDisabled={transferTarget === ''}
+          onCancel={closeAction}
+          onConfirm={() => {
+            void handleTransfer();
+          }}
+        >
+          {transferCandidates.length > 0 ? (
+            <div className="field-group">
+              <label htmlFor="company-transfer-target" className="app-label">
+                New owner
+              </label>
+              <select
+                id="company-transfer-target"
+                data-testid="company-transfer-target"
+                value={transferTarget}
+                onChange={(event) => setTransferTarget(event.target.value)}
+                className="field-input nudge-top"
+              >
+                {transferCandidates.map((member) => (
+                  <option key={member.accountId} value={member.accountId}>
+                    {member.accountId}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <p className="app-small">Add an admin or a member before transferring ownership.</p>
+          )}
+        </ConfirmDialog>
+      )}
+
+      {pendingAction === 'rename' && (
+        <ConfirmDialog
+          title={DESTRUCTIVE_ACTIONS.rename.title}
+          body={DESTRUCTIVE_ACTIONS.rename.body}
+          confirmLabel={DESTRUCTIVE_ACTIONS.rename.confirmLabel}
+          testIdPrefix="company-rename"
+          busy={actionBusy}
+          error={actionError}
+          confirmDisabled={renameName.trim().length === 0}
+          onCancel={closeAction}
+          onConfirm={() => {
+            void handleRename();
+          }}
+        >
+          <div className="field-group">
+            <label htmlFor="company-rename-name" className="app-label">
+              Company name
+            </label>
+            <input
+              id="company-rename-name"
+              data-testid="company-rename-name"
+              value={renameName}
+              maxLength={100}
+              onChange={(event) => setRenameName(event.target.value)}
+              className="field-input nudge-top"
+            />
+          </div>
+        </ConfirmDialog>
+      )}
+
+      {pendingAction === 'disable' && (
+        <ConfirmDialog
+          title={DESTRUCTIVE_ACTIONS.disable.title}
+          body={DESTRUCTIVE_ACTIONS.disable.body}
+          confirmLabel={DESTRUCTIVE_ACTIONS.disable.confirmLabel}
+          testIdPrefix="company-disable"
+          busy={actionBusy}
+          error={actionError}
+          onCancel={closeAction}
+          onConfirm={() => {
+            void handleDisable();
+          }}
         />
       )}
     </>

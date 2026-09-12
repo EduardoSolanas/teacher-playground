@@ -11,24 +11,43 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 const joinedAt = Date.UTC(2026, 0, 15);
 
 const summaryBody = {
-  company: { id: 'co_1', name: 'Acme Tutoring', state: 'active' },
-  role: 'owner',
-  capacity: 5,
-  quantity: 5,
-  pendingSeats: null,
+  company: {
+    id: 'co_1',
+    name: 'Acme Tutoring',
+    role: 'owner',
+    state: 'active',
+    processorCustomerId: null,
+    invoiceApproved: false,
+    createdAt: joinedAt,
+    updatedAt: joinedAt,
+  },
   members: [
-    { accountId: 'acc_owner', displayName: 'Ada Lovelace', role: 'owner', joinedAt },
+    { accountId: 'acc_owner', role: 'owner', state: 'active', createdAt: joinedAt, revokedAt: null },
     {
       accountId: 'acc_tutor',
-      displayName: 'Grace Hopper',
       role: 'member',
-      joinedAt: Date.UTC(2026, 1, 2),
+      state: 'active',
+      createdAt: Date.UTC(2026, 1, 2),
+      revokedAt: null,
     },
   ],
-  invoiceUrl: 'https://invoice.stripe.com/i/in_test_1',
+  subscription: {
+    quantity: 5,
+    pendingQuantity: null,
+    pendingOperationId: null,
+    status: 'active',
+    collectionMethod: 'charge_automatically',
+    currentPeriodEnd: null,
+    firstPaidAt: null,
+  },
 };
 
 beforeEach(() => {
@@ -74,7 +93,11 @@ describe('CompanyAdminPanel mint and revoke', () => {
       const path = String(input);
       calls.push({ path, init });
       if (path === '/api/company') return jsonResponse(200, summaryBody);
-      return jsonResponse(201, { token: 'minted_token', expiresAt: Date.UTC(2026, 2, 1) });
+      return jsonResponse(201, {
+        token: 'minted_token',
+        inviteHash: await sha256Hex('minted_token'),
+        expiresAt: Date.UTC(2026, 2, 1),
+      });
     };
 
     render(<CompanyAdminPanel request={request} />);
@@ -94,7 +117,8 @@ describe('CompanyAdminPanel mint and revoke', () => {
     expect(mintCall?.init?.method).toBe('POST');
     expect(JSON.parse(String(mintCall?.init?.body))).toEqual({ role: 'admin' });
   });
-  it('revokes the fragment invite through DELETE /api/company/invites', async () => {
+
+  it('revokes the fragment invite through DELETE /api/company/invites by hash', async () => {
     window.history.replaceState({}, '', '/account/company#invite=frag_token');
     const calls: { path: string; init?: RequestInit }[] = [];
     const request: AjaxFetch = async (input, init) => {
@@ -116,18 +140,33 @@ describe('CompanyAdminPanel mint and revoke', () => {
     });
     const revokeCall = calls.find((call) => call.path === '/api/company/invites');
     expect(revokeCall?.init?.method).toBe('DELETE');
-    expect(JSON.parse(String(revokeCall?.init?.body))).toEqual({ token: 'frag_token' });
+    expect(JSON.parse(String(revokeCall?.init?.body))).toEqual({
+      inviteHash: await sha256Hex('frag_token'),
+    });
     expect(screen.getByTestId('company-invite-status').textContent).toMatch(/revoked/i);
   });
 });
 
 describe('CompanyAdminPanel pending seat change', () => {
+  const pendingBody = {
+    ...summaryBody,
+    subscription: {
+      ...summaryBody.subscription,
+      pendingQuantity: 8,
+      pendingOperationId: 'op_seat_1',
+    },
+  };
+  const settledBody = {
+    ...summaryBody,
+    subscription: {
+      ...summaryBody.subscription,
+      quantity: 8,
+      pendingQuantity: null,
+      pendingOperationId: null,
+    },
+  };
+
   it('shows a pending seat change and settles it through POST /api/company/seats', async () => {
-    const pendingBody = {
-      ...summaryBody,
-      pendingSeats: { quantity: 8, operationId: 'op_seat_1' },
-    };
-    const settledBody = { ...summaryBody, capacity: 8, pendingSeats: null };
     const calls: { path: string; init?: RequestInit }[] = [];
     let summaryCalls = 0;
     const request: AjaxFetch = async (input, init) => {
@@ -152,7 +191,7 @@ describe('CompanyAdminPanel pending seat change', () => {
     const settleCall = calls.find((call) => call.path === '/api/company/seats');
     expect(settleCall?.init?.method).toBe('POST');
     expect(JSON.parse(String(settleCall?.init?.body))).toEqual({
-      targetQuantity: 8,
+      quantity: 8,
       operationId: 'op_seat_1',
     });
     expect(screen.getByTestId('company-capacity').textContent).toContain('8');
@@ -161,10 +200,7 @@ describe('CompanyAdminPanel pending seat change', () => {
   it('keeps the pending seat change visible while the server still reports it pending', async () => {
     const request: AjaxFetch = async (input) => {
       if (String(input) === '/api/company/seats') return jsonResponse(202, { status: 'pending' });
-      return jsonResponse(200, {
-        ...summaryBody,
-        pendingSeats: { quantity: 8, operationId: 'op_seat_1' },
-      });
+      return jsonResponse(200, pendingBody);
     };
 
     render(<CompanyAdminPanel request={request} />);
@@ -182,11 +218,19 @@ describe('CompanyAdminPanel pending seat change', () => {
 });
 
 describe('CompanyAdminPanel destructive actions', () => {
-  it('keeps transfer, rename, and disable behind confirmations whose action stays disabled', async () => {
-    const calls: string[] = [];
-    const request: AjaxFetch = async (input) => {
-      calls.push(String(input));
-      return jsonResponse(200, summaryBody);
+  const adminBody = { ...summaryBody, company: { ...summaryBody.company, role: 'admin' } };
+
+  it('transfers ownership through POST /api/company/owner behind a real confirmation', async () => {
+    const calls: { path: string; init?: RequestInit }[] = [];
+    let summaryCalls = 0;
+    const request: AjaxFetch = async (input, init) => {
+      const path = String(input);
+      calls.push({ path, init });
+      if (path === '/api/company/owner') {
+        return jsonResponse(200, { outcome: 'transferred', accountId: 'acc_tutor' });
+      }
+      summaryCalls += 1;
+      return jsonResponse(200, summaryCalls === 1 ? summaryBody : adminBody);
     };
 
     render(<CompanyAdminPanel request={request} />);
@@ -196,27 +240,128 @@ describe('CompanyAdminPanel destructive actions', () => {
 
     fireEvent.click(screen.getByTestId('company-transfer'));
     expect(screen.getByRole('dialog', { name: /transfer ownership/i })).toBeTruthy();
-    const transferConfirm = screen.getByTestId('company-transfer-confirm') as HTMLButtonElement;
-    expect(transferConfirm.disabled).toBe(true);
-    expect(transferConfirm.getAttribute('aria-disabled')).toBe('true');
-    fireEvent.click(screen.getByTestId('company-transfer-cancel'));
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect((screen.getByTestId('company-transfer-target') as HTMLSelectElement).value).toBe(
+      'acc_tutor',
+    );
+
+    fireEvent.click(screen.getByTestId('company-transfer-confirm'));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+    const transferCall = calls.find((call) => call.path === '/api/company/owner');
+    expect(transferCall?.init?.method).toBe('POST');
+    expect(JSON.parse(String(transferCall?.init?.body))).toEqual({ accountId: 'acc_tutor' });
+    await waitFor(() => {
+      expect(screen.queryByTestId('company-transfer')).toBeNull();
+    });
+  });
+
+  it('renames the company through PATCH /api/company behind a real confirmation', async () => {
+    const calls: { path: string; init?: RequestInit }[] = [];
+    let summaryCalls = 0;
+    const renamedBody = { ...summaryBody, company: { ...summaryBody.company, name: 'Acme 2' } };
+    const request: AjaxFetch = async (input, init) => {
+      const path = String(input);
+      calls.push({ path, init });
+      if (path === '/api/company' && init?.method === 'PATCH') {
+        return jsonResponse(200, { company: renamedBody.company });
+      }
+      summaryCalls += 1;
+      return jsonResponse(200, summaryCalls === 1 ? summaryBody : renamedBody);
+    };
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-summary')).toBeTruthy();
+    });
 
     fireEvent.click(screen.getByTestId('company-rename'));
-    expect(screen.getByRole('dialog', { name: /rename company/i })).toBeTruthy();
-    expect((screen.getByTestId('company-rename-confirm') as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByTestId('company-rename-cancel'));
+    const nameInput = screen.getByTestId('company-rename-name') as HTMLInputElement;
+    expect(nameInput.value).toBe('Acme Tutoring');
+
+    fireEvent.change(nameInput, { target: { value: 'Acme 2' } });
+    fireEvent.click(screen.getByTestId('company-rename-confirm'));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+    const renameCall = calls.find((call) => call.init?.method === 'PATCH');
+    expect(renameCall?.path).toBe('/api/company');
+    expect(JSON.parse(String(renameCall?.init?.body))).toEqual({ name: 'Acme 2' });
+    await waitFor(() => {
+      expect(screen.getByTestId('company-summary').textContent).toContain('Acme 2');
+    });
+  });
+
+  it('disables the company through DELETE /api/company behind a real confirmation', async () => {
+    const calls: { path: string; init?: RequestInit }[] = [];
+    const request: AjaxFetch = async (input, init) => {
+      const path = String(input);
+      calls.push({ path, init });
+      if (init?.method === 'DELETE') {
+        return jsonResponse(200, { outcome: 'disabled', revokedAccountIds: [] });
+      }
+      return jsonResponse(200, summaryBody);
+    };
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-summary')).toBeTruthy();
+    });
 
     fireEvent.click(screen.getByTestId('company-disable'));
     expect(screen.getByRole('dialog', { name: /disable company/i })).toBeTruthy();
-    expect((screen.getByTestId('company-disable-confirm') as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByTestId('company-disable-cancel'));
+    fireEvent.click(screen.getByTestId('company-disable-confirm'));
 
-    expect(calls.filter((path) => path !== '/api/company')).toEqual([]);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-disabled')).toBeTruthy();
+    });
+    const disableCall = calls.find((call) => call.init?.method === 'DELETE');
+    expect(disableCall?.path).toBe('/api/company');
   });
 
-  it('offers transfer only to the owner', async () => {
-    const adminBody = { ...summaryBody, role: 'admin' };
+  it('shows the server error and keeps the dialog open when an action is refused', async () => {
+    const request: AjaxFetch = async (input, init) => {
+      if (init?.method === 'DELETE') return jsonResponse(403, { error: 'Forbidden' });
+      return jsonResponse(200, summaryBody);
+    };
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-summary')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('company-disable'));
+    fireEvent.click(screen.getByTestId('company-disable-confirm'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-disable-error').textContent).toContain('Forbidden');
+    });
+    expect(screen.getByRole('dialog', { name: /disable company/i })).toBeTruthy();
+    expect(screen.queryByTestId('company-disabled')).toBeNull();
+  });
+
+  it('closes a confirmation without a request when cancelled', async () => {
+    const calls: string[] = [];
+    const request: AjaxFetch = async (input, init) => {
+      calls.push(`${init?.method ?? 'GET'} ${String(input)}`);
+      return jsonResponse(200, summaryBody);
+    };
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-summary')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('company-rename'));
+    fireEvent.click(screen.getByTestId('company-rename-cancel'));
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(calls).toEqual(['GET /api/company']);
+  });
+
+  it('offers transfer and disable only to the owner', async () => {
     const request: AjaxFetch = async () => jsonResponse(200, adminBody);
 
     render(<CompanyAdminPanel request={request} />);
@@ -226,13 +371,14 @@ describe('CompanyAdminPanel destructive actions', () => {
 
     expect(screen.queryByTestId('company-transfer')).toBeNull();
     expect(screen.getByTestId('company-rename')).toBeTruthy();
-    expect(screen.getByTestId('company-disable')).toBeTruthy();
+    expect(screen.queryByTestId('company-disable')).toBeNull();
   });
 });
 
 describe('CompanyAdminPanel access control', () => {
   it('shows a refusal instead of company data for a member', async () => {
-    const request: AjaxFetch = async () => jsonResponse(200, { ...summaryBody, role: 'member' });
+    const memberBody = { ...summaryBody, company: { ...summaryBody.company, role: 'member' } };
+    const request: AjaxFetch = async () => jsonResponse(200, memberBody);
 
     render(<CompanyAdminPanel request={request} />);
 
@@ -334,32 +480,6 @@ describe('CompanyAdminPanel invite redemption', () => {
   });
 });
 
-describe('CompanyAdminPanel invoice link', () => {
-  it('links to the server-issued invoice when the summary carries one', async () => {
-    const request: AjaxFetch = async () => jsonResponse(200, summaryBody);
-
-    render(<CompanyAdminPanel request={request} />);
-    await waitFor(() => {
-      expect(screen.getByTestId('company-summary')).toBeTruthy();
-    });
-
-    const link = screen.getByTestId('company-invoice-link') as HTMLAnchorElement;
-    expect(link.getAttribute('href')).toBe('https://invoice.stripe.com/i/in_test_1');
-  });
-
-  it('renders no invoice link when the summary carries no invoice', async () => {
-    const request: AjaxFetch = async () =>
-      jsonResponse(200, { ...summaryBody, invoiceUrl: null });
-
-    render(<CompanyAdminPanel request={request} />);
-    await waitFor(() => {
-      expect(screen.getByTestId('company-summary')).toBeTruthy();
-    });
-
-    expect(screen.queryByTestId('company-invoice-link')).toBeNull();
-  });
-});
-
 describe('CompanyAdminPanel summary', () => {
   it('loads the company summary with capacity and each member row', async () => {
     const calls: string[] = [];
@@ -376,7 +496,7 @@ describe('CompanyAdminPanel summary', () => {
     expect(calls).toEqual(['/api/company']);
     expect(screen.getByTestId('company-capacity').textContent).toContain('5');
     const ownerRow = screen.getByTestId('company-member-acc_owner');
-    expect(ownerRow.textContent).toContain('Ada Lovelace');
+    expect(ownerRow.textContent).toContain('acc_owner');
     expect(ownerRow.textContent).toContain('owner');
     expect(ownerRow.textContent).toContain(new Date(joinedAt).toLocaleDateString());
     expect(screen.getByTestId('company-member-acc_tutor').textContent).toContain('member');

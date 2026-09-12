@@ -2,6 +2,7 @@ import type { RoomDatabase } from '../whiteboard/db';
 import { validateAuditContext } from './identityStore';
 import type { EntitlementRow, EntitlementSource, EntitlementStatus } from '../plan/effectivePlan';
 import { PAST_DUE_GRACE_MS, type PlanId } from '../plan/catalog';
+import type { CompanySubscriptionStatus } from '../company/seats';
 
 export type EntitlementCauseKind =
   | 'processor_event'
@@ -373,6 +374,90 @@ export function applySubscriptionState(
       now: write.now,
     },
     cause,
+  );
+
+  db.prepare(
+    `UPDATE billing_subscriptions
+     SET last_state_event_created = ?, processor_canceled_at = ?, updated_at = ?
+     WHERE processor_subscription_id = ?`,
+  ).run(
+    write.eventCreated,
+    canceledNow ? (write.fetched.canceledAt ?? write.now) : row.processor_canceled_at,
+    write.now,
+    write.processorSubscriptionId,
+  );
+
+  return { applied: true, canceledNow };
+}
+
+/**
+ * Company counterpart of applySubscriptionState (spec §3.7 C-5): the fetched
+ * company subscription state is written under the same per-subscription
+ * ordering, without touching member entitlements. The caller fans the new
+ * state out to active members through the entitlement writer.
+ */
+export function applyCompanySubscriptionState(
+  db: RoomDatabase,
+  write: {
+    processorSubscriptionId: string;
+    companyId: string;
+    eventCreated: number;
+    now: number;
+    fetched: {
+      status: CompanySubscriptionStatus;
+      currentPeriodEnd: number | null;
+      canceledAt: number | null;
+      pauseCollection: boolean;
+    };
+  },
+): { applied: boolean; canceledNow: boolean } {
+  ensureBillingSubscription(db, {
+    processorSubscriptionId: write.processorSubscriptionId,
+    subjectKind: 'company',
+    subjectId: write.companyId,
+    now: write.now,
+  });
+  const row = readSubscriptionOrdering(db, write.processorSubscriptionId);
+  if (!row) return { applied: false, canceledNow: false };
+  if (row.processor_canceled_at !== null) {
+    return { applied: false, canceledNow: false };
+  }
+  if (write.eventCreated < row.last_state_event_created) {
+    return { applied: false, canceledNow: false };
+  }
+
+  const existing = db
+    .prepare(
+      `SELECT status, grace_until FROM company_subscriptions
+       WHERE processor_subscription_id = ?`,
+    )
+    .get(write.processorSubscriptionId) as
+    | { status: CompanySubscriptionStatus; grace_until: number | null }
+    | undefined;
+  if (!existing) return { applied: false, canceledNow: false };
+
+  const canceledNow = write.fetched.status === 'canceled';
+  let graceUntil: number | null = null;
+  if (write.fetched.status === 'past_due') {
+    const alreadyOpen =
+      existing.status === 'past_due' && existing.grace_until !== null;
+    graceUntil = alreadyOpen
+      ? existing.grace_until
+      : write.eventCreated + PAST_DUE_GRACE_MS;
+  }
+
+  db.prepare(
+    `UPDATE company_subscriptions
+     SET status = ?, grace_until = ?, collection_paused = ?,
+         current_period_end = ?, updated_at = ?
+     WHERE processor_subscription_id = ?`,
+  ).run(
+    write.fetched.status,
+    graceUntil,
+    write.fetched.pauseCollection ? 1 : 0,
+    write.fetched.currentPeriodEnd,
+    write.now,
+    write.processorSubscriptionId,
   );
 
   db.prepare(

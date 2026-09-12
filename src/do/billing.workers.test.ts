@@ -3,6 +3,11 @@ import { env } from 'cloudflare:workers';
 import { runInDurableObject } from 'cloudflare:test';
 import { getIdentityObject, type IdentityDO } from './IdentityDO';
 import { writeEntitlement } from '../lib/identity/entitlementWriter';
+import { ensureReferralCode } from '../lib/referrals/codes';
+import {
+  confirmReferralRedemption,
+  recordReferralRedemption,
+} from '../lib/referrals/ledger';
 import { PAST_DUE_GRACE_MS } from '../lib/plan/catalog';
 import type { PlanId } from '../lib/plan/catalog';
 
@@ -783,6 +788,199 @@ describe('identity /billing/events/apply: reversed delivery and class-2 effects'
     });
   });
 
+  it('marks a referral earned only when the paid invoice actually collected money', async () => {
+    const zeroAccount = await newAccount('billing-referral-zero');
+    const paidAccount = await newAccount('billing-referral-earned-paid');
+    const ownerId = await newAccount('billing-referral-earned-owner');
+    await runInDurableObject(identityStub(), (instance) => {
+      const code = ensureReferralCode(instance.db, { accountId: ownerId, now: 1 }).code;
+      recordReferralRedemption(instance.db, {
+        code,
+        referredAccountId: zeroAccount,
+        referredCustomerId: 'cus_referral_zero',
+        objectId: 'cs_referral_zero',
+        occurredAt: 100,
+        recordedAt: 100,
+      });
+      recordReferralRedemption(instance.db, {
+        code,
+        referredAccountId: paidAccount,
+        referredCustomerId: 'cus_referral_really_paid',
+        objectId: 'cs_referral_really_paid',
+        occurredAt: 100,
+        recordedAt: 100,
+      });
+    });
+
+    const zero = await postApply(
+      applyBody(
+        { id: 'evt_referral_zero', type: 'invoice.paid', created: 300 },
+        {
+          invoice: invoiceBody('in_referral_zero', {
+            customer: 'cus_referral_zero',
+            amountPaid: 0,
+          }),
+        },
+      ),
+    );
+    expect(zero.status).toBe(200);
+
+    const paid = await postApply(
+      applyBody(
+        { id: 'evt_referral_really_paid', type: 'invoice.paid', created: 400 },
+        {
+          invoice: invoiceBody('in_referral_really_paid', {
+            customer: 'cus_referral_really_paid',
+            amountPaid: 500,
+          }),
+        },
+      ),
+    );
+    expect(paid.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const rows = instance.db
+        .prepare(
+          `SELECT object_id, reward_status, confirmed_at FROM referral_events
+           WHERE kind = 'redemption'
+             AND object_id IN ('cs_referral_really_paid', 'cs_referral_zero')
+           ORDER BY object_id`,
+        )
+        .all();
+      expect(rows).toEqual([
+        { object_id: 'cs_referral_really_paid', reward_status: 'earned', confirmed_at: 400 },
+        { object_id: 'cs_referral_zero', reward_status: 'pending', confirmed_at: null },
+      ]);
+    });
+  });
+
+  it('reverses a confirmed referral on refund without changing entitlement', async () => {
+    const accountId = await newAccount('billing-refund-referral');
+    const ownerId = await newAccount('billing-refund-referral-owner');
+    const sub = 'sub_refund_referral';
+    const code = await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        currentPeriodEnd: 900,
+        processorCustomerId: 'cus_refund_referral',
+        processorSubscriptionId: sub,
+      });
+      const minted = ensureReferralCode(instance.db, { accountId: ownerId, now: 1 }).code;
+      recordReferralRedemption(instance.db, {
+        code: minted,
+        referredAccountId: accountId,
+        referredCustomerId: 'cus_refund_referral',
+        objectId: 'cs_refund_referral',
+        occurredAt: 100,
+        recordedAt: 100,
+      });
+      confirmReferralRedemption(instance.db, {
+        referredCustomerId: 'cus_refund_referral',
+        amountPaidCents: 1_999,
+        occurredAt: 200,
+      });
+      return minted;
+    });
+
+    const response = await postApply(
+      applyBody(
+        { id: 'evt_refund_referral', type: 'charge.refunded', created: 300 },
+        { charge: { id: 'ch_refund_referral', customer: 'cus_refund_referral' } },
+      ),
+    );
+    expect(response.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const reversal = instance.db
+        .prepare(
+          `SELECT kind, code, referred_account_id, referred_customer_id, reward_status
+           FROM referral_events
+           WHERE kind = 'reversal' AND object_id = 'ch_refund_referral'`,
+        )
+        .get() as Record<string, unknown> | undefined;
+      expect(reversal).toMatchObject({
+        kind: 'reversal',
+        code,
+        referred_account_id: accountId,
+        referred_customer_id: 'cus_refund_referral',
+        reward_status: 'none',
+      });
+
+      const redemption = instance.db
+        .prepare(
+          `SELECT reward_status, confirmed_at FROM referral_events
+           WHERE object_id = 'cs_refund_referral'`,
+        )
+        .get();
+      expect(redemption).toEqual({ reward_status: 'voided', confirmed_at: 200 });
+
+      const entitlement = readEntitlement(instance, accountId);
+      expect(entitlement?.status).toBe('active');
+      expect(entitlement?.current_period_end).toBe(900);
+    });
+  });
+
+  it('reverses a referral once per refund object across event ids', async () => {
+    const accountId = await newAccount('billing-refund-dedupe');
+    const ownerId = await newAccount('billing-refund-dedupe-owner');
+    const sub = 'sub_refund_dedupe';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        processorCustomerId: 'cus_refund_dedupe',
+        processorSubscriptionId: sub,
+      });
+      const code = ensureReferralCode(instance.db, { accountId: ownerId, now: 1 }).code;
+      recordReferralRedemption(instance.db, {
+        code,
+        referredAccountId: accountId,
+        referredCustomerId: 'cus_refund_dedupe',
+        objectId: 'cs_refund_dedupe',
+        occurredAt: 100,
+        recordedAt: 100,
+      });
+      confirmReferralRedemption(instance.db, {
+        referredCustomerId: 'cus_refund_dedupe',
+        amountPaidCents: 1_999,
+        occurredAt: 200,
+      });
+    });
+
+    for (const [eventId, created] of [
+      ['evt_refund_dedupe_a', 300],
+      ['evt_refund_dedupe_b', 301],
+    ] as const) {
+      const response = await postApply(
+        applyBody(
+          { id: eventId, type: 'charge.refunded', created },
+          { charge: { id: 'ch_refund_dedupe', customer: 'cus_refund_dedupe' } },
+        ),
+      );
+      expect(response.status, eventId).toBe(200);
+    }
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(
+        instance.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM referral_events
+             WHERE kind = 'reversal' AND object_id = 'ch_refund_dedupe'`,
+          )
+          .get(),
+      ).toEqual({ count: 1 });
+      expect(
+        instance.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM billing_effects
+             WHERE effect_kind = 'refund' AND object_id = 'ch_refund_dedupe'`,
+          )
+          .get(),
+      ).toEqual({ count: 1 });
+    });
+  });
+
   it('does not re-open grace when payment_failed arrives after the recovering invoice.paid', async () => {
     const accountId = await newAccount('billing-payment-failed-reversed');
     const sub21 = 'sub_payment_failed_reversed';
@@ -1515,5 +1713,131 @@ describe('identity /billing/events/apply: collection handoff (D-6)', () => {
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ outcome: 'applied' });
+  });
+});
+
+describe('identity /billing/events/apply: checkout referral effect (P-3)', () => {
+  function checkoutBody(
+    id: string,
+    opts: Partial<{
+      clientReferenceId: string | null;
+      customer: string | null;
+      referrerCode: string | null;
+    }> = {},
+  ): Record<string, unknown> {
+    return {
+      id,
+      clientReferenceId: opts.clientReferenceId ?? null,
+      customer: opts.customer ?? null,
+      referrerCode: opts.referrerCode ?? null,
+    };
+  }
+
+  it('records one pending redemption per checkout session and dedupes across event ids', async () => {
+    const ownerId = await newAccount('billing-checkout-referral-owner');
+    const buyerId = await newAccount('billing-checkout-referral-buyer');
+    const code = await runInDurableObject(identityStub(), (instance) =>
+      ensureReferralCode(instance.db, { accountId: ownerId, now: 1 }).code,
+    );
+    const session = checkoutBody('cs_checkout_referral', {
+      clientReferenceId: buyerId,
+      customer: 'cus_checkout_referral',
+      referrerCode: code,
+    });
+
+    const first = await postApply(
+      applyBody(
+        { id: 'evt_checkout_referral_a', type: 'checkout.session.completed', created: 300 },
+        { checkout: session },
+      ),
+    );
+    expect(first.status).toBe(200);
+
+    const replay = await postApply(
+      applyBody(
+        { id: 'evt_checkout_referral_b', type: 'checkout.session.completed', created: 301 },
+        { checkout: session },
+      ),
+    );
+    expect(replay.status).toBe(200);
+
+    const zero = await postApply(
+      applyBody(
+        { id: 'evt_checkout_referral_zero', type: 'invoice.paid', created: 400 },
+        {
+          invoice: invoiceBody('in_checkout_referral_zero', {
+            customer: 'cus_checkout_referral',
+            amountPaid: 0,
+          }),
+        },
+      ),
+    );
+    expect(zero.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const rows = instance.db
+        .prepare(
+          `SELECT code, kind, referred_account_id, referred_customer_id, object_id,
+                  reward_status, confirmed_at, processor_event_id
+           FROM referral_events
+           WHERE kind = 'redemption' AND object_id = 'cs_checkout_referral'`,
+        )
+        .all();
+      expect(rows).toEqual([
+        {
+          code,
+          kind: 'redemption',
+          referred_account_id: buyerId,
+          referred_customer_id: 'cus_checkout_referral',
+          object_id: 'cs_checkout_referral',
+          reward_status: 'pending',
+          confirmed_at: null,
+          processor_event_id: 'evt_checkout_referral_a',
+        },
+      ]);
+      expect(
+        instance.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM billing_effects
+             WHERE effect_kind = 'checkout_completed' AND object_id = 'cs_checkout_referral'`,
+          )
+          .get(),
+      ).toEqual({ count: 1 });
+    });
+  });
+
+  it('records no redemption when the session carries no validated code', async () => {
+    const buyerId = await newAccount('billing-checkout-no-code-buyer');
+    const response = await postApply(
+      applyBody(
+        { id: 'evt_checkout_no_code', type: 'checkout.session.completed', created: 300 },
+        {
+          checkout: checkoutBody('cs_checkout_no_code', {
+            clientReferenceId: buyerId,
+            customer: 'cus_checkout_no_code',
+          }),
+        },
+      ),
+    );
+    expect(response.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(
+        instance.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM referral_events
+             WHERE kind = 'redemption' AND object_id = 'cs_checkout_no_code'`,
+          )
+          .get(),
+      ).toEqual({ count: 0 });
+      expect(
+        instance.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM billing_effects
+             WHERE effect_kind = 'checkout_completed' AND object_id = 'cs_checkout_no_code'`,
+          )
+          .get(),
+      ).toEqual({ count: 1 });
+    });
   });
 });

@@ -1,27 +1,34 @@
 'use client';
 
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { useDialogFocusTrap } from '@/components/ConfirmDialog';
 
-export default function InertConfirmDialog({
+export default function ConfirmDialog({
   title,
   body,
   confirmLabel,
-  note,
   testIdPrefix,
+  busy = false,
+  confirmDisabled = false,
+  error = null,
   onCancel,
+  onConfirm,
+  children,
 }: {
   title: string;
   body: string;
   confirmLabel: string;
-  note: string;
   testIdPrefix: string;
+  busy?: boolean;
+  confirmDisabled?: boolean;
+  error?: string | null;
   onCancel: () => void;
+  onConfirm: () => void;
+  children?: ReactNode;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const titleId = `${testIdPrefix}-title`;
-  const noteId = `${testIdPrefix}-note`;
 
   useDialogFocusTrap(dialogRef, cancelRef);
 
@@ -51,26 +58,34 @@ export default function InertConfirmDialog({
           {title}
         </h3>
         <p className="m-0 mb-3 text-sm leading-relaxed text-slate-500">{body}</p>
-        <p id={noteId} data-testid={`${testIdPrefix}-note`} className="m-0 mb-6 text-sm font-medium text-amber-700">
-          {note}
-        </p>
+        {children}
+        {error !== null && (
+          <p
+            role="alert"
+            data-testid={`${testIdPrefix}-error`}
+            className="m-0 mb-4 text-sm font-medium text-red-600"
+          >
+            {error}
+          </p>
+        )}
         <div className="flex justify-end gap-3">
           <button
             ref={cancelRef}
             type="button"
             data-testid={`${testIdPrefix}-cancel`}
+            disabled={busy}
             onClick={onCancel}
-            className="cursor-pointer rounded-lg border border-slate-300 bg-transparent px-5 py-2 text-sm text-slate-600"
+            className="cursor-pointer rounded-lg border border-slate-300 bg-transparent px-5 py-2 text-sm text-slate-600 disabled:opacity-40"
           >
             Cancel
           </button>
           <button
             type="button"
-            disabled
-            aria-disabled="true"
-            aria-describedby={noteId}
             data-testid={`${testIdPrefix}-confirm`}
-            className="cursor-not-allowed rounded-lg border-none bg-red-600 px-5 py-2 text-sm font-medium text-white disabled:opacity-40"
+            disabled={busy || confirmDisabled}
+            aria-disabled={busy || confirmDisabled ? 'true' : undefined}
+            onClick={onConfirm}
+            className="cursor-pointer rounded-lg border-none bg-red-600 px-5 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
             {confirmLabel}
           </button>

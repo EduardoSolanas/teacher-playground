@@ -30,7 +30,7 @@ function entitlementRow(overrides: Partial<EntitlementRow> = {}): EntitlementRow
   };
 }
 
-function openMenu(props: Partial<Parameters<typeof UserProfileMenu>[0]> = {}) {
+async function openMenu(props: Partial<Parameters<typeof UserProfileMenu>[0]> = {}) {
   const view = render(
     <UserProfileMenu
       displayName="Ada Lovelace"
@@ -39,28 +39,31 @@ function openMenu(props: Partial<Parameters<typeof UserProfileMenu>[0]> = {}) {
     />,
   );
   fireEvent.click(screen.getByTestId('whiteboard-profile-btn'));
+  await waitFor(() => {
+    expect(screen.queryByTestId('referral-loading')).toBeNull();
+  });
   return view;
 }
 
 describe('UserProfileMenu plan section', () => {
-  it('shows Free and offers Upgrade for an account with no paid plan', () => {
-    openMenu({ plan: { planId: 'free', status: 'free' } });
+  it('shows Free and offers Upgrade for an account with no paid plan', async () => {
+    await openMenu({ plan: { planId: 'free', status: 'free' } });
 
     expect(screen.getByTestId('whiteboard-profile-plan').textContent).toBe('Free');
     expect(screen.getByTestId('whiteboard-profile-plan-upgrade')).toBeTruthy();
     expect(screen.queryByTestId('whiteboard-profile-plan-manage')).toBeNull();
   });
 
-  it('shows Tutor Pro and offers Manage for a paid plan', () => {
-    openMenu({ plan: { planId: 'tutor_pro_monthly', status: 'active' } });
+  it('shows Tutor Pro and offers Manage for a paid plan', async () => {
+    await openMenu({ plan: { planId: 'tutor_pro_monthly', status: 'active' } });
 
     expect(screen.getByTestId('whiteboard-profile-plan').textContent).toBe('Tutor Pro');
     expect(screen.getByTestId('whiteboard-profile-plan-manage')).toBeTruthy();
     expect(screen.queryByTestId('whiteboard-profile-plan-upgrade')).toBeNull();
   });
 
-  it('shows the company name and role when the session carries a company', () => {
-    openMenu({
+  it('shows the company name and role when the session carries a company', async () => {
+    await openMenu({
       plan: { planId: 'corporate_seat', status: 'active' },
       company: { id: 'co_1', name: 'Acme Tutoring', role: 'admin' },
     });
@@ -71,8 +74,8 @@ describe('UserProfileMenu plan section', () => {
     expect(company.textContent).toContain('admin');
   });
 
-  it('links the company entry to the company admin page', () => {
-    openMenu({
+  it('links the company entry to the company admin page', async () => {
+    await openMenu({
       plan: { planId: 'corporate_seat', status: 'active' },
       company: { id: 'co_1', name: 'Acme Tutoring', role: 'admin' },
     });
@@ -80,6 +83,37 @@ describe('UserProfileMenu plan section', () => {
     const link = screen.getByTestId('whiteboard-profile-company-link');
     expect(link.getAttribute('href')).toBe('/account/company');
     expect(link.textContent).toContain('Acme Tutoring');
+  });
+
+  it('fetches the referral summary only after the menu opens', async () => {
+    const calls: string[] = [];
+    const request: AjaxFetch = async (input) => {
+      calls.push(String(input));
+      return jsonResponse(200, {
+        code: 'TUTOR123',
+        link: 'https://teach.example.com/whiteboard?ref=TUTOR123',
+        pendingCount: 0,
+        confirmedCount: 1,
+        redemptionCount: 1,
+      });
+    };
+
+    render(
+      <UserProfileMenu
+        displayName="Ada Lovelace"
+        onDisplayNameChange={() => undefined}
+        request={request}
+      />,
+    );
+    expect(calls).toEqual([]);
+
+    fireEvent.click(screen.getByTestId('whiteboard-profile-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('referral-code').textContent).toBe('TUTOR123');
+    });
+    expect(calls).toEqual(['/api/referrals/me']);
+    expect(screen.getByTestId('referral-counter').getAttribute('role')).toBe('status');
   });
 
   it('upgrades through the server-issued checkout URL', async () => {
@@ -91,7 +125,7 @@ describe('UserProfileMenu plan section', () => {
     };
     const navigated: string[] = [];
 
-    openMenu({
+    await openMenu({
       plan: { planId: 'free', status: 'free' },
       request,
       navigate: (url) => {
@@ -103,10 +137,11 @@ describe('UserProfileMenu plan section', () => {
     await waitFor(() => {
       expect(navigated).toEqual([checkoutUrl]);
     });
-    expect(calls).toHaveLength(1);
-    expect(calls[0].path).toBe('/api/billing/checkout');
-    expect(calls[0].init?.method).toBe('POST');
-    const checkoutBody = JSON.parse(String(calls[0].init?.body)) as {
+    const billingCalls = calls.filter((call) => call.path.startsWith('/api/billing/'));
+    expect(billingCalls).toHaveLength(1);
+    expect(billingCalls[0].path).toBe('/api/billing/checkout');
+    expect(billingCalls[0].init?.method).toBe('POST');
+    const checkoutBody = JSON.parse(String(billingCalls[0].init?.body)) as {
       planId?: unknown;
       operationId?: unknown;
     };
@@ -124,7 +159,7 @@ describe('UserProfileMenu plan section', () => {
     };
     const navigated: string[] = [];
 
-    openMenu({
+    await openMenu({
       plan: { planId: 'tutor_pro_annual', status: 'active' },
       request,
       navigate: (url) => {
@@ -136,10 +171,11 @@ describe('UserProfileMenu plan section', () => {
     await waitFor(() => {
       expect(navigated).toEqual([portalUrl]);
     });
-    expect(calls).toHaveLength(1);
-    expect(calls[0].path).toBe('/api/billing/portal');
-    expect(calls[0].init?.method).toBe('POST');
-    const portalBody = JSON.parse(String(calls[0].init?.body)) as { operationId?: unknown };
+    const billingCalls = calls.filter((call) => call.path.startsWith('/api/billing/'));
+    expect(billingCalls).toHaveLength(1);
+    expect(billingCalls[0].path).toBe('/api/billing/portal');
+    expect(billingCalls[0].init?.method).toBe('POST');
+    const portalBody = JSON.parse(String(billingCalls[0].init?.body)) as { operationId?: unknown };
     expect(typeof portalBody.operationId).toBe('string');
     expect(portalBody.operationId).toMatch(/^[A-Za-z0-9_-]{1,128}$/);
   });
@@ -151,7 +187,7 @@ describe('UserProfileMenu plan section', () => {
       return jsonResponse(200, { url: `https://checkout.stripe.com/c/pay/cs_click_${calls.length}` });
     };
 
-    openMenu({
+    await openMenu({
       plan: { planId: 'free', status: 'free' },
       request,
       navigate: () => undefined,
@@ -159,34 +195,36 @@ describe('UserProfileMenu plan section', () => {
     const upgrade = screen.getByTestId('whiteboard-profile-plan-upgrade');
     fireEvent.click(upgrade);
     await waitFor(() => {
-      expect(calls).toHaveLength(1);
+      expect(calls.filter((call) => call.path === '/api/billing/checkout')).toHaveLength(1);
     });
     fireEvent.click(upgrade);
     await waitFor(() => {
-      expect(calls).toHaveLength(2);
+      expect(calls.filter((call) => call.path === '/api/billing/checkout')).toHaveLength(2);
     });
 
-    const operationIds = calls.map(
-      (call) => (JSON.parse(String(call.init?.body)) as { operationId?: unknown }).operationId,
-    );
+    const operationIds = calls
+      .filter((call) => call.path === '/api/billing/checkout')
+      .map(
+        (call) => (JSON.parse(String(call.init?.body)) as { operationId?: unknown }).operationId,
+      );
     expect(operationIds[0]).toMatch(/^[A-Za-z0-9_-]{1,128}$/);
     expect(operationIds[1]).toMatch(/^[A-Za-z0-9_-]{1,128}$/);
     expect(operationIds[1]).not.toBe(operationIds[0]);
   });
 
-  it('shows the localized payment overdue date during grace', () => {
+  it('shows the localized payment overdue date during grace', async () => {
     const graceUntil = Date.UTC(2026, 8, 19);
     const pastDue = entitlementRow({ status: 'past_due', graceUntil });
-    openMenu({ plan: resolveEffectivePlan([pastDue], graceUntil - 1) });
+    await openMenu({ plan: resolveEffectivePlan([pastDue], graceUntil - 1) });
 
     const notice = screen.getByTestId('whiteboard-profile-plan-grace');
     expect(notice.textContent).toContain('payment overdue until');
     expect(notice.textContent).toContain(new Date(graceUntil).toLocaleDateString());
   });
 
-  it('shows that billing is on hold while collection is paused', () => {
+  it('shows that billing is on hold while collection is paused', async () => {
     const paused = entitlementRow({ collectionPaused: true });
-    openMenu({ plan: resolveEffectivePlan([paused], 1_000) });
+    await openMenu({ plan: resolveEffectivePlan([paused], 1_000) });
 
     expect(screen.getByTestId('whiteboard-profile-plan-hold').textContent).toContain('billing on hold');
   });
@@ -210,7 +248,7 @@ describe('UserProfileMenu plan section', () => {
     });
     const navigated: string[] = [];
 
-    openMenu({
+    await openMenu({
       plan: { planId: 'free', status: 'free' },
       request,
       navigate: (url) => {

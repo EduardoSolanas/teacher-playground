@@ -2,7 +2,6 @@ export type CompanyRole = 'owner' | 'admin' | 'member';
 
 export interface CompanyMemberSummary {
   accountId: string;
-  displayName: string;
   role: CompanyRole;
   joinedAt: number | null;
 }
@@ -20,7 +19,12 @@ export interface CompanySummary {
   capacity: number;
   pendingSeats: PendingSeatChange | null;
   members: CompanyMemberSummary[];
-  invoiceUrl: string | null;
+}
+
+interface CompanySubscriptionSummary {
+  quantity: number;
+  pendingQuantity: number | null;
+  pendingOperationId: string | null;
 }
 
 function isRole(value: unknown): value is CompanyRole {
@@ -28,40 +32,43 @@ function isRole(value: unknown): value is CompanyRole {
 }
 
 function toMember(entry: unknown): CompanyMemberSummary | null {
-  if (!entry || typeof entry !== 'object') return null;
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
   const record = entry as Record<string, unknown>;
-  const accountId = record.accountId ?? record.account_id;
+  const accountId = record.accountId;
   if (typeof accountId !== 'string' || accountId.length === 0) return null;
-  const rawName = record.displayName ?? record.preferredDisplayName ?? record.preferred_display_name;
   const role = record.role;
   if (!isRole(role)) return null;
-  const joinedAt = record.joinedAt ?? record.createdAt ?? record.created_at;
+  const joinedAt = record.createdAt;
   return {
     accountId,
-    displayName: typeof rawName === 'string' && rawName.trim() ? rawName : accountId,
     role,
     joinedAt: typeof joinedAt === 'number' ? joinedAt : null,
   };
 }
 
-function toPendingSeats(payload: Record<string, unknown>): PendingSeatChange | null {
-  const nested = payload.pendingSeats;
-  if (nested && typeof nested === 'object') {
-    const record = nested as Record<string, unknown>;
-    if (typeof record.quantity === 'number' && typeof record.operationId === 'string') {
-      return { quantity: record.quantity, operationId: record.operationId };
-    }
+function toSubscription(value: unknown): CompanySubscriptionSummary | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const quantity = record.quantity;
+  if (typeof quantity !== 'number' || !Number.isInteger(quantity) || quantity < 1) {
     return null;
   }
-  const quantity = payload.pendingQuantity;
-  const operationId = payload.pendingOperationId;
-  if (typeof quantity === 'number' && typeof operationId === 'string') {
-    return { quantity, operationId };
-  }
-  return null;
+  return {
+    quantity,
+    pendingQuantity:
+      typeof record.pendingQuantity === 'number' ? record.pendingQuantity : null,
+    pendingOperationId:
+      typeof record.pendingOperationId === 'string' ? record.pendingOperationId : null,
+  };
 }
 
 const INVITE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{1,256}$/;
+const INVITE_HASH_PATTERN = /^[0-9a-f]{64}$/;
+
+export interface MintedInviteSummary {
+  token: string;
+  inviteHash: string | null;
+}
 
 export function readInviteToken(hash: string): string | null {
   const params = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash);
@@ -70,37 +77,55 @@ export function readInviteToken(hash: string): string | null {
   return token;
 }
 
-export function readMintedToken(payload: unknown): string | null {
-  if (!payload || typeof payload !== 'object') return null;
+export function readMintedInvite(payload: unknown): MintedInviteSummary | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
   const record = payload as Record<string, unknown>;
-  const nested = record.invite;
-  const token =
-    record.token ??
-    (nested && typeof nested === 'object'
-      ? (nested as Record<string, unknown>).token
-      : undefined);
+  const token = record.token;
   if (typeof token !== 'string' || !INVITE_TOKEN_PATTERN.test(token)) return null;
-  return token;
+  const inviteHash = record.inviteHash;
+  return {
+    token,
+    inviteHash:
+      typeof inviteHash === 'string' && INVITE_HASH_PATTERN.test(inviteHash)
+        ? inviteHash
+        : null,
+  };
+}
+
+export async function inviteTokenHash(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
 }
 
 export function parseCompanySummary(payload: unknown): CompanySummary | null {
   if (!payload || typeof payload !== 'object') return null;
   const record = payload as Record<string, unknown>;
   const company = record.company;
-  if (!company || typeof company !== 'object') return null;
+  if (!company || typeof company !== 'object' || Array.isArray(company)) return null;
   const companyRecord = company as Record<string, unknown>;
-  const companyId = companyRecord.id ?? companyRecord.companyId;
+  const companyId = companyRecord.id;
   const name = companyRecord.name;
   if (typeof companyId !== 'string' || typeof name !== 'string') return null;
 
-  const role = record.role ?? companyRecord.role;
+  const role = companyRecord.role;
   if (!isRole(role)) return null;
 
-  const capacity = record.capacity ?? record.seatCapacity;
-  if (typeof capacity !== 'number') return null;
-
-  const invoiceUrl = record.invoiceUrl ?? record.hostedInvoiceUrl;
-  const state = companyRecord.state === 'disabled' ? 'disabled' : 'active';
+  let subscription: CompanySubscriptionSummary | null = null;
+  if (record.subscription !== null && record.subscription !== undefined) {
+    subscription = toSubscription(record.subscription);
+    if (subscription === null) return null;
+  }
+  const capacity = subscription
+    ? Math.min(subscription.quantity, subscription.pendingQuantity ?? subscription.quantity)
+    : 1;
+  const pendingSeats =
+    subscription &&
+    subscription.pendingQuantity !== null &&
+    subscription.pendingOperationId !== null
+      ? { quantity: subscription.pendingQuantity, operationId: subscription.pendingOperationId }
+      : null;
 
   const membersPayload = Array.isArray(record.members) ? record.members : [];
   const members = membersPayload
@@ -110,11 +135,10 @@ export function parseCompanySummary(payload: unknown): CompanySummary | null {
   return {
     companyId,
     name,
-    state,
+    state: companyRecord.state === 'disabled' ? 'disabled' : 'active',
     role,
     capacity,
-    pendingSeats: toPendingSeats(record),
+    pendingSeats,
     members,
-    invoiceUrl: typeof invoiceUrl === 'string' && invoiceUrl.length > 0 ? invoiceUrl : null,
   };
 }

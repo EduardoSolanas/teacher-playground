@@ -84,6 +84,10 @@ export function isRouteAllowedOnHost(
     return hostKind === 'teacher' && method === 'POST';
   }
 
+  if (pathname === '/account/company') {
+    return hostKind === 'teacher' && (method === 'GET' || method === 'HEAD');
+  }
+
   // Teacher-only paths: allow on teacher host, deny on guest host
   const isTeacherOnlyPath =
     pathname === '/' ||
@@ -101,6 +105,7 @@ export function isRouteAllowedOnHost(
     pathname.startsWith('/auth/account/') ||
     pathname === '/api/company' ||
     pathname.startsWith('/api/company/') ||
+    pathname === REFERRAL_ME_PATH ||
     pathname === '/api/whiteboard/rooms';
 
   // The marketing hostname serves the public pages and nothing else. Everything
@@ -253,6 +258,8 @@ export const BILLING_WEBHOOK_PATH = '/api/billing/webhook';
 export const BILLING_CHECKOUT_PATH = '/api/billing/checkout';
 
 export const BILLING_PORTAL_PATH = '/api/billing/portal';
+
+export const REFERRAL_ME_PATH = '/api/referrals/me';
 
 export const BILLING_WEBHOOK_MAX_BODY_BYTES = 1024 * 1024;
 
@@ -409,6 +416,7 @@ export function isPublicPath(pathname: string): boolean {
 /** Where Excalidraw's published shape libraries are fetched from. */
 const EXCALIDRAW_LIBRARY_HOST = 'libraries.excalidraw.com';
 
+
 /**
  * Same-origin HTTP and WebSocket only, plus the two hosts the room genuinely
  * reaches: the media server and the shape library. Never a wildcard scheme.
@@ -530,9 +538,6 @@ export function withSecurityHeaders(
         "base-uri 'self'",
         options?.connectSrc ?? "connect-src 'self'",
         "img-src 'self' data: blob:",
-        // Excalidraw registers its bundled fonts through blob: URLs built at
-        // runtime, so 'self' and data: alone are not enough — the browser
-        // reported the block hundreds of times on a single board.
         options?.fontSrc
           ?? "font-src 'self' data: blob: https://excalidraw-assets.sen-tutor.co.uk",
         "style-src 'self' 'unsafe-inline'",

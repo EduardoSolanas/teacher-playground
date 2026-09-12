@@ -7,6 +7,7 @@ import { completeSignOut } from '@/lib/identity/completeSignOut';
 import type { PlanId } from '@/lib/plan/catalog';
 import type { EntitlementStatus } from '@/lib/plan/effectivePlan';
 import type { AjaxFetch } from '@/lib/whiteboard/teacherRooms';
+import ReferralPanel from './ReferralPanel';
 
 /**
  * The trigger's default skin is tuned for the rooms-list header, which sits on
@@ -339,6 +340,12 @@ export function UserProfileMenu({
                   {billingError}
                 </p>
               )}
+            </div>
+          )}
+
+          {!editing && !deleting && (
+            <div className="border-b border-slate-700 p-1.5">
+              <ReferralPanel request={request} />
             </div>
           )}
 

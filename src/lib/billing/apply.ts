@@ -2,6 +2,7 @@ import type { RoomDatabase } from '../whiteboard/db';
 import type { EntitlementStatus } from '../plan/effectivePlan';
 import type { PlanId } from '../plan/catalog';
 import {
+  applyCompanySubscriptionState,
   applySubscriptionState,
   cancelCollection,
   ensureBillingSubscription,
@@ -10,7 +11,15 @@ import {
   upsertDisputeHold,
   type BillingSubjectKind,
   type DisputeHoldState,
+  type EntitlementCause,
 } from '../identity/entitlementWriter';
+import type { CompanySubscriptionStatus } from '../company/seats';
+import {
+  confirmReferralRedemption,
+  recordReferralRedemption,
+  recordReferralReversal,
+} from '../referrals/ledger';
+import { materializeCompanyMemberEntitlements } from '../company/companyEntitlements';
 
 /**
  * Stripe webhook apply pipeline (spec §7). One event becomes a billing_events
@@ -82,6 +91,16 @@ export interface FetchedDispute {
   status?: string;
   charge?: { id?: string; customer?: string | null };
 }
+export interface FetchedCharge {
+  id: string | null;
+  customer: string | null;
+}
+export interface FetchedCheckoutSession {
+  id: string;
+  clientReferenceId: string | null;
+  customer: string | null;
+  referrerCode: string | null;
+}
 
 const SUBSCRIPTION_STATUS_TO_ENTITLEMENT: Record<string, EntitlementStatus> = {
   trialing: 'trialing',
@@ -142,6 +161,20 @@ function asInvoice(value: unknown): FetchedInvoice | null {
     subscription:
       typeof record.subscription === 'string' ? record.subscription : null,
     payments: Array.isArray(record.payments) ? record.payments : [],
+  };
+}
+
+function asCheckoutSession(value: unknown): FetchedCheckoutSession | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.id !== 'string' || record.id.length === 0) return null;
+  return {
+    id: record.id,
+    clientReferenceId:
+      typeof record.clientReferenceId === 'string' ? record.clientReferenceId : null,
+    customer: typeof record.customer === 'string' ? record.customer : null,
+    referrerCode:
+      typeof record.referrerCode === 'string' ? record.referrerCode : null,
   };
 }
 
@@ -266,12 +299,13 @@ interface NormalizedObjects {
   subscription: FetchedSubscription | null;
   invoice: FetchedInvoice | null;
   dispute: FetchedDispute | null;
-  charge: { id?: string } | null;
+  checkout: FetchedCheckoutSession | null;
+  charge: FetchedCharge | null;
 }
 
 function normalizeObjects(objects: unknown): NormalizedObjects {
   if (typeof objects !== 'object' || objects === null) {
-    return { subscription: null, invoice: null, dispute: null, charge: null };
+    return { subscription: null, invoice: null, dispute: null, checkout: null, charge: null };
   }
   const record = objects as Record<string, unknown>;
   const charge =
@@ -282,8 +316,32 @@ function normalizeObjects(objects: unknown): NormalizedObjects {
     subscription: asSubscription(record.subscription),
     invoice: asInvoice(record.invoice),
     dispute: asDispute(record.dispute),
-    charge: charge ? { id: typeof charge.id === 'string' ? charge.id : undefined } : null,
+    checkout: asCheckoutSession(record.checkout),
+    charge: charge
+      ? {
+          id: typeof charge.id === 'string' ? charge.id : null,
+          customer: typeof charge.customer === 'string' ? charge.customer : null,
+        }
+      : null,
   };
+}
+
+const COMPANY_SUBSCRIPTION_STATUSES: ReadonlySet<string> = new Set([
+  'trialing',
+  'active',
+  'past_due',
+  'canceled',
+  'unpaid',
+  'paused',
+  'incomplete',
+  'incomplete_expired',
+]);
+
+function mapCompanySubscriptionStatus(status: string): CompanySubscriptionStatus {
+  if (!COMPANY_SUBSCRIPTION_STATUSES.has(status)) {
+    throw new UnrepresentableSubscriptionStatusError(status);
+  }
+  return status as CompanySubscriptionStatus;
 }
 
 function applyClass1(
@@ -292,11 +350,43 @@ function applyClass1(
   sub: FetchedSubscription,
   now: number,
 ): { skipped: boolean } {
-  const status = mapSubscriptionStatus(sub.status);
   const resolved = resolveSubject(db, { subscriptionId: sub.id, customerId: sub.customer });
-  if (!resolved || resolved.subjectKind !== 'account') {
+  if (!resolved) {
     return { skipped: true };
   }
+  const cause: EntitlementCause = {
+    kind: 'processor_event',
+    id: event.id,
+    actor: 'stripe',
+    reason: event.type,
+  };
+  if (resolved.subjectKind === 'company') {
+    const result = applyCompanySubscriptionState(db, {
+      processorSubscriptionId: sub.id,
+      companyId: resolved.subjectId,
+      eventCreated: event.created,
+      now,
+      fetched: {
+        status: mapCompanySubscriptionStatus(sub.status),
+        currentPeriodEnd: sub.currentPeriodEnd,
+        canceledAt: sub.canceledAt,
+        pauseCollection: sub.pauseCollection !== null || sub.status === 'canceled',
+      },
+    });
+    if (result.canceledNow) {
+      cancelCollection(db, { processorSubscriptionId: sub.id, now });
+    }
+    if (!result.applied) {
+      return { skipped: true };
+    }
+    materializeCompanyMemberEntitlements(db, {
+      companyId: resolved.subjectId,
+      cause,
+      now,
+    });
+    return { skipped: false };
+  }
+  const status = mapSubscriptionStatus(sub.status);
   const entitlement = db
     .prepare(`SELECT plan_id FROM entitlements WHERE account_id = ? AND source = 'personal'`)
     .get(resolved.subjectId) as { plan_id: string } | undefined;
@@ -319,7 +409,7 @@ function applyClass1(
         pauseCollection: sub.pauseCollection !== null || status === 'canceled',
       },
     },
-    { kind: 'processor_event', id: event.id, actor: 'stripe', reason: event.type },
+    cause,
   );
   if (result.canceledNow) {
     cancelCollection(db, { processorSubscriptionId: sub.id, now });
@@ -361,22 +451,56 @@ function applyPaidEffects(
         event.created,
       );
     }
-    if (invoice.customer) {
-      db.prepare(
-        `UPDATE referral_events SET confirmed_at = ?
-         WHERE kind = 'redemption' AND referred_customer_id = ?
-           AND reward_status = 'pending' AND confirmed_at IS NULL`,
-      ).run(event.created, invoice.customer);
-    }
     const companySubId = objects.subscription?.id ?? invoice.subscription;
     if (companySubId) {
-      setCompanyFirstPaidAt(db, {
+      const firstPaid = setCompanyFirstPaidAt(db, {
         processorSubscriptionId: companySubId,
         occurredAt: event.created,
       });
+      if (firstPaid.updated && resolved?.subjectKind === 'company') {
+        materializeCompanyMemberEntitlements(db, {
+          companyId: resolved.subjectId,
+          cause: {
+            kind: 'processor_event',
+            id: event.id,
+            actor: 'stripe',
+            reason: event.type,
+          },
+          now,
+        });
+      }
     }
   }
+  if (invoice.customer) {
+    confirmReferralRedemption(db, {
+      referredCustomerId: invoice.customer,
+      amountPaidCents: amountPaid,
+      occurredAt: event.created,
+    });
+  }
   return { outcome: 'applied' };
+}
+
+function applyCheckoutEffect(
+  db: RoomDatabase,
+  event: BillingEventReceipt,
+  checkout: FetchedCheckoutSession | null,
+  now: number,
+): void {
+  if (!checkout) return;
+  const inserted = recordEffect(db, event, 'checkout_completed', checkout.id, now);
+  if (!inserted) return;
+  if (checkout.clientReferenceId && checkout.referrerCode) {
+    recordReferralRedemption(db, {
+      code: checkout.referrerCode,
+      referredAccountId: checkout.clientReferenceId,
+      referredCustomerId: checkout.customer,
+      objectId: checkout.id,
+      occurredAt: event.created,
+      recordedAt: now,
+      processorEventId: event.id,
+    });
+  }
 }
 
 function applyDispute(
@@ -442,11 +566,24 @@ function processEvent(db: RoomDatabase, input: BillingApplyInput, now: number): 
   }
   if (CLASS_1_TYPES.has(event.type)) {
     if (objects.subscription) applyClass1(db, event, objects.subscription, now);
+    if (event.type === 'checkout.session.completed') {
+      applyCheckoutEffect(db, event, objects.checkout, now);
+    }
     return { outcome: 'applied' };
   }
   if (event.type === 'charge.refunded') {
-    if (objects.charge?.id) {
-      recordEffect(db, event, REFUND_EFFECT, objects.charge.id, now);
+    const charge = objects.charge;
+    if (charge?.id) {
+      const inserted = recordEffect(db, event, REFUND_EFFECT, charge.id, now);
+      if (inserted && charge.customer) {
+        recordReferralReversal(db, {
+          objectId: charge.id,
+          referredCustomerId: charge.customer,
+          occurredAt: event.created,
+          recordedAt: now,
+          processorEventId: event.id,
+        });
+      }
     }
     return { outcome: 'applied' };
   }

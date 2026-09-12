@@ -39,6 +39,9 @@ describe('UserProfileMenu', () => {
     render(<UserProfileMenu displayName="Ada Lovelace" onDisplayNameChange={() => undefined} />);
 
     fireEvent.click(screen.getByTestId('whiteboard-profile-btn'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('referral-loading')).toBeNull();
+    });
     expect(screen.getByTestId('whiteboard-profile-edit-name')).toBeTruthy();
     expect(screen.getByTestId('whiteboard-logout-btn')).toBeTruthy();
     expect(screen.getByTestId('whiteboard-profile-delete')).toBeTruthy();
@@ -62,7 +65,9 @@ describe('UserProfileMenu', () => {
     expect(ajaxFetch).toHaveBeenCalledWith('/auth/account/profile', expect.objectContaining({
       method: 'PATCH',
     }));
-    expect(JSON.parse(String(ajaxFetch.mock.calls[0][1].body))).toEqual({ displayName: 'Ms Ada' });
+    const saveCall = ajaxFetch.mock.calls.find((call) => call[0] === '/auth/account/profile');
+    expect(saveCall).toBeTruthy();
+    expect(JSON.parse(String(saveCall?.[1]?.body))).toEqual({ displayName: 'Ms Ada' });
   });
 
   it('moves focus into the menu and returns it to the trigger on Escape (UX-A5)', async () => {

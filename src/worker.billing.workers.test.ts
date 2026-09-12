@@ -8,6 +8,7 @@ import {
 } from './do/IdentityDO';
 import { bootstrapLocalSession, authenticatedFetch, localAccessToken } from './test/workerAuth';
 import { writeEntitlement } from './lib/identity/entitlementWriter';
+import { ensureReferralCode } from './lib/referrals/codes';
 import { readBillingEnv } from './lib/billing/stripeConfig';
 import {
   claimCollectionExecution,
@@ -569,10 +570,14 @@ describe('Worker POST /api/billing/checkout', () => {
 
   it('records one operation per operationId and conflicts on a changed request', async () => {
     const session = await bootstrapLocalSession('billing-checkout-operation');
+    const owner = await bootstrapLocalSession('billing-checkout-operation-owner');
+    const liveCode = await runInDurableObject(identityStub(), (instance) =>
+      ensureReferralCode(instance.db, { accountId: owner.accountId, now: 500 }).code,
+    );
     const body = {
       planId: 'tutor_pro_monthly',
       operationId: 'op_checkout_replay',
-      referralCode: 'PARTNER7',
+      referralCode: liveCode,
     };
     expect((await postCheckout(session, body)).status).toBe(502);
     expect((await postCheckout(session, body)).status).toBe(502);
@@ -582,8 +587,8 @@ describe('Worker POST /api/billing/checkout', () => {
     });
 
     const conflict = await postCheckout(session, {
-      ...body,
-      referralCode: 'OTHER001',
+      planId: 'tutor_pro_monthly',
+      operationId: body.operationId,
     });
     expect(conflict.status).toBe(409);
     expect(await conflict.json()).toEqual({ error: 'Conflict' });

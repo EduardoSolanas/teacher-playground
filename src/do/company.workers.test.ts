@@ -8,6 +8,7 @@ import {
   writeEntitlement,
 } from '../lib/identity/entitlementWriter';
 import { recordOwnedRoom } from '../lib/identity/identityStore';
+import { PAST_DUE_GRACE_MS } from '../lib/plan/catalog';
 
 declare global {
   namespace Cloudflare {
@@ -922,6 +923,33 @@ describe('IdentityDO company routes (spec §6.2)', () => {
     });
   });
 
+  it('summary exposes the pending seat operation so the admin page can settle it', async () => {
+    const owner = await accessSession('company-summary-pending-owner');
+    const companyId = await createCompanyFor(owner, 'Pending Summary Co');
+    await seedCompanySubscription(companyId, 3);
+
+    const reserved = await companyFetch('/companies/seats', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ quantity: 5, operationId: 'op_summary_pending' }),
+    });
+    expect(reserved.status).toBe(200);
+
+    const summary = await companyFetch('/companies', owner.cookie);
+    expect(summary.status).toBe(200);
+    const body = (await summary.json()) as {
+      subscription: {
+        quantity: number;
+        pendingQuantity: number | null;
+        pendingOperationId: string | null;
+      } | null;
+    };
+    expect(body.subscription).toMatchObject({
+      quantity: 3,
+      pendingQuantity: 5,
+      pendingOperationId: 'op_summary_pending',
+    });
+  });
+
   it('rename is owner/admin only and refuses a plain member', async () => {
     const owner = await accessSession('company-rename-owner');
     const admin = await accessSession('company-rename-admin');
@@ -1013,5 +1041,225 @@ describe('IdentityDO company routes (spec §6.2)', () => {
         .get(invite.inviteHash),
     );
     expect(stored).toEqual({ revokedAt: null });
+  });
+
+  function applyBody(
+    event: { id: string; type: string; created: number },
+    objects: Record<string, unknown>,
+  ): string {
+    return JSON.stringify({
+      signatureVerified: true,
+      payloadHash: '7d'.repeat(32),
+      event: { ...event, livemode: true },
+      objects,
+    });
+  }
+
+  function postApply(raw: string): Promise<Response> {
+    return identityStub().fetch('https://identity/billing/events/apply', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: raw,
+    });
+  }
+
+  function invoiceBody(
+    id: string,
+    opts: { customer?: string | null; amountPaid?: number; subscription?: string | null } = {},
+  ): Record<string, unknown> {
+    return {
+      id,
+      customer: opts.customer ?? null,
+      status: 'paid',
+      amountPaid: opts.amountPaid ?? 0,
+      currency: 'gbp',
+      paymentIntent: null,
+      subscription: opts.subscription ?? null,
+      payments: [],
+    };
+  }
+
+  function subscriptionBody(
+    id: string,
+    status: string,
+    opts: Partial<{
+      customer: string | null;
+      currentPeriodEnd: number | null;
+      pauseCollection: { behavior: string } | null;
+    }> = {},
+  ): Record<string, unknown> {
+    return {
+      id,
+      customer: opts.customer ?? null,
+      status,
+      canceledAt: null,
+      currentPeriodEnd: opts.currentPeriodEnd ?? null,
+      pauseCollection: opts.pauseCollection ?? null,
+    };
+  }
+
+  async function admitMember(
+    owner: LocalSession,
+    member: LocalSession,
+    companyId: string,
+  ): Promise<void> {
+    const minted = await companyFetch('/companies/invites', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ role: 'member' }),
+    });
+    expect(minted.status).toBe(201);
+    const token = ((await minted.json()) as { token: string }).token;
+    const redeemed = await companyFetch('/companies/invites/redeem', member.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    });
+    expect(redeemed.status).toBe(200);
+    expect(((await redeemed.json()) as { companyId: string }).companyId).toBe(companyId);
+  }
+
+  it('first invoice.paid materializes every active member with one audit row each', async () => {
+    const owner = await accessSession('company-c4-owner');
+    const member = await accessSession('company-c4-member');
+    const companyId = await createCompanyFor(owner, 'First Paid Co');
+    await seedCompanySubscription(companyId, 3);
+    await admitMember(owner, member, companyId);
+
+    const response = await postApply(
+      applyBody(
+        { id: 'evt_c4_paid', type: 'invoice.paid', created: 500 },
+        {
+          invoice: invoiceBody('in_c4_paid', {
+            customer: 'cus_c4',
+            amountPaid: 4_500,
+            subscription: `sub_${companyId}`,
+          }),
+        },
+      ),
+    );
+    expect(response.status).toBe(200);
+
+    const stored = await runInDurableObject(identityStub(), (instance) => ({
+      firstPaidAt: instance.db
+        .prepare(
+          `SELECT first_paid_at AS firstPaidAt FROM company_subscriptions
+           WHERE company_id = ?`,
+        )
+        .get(companyId),
+      owner: readEntitlementsForAccount(instance.db, owner.accountId),
+      member: readEntitlementsForAccount(instance.db, member.accountId),
+      audit: instance.db
+        .prepare(
+          `SELECT subject_id AS accountId FROM entitlement_audit
+           WHERE cause_kind = 'processor_event' AND cause_id = 'evt_c4_paid'
+           ORDER BY subject_id`,
+        )
+        .all(),
+    }));
+
+    expect(stored.firstPaidAt).toEqual({ firstPaidAt: 500 });
+    for (const [accountId, rows] of [
+      [owner.accountId, stored.owner],
+      [member.accountId, stored.member],
+    ] as const) {
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        accountId,
+        source: 'company',
+        planId: 'corporate_seat',
+        status: 'active',
+        graceUntil: null,
+        collectionPaused: false,
+        companyId,
+        processorSubscriptionId: `sub_${companyId}`,
+      });
+    }
+    expect(stored.audit).toEqual(
+      [owner.accountId, member.accountId]
+        .sort()
+        .map((accountId) => ({ accountId })),
+    );
+  });
+
+  it('company past_due fans out grace_until to every member row', async () => {
+    const owner = await accessSession('company-c5-owner');
+    const member = await accessSession('company-c5-member');
+    const companyId = await createCompanyFor(owner, 'Grace Co');
+    await seedCompanySubscription(companyId, 3);
+    await admitMember(owner, member, companyId);
+
+    const paid = await postApply(
+      applyBody(
+        { id: 'evt_c5_paid', type: 'invoice.paid', created: 500 },
+        {
+          invoice: invoiceBody('in_c5_paid', {
+            customer: 'cus_c5',
+            amountPaid: 4_500,
+            subscription: `sub_${companyId}`,
+          }),
+        },
+      ),
+    );
+    expect(paid.status).toBe(200);
+
+    const pastDueAt = 700;
+    const pastDue = await postApply(
+      applyBody(
+        { id: 'evt_c5_past_due', type: 'customer.subscription.updated', created: pastDueAt },
+        {
+          subscription: subscriptionBody(`sub_${companyId}`, 'past_due', {
+            customer: 'cus_c5',
+            currentPeriodEnd: 1_000,
+            pauseCollection: { behavior: 'void' },
+          }),
+        },
+      ),
+    );
+    expect(pastDue.status).toBe(200);
+
+    const stored = await runInDurableObject(identityStub(), (instance) => ({
+      subscription: instance.db
+        .prepare(
+          `SELECT status, grace_until AS graceUntil,
+                  collection_paused AS collectionPaused,
+                  current_period_end AS currentPeriodEnd
+           FROM company_subscriptions WHERE company_id = ?`,
+        )
+        .get(companyId),
+      owner: readEntitlementsForAccount(instance.db, owner.accountId),
+      member: readEntitlementsForAccount(instance.db, member.accountId),
+      audit: instance.db
+        .prepare(
+          `SELECT subject_id AS accountId FROM entitlement_audit
+           WHERE cause_kind = 'processor_event' AND cause_id = 'evt_c5_past_due'
+           ORDER BY subject_id`,
+        )
+        .all(),
+    }));
+
+    expect(stored.subscription).toEqual({
+      status: 'past_due',
+      graceUntil: pastDueAt + PAST_DUE_GRACE_MS,
+      collectionPaused: 1,
+      currentPeriodEnd: 1_000,
+    });
+    for (const [accountId, rows] of [
+      [owner.accountId, stored.owner],
+      [member.accountId, stored.member],
+    ] as const) {
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        accountId,
+        source: 'company',
+        status: 'past_due',
+        graceUntil: pastDueAt + PAST_DUE_GRACE_MS,
+        collectionPaused: true,
+        currentPeriodEnd: 1_000,
+      });
+    }
+    expect(stored.audit).toEqual(
+      [owner.accountId, member.accountId]
+        .sort()
+        .map((accountId) => ({ accountId })),
+    );
   });
 });

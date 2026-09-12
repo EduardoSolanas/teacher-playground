@@ -78,6 +78,8 @@ import {
   settleSeatChange,
 } from '../lib/company/seats';
 import { resolveEffectivePlan } from '../lib/plan/effectivePlan';
+import { findReferralCode } from '../lib/referrals/codes';
+import { readReferralSummary } from '../lib/referrals/summary';
 import {
   applyEvent,
   sha256Hex,
@@ -125,6 +127,8 @@ const BILLING_OPERATIONS_PATH = '/billing/operations';
 const BILLING_SETTLE_PATH = '/billing/operations/settle';
 const BILLING_RATE_LIMIT_PATH = '/billing/rate-limit';
 const BILLING_CUSTOMER_PATH = '/billing/customer';
+const REFERRALS_ME_PATH = '/referrals/me';
+const REFERRAL_VALIDATE_PATH = '/referrals/validate';
 const COMPANY_PATH = '/companies';
 const COMPANY_MEMBERSHIP_PATH = '/companies/membership';
 const COMPANY_CUSTOMER_PATH = '/companies/customer';
@@ -140,6 +144,8 @@ export const GLOBAL_IDENTITY_OBJECT_NAME = 'global';
 
 export const BILLING_OPERATION_RATE_MAX = 10;
 export const BILLING_OPERATION_RATE_WINDOW_MS = 60 * 60 * 1000;
+
+export const REFERRALS_ME_RATE_MAX = 60;
 
 export const COMPANY_CREATE_RATE_MAX = 5;
 export const COMPANY_INVITE_RATE_MAX = 20;
@@ -579,6 +585,16 @@ function isBillingOperationsBody(
     body.operationId.length >= 1 &&
     isValidOperationKind(body.kind) &&
     (body.stripeObjectId === undefined || typeof body.stripeObjectId === 'string')
+  );
+}
+
+function isReferralValidateBody(value: unknown): value is { referralCode: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  return (
+    typeof body.referralCode === 'string' &&
+    body.referralCode.length >= 1 &&
+    body.referralCode.length <= 64
   );
 }
 
@@ -1454,6 +1470,55 @@ export class IdentityDO extends DurableObject {
       );
     }
 
+    if (url.pathname === REFERRALS_ME_PATH) {
+      if (request.method !== 'GET') return methodNotAllowed('GET');
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      const baseUrl = url.searchParams.get('baseUrl');
+      if (!baseUrl) {
+        return Response.json({ error: 'Invalid request' }, { status: 400, headers: noStore() });
+      }
+      const limit = takeRateSlot(
+        this.db,
+        `referrals:me:${session.accountId}`,
+        REFERRALS_ME_RATE_MAX,
+        Date.now(),
+      );
+      if (!limit.allowed) return rateLimitedResponse(limit.retryAfterMs);
+      const summary = readReferralSummary(this.db, {
+        accountId: session.accountId,
+        baseUrl,
+      });
+      return Response.json(
+        summary ?? {
+          code: null,
+          link: null,
+          pendingCount: 0,
+          confirmedCount: 0,
+          redemptionCount: 0,
+        },
+        { headers: noStore() },
+      );
+    }
+
+    if (url.pathname === REFERRAL_VALIDATE_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      const parsed = await readExactJson(request, isReferralValidateBody);
+      if ('response' in parsed) return parsed.response;
+      const found = findReferralCode(this.db, parsed.body.referralCode);
+      const live = found &&
+        found.active &&
+        (found.expiresAt === null || Date.now() < found.expiresAt) &&
+        found.ownerAccountId !== session.accountId
+        ? found.code
+        : null;
+      return Response.json({ referralCode: live }, { headers: noStore() });
+    }
+
     if (url.pathname === COMPANY_MEMBERSHIP_PATH) {
       if (request.method !== 'GET') return methodNotAllowed('GET');
       const token = parseSessionCookie(request.headers.get('cookie'));
@@ -1500,11 +1565,12 @@ export class IdentityDO extends DurableObject {
             members: listActiveMembers(this.db, membership.companyId).map(
               membershipJson,
             ),
-            subscription: subscription
-              ? {
-                  quantity: subscription.quantity,
-                  pendingQuantity: subscription.pendingQuantity,
-                  status: subscription.status,
+              subscription: subscription
+                ? {
+                    quantity: subscription.quantity,
+                    pendingQuantity: subscription.pendingQuantity,
+                    pendingOperationId: subscription.pendingOperationId,
+                    status: subscription.status,
                   collectionMethod: subscription.collectionMethod,
                   currentPeriodEnd: subscription.currentPeriodEnd,
                   firstPaidAt: subscription.firstPaidAt,

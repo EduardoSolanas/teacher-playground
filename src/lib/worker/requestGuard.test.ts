@@ -125,6 +125,16 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(isRouteAllowedOnHost('/api/whiteboard/rooms', 'GET', 'guest')).toBe(false);
     });
 
+    it('/account/company (company admin page) is teacher-only GET/HEAD', () => {
+      expect(isRouteAllowedOnHost('/account/company', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/account/company', 'HEAD', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/account/company', 'GET', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/account/company', 'GET', 'marketing')).toBe(false);
+      expect(isRouteAllowedOnHost('/account/company', 'POST', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/account/company/', 'GET', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/account/company/extra', 'GET', 'teacher')).toBe(false);
+    });
+
     // Guest-only paths
     it('POST /auth/guest is guest-only', () => {
       expect(isRouteAllowedOnHost('/auth/guest', 'POST', 'guest')).toBe(true);
@@ -679,6 +689,7 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
     );
   });
 
+
   describe('stripForwardedIdentityHeaders (SEC-004)', () => {
     it('removes cookies, Authorization, Access assertion, and client identity headers', () => {
       const incoming = new Headers({
@@ -969,6 +980,36 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       ] as const) {
         expect(isOriginGuardedPath(pathname, method), `${method} ${pathname}`).toBe(true);
       }
+    });
+  });
+
+  describe('referral route boundary (spec §6.1)', () => {
+    it('allows /api/referrals/me on the teacher host only', () => {
+      expect(isRouteAllowedOnHost('/api/referrals/me', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/referrals/me', 'HEAD', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/referrals/me', 'GET', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/api/referrals/me', 'POST', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/api/referrals/me', 'GET', 'marketing')).toBe(false);
+      expect(isRouteAllowedOnHost('/api/referrals/me', 'GET', 'unknown')).toBe(false);
+    });
+
+    it('keeps suffix and prefix variants of /api/referrals/me out of the allowance', () => {
+      for (const pathname of [
+        '/api/referrals/me/',
+        '/api/referrals/me/extra',
+        '/api/referrals/meX',
+        '/api/referrals/me2',
+        '/api/referrals',
+        '/api/referrals/mine',
+      ]) {
+        expect(isRouteAllowedOnHost(pathname, 'GET', 'teacher'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'teacher'), pathname).toBe(false);
+      }
+    });
+
+    it('leaves the caller-scoped referral read unguarded by Origin like every other GET', () => {
+      expect(isOriginGuardedPath('/api/referrals/me', 'GET')).toBe(false);
+      expect(isOriginGuardedPath('/api/referrals/me', 'HEAD')).toBe(false);
     });
   });
 });

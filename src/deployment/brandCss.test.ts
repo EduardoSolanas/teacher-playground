@@ -122,6 +122,17 @@ describe('public/brand.css contract', () => {
     expect(inside).toMatch(/\.room-pin-off\{/);
     expect(layerBody.slice(close)).not.toContain('.room-card');
   });
+
+  it('§10: the pricing comparison table ships its own .compare* recipe', () => {
+    const css = readRepositoryFile(brandCssPath);
+
+    expect(ruleFor(css, '.compare')).toMatch(/border-collapse:collapse/);
+    expect(ruleFor(css, '.compare')).toMatch(/border:1px solid var\(--line\)/);
+    expect(ruleFor(css, '.compare caption')).toMatch(/color:var\(--mut\)/);
+    expect(ruleFor(css, '.compare thead th')).toMatch(/background:var\(--paper2\)/);
+    expect(ruleFor(css, '.bands')).toMatch(/display:grid/);
+    expect(ruleFor(css, '.vat')).toMatch(/color:var\(--mut\)/);
+  });
 });
 
 describe('src/app/globals.css contract', () => {

@@ -45,6 +45,7 @@ import {
   BILLING_WEBHOOK_MAX_BODY_BYTES,
   BILLING_CHECKOUT_PATH,
   BILLING_PORTAL_PATH,
+  REFERRAL_ME_PATH,
   routeHostKind,
   stripForwardedIdentityHeaders,
   connectSrcForPageOrigin,
@@ -155,6 +156,8 @@ const IDENTITY_COMPANY_INVITE_REDEEM = 'https://identity/companies/invites/redee
 const IDENTITY_BILLING_OPERATIONS = 'https://identity/billing/operations';
 const IDENTITY_BILLING_RATE_LIMIT = 'https://identity/billing/rate-limit';
 const IDENTITY_BILLING_CUSTOMER = 'https://identity/billing/customer';
+const IDENTITY_REFERRALS_ME = 'https://identity/referrals/me';
+const IDENTITY_REFERRAL_VALIDATE = 'https://identity/referrals/validate';
 
 const PERSONAL_PAID_PLANS: ReadonlySet<string> = new Set([
   'tutor_pro_monthly',
@@ -1651,6 +1654,20 @@ function normalizeSubscription(value: unknown): Record<string, unknown> | null {
   };
 }
 
+function normalizeCheckoutSession(value: unknown): Record<string, unknown> | null {
+  const record = recordOf(value);
+  if (record === null) return null;
+  const id = idValue(record.id);
+  if (id === null) return null;
+  const metadata = recordOf(record.metadata);
+  return {
+    id,
+    clientReferenceId: idValue(record.client_reference_id),
+    customer: idValue(record.customer),
+    referrerCode: idValue(metadata?.referrer_code),
+  };
+}
+
 function normalizeInvoicePayment(value: unknown): { id: string; amount: number } | null {
   const record = recordOf(value);
   if (record === null) return null;
@@ -1761,8 +1778,11 @@ async function fetchWebhookObjects(
   }
 
   if (event.type === 'charge.refunded') {
-    const id = idValue(recordOf(json)?.id);
-    return id === null ? null : { charge: { id } };
+    const charge = recordOf(json);
+    const id = idValue(charge?.id);
+    return id === null
+      ? null
+      : { charge: { id, customer: idValue(charge?.customer) } };
   }
 
   if (event.type.startsWith('charge.dispute.')) {
@@ -1789,13 +1809,15 @@ async function fetchWebhookObjects(
   }
 
   if (event.type.startsWith('checkout.session.')) {
+    const session = normalizeCheckoutSession(json);
+    const objects: Record<string, unknown> = session === null ? {} : { checkout: session };
     const subscriptionRef = recordOf(json)?.subscription;
     if (recordOf(subscriptionRef) !== null) {
       const subscription = normalizeSubscription(subscriptionRef);
-      return subscription === null ? null : { subscription };
+      return subscription === null ? null : { ...objects, subscription };
     }
     const subscriptionId = idValue(subscriptionRef);
-    if (subscriptionId === null) return {};
+    if (subscriptionId === null) return objects;
     const subscriptionRequest = eventsFetchMapRequest(
       billing.apiBaseUrl,
       billing.secretKey ?? '',
@@ -1806,7 +1828,7 @@ async function fetchWebhookObjects(
     const fetchedSubscription = await executeWebhookFetch(billing, subscriptionRequest);
     if (!fetchedSubscription.ok) return null;
     const subscription = normalizeSubscription(fetchedSubscription.json);
-    return subscription === null ? null : { subscription };
+    return subscription === null ? null : { ...objects, subscription };
   }
 
   return {};
@@ -2041,6 +2063,33 @@ async function billingRateLimit(env: Env, request: Request): Promise<Response | 
   return rateLimited(env, retryAfterMs);
 }
 
+async function validateReferralCode(
+  env: Env,
+  request: Request,
+  referralCode: string,
+): Promise<{ response: Response } | { referralCode: string | null }> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const result = await identity.fetch(new Request(IDENTITY_REFERRAL_VALIDATE, {
+    ...internalJson({ referralCode }),
+    headers: {
+      'content-type': 'application/json',
+      cookie: request.headers.get('cookie') ?? '',
+    },
+  }));
+  if (!result.ok) {
+    return {
+      response: withSecurityHeaders(new Response(result.body, {
+        status: result.status,
+        headers: result.headers,
+      })),
+    };
+  }
+  const body = (await result.json()) as { referralCode?: unknown };
+  return {
+    referralCode: typeof body.referralCode === 'string' ? body.referralCode : null,
+  };
+}
+
 async function recordBillingOperation(
   env: Env,
   session: ValidatedSession,
@@ -2130,12 +2179,18 @@ async function billingCheckout(
   if (!billing.apiBaseAllowed || billing.secretKey === null || priceId === null) {
     return billingUnavailable();
   }
+  let validatedReferralCode: string | undefined;
+  if (referralCode !== undefined) {
+    const validation = await validateReferralCode(env, request, referralCode);
+    if ('response' in validation) return validation.response;
+    validatedReferralCode = validation.referralCode ?? undefined;
+  }
   const origin = new URL(request.url).origin;
   const successUrl = `${origin}/whiteboard?billing=success`;
   const cancelUrl = `${origin}/pricing?billing=cancelled`;
   const recorded = await recordBillingOperation(env, outcome.session, operationId, 'checkout', {
     planId,
-    referralCode,
+    referralCode: validatedReferralCode,
     successUrl,
     cancelUrl,
   });
@@ -2148,7 +2203,7 @@ async function billingCheckout(
     operationId,
     successUrl,
     cancelUrl,
-    referralCode,
+    referralCode: validatedReferralCode,
   });
   return executeBillingSession(billing, stripeRequest);
 }
@@ -2210,6 +2265,41 @@ async function billingPortal(
     returnUrl,
   });
   return executeBillingSession(billing, stripeRequest);
+}
+
+async function referralsMe(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'GET') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'GET' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const baseUrl = new URL(request.url).origin;
+  const result = await identity.fetch(new Request(
+    `${IDENTITY_REFERRALS_ME}?baseUrl=${encodeURIComponent(baseUrl)}`,
+    { headers: { cookie: request.headers.get('cookie') ?? '' } },
+  ));
+  if (result.status === 429) {
+    const body = (await result.json().catch(() => null)) as
+      | { retryAfterMs?: unknown }
+      | null;
+    const retryAfterMs =
+      typeof body?.retryAfterMs === 'number' && Number.isFinite(body.retryAfterMs)
+        ? body.retryAfterMs
+        : 0;
+    return rateLimited(env, retryAfterMs);
+  }
+  return withSecurityHeaders(new Response(result.body, {
+    status: result.status,
+    headers: result.headers,
+  }));
 }
 
 function hostNotFound(): Response {
@@ -2412,6 +2502,9 @@ const worker = {
       }
       if (url.pathname === BILLING_PORTAL_PATH) {
         return billingPortal(env, request, principal);
+      }
+      if (url.pathname === REFERRAL_ME_PATH) {
+        return referralsMe(env, request, principal);
       }
     }
 
