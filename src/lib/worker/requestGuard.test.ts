@@ -6,6 +6,7 @@ import {
   withSecurityHeaders,
   withNonceHtmlSecurityHeaders,
   connectSrcForPageOrigin,
+  fontSrcForAssetOrigin,
   MAX_BODY_BYTES,
   BILLING_WEBHOOK_MAX_BODY_BYTES,
   BILLING_WEBHOOK_PATH,
@@ -732,7 +733,7 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
         headers: { 'content-type': 'text/html' },
       }),
       {
-        fontSrc: "font-src 'self' data: blob: https://excalidraw-assets.sen-tutor.co.uk",
+        fontSrc: fontSrcForAssetOrigin('https://excalidraw-assets.sen-tutor.co.uk'),
       },
     );
     expect(response.headers.get('Content-Security-Policy')).toContain(
@@ -740,6 +741,38 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
     );
   });
 
+  describe('fontSrcForAssetOrigin', () => {
+    // The CDN origin used to be a literal in the module, so a second
+    // environment serving its assets from a different host could not have
+    // overridden it without a code change -- and the failure mode is silent:
+    // green tests and a board with no glyphs.
+    it('admits the configured origin and nothing else', () => {
+      expect(fontSrcForAssetOrigin('https://assets.example.com')).toBe(
+        "font-src 'self' data: blob: https://assets.example.com",
+      );
+    });
+
+    it('keeps only the origin when given a full release path', () => {
+      // The manifest also stores a base URL with a path on it. Anything past
+      // the origin is meaningless to CSP, and leaving it in would produce a
+      // source expression that matches nothing.
+      expect(fontSrcForAssetOrigin('https://assets.example.com/releases/1.2.3/dist/prod/')).toBe(
+        "font-src 'self' data: blob: https://assets.example.com",
+      );
+    });
+
+    it.each([undefined, null, '', 'not a url', 'http://assets.example.com'])(
+      'falls back to same-origin fonts for %s',
+      (value) => {
+        // Failing closed here would break every board, and the CDN origin
+        // carries no authority, so the safe direction is to drop it. An http
+        // origin is dropped too: it would be blocked as mixed content on the
+        // deployed page anyway, so admitting it widens the policy without ever
+        // serving a font.
+        expect(fontSrcForAssetOrigin(value)).toBe("font-src 'self' data: blob:");
+      },
+    );
+  });
 
   describe('stripForwardedIdentityHeaders (SEC-004)', () => {
     it('removes cookies, Authorization, Access assertion, and client identity headers', () => {

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
@@ -41,26 +41,36 @@ describe('production deployment policy', () => {
   it('runs the cryptographic Worker boundary before serving static assets', () => {
     for (const configPath of ['wrangler.toml', 'wrangler.local.toml']) {
       const config = readRepositoryFile(configPath);
-      const assetsBlock = /^\[assets\]\s*\n((?:(?!^\[)[\s\S])*)/m.exec(config)?.[1];
-      expect(assetsBlock, `${configPath}: no [assets] block`).toBeTruthy();
 
-      const setting = /^run_worker_first\s*=\s*(true|\[[^\]]*\])\s*$/m.exec(assetsBlock!)?.[1];
-      expect(setting, `${configPath}: run_worker_first missing`).toBeTruthy();
+      // EVERY assets block, not just the top-level one. `assets` is not
+      // inherited in a way that can be relied on, so a named environment
+      // declares its own -- and an [env.staging.assets] that forgot
+      // run_worker_first would route that environment's /api/* and /auth/*
+      // around Access with nothing here noticing.
+      const assetsBlocks = Array.from(
+        config.matchAll(/^\[(?:env\.[A-Za-z0-9_-]+\.)?assets\]\s*\n((?:(?!^\[)[\s\S])*)/gm),
+      );
+      expect(assetsBlocks.length, `${configPath}: no [assets] block`).toBeGreaterThan(0);
 
-      if (setting === 'true') continue;
+      for (const [, assetsBlock] of assetsBlocks) {
+        const setting = /^run_worker_first\s*=\s*(true|\[[^\]]*\])\s*$/m.exec(assetsBlock)?.[1];
+        expect(setting, `${configPath}: run_worker_first missing`).toBeTruthy();
 
-      // The array form is allowed only so immutable assets can skip the Worker.
-      // It must still cover everything by default, and every exclusion must be a
-      // known-safe prefix — otherwise a later edit could quietly route /api/* or
-      // /auth/* around Access and the session check.
-      const patterns = Array.from(setting!.matchAll(/"([^"]+)"/g)).map((m) => m[1]);
-      expect(patterns, `${configPath}: must match all paths by default`).toContain('/*');
+        if (setting === 'true') continue;
 
-      for (const exclusion of patterns.filter((pattern) => pattern.startsWith('!'))) {
-        expect(
-          BYPASSABLE_ASSET_PREFIXES,
-          `${configPath}: ${exclusion} may not bypass the Worker`,
-        ).toContain(exclusion.slice(1));
+        // The array form is allowed only so immutable assets can skip the
+        // Worker. It must still cover everything by default, and every
+        // exclusion must be a known-safe prefix — otherwise a later edit could
+        // quietly route /api/* or /auth/* around Access and the session check.
+        const patterns = Array.from(setting!.matchAll(/"([^"]+)"/g)).map((m) => m[1]);
+        expect(patterns, `${configPath}: must match all paths by default`).toContain('/*');
+
+        for (const exclusion of patterns.filter((pattern) => pattern.startsWith('!'))) {
+          expect(
+            BYPASSABLE_ASSET_PREFIXES,
+            `${configPath}: ${exclusion} may not bypass the Worker`,
+          ).toContain(exclusion.slice(1));
+        }
       }
     }
   });
@@ -129,17 +139,29 @@ describe('production deployment policy', () => {
   });
 
   it('pins GitHub Actions to full commit SHAs on a maintained Node LTS', () => {
-    const workflowPaths = [
+    // Every workflow, not a hand-kept list. A list is a thing a new workflow is
+    // added without, and an unpinned action in the new one is exactly the gap
+    // this test exists to close -- so the enumeration is the directory itself.
+    const workflowPaths = readdirSync(resolve(repositoryRoot, '.github/workflows'))
+      .filter((entry) => entry.endsWith('.yml') || entry.endsWith('.yaml'))
+      .map((entry) => `.github/workflows/${entry}`)
+      .sort();
+
+    // These four are load-bearing enough to name: the deploy path runs on them.
+    expect(workflowPaths).toEqual(expect.arrayContaining([
       '.github/workflows/ci.yml',
       '.github/workflows/deploy-cloudflare.yml',
       '.github/workflows/configure-livekit.yml',
-    ];
+      '.github/workflows/infra.yml',
+    ]));
+
     const requiredActionPins = {
       'actions/checkout': '3d3c42e5aac5ba805825da76410c181273ba90b1',
       'actions/setup-node': '820762786026740c76f36085b0efc47a31fe5020',
       'actions/upload-artifact': '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
       'actions/dependency-review-action': 'a1d282b36b6f3519aa1f3fc636f609c47dddb294',
       'cloudflare/wrangler-action': 'ebbaa1584979971c8614a24965b4405ff95890e0',
+      'hashicorp/setup-terraform': 'dfe3c3f87815947d99a8997f908cb6525fc44e9e',
     };
 
     for (const workflowPath of workflowPaths) {
@@ -154,7 +176,11 @@ describe('production deployment policy', () => {
       }
 
       expect(workflow, workflowPath).not.toMatch(/^\s+node-version:\s*['"]?20(?:\.\d+)*['"]?\s*$/m);
-      expect(workflow, workflowPath).toMatch(/^\s+node-version:\s*['"]?22(?:\.\d+){2}['"]?\s*$/m);
+      // Only where a workflow sets Node up at all. A workflow that runs no
+      // JavaScript should not be made to declare a version it never uses.
+      if (workflow.includes('actions/setup-node@')) {
+        expect(workflow, workflowPath).toMatch(/^\s+node-version:\s*['"]?22(?:\.\d+){2}['"]?\s*$/m);
+      }
 
       for (const [action, sha] of Object.entries(requiredActionPins)) {
         const refs = [...workflow.matchAll(new RegExp(`^\\s+uses:\\s+${action.replace('/', '\\/')}@([0-9a-f]{40})`, 'gm'))]
@@ -216,14 +242,24 @@ describe('production deployment policy', () => {
     const packageJson = readRepositoryFile('package.json');
     const lockfile = readRepositoryFile('package-lock.json');
     const assetPath = readRepositoryFile('src/lib/whiteboard/excalidrawAssetPath.ts');
-    const requestGuard = readRepositoryFile('src/lib/worker/requestGuard.ts');
     const release = '0.18.1-tp.11';
     const origin = 'https://excalidraw-assets.sen-tutor.co.uk';
 
     expect(packageJson).toContain(`teacher-playground-v${release}/package.tgz`);
     expect(lockfile).toContain(`teacher-playground-v${release}/package.tgz`);
     expect(assetPath).toContain(`${origin}/releases/${release}/dist/prod/`);
-    expect(requestGuard).toContain(`font-src 'self' data: blob: ${origin}`);
+
+    // The CSP font-src origin is no longer a literal in the Worker: it is a
+    // deployment input, so a second environment can serve its assets from its
+    // own host. That moves this assertion to the manifest, which is where the
+    // value now lives -- and src/infra/environments.test.ts is what keeps
+    // wrangler.toml's binding equal to it.
+    const manifest = JSON.parse(readRepositoryFile('infra/environments.json')) as {
+      environments: Record<string, { excalidraw: { assetBaseUrl: string; assetOrigin: string } }>;
+    };
+    const production = manifest.environments.prod;
+    expect(production.excalidraw.assetOrigin).toBe(origin);
+    expect(production.excalidraw.assetBaseUrl).toBe(`${origin}/releases/${release}/dist/prod/`);
     const deploymentGuide = readRepositoryFile('DEPLOY.md');
     expect(deploymentGuide).toContain('32781207895');
     expect(deploymentGuide).toContain('32783092806');

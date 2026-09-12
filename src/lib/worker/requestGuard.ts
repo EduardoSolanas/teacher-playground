@@ -416,6 +416,44 @@ export function isPublicPath(pathname: string): boolean {
 /** Where Excalidraw's published shape libraries are fetched from. */
 const EXCALIDRAW_LIBRARY_HOST = 'libraries.excalidraw.com';
 
+/**
+ * `font-src` when no asset origin is configured.
+ *
+ * Excalidraw registers its bundled fonts through blob: URLs built at runtime,
+ * so 'self' and data: alone are not enough — the browser reported the block
+ * hundreds of times on a single board. No third-party origin is included here:
+ * the CDN that serves a given environment's fonts is an input, not a constant,
+ * and a build that has no CDN must not advertise someone else's.
+ */
+const DEFAULT_FONT_SRC = "font-src 'self' data: blob:";
+
+/**
+ * `font-src` for a deployment whose Excalidraw assets come from a CDN.
+ *
+ * The origin is a deployment input (`EXCALIDRAW_ASSET_ORIGIN`), not a literal,
+ * because a second environment serving its assets from a different host would
+ * otherwise need a code change to get its own fonts — and the failure mode is
+ * silent: the tests stay green and the board renders with no glyphs, because
+ * the only symptom is a console violation in a browser nobody opened.
+ *
+ * A missing or unparseable origin yields the default rather than an empty
+ * allowlist or a thrown error. Failing closed here would break every board;
+ * the CDN origin carries no authority, so the safe direction is to drop it.
+ */
+export function fontSrcForAssetOrigin(assetOrigin?: string | null): string {
+  if (!assetOrigin) return DEFAULT_FONT_SRC;
+  let origin: string;
+  try {
+    origin = new URL(assetOrigin).origin;
+  } catch {
+    return DEFAULT_FONT_SRC;
+  }
+  // Only an https origin is worth adding. An http one would be blocked as mixed
+  // content on the deployed page anyway, so admitting it to the policy would
+  // widen the allowlist without ever serving a font.
+  if (!origin.startsWith('https://')) return DEFAULT_FONT_SRC;
+  return `${DEFAULT_FONT_SRC} ${origin}`;
+}
 
 /**
  * Same-origin HTTP and WebSocket only, plus the two hosts the room genuinely
@@ -542,8 +580,10 @@ export function withSecurityHeaders(
         "form-action 'self'",
         options?.connectSrc ?? "connect-src 'self'",
         "img-src 'self' data: blob:",
-        options?.fontSrc
-          ?? "font-src 'self' data: blob: https://excalidraw-assets.sen-tutor.co.uk",
+        // Callers pass the environment's asset origin through
+        // `fontSrcForAssetOrigin`. Without one, no third-party font host is
+        // advertised at all.
+        options?.fontSrc ?? DEFAULT_FONT_SRC,
         "style-src 'self' 'unsafe-inline'",
         options?.scriptNonce
           ? `script-src 'self' 'nonce-${options.scriptNonce}' 'strict-dynamic'`

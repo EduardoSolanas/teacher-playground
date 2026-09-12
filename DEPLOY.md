@@ -36,11 +36,14 @@ Guest join uses a **second hostname** on the same Worker. The teacher hostname
 keeps the existing Access application (exact hostname only — no wildcard). The
 guest hostname gets DNS and a Worker route but **no Access application**; adding
 one breaks guest join. `wrangler.toml` sets `TEACHER_HOSTNAME` and
-`GUEST_HOSTNAME`; if either is unset, every request is treated as teacher-host.
-`workers_dev` and `preview_urls` are already `false`, so the Worker has no
-Cloudflare-generated alternate origin. Before enabling guests in production,
-spend the zone's single free rate-limit rule on `POST /auth/guest` on the guest
-hostname. See `CLOUDFLARE_ACCESS_STAGING.md` and `guest_implementation.md` §6.5;
+`GUEST_HOSTNAME` from `infra/environments.json`; if either is unset, every
+request is treated as teacher-host. `workers_dev` and `preview_urls` are already
+`false`, so the Worker has no Cloudflare-generated alternate origin. The zone's
+single free rate-limit rule is spent on `POST /auth/guest` on the guest hostname
+by `infra/cloudflare/ratelimit.tf`; it is the outer bound that sheds volumetric
+abuse before a Worker invocation, and stays deliberately looser than the
+in-Worker `GUEST_AUTH_RATE_MAX` so a legitimate client always meets the Worker's
+considered 429 rather than an opaque edge block. See `CLOUDFLARE_ACCESS_STAGING.md` and `guest_implementation.md` §6.5;
 the Access application and DNS state live in the Cloudflare account and are not
 verified in this repository.
 
@@ -66,12 +69,45 @@ serves it for every `/whiteboard/<roomId>` URL. `RoomClient.tsx` reads the real
 id from `window.location.pathname`, so the address bar is never rewritten and
 room links stay shareable.
 
+## Infrastructure as code
+
+Everything this deployment needs from the Cloudflare account is declared in
+`infra/`, and every per-environment value comes from one file,
+`infra/environments.json`:
+
+- **Terraform** (`infra/cloudflare`) owns the R2 bucket, the Access application
+  and its policy, the zone's rate-limit rule, and the login branding.
+  `.github/workflows/infra.yml` plans on every change and applies only from a
+  named manual run.
+- **Wrangler** owns the Worker, its Durable Objects, and its three custom
+  domains. It is not split between the two tools, so a `terraform apply` can
+  never revert a deploy.
+- **`npm run infra:check`** reads the live account for what Terraform
+  structurally cannot prove: that no Access application covers the guest
+  hostname, that no Bypass policy exists, and that the R2 bucket has no public
+  domain. Terraform sees only the resources it manages, so an absence is
+  invisible to it.
+
+`wrangler.toml` holds a copy of the manifest's values, because Wrangler reads
+TOML at deploy time. Each environment is an `[env.<name>]` block there —
+production is `[env.prod]`, deployed with `wrangler deploy --env prod`. Nothing
+environment-specific sits at the top level, so a second environment cannot
+inherit production's hostnames or bucket by accident.
+`src/infra/environments.test.ts` fails when the two disagree. Edit the manifest;
+let the test tell you what must follow.
+
+See `infra/README.md` for the runbook, including how production — which predates
+the stack — is adopted rather than recreated.
+
 ## Prerequisites
 
 - A Cloudflare account. SQLite-backed Durable Objects are available on the
   Workers Free plan; key-value backed Durable Objects are not, which is why
   `wrangler.toml` uses `new_sqlite_classes`.
 - `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as GitHub secrets for CI.
+- `TFSTATE_ACCESS_KEY_ID` and `TFSTATE_SECRET_ACCESS_KEY` (R2 API token
+  credentials) for Terraform state, and a private R2 state bucket bootstrapped
+  once by hand.
 
 ## Production hostname closure (externally blocked)
 
@@ -130,8 +166,19 @@ npx wrangler secret put LIVEKIT_API_SECRET
 npm run deploy
 ```
 
-That runs `next build` (static export into `out/`) and then `wrangler deploy`,
-which uploads the Worker together with the contents of `out/`.
+That runs `next build` (static export into `out/`) and then
+`wrangler deploy --env prod`, which uploads the Worker together with the
+contents of `out/`.
+
+`--env` is required, not stylistic. Each environment is an `[env.<name>]` block
+in `wrangler.toml`; the top level holds only what every environment shares and
+deliberately sets **no `main`**. Wrangler merely warns when environments exist
+and `--env` is omitted, and the deploy it would then make publishes the Worker
+with no routes, no vars and no bindings — over the live script, because
+`[env.prod]` keeps the Worker's real name. Withholding the top-level entry point
+turns that into an immediate `Missing entry-point` error instead.
+`src/infra/environments.test.ts` asserts that every wrangler invocation in
+`package.json` and in the workflows passes `--env`.
 
 Pushes to `main` deploy automatically via
 `.github/workflows/deploy-cloudflare.yml`, which typechecks, runs both test
@@ -186,14 +233,22 @@ while the CDN is unavailable.
 
 #### Changing the CDN hostname touches the CSP
 
-The hostname is written in three places that must move together:
+The hostname now has one home: `excalidraw.assetBaseUrl` and
+`excalidraw.assetOrigin` in `infra/environments.json`. The deploy workflow reads
+the base URL into `NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH` at build time, and
+`EXCALIDRAW_ASSET_ORIGIN` in `wrangler.toml` carries the origin into the Worker's
+CSP through `fontSrcForAssetOrigin`. `src/infra/environments.test.ts` asserts
+that the origin is the origin of the base URL, and that the binding equals the
+manifest.
 
-- `EXCALIDRAW_CDN_BASE_PATH` in `src/lib/whiteboard/excalidrawAssetPath.ts`
-- the `font-src` default in `src/lib/worker/requestGuard.ts`
-- the assertion covering that default in `src/lib/worker/requestGuard.test.ts`
+`EXCALIDRAW_CDN_BASE_PATH` in `src/lib/whiteboard/excalidrawAssetPath.ts` remains
+as the default for a build that sets no asset path, and
+`src/deployment/deploymentPolicy.test.ts` keeps it on the same fork release as
+the package and the manifest.
 
-A hostname change that misses the CSP produces a green test suite and a board
-with no fonts, because the failure appears only as a browser console violation.
+A hostname change that missed the CSP used to produce a green test suite and a
+board with no fonts, because the failure appears only as a browser console
+violation. That is what the single source and its test close.
 
 No automated check covers the cross-origin load itself. Parent unit tests assert
 the CSP header string, and fork tests cover uploader MIME and cache contracts,

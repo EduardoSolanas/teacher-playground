@@ -1,0 +1,98 @@
+# Cloudflare Access for the split-hostname guest design.
+#
+# guest_implementation.md §6.5 states four invariants. Two of them are shapes
+# this stack can hold, and two are absences it cannot prove:
+#
+#   1. The teacher hostname has exactly one Access application.   <- held here
+#   2. That application is an EXACT hostname, never a wildcard.   <- held here
+#      (asserted in locals.tf; a `*.<zone>` application would cover the guest
+#      hostname and break guest join, and would put a login in front of the
+#      public landing page.)
+#   3. The guest hostname has NO Access application of any kind.  <- not held
+#   4. No Bypass policy exists anywhere.                          <- not held
+#
+# Terraform can refuse to create 3 and 4; it cannot see an application or policy
+# some other tool made. Proving an absence needs a read of the live account,
+# which is what `npm run access:check` does, blocking, in CI. That script is not
+# a leftover from before this stack -- it covers what this stack structurally
+# cannot.
+
+resource "cloudflare_zero_trust_access_policy" "allow_teachers" {
+  account_id = local.account_id
+  name       = "Allow signed-in teachers"
+  decision   = "allow"
+
+  # Anyone who completes one of the organization's configured identity
+  # providers. The product's own authorization -- which account may open which
+  # room -- is enforced by IdentityDO behind this, never by Access.
+  #
+  # NOTE when adopting an existing production policy: scripts/cloudflare-access.mjs
+  # created its policy with `login_method` carrying an empty id. If the live rule
+  # normalised to something other than `everyone`, the first plan will propose a
+  # change to an authorization rule. Read that diff before applying it.
+  include = [{
+    everyone = {}
+  }]
+}
+
+resource "cloudflare_zero_trust_access_application" "teacher" {
+  account_id = local.account_id
+  name       = local.env.access.applicationName
+
+  # EXACT hostname. Never a wildcard, never the guest or marketing hostname.
+  domain = local.teacher_hostname
+  type   = "self_hosted"
+
+  session_duration = local.env.access.sessionDuration
+
+  # The launcher is a directory of applications for end users; teachers reach
+  # this one by its own URL, and students never see Access at all.
+  app_launcher_visible = false
+
+  # Empty means every identity provider the organization has configured, rather
+  # than a pinned list that silently excludes a provider added later.
+  allowed_idps = []
+
+  # The login page must offer the choice. Skipping straight to one provider
+  # strands every teacher who used a different one.
+  auto_redirect_to_identity = false
+
+  policies = [{
+    id         = cloudflare_zero_trust_access_policy.allow_teachers.id
+    precedence = 1
+  }]
+
+  lifecycle {
+    # Destroying this application removes the login in front of the teacher
+    # surface. The Worker still verifies the Access JWT and would refuse every
+    # request, so the failure is closed rather than open -- but it is a total
+    # outage, and it must not happen as a side effect of some other change.
+    prevent_destroy = true
+
+    # Checked here rather than trusted from the manifest, because this is the
+    # resource that would do the damage. A plan that would widen the
+    # application's reach stops before it is a plan.
+    precondition {
+      condition     = !startswith(local.teacher_hostname, "*")
+      error_message = "The Access application domain must be an exact hostname. A wildcard would cover the guest hostname and break guest join entirely, and would put a login in front of the public landing page."
+    }
+
+    precondition {
+      condition     = local.teacher_hostname != local.guest_hostname
+      error_message = "The teacher and guest hostnames must differ. Access in front of the guest hostname demands a login from every pupil joining with a class PIN."
+    }
+
+    precondition {
+      condition     = local.teacher_hostname != local.marketing_hostname
+      error_message = "The teacher and marketing hostnames must differ. The Access JWT arrives only on paths an Access application protects, so public pages cannot be public on a protected hostname."
+    }
+  }
+}
+
+# The guest hostname gets DNS and a Worker route and NOTHING here. Its absence
+# from this file is the design: an Access application in front of it would
+# demand a login from every pupil joining with a class PIN.
+#
+# The marketing hostname is likewise absent, and for a second reason: the Access
+# JWT arrives only on paths an Access application protects, so public pages
+# cannot be public on a protected hostname.

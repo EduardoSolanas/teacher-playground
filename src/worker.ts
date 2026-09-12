@@ -49,6 +49,7 @@ import {
   routeHostKind,
   stripForwardedIdentityHeaders,
   connectSrcForPageOrigin,
+  fontSrcForAssetOrigin,
   withSecurityHeaders,
   withNonceHtmlSecurityHeaders,
 } from './lib/worker/requestGuard';
@@ -111,6 +112,16 @@ export interface Env {
    * pages cannot be public on the app hostname. Unset disables the surface.
    */
   MARKETING_HOSTNAME?: string;
+  /**
+   * Origin serving the pinned Excalidraw release. Feeds the CSP `font-src`.
+   *
+   * Unset means same-origin fonts only: the board still renders, with
+   * Excalidraw's bundled faces, and no third-party origin is advertised. That
+   * is the correct default for a build whose assets are not on a CDN, and it
+   * keeps the CDN hostname out of the Worker source, where a second
+   * environment had no way to override it.
+   */
+  EXCALIDRAW_ASSET_ORIGIN?: string;
   STRIPE_API_BASE?: string;
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
@@ -2712,6 +2723,7 @@ const worker = {
       return withNonceHtmlSecurityHeaders(asset, {
         indexable: (MARKETING_PAGES as readonly string[]).includes(url.pathname),
         connectSrc: connectSrcForPageOrigin(url.origin, env.LIVEKIT_URL),
+        fontSrc: fontSrcForAssetOrigin(env.EXCALIDRAW_ASSET_ORIGIN),
       });
     }
     if (
@@ -2764,6 +2776,7 @@ const worker = {
       return withNonceHtmlSecurityHeaders(response, {
         indexable: (MARKETING_PAGES as readonly string[]).includes(url.pathname),
         connectSrc: connectSrcForPageOrigin(url.origin, env.LIVEKIT_URL),
+        fontSrc: fontSrcForAssetOrigin(env.EXCALIDRAW_ASSET_ORIGIN),
       });
     }
 
@@ -3244,11 +3257,13 @@ const worker = {
       rewritten.pathname = ROOM_PLACEHOLDER;
       return withNonceHtmlSecurityHeaders(await env.ASSETS.fetch(new Request(rewritten, request)), {
         connectSrc: connectSrcForPageOrigin(url.origin, env.LIVEKIT_URL),
+        fontSrc: fontSrcForAssetOrigin(env.EXCALIDRAW_ASSET_ORIGIN),
       });
     }
 
     return withNonceHtmlSecurityHeaders(await env.ASSETS.fetch(request), {
       connectSrc: connectSrcForPageOrigin(url.origin, env.LIVEKIT_URL),
+      fontSrc: fontSrcForAssetOrigin(env.EXCALIDRAW_ASSET_ORIGIN),
     });
   },
 

@@ -1,0 +1,218 @@
+name: Infrastructure
+
+# The Terraform stack in infra/cloudflare, run per environment.
+#
+# Deliberately separate from Deploy to Cloudflare. That workflow publishes the
+# Worker; this one changes the account the Worker runs in -- Access, R2, the
+# zone's single rate-limit rule. Those move on different cadences, and coupling
+# them would put an infrastructure apply behind every application commit.
+#
+# Plans are automatic on anything that touches infrastructure. Applies are never
+# automatic: they are a named manual run against a GitHub environment, so a
+# reviewer approves the account change itself rather than inheriting approval
+# from a code review.
+
+on:
+  pull_request:
+    paths:
+      - 'infra/**'
+      - 'wrangler.toml'
+      - 'scripts/cloudflare-access.mjs'
+      - 'scripts/cloudflare-r2.mjs'
+      - 'scripts/lib/environments.mjs'
+      - '.github/workflows/infra.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - 'wrangler.toml'
+      - 'scripts/cloudflare-access.mjs'
+      - 'scripts/cloudflare-r2.mjs'
+      - 'scripts/lib/environments.mjs'
+      - '.github/workflows/infra.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Which infra/environments.json entry to act on.
+        required: true
+        default: prod
+        type: string
+      apply:
+        description: >-
+          Apply the plan. Left false, this run plans and stops, which is the
+          same thing a pull request gets.
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# R2 implements neither the DynamoDB locking the S3 backend prefers nor
+# S3-native conditional-write locking, so `use_lockfile` is off in the backend
+# configuration and THIS is what stops two runs writing the same state: one
+# infrastructure run at a time, queued rather than cancelled, because cancelling
+# a run mid-apply is how state and reality come apart.
+concurrency:
+  group: infra-cloudflare
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    name: Terraform ${{ inputs.apply && 'apply' || 'plan' }}
+    runs-on: ubuntu-24.04
+
+    # An apply reaches a real Cloudflare account, so it runs against the
+    # environment whose reviewers and secrets govern that account. A plan needs
+    # the same read credentials and gets them the same way.
+    environment: ${{ inputs.environment || 'prod' }}
+
+    env:
+      TP_ENV: ${{ inputs.environment || 'prod' }}
+      # Terraform reads the Cloudflare token from the environment; it is never
+      # written to a file, and no value is ever echoed.
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      # State lives in a private R2 bucket over the S3-compatible endpoint.
+      # These are R2 API token credentials, not AWS ones -- the S3 backend just
+      # reads them under these names.
+      AWS_ACCESS_KEY_ID: ${{ secrets.TFSTATE_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.TFSTATE_SECRET_ACCESS_KEY }}
+
+    defaults:
+      run:
+        working-directory: infra/cloudflare
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.14.4
+          # The wrapper rewrites stdout to collect it into step outputs, which
+          # this workflow does not use, and which mangles the plan output a
+          # human has to read.
+          terraform_wrapper: false
+
+      - name: Refuse an unknown environment
+        run: |
+          set -euo pipefail
+          if [ ! -f "environments/${TP_ENV}.tfvars" ]; then
+            echo "No infra/cloudflare/environments/${TP_ENV}.tfvars." >&2
+            echo "Add the environment to infra/environments.json first; see infra/README.md." >&2
+            exit 1
+          fi
+
+      # The state bucket is a documented one-time manual bootstrap (infra/README.md)
+      # because state cannot hold its own bucket. Until it exists, formatting and
+      # schema validation still run -- they need no credentials -- and the steps
+      # that reach the backend are skipped with a notice rather than failing the
+      # job on a prerequisite nobody has claimed to have met yet.
+      - name: Detect the state backend
+        id: backend
+        env:
+          TFSTATE_ACCESS_KEY_ID: ${{ secrets.TFSTATE_ACCESS_KEY_ID }}
+        run: |
+          set -euo pipefail
+          if [ -n "${TFSTATE_ACCESS_KEY_ID:-}" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # An apply that cannot reach state must fail, never skip. A skipped step
+      # reports success, and "the apply ran" is what a green run would be taken
+      # to mean.
+      - name: Refuse an apply with no state backend
+        if: steps.backend.outputs.ready != 'true' && github.event_name == 'workflow_dispatch' && inputs.apply
+        run: |
+          echo "Cannot apply: the Terraform state backend is not configured." >&2
+          echo "Bootstrap the state bucket and set TFSTATE_ACCESS_KEY_ID and TFSTATE_SECRET_ACCESS_KEY; see infra/README.md." >&2
+          exit 1
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive
+
+      - name: Validate without a backend
+        if: steps.backend.outputs.ready != 'true'
+        run: |
+          set -euo pipefail
+          terraform init -input=false -backend=false
+          terraform validate
+          echo "::notice::State backend not bootstrapped; ran fmt and validate only. See infra/README.md."
+
+      - name: Init
+        if: steps.backend.outputs.ready == 'true'
+        run: terraform init -input=false -backend-config="environments/${TP_ENV}.backend.hcl"
+
+      - name: Validate
+        if: steps.backend.outputs.ready == 'true'
+        run: terraform validate
+
+      # -lock=false is correct here and only here: R2 provides no state locking,
+      # a plan writes nothing, and the concurrency group above is what serialises
+      # the applies that do.
+      - name: Plan
+        if: steps.backend.outputs.ready == 'true'
+        run: |
+          terraform plan -input=false -lock=false \
+            -var-file="environments/${TP_ENV}.tfvars" \
+            -out=tfplan
+
+      - name: Apply
+        if: steps.backend.outputs.ready == 'true' && github.event_name == 'workflow_dispatch' && inputs.apply
+        run: terraform apply -input=false -lock=false tfplan
+
+      # The AUD is generated by Cloudflare, so it flows OUT of Terraform and
+      # back into infra/environments.json by hand. Printing it after an apply is
+      # what makes the copy step visible instead of forgotten; it is an audience
+      # identifier, not a credential.
+      - name: Show outputs
+        if: steps.backend.outputs.ready == 'true' && github.event_name == 'workflow_dispatch' && inputs.apply
+        run: terraform output
+
+  invariants:
+    name: Live Cloudflare invariants
+    runs-on: ubuntu-24.04
+
+    # Only for runs that already hold account credentials. A pull request from a
+    # FORK does not, and a job that silently skips its checks is worse than one
+    # that does not run. A same-repository pull request does hold them, and is
+    # exactly where these read-only checks are most useful -- before a merge
+    # rather than after one.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+
+    environment: ${{ inputs.environment || 'prod' }}
+
+    env:
+      TP_ENV: ${{ inputs.environment || 'prod' }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.2
+          cache: npm
+
+      # Lifecycle scripts are disabled so a compromised transitive package cannot
+      # run install/postinstall. These checks use only node:fs and fetch, so no
+      # native addon allowlist rebuild is required.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --loglevel=error
+
+      # What Terraform structurally cannot prove: that NO Access application
+      # covers the guest hostname, that no Bypass policy exists anywhere, and
+      # that the R2 bucket has no public domain. Terraform sees only the
+      # resources it manages, so an absence is invisible to it. These read the
+      # live account.
+      - name: Access application invariants
+        run: npm run access:check
+
+      - name: R2 bucket invariants
+        run: npm run r2:check

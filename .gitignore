@@ -65,3 +65,18 @@ coverage-e2e/
 
 # Throwaway agent worktrees, each with its own node_modules and build output.
 .claude/worktrees/
+
+# Terraform. State is remote (a private R2 bucket, one key per environment);
+# .terraform/ is a per-machine provider cache, and a local *.tfstate is either a
+# stale copy of remote state or a plan artifact -- neither belongs in history,
+# and both would put resource ids and configuration in the repository.
+infra/**/.terraform/
+infra/**/*.tfstate
+infra/**/*.tfstate.*
+infra/**/tfplan
+infra/**/crash.log
+# Variable files are TRACKED: environments/<env>.tfvars is configuration, not
+# credentials, and src/infra/environments.test.ts requires one per environment.
+# Anything auto-loaded by name is not -- it would apply silently to every run.
+infra/**/*.auto.tfvars
+infra/**/terraform.tfvars
