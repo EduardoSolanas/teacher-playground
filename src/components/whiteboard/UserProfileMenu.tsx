@@ -280,7 +280,13 @@ export function UserProfileMenu({
                   data-testid="whiteboard-profile-company"
                   className="truncate px-3 pb-1 text-[0.75rem] text-slate-400"
                 >
-                  {company.name} · {company.role}
+                  <a
+                    data-testid="whiteboard-profile-company-link"
+                    href="/account/company"
+                    className="underline"
+                  >
+                    {company.name} · {company.role}
+                  </a>
                 </p>
               )}
               {plan.status === 'past_due' && typeof plan.graceUntil === 'number' && (

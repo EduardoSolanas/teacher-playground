@@ -99,6 +99,8 @@ export function isRouteAllowedOnHost(
     pathname.startsWith('/auth/session/') ||
     pathname === '/auth/account' ||
     pathname.startsWith('/auth/account/') ||
+    pathname === '/api/company' ||
+    pathname.startsWith('/api/company/') ||
     pathname === '/api/whiteboard/rooms';
 
   // The marketing hostname serves the public pages and nothing else. Everything

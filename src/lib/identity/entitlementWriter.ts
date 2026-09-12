@@ -193,6 +193,54 @@ export function readEntitlementsForAccount(
   }));
 }
 
+export function deleteCompanyEntitlement(
+  db: RoomDatabase,
+  args: {
+    companyId: string;
+    accountId: string;
+    cause: EntitlementCause;
+    now: number;
+  },
+): { deleted: boolean } {
+  const { actor, reason } = validateAuditContext(args.cause);
+  const existing = db
+    .prepare(
+      `SELECT plan_id, status, company_id FROM entitlements
+       WHERE account_id = ? AND source = 'company'`,
+    )
+    .get(args.accountId) as
+    | { plan_id: string; status: string; company_id: string | null }
+    | undefined;
+  if (!existing || existing.company_id !== args.companyId) {
+    return { deleted: false };
+  }
+
+  db.prepare(
+    `DELETE FROM entitlements WHERE account_id = ? AND source = 'company'`,
+  ).run(args.accountId);
+
+  db.prepare(
+    `INSERT INTO entitlement_audit (
+       audit_id, subject_kind, subject_id, action, cause_kind, cause_id,
+       actor, reason, previous_plan, next_plan, previous_status, next_status,
+       processor_event_id, created_at
+     ) VALUES (?, 'account', ?, 'entitlement_change', ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)`,
+  ).run(
+    crypto.randomUUID(),
+    args.accountId,
+    args.cause.kind,
+    args.cause.id,
+    actor,
+    reason,
+    existing.plan_id,
+    existing.status,
+    args.cause.kind === 'processor_event' ? args.cause.id : null,
+    args.now,
+  );
+
+  return { deleted: true };
+}
+
 /**
  * Billing ordering / collection writers (spec §3.3, §3.6, §7). These own the
  * billing_subscriptions, billing_dispute_holds and company_subscriptions rows

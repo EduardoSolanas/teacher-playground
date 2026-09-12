@@ -71,6 +71,17 @@ describe('UserProfileMenu plan section', () => {
     expect(company.textContent).toContain('admin');
   });
 
+  it('links the company entry to the company admin page', () => {
+    openMenu({
+      plan: { planId: 'corporate_seat', status: 'active' },
+      company: { id: 'co_1', name: 'Acme Tutoring', role: 'admin' },
+    });
+
+    const link = screen.getByTestId('whiteboard-profile-company-link');
+    expect(link.getAttribute('href')).toBe('/account/company');
+    expect(link.textContent).toContain('Acme Tutoring');
+  });
+
   it('upgrades through the server-issued checkout URL', async () => {
     const checkoutUrl = 'https://checkout.stripe.com/c/pay/cs_test_profile';
     const calls: { path: string; init?: RequestInit }[] = [];

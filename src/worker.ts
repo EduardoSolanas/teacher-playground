@@ -133,10 +133,25 @@ const ACCOUNT_EXPORT = '/auth/account/export';
 const ACCOUNT_ERASE = '/auth/account';
 const ACCOUNT_PROFILE = '/auth/account/profile';
 const ACCOUNT_ROOMS = '/api/whiteboard/rooms';
+const COMPANY_API = '/api/company';
+const COMPANY_INVITES_API = '/api/company/invites';
+const COMPANY_INVITE_REDEEM_API = '/api/company/invites/redeem';
+const COMPANY_SEATS_API = '/api/company/seats';
+const COMPANY_MEMBER_REVOKE_API = '/api/company/members/revoke';
+const COMPANY_OWNER_API = '/api/company/owner';
 const AUTH_GUEST = '/auth/guest';
 const IDENTITY_ACCOUNT_ROOMS = 'https://identity/accounts/rooms';
 const IDENTITY_GUESTS_PURGE = 'https://identity/guests/purge';
 const IDENTITY_ACCOUNT_PLAN = 'https://identity/accounts/plan';
+const IDENTITY_COMPANIES = 'https://identity/companies';
+const IDENTITY_COMPANY_MEMBERSHIP = 'https://identity/companies/membership';
+const IDENTITY_COMPANY_CUSTOMER = 'https://identity/companies/customer';
+const IDENTITY_COMPANY_SEATS = 'https://identity/companies/seats';
+const IDENTITY_COMPANY_SEAT_SETTLE = 'https://identity/companies/seats/settle';
+const IDENTITY_COMPANY_MEMBERS_REVOKE = 'https://identity/companies/members/revoke';
+const IDENTITY_COMPANY_OWNER = 'https://identity/companies/owner';
+const IDENTITY_COMPANY_INVITES = 'https://identity/companies/invites';
+const IDENTITY_COMPANY_INVITE_REDEEM = 'https://identity/companies/invites/redeem';
 const IDENTITY_BILLING_OPERATIONS = 'https://identity/billing/operations';
 const IDENTITY_BILLING_RATE_LIMIT = 'https://identity/billing/rate-limit';
 const IDENTITY_BILLING_CUSTOMER = 'https://identity/billing/customer';
@@ -525,6 +540,21 @@ async function resolveSessionPlan(env: Env, accountId: string): Promise<unknown 
   }
 }
 
+async function resolveSessionCompany(env: Env, request: Request): Promise<unknown | null> {
+  try {
+    const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+    const response = await identity.fetch(new Request('https://identity/companies/membership', {
+      headers: { cookie: request.headers.get('cookie') ?? '' },
+    }));
+    if (!response.ok) return null;
+    const body: unknown = await response.json();
+    if (body === null || typeof body !== 'object') return null;
+    return (body as { company?: unknown }).company ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function sessionCurrent(
   env: Env,
   request: Request,
@@ -547,7 +577,8 @@ async function sessionCurrent(
   const { preferredDisplayName, ...publicSession } = session;
   const displayName = preferredDisplayName || principal.displayName;
   const plan = await resolveSessionPlan(env, session.accountId);
-  const payload = { ...publicSession, plan, company: null };
+  const company = await resolveSessionCompany(env, request);
+  const payload = { ...publicSession, plan, company };
   return withSecurityHeaders(Response.json(
     displayName ? { ...payload, displayName } : payload,
     { status: 200, headers: result.headers },
@@ -620,6 +651,551 @@ async function accountProfile(
     body: request.body,
   }));
   return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
+}
+
+function isCompanyCreateApiBody(value: unknown): value is {
+  name: string;
+  operationId: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 2 &&
+    typeof body.name === 'string' &&
+    body.name.trim().length >= 1 &&
+    body.name.length <= 100 &&
+    typeof body.operationId === 'string' &&
+    BILLING_OPERATION_ID_RE.test(body.operationId)
+  );
+}
+
+async function identityCompanyFetch(
+  env: Env,
+  request: Request,
+  path: string,
+  init: { method: string; body?: string },
+): Promise<Response> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  return identity.fetch(new Request(`https://identity${path}`, {
+    method: init.method,
+    headers: {
+      'content-type': 'application/json',
+      cookie: request.headers.get('cookie') ?? '',
+    },
+    ...(init.body === undefined ? {} : { body: init.body }),
+  }));
+}
+
+async function companyProxyResponse(env: Env, result: Response): Promise<Response> {
+  if (result.status === 429) {
+    let retryAfterMs = 0;
+    try {
+      const body = (await result.clone().json()) as { retryAfterMs?: unknown };
+      if (typeof body.retryAfterMs === 'number' && Number.isFinite(body.retryAfterMs)) {
+        retryAfterMs = body.retryAfterMs;
+      }
+    } catch {
+      retryAfterMs = 0;
+    }
+    return rateLimited(env, retryAfterMs);
+  }
+  return withSecurityHeaders(new Response(result.body, {
+    status: result.status,
+    headers: result.headers,
+  }));
+}
+
+interface CompanyApiRecord {
+  id: string;
+  name: string;
+  role: string;
+  processorCustomerId: string | null;
+}
+
+async function createCompanyCustomer(
+  env: Env,
+  accountId: string,
+  cookie: string,
+  company: CompanyApiRecord,
+  operationId: string,
+): Promise<{ customerReady: boolean; company: CompanyApiRecord }> {
+  const billing = billingEnvFor(env);
+  if (!billing.apiBaseAllowed || billing.secretKey === null) {
+    return { customerReady: false, company };
+  }
+  const params = new URLSearchParams();
+  params.append('name', company.name);
+  params.append('metadata[company_id]', company.id);
+  params.append('metadata[account_id]', accountId);
+  const stripeRequest = new Request(`${billing.apiBaseUrl}/v1/customers`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      'idempotency-key': `op:company:${company.id}:${operationId}`,
+    },
+    body: params.toString(),
+  });
+  let result;
+  try {
+    result = await executeStripeRequest(stripeRequest, billing.secretKey);
+  } catch {
+    return { customerReady: false, company };
+  }
+  if (!result.ok) return { customerReady: false, company };
+  const customerId = recordOf(result.json)?.id;
+  if (typeof customerId !== 'string' || !customerId.startsWith('cus_')) {
+    return { customerReady: false, company };
+  }
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const writeback = await identity.fetch(new Request(IDENTITY_COMPANY_CUSTOMER, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({
+      companyId: company.id,
+      operationId,
+      processorCustomerId: customerId,
+    }),
+  }));
+  if (!writeback.ok) return { customerReady: false, company };
+  const updated = (await writeback.json()) as { company?: CompanyApiRecord };
+  return { customerReady: true, company: updated.company ?? company };
+}
+
+function isCompanyNameApiBody(value: unknown): value is { name: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    typeof body.name === 'string' &&
+    body.name.trim().length >= 1 &&
+    body.name.length <= 100
+  );
+}
+
+async function companyRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (
+    request.method !== 'GET' &&
+    request.method !== 'POST' &&
+    request.method !== 'PATCH' &&
+    request.method !== 'DELETE'
+  ) {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'GET, POST, PATCH, DELETE' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+
+  if (request.method === 'GET') {
+    return companyProxyResponse(env, await identityCompanyFetch(
+      env,
+      request,
+      '/companies',
+      { method: 'GET' },
+    ));
+  }
+
+  if (request.method === 'DELETE') {
+    return companyProxyResponse(env, await identityCompanyFetch(
+      env,
+      request,
+      '/companies',
+      { method: 'DELETE' },
+    ));
+  }
+
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+
+  if (request.method === 'PATCH') {
+    if (!isCompanyNameApiBody(read.body)) {
+      return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+    }
+    return companyProxyResponse(env, await identityCompanyFetch(
+      env,
+      request,
+      '/companies',
+      { method: 'PATCH', body: JSON.stringify({ name: read.body.name }) },
+    ));
+  }
+
+  if (!isCompanyCreateApiBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  const canonicalBody = JSON.stringify({
+    name: read.body.name,
+    operationId: read.body.operationId,
+  });
+  const result = await identityCompanyFetch(env, request, '/companies', {
+    method: 'POST',
+    body: canonicalBody,
+  });
+  if (!result.ok) return companyProxyResponse(env, result);
+  const created = (await result.json()) as {
+    company: CompanyApiRecord;
+    membership: unknown;
+    operation: { id: string; status: string } | null;
+  };
+  let company = created.company;
+  let customerReady = company?.processorCustomerId !== null;
+  if (!customerReady && created.operation?.status === 'pending') {
+    const attempt = await createCompanyCustomer(
+      env,
+      outcome.session.accountId,
+      request.headers.get('cookie') ?? '',
+      company,
+      created.operation.id,
+    );
+    customerReady = attempt.customerReady;
+    company = attempt.company;
+  }
+  return withSecurityHeaders(Response.json(
+    { company, membership: created.membership, customerReady },
+    { status: result.status, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+function isCompanyInviteApiBody(value: unknown): value is { role: 'admin' | 'member' } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    (body.role === 'admin' || body.role === 'member')
+  );
+}
+
+function isCompanyInviteRevokeApiBody(value: unknown): value is { inviteHash: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    typeof body.inviteHash === 'string' &&
+    /^[0-9a-f]{64}$/.test(body.inviteHash)
+  );
+}
+
+function isCompanyInviteRedeemApiBody(value: unknown): value is { token: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    typeof body.token === 'string' &&
+    body.token.length >= 1 &&
+    body.token.length <= 512
+  );
+}
+
+async function companyInvitesRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST' && request.method !== 'DELETE') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST, DELETE' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+
+  let canonicalBody: string;
+  if (request.method === 'POST') {
+    if (!isCompanyInviteApiBody(read.body)) {
+      return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+    }
+    canonicalBody = JSON.stringify({ role: read.body.role });
+  } else {
+    if (!isCompanyInviteRevokeApiBody(read.body)) {
+      return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+    }
+    canonicalBody = JSON.stringify({ inviteHash: read.body.inviteHash });
+  }
+
+  return companyProxyResponse(env, await identityCompanyFetch(
+    env,
+    request,
+    '/companies/invites',
+    { method: request.method, body: canonicalBody },
+  ));
+}
+
+async function companyInviteRedeemRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+  if (!isCompanyInviteRedeemApiBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  return companyProxyResponse(env, await identityCompanyFetch(
+    env,
+    request,
+    '/companies/invites/redeem',
+    { method: 'POST', body: JSON.stringify({ token: read.body.token }) },
+  ));
+}
+
+function isCompanySeatApiBody(value: unknown): value is {
+  quantity: number;
+  operationId: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 2 &&
+    typeof body.quantity === 'number' &&
+    Number.isInteger(body.quantity) &&
+    body.quantity >= 1 &&
+    body.quantity <= 10_000 &&
+    typeof body.operationId === 'string' &&
+    BILLING_OPERATION_ID_RE.test(body.operationId)
+  );
+}
+
+function stripeSubscriptionItemId(json: unknown): string | null {
+  const items = recordOf(json)?.items;
+  if (!Array.isArray(items)) return null;
+  const first = items[0];
+  if (typeof first !== 'object' || first === null || Array.isArray(first)) return null;
+  const id = (first as Record<string, unknown>).id;
+  return typeof id === 'string' && id.length > 0 ? id : null;
+}
+
+async function settleSeatChangeViaDo(
+  env: Env,
+  cookie: string,
+  operationId: string,
+  outcome: 'success' | 'failure' | 'unknown',
+): Promise<void> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  await identity.fetch(new Request(IDENTITY_COMPANY_SEAT_SETTLE, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ operationId, outcome }),
+  }));
+}
+
+function seatPending(operationId: string): Response {
+  return withSecurityHeaders(Response.json(
+    { status: 'pending', operationId },
+    { status: 202, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+function seatSettled(): Response {
+  return withSecurityHeaders(Response.json(
+    { status: 'settled' },
+    { status: 200, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+async function applySeatChange(
+  env: Env,
+  cookie: string,
+  reservation: {
+    companyId: string;
+    operationId: string;
+    targetQuantity: number;
+    prorationBehavior: string;
+    processorSubscriptionId: string;
+  },
+): Promise<Response> {
+  const billing = billingEnvFor(env);
+  if (!billing.apiBaseAllowed || billing.secretKey === null) {
+    await settleSeatChangeViaDo(env, cookie, reservation.operationId, 'failure');
+    return billingUnavailable();
+  }
+
+  let subscriptionResult;
+  try {
+    subscriptionResult = await executeStripeRequest(
+      new Request(`${billing.apiBaseUrl}/v1/subscriptions/${reservation.processorSubscriptionId}`, {
+        method: 'GET',
+      }),
+      billing.secretKey,
+    );
+  } catch {
+    subscriptionResult = null;
+  }
+  if (!subscriptionResult || !subscriptionResult.ok) {
+    await settleSeatChangeViaDo(env, cookie, reservation.operationId, 'unknown');
+    return seatPending(reservation.operationId);
+  }
+  const itemId = stripeSubscriptionItemId(subscriptionResult.json);
+  if (itemId === null) {
+    await settleSeatChangeViaDo(env, cookie, reservation.operationId, 'failure');
+    return stripeRequestFailed();
+  }
+
+  const params = new URLSearchParams();
+  params.append('items[0][id]', itemId);
+  params.append('items[0][quantity]', String(reservation.targetQuantity));
+  params.append('proration_behavior', reservation.prorationBehavior);
+  let updateResult;
+  try {
+    updateResult = await executeStripeRequest(
+      new Request(`${billing.apiBaseUrl}/v1/subscriptions/${reservation.processorSubscriptionId}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          'idempotency-key': `op:company:${reservation.companyId}:${reservation.operationId}`,
+        },
+        body: params.toString(),
+      }),
+      billing.secretKey,
+    );
+  } catch {
+    updateResult = null;
+  }
+  if (!updateResult) {
+    await settleSeatChangeViaDo(env, cookie, reservation.operationId, 'unknown');
+    return seatPending(reservation.operationId);
+  }
+  if (updateResult.ok) {
+    await settleSeatChangeViaDo(env, cookie, reservation.operationId, 'success');
+    return seatSettled();
+  }
+  if (updateResult.status >= 400 && updateResult.status < 500) {
+    await settleSeatChangeViaDo(env, cookie, reservation.operationId, 'failure');
+    return stripeRequestFailed();
+  }
+  await settleSeatChangeViaDo(env, cookie, reservation.operationId, 'unknown');
+  return seatPending(reservation.operationId);
+}
+
+async function companySeatsRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+  if (!isCompanySeatApiBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  const cookie = request.headers.get('cookie') ?? '';
+  const canonicalBody = JSON.stringify({
+    quantity: read.body.quantity,
+    operationId: read.body.operationId,
+  });
+  const result = await identityCompanyFetch(env, request, '/companies/seats', {
+    method: 'POST',
+    body: canonicalBody,
+  });
+  if (!result.ok) return companyProxyResponse(env, result);
+  const reservation = (await result.json()) as {
+    status: string;
+    companyId: string;
+    operationId: string;
+    targetQuantity: number;
+    direction: string;
+    prorationBehavior: string;
+    processorSubscriptionId: string;
+  };
+  return applySeatChange(env, cookie, reservation);
+}
+
+function isCompanyMemberApiBody(value: unknown): value is { accountId: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    typeof body.accountId === 'string' &&
+    body.accountId.length >= 1 &&
+    body.accountId.length <= 128
+  );
+}
+
+async function companyMemberRevokeRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+  if (!isCompanyMemberApiBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  return companyProxyResponse(env, await identityCompanyFetch(
+    env,
+    request,
+    '/companies/members/revoke',
+    { method: 'POST', body: JSON.stringify({ accountId: read.body.accountId }) },
+  ));
+}
+
+async function companyOwnerRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+  if (!isCompanyMemberApiBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  return companyProxyResponse(env, await identityCompanyFetch(
+    env,
+    request,
+    '/companies/owner',
+    { method: 'POST', body: JSON.stringify({ accountId: read.body.accountId }) },
+  ));
 }
 
 async function accountExport(
@@ -1812,6 +2388,24 @@ const worker = {
       }
       if (url.pathname === ACCOUNT_ROOMS) {
         return listAccountRooms(env, request, principal);
+      }
+      if (url.pathname === COMPANY_API) {
+        return companyRoute(env, request, principal);
+      }
+      if (url.pathname === COMPANY_INVITES_API) {
+        return companyInvitesRoute(env, request, principal);
+      }
+      if (url.pathname === COMPANY_INVITE_REDEEM_API) {
+        return companyInviteRedeemRoute(env, request, principal);
+      }
+      if (url.pathname === COMPANY_SEATS_API) {
+        return companySeatsRoute(env, request, principal);
+      }
+      if (url.pathname === COMPANY_MEMBER_REVOKE_API) {
+        return companyMemberRevokeRoute(env, request, principal);
+      }
+      if (url.pathname === COMPANY_OWNER_API) {
+        return companyOwnerRoute(env, request, principal);
       }
       if (url.pathname === BILLING_CHECKOUT_PATH) {
         return billingCheckout(env, request, principal);

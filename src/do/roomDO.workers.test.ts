@@ -849,6 +849,34 @@ describe('signaling message rate limit', () => {
     });
   }
 
+  /*
+   * Deliver a 361-message burst through the DO's own message handler. A loaded
+   * suite can stretch 361 `ws.send`s past the 1000 ms sliding window, after
+   * which no single window reaches the ceiling and the burst tests fail for
+   * reasons the limiter does not have. The handler is the real code path; only
+   * transport timing is removed.
+   */
+  function sendBurstInProcess(roomId: string, accountId: string): Promise<void> {
+    return runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      async (instance: RoomDO) => {
+        const server = (instance as unknown as { ctx: DurableObjectState }).ctx
+          .getWebSockets()
+          .find((socket) => {
+            const attachment = socket.deserializeAttachment() as { accountId?: string } | null;
+            return attachment?.accountId === accountId;
+          });
+        if (!server) throw new Error('no server-side socket for the account');
+        for (let i = 0; i < 361; i += 1) {
+          await instance.webSocketMessage(
+            server,
+            JSON.stringify({ type: 'subscribe', topics: ['room'] }),
+          );
+        }
+      },
+    );
+  }
+
   function awarenessFrame(peerId: string): Uint8Array {
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, 1);
@@ -865,40 +893,14 @@ describe('signaling message rate limit', () => {
     const ws = await connectGranted(owner, roomId);
     const closed = closeSignal(ws);
 
-    /*
-     * Deliver each 361-message burst through the DO's own message handler.
-     * A loaded suite can stretch 361 `ws.send`s past the 1000 ms sliding
-     * window, after which no single window reaches the ceiling and the test
-     * flakes for reasons the limiter does not have. The handler is the real
-     * code path; only transport timing is removed.
-     */
-    const deliverBurst = () => runInDurableObject(
-      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
-      async (instance: RoomDO) => {
-        const server = (instance as unknown as { ctx: DurableObjectState }).ctx
-          .getWebSockets()
-          .find((socket) => {
-            const attachment = socket.deserializeAttachment() as { accountId?: string } | null;
-            return attachment?.accountId === owner.accountId;
-          });
-        if (!server) throw new Error('no server-side socket for the owner');
-        for (let i = 0; i < 361; i += 1) {
-          await instance.webSocketMessage(
-            server,
-            JSON.stringify({ type: 'subscribe', topics: ['room'] }),
-          );
-        }
-      },
-    );
-
     // Burst 1 exceeds the ceiling of 360 (breach 1)
-    await deliverBurst();
+    await sendBurstInProcess(roomId, owner.accountId);
 
     // Wait for window 1 to pass
     await new Promise((r) => setTimeout(r, 1100));
 
     // Burst 2 breaches the next window -> close
-    await deliverBurst();
+    await sendBurstInProcess(roomId, owner.accountId);
 
     expect(await closed).toBe(1008);
   }, 60_000);
@@ -915,9 +917,7 @@ describe('signaling message rate limit', () => {
       const firstClosed = closeSignal(first);
 
       // One window over the ceiling is a breach, but not yet a close.
-      for (let i = 0; i < 361; i += 1) {
-        first.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
-      }
+      await sendBurstInProcess(roomId, owner.accountId);
       await new Promise((r) => setTimeout(r, 1100));
 
       /*
@@ -955,9 +955,7 @@ describe('signaling message rate limit', () => {
         secondState.code = event.code;
       }, { once: true });
       await new Promise((r) => setTimeout(r, 1100));
-      for (let i = 0; i < 361; i += 1) {
-        second.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
-      }
+      await sendBurstInProcess(roomId, owner.accountId);
       await vi.waitFor(() => {
         expect(secondState.closed).toBe(true);
       }, { timeout: 5000, interval: 20 });
@@ -1108,14 +1106,10 @@ describe('signaling message rate limit', () => {
 
     const abuserClosed = closeSignal(abuser);
     // Send 361 messages in window 1
-    for (let i = 0; i < 361; i += 1) {
-      abuser.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
-    }
+    await sendBurstInProcess(roomId, owner.accountId);
     await new Promise((r) => setTimeout(r, 1100));
     // Send 361 messages in window 2 -> closes
-    for (let i = 0; i < 361; i += 1) {
-      abuser.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
-    }
+    await sendBurstInProcess(roomId, owner.accountId);
     expect(await abuserClosed).toBe(1008);
 
     const received = nextMessage(survivor);

@@ -16,6 +16,7 @@ import {
   reserveCompanySeatChange,
   settleCompanySeatChange,
   writeEntitlement,
+  deleteCompanyEntitlement,
 } from './entitlementWriter';
 import type {
   EntitlementCause,
@@ -459,5 +460,125 @@ describe('entitlementWriter company seat reservations', () => {
       pending_operation_id: null,
       updated_at: 3_000,
     });
+  });
+});
+
+describe('entitlementWriter company entitlement deletion (C-11/C-13)', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    applyIdentitySchema(db);
+  });
+
+  function account(subject: string): string {
+    const outcome = resolveAccountForSubject(db, {
+      issuer: 'https://issuer',
+      subject,
+    });
+    if (isTutorCapReached(outcome)) throw new Error('unexpected tutor cap outcome');
+    return outcome.account.accountId;
+  }
+
+  function company(companyId: string): void {
+    db.prepare(
+      `INSERT INTO companies (company_id, name, created_at, updated_at)
+       VALUES (?, 'Delete Co', 1, 1)`,
+    ).run(companyId);
+  }
+
+  function seedCompanyRow(accountId: string, companyId: string, id: string): void {
+    writeEntitlement(
+      db,
+      {
+        accountId,
+        source: 'company',
+        state: entitlingState({ planId: 'corporate_seat', companyId }),
+        now: 10,
+      },
+      cause('membership', id),
+    );
+  }
+
+  it('deletes one member company row with one audit row and leaves other rows alone', () => {
+    const companyId = 'co-delete-main';
+    const otherCompanyId = 'co-delete-other';
+    company(companyId);
+    company(otherCompanyId);
+    const memberId = account('delete-member');
+    const otherId = account('delete-other');
+    writeEntitlement(
+      db,
+      { accountId: memberId, source: 'personal', state: entitlingState(), now: 10 },
+      cause('operator', 'keep-personal'),
+    );
+    seedCompanyRow(memberId, companyId, 'seed-main');
+    seedCompanyRow(otherId, otherCompanyId, 'seed-other');
+
+    const result = deleteCompanyEntitlement(db, {
+      companyId,
+      accountId: memberId,
+      cause: cause('membership', 'delete-main'),
+      now: 5_000,
+    });
+
+    expect(result).toEqual({ deleted: true });
+    expect(readEntitlementsForAccount(db, memberId).map((row) => row.source)).toEqual([
+      'personal',
+    ]);
+    expect(readEntitlementsForAccount(db, otherId)).toHaveLength(1);
+    expect(
+      auditRows(db).filter((row) => row.causeId === 'delete-main'),
+    ).toEqual([
+      {
+        auditId: expect.any(String),
+        subjectKind: 'account',
+        subjectId: memberId,
+        action: 'entitlement_change',
+        causeKind: 'membership',
+        causeId: 'delete-main',
+        actor: 'test-operator',
+        reason: 'writer test',
+        previousPlan: 'corporate_seat',
+        nextPlan: null,
+        previousStatus: 'active',
+        nextStatus: null,
+        processorEventId: null,
+        createdAt: 5_000,
+      },
+    ]);
+  });
+
+  it('changes nothing for another company or an absent row and never repeats the audit', () => {
+    const companyId = 'co-delete-guard';
+    company(companyId);
+    const memberId = account('delete-guard-member');
+    seedCompanyRow(memberId, companyId, 'seed-guard');
+
+    const wrongCompany = deleteCompanyEntitlement(db, {
+      companyId: 'co-not-mine',
+      accountId: memberId,
+      cause: cause('membership', 'delete-wrong-company'),
+      now: 5_000,
+    });
+    expect(wrongCompany).toEqual({ deleted: false });
+    expect(readEntitlementsForAccount(db, memberId)).toHaveLength(1);
+    expect(auditRows(db).filter((row) => row.causeId === 'delete-wrong-company')).toEqual([]);
+
+    const deleted = deleteCompanyEntitlement(db, {
+      companyId,
+      accountId: memberId,
+      cause: cause('membership', 'delete-once'),
+      now: 5_000,
+    });
+    expect(deleted).toEqual({ deleted: true });
+    const replay = deleteCompanyEntitlement(db, {
+      companyId,
+      accountId: memberId,
+      cause: cause('membership', 'delete-once'),
+      now: 6_000,
+    });
+    expect(replay).toEqual({ deleted: false });
+    expect(auditRows(db).filter((row) => row.causeId === 'delete-once')).toHaveLength(1);
   });
 });

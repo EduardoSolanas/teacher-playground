@@ -52,7 +52,31 @@ import {
   PLAN_LIMIT_STATUS,
   canAddOwnedRoom,
 } from '../lib/plan/limits';
-import { readEntitlementsForAccount } from '../lib/identity/entitlementWriter';
+import { readEntitlementsForAccount, deleteCompanyEntitlement } from '../lib/identity/entitlementWriter';
+import {
+  CompanyOwnerAssertionError,
+  createCompany,
+  disableCompany,
+  listActiveMembers,
+  readActiveMembership,
+  readCompany,
+  revokeMember,
+  transferOwnership,
+  type CompanyMemberRecord,
+  type CompanyRecord,
+} from '../lib/company/membership';
+import {
+  mintInvite,
+  redeemInvite,
+  revokeInvite,
+  type InviteRole,
+} from '../lib/company/invites';
+import {
+  readCompanySubscription,
+  releaseSeatChange,
+  reserveSeatChange,
+  settleSeatChange,
+} from '../lib/company/seats';
 import { resolveEffectivePlan } from '../lib/plan/effectivePlan';
 import {
   applyEvent,
@@ -101,11 +125,27 @@ const BILLING_OPERATIONS_PATH = '/billing/operations';
 const BILLING_SETTLE_PATH = '/billing/operations/settle';
 const BILLING_RATE_LIMIT_PATH = '/billing/rate-limit';
 const BILLING_CUSTOMER_PATH = '/billing/customer';
+const COMPANY_PATH = '/companies';
+const COMPANY_MEMBERSHIP_PATH = '/companies/membership';
+const COMPANY_CUSTOMER_PATH = '/companies/customer';
+const COMPANY_INVITES_PATH = '/companies/invites';
+const COMPANY_INVITE_REDEEM_PATH = '/companies/invites/redeem';
+const COMPANY_SEATS_PATH = '/companies/seats';
+const COMPANY_SEAT_SETTLE_PATH = '/companies/seats/settle';
+const COMPANY_MEMBER_REVOKE_PATH = '/companies/members/revoke';
+const COMPANY_OWNER_PATH = '/companies/owner';
 const BILLING_PAYLOAD_HASH_PATTERN = /^[0-9a-f]{64}$/;
+const OPERATION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 export const GLOBAL_IDENTITY_OBJECT_NAME = 'global';
 
 export const BILLING_OPERATION_RATE_MAX = 10;
 export const BILLING_OPERATION_RATE_WINDOW_MS = 60 * 60 * 1000;
+
+export const COMPANY_CREATE_RATE_MAX = 5;
+export const COMPANY_INVITE_RATE_MAX = 20;
+export const COMPANY_REDEEM_RATE_MAX = 10;
+export const COMPANY_SEAT_RATE_MAX = 5;
+export const COMPANY_MEMBER_RATE_MAX = 20;
 
 function applyBillingRateLimitSchema(db: RoomDatabase): void {
   db.exec(
@@ -117,9 +157,10 @@ function applyBillingRateLimitSchema(db: RoomDatabase): void {
   );
 }
 
-function takeBillingOperationSlot(
+function takeRateSlot(
   db: RoomDatabase,
   subjectId: string,
+  max: number,
   now: number,
 ): { allowed: boolean; retryAfterMs: number } {
   const row = db
@@ -138,13 +179,57 @@ function takeBillingOperationSlot(
     return { allowed: true, retryAfterMs: BILLING_OPERATION_RATE_WINDOW_MS };
   }
   const retryAfterMs = row.window_start + BILLING_OPERATION_RATE_WINDOW_MS - now;
-  if (row.count < BILLING_OPERATION_RATE_MAX) {
+  if (row.count < max) {
     db.prepare(
       `UPDATE billing_rate_counters SET count = count + 1 WHERE subject_id = ?`,
     ).run(subjectId);
     return { allowed: true, retryAfterMs };
   }
   return { allowed: false, retryAfterMs };
+}
+
+function takeBillingOperationSlot(
+  db: RoomDatabase,
+  subjectId: string,
+  now: number,
+): { allowed: boolean; retryAfterMs: number } {
+  return takeRateSlot(db, subjectId, BILLING_OPERATION_RATE_MAX, now);
+}
+
+function rateLimitedResponse(retryAfterMs: number): Response {
+  return Response.json(
+    { error: 'Too many requests', retryAfterMs },
+    {
+      status: 429,
+      headers: noStore({ 'Retry-After': String(Math.ceil(retryAfterMs / 1000)) }),
+    },
+  );
+}
+
+function companyJson(
+  company: CompanyRecord,
+  role: string,
+): Record<string, unknown> {
+  return {
+    id: company.companyId,
+    name: company.name,
+    role,
+    state: company.state,
+    processorCustomerId: company.processorCustomerId,
+    invoiceApproved: company.invoiceApproved,
+    createdAt: company.createdAt,
+    updatedAt: company.updatedAt,
+  };
+}
+
+function membershipJson(membership: CompanyMemberRecord): Record<string, unknown> {
+  return {
+    accountId: membership.accountId,
+    role: membership.role,
+    state: membership.state,
+    createdAt: membership.createdAt,
+    revokedAt: membership.revokedAt,
+  };
 }
 
 /**
@@ -494,6 +579,145 @@ function isBillingOperationsBody(
     body.operationId.length >= 1 &&
     isValidOperationKind(body.kind) &&
     (body.stripeObjectId === undefined || typeof body.stripeObjectId === 'string')
+  );
+}
+
+function isCompanyCreateBody(value: unknown): value is { name: string; operationId: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 2 &&
+    typeof body.name === 'string' &&
+    body.name.trim().length >= 1 &&
+    body.name.length <= 100 &&
+    typeof body.operationId === 'string' &&
+    OPERATION_ID_PATTERN.test(body.operationId)
+  );
+}
+
+function isCompanyCustomerBody(value: unknown): value is {
+  companyId: string;
+  operationId: string;
+  processorCustomerId: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 3 &&
+    typeof body.companyId === 'string' &&
+    body.companyId.length >= 1 &&
+    body.companyId.length <= 128 &&
+    typeof body.operationId === 'string' &&
+    OPERATION_ID_PATTERN.test(body.operationId) &&
+    typeof body.processorCustomerId === 'string' &&
+    /^cus_[A-Za-z0-9_]{1,120}$/.test(body.processorCustomerId)
+  );
+}
+
+function isCompanyNameBody(value: unknown): value is { name: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    typeof body.name === 'string' &&
+    body.name.trim().length >= 1 &&
+    body.name.length <= 100
+  );
+}
+
+function isCompanyInviteBody(value: unknown): value is { role: InviteRole } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    (body.role === 'admin' || body.role === 'member')
+  );
+}
+
+function isCompanyInviteRevokeBody(
+  value: unknown,
+): value is { inviteHash: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    typeof body.inviteHash === 'string' &&
+    /^[0-9a-f]{64}$/.test(body.inviteHash)
+  );
+}
+
+function isCompanyInviteRedeemBody(
+  value: unknown,
+): value is { token: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    typeof body.token === 'string' &&
+    body.token.length >= 1 &&
+    body.token.length <= 512
+  );
+}
+
+function isCompanySeatBody(value: unknown): value is {
+  quantity: number;
+  operationId: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 2 &&
+    typeof body.quantity === 'number' &&
+    Number.isInteger(body.quantity) &&
+    body.quantity >= 1 &&
+    body.quantity <= 10_000 &&
+    typeof body.operationId === 'string' &&
+    OPERATION_ID_PATTERN.test(body.operationId)
+  );
+}
+
+function isCompanySeatSettleBody(value: unknown): value is {
+  operationId: string;
+  outcome: 'success' | 'failure' | 'unknown';
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 2 &&
+    typeof body.operationId === 'string' &&
+    OPERATION_ID_PATTERN.test(body.operationId) &&
+    (body.outcome === 'success' ||
+      body.outcome === 'failure' ||
+      body.outcome === 'unknown')
+  );
+}
+
+function isCompanyMemberBody(value: unknown): value is { accountId: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    typeof body.accountId === 'string' &&
+    body.accountId.length >= 1 &&
+    body.accountId.length <= 128
   );
 }
 
@@ -1228,6 +1452,596 @@ export class IdentityDO extends DurableObject {
         { processorCustomerId: personal?.processorCustomerId ?? null },
         { headers: noStore() },
       );
+    }
+
+    if (url.pathname === COMPANY_MEMBERSHIP_PATH) {
+      if (request.method !== 'GET') return methodNotAllowed('GET');
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      const membership = readActiveMembership(this.db, session.accountId);
+      const company = membership
+        ? readCompany(this.db, membership.companyId)
+        : null;
+      if (!membership || !company || company.state !== 'active') {
+        return Response.json({ company: null }, { headers: noStore() });
+      }
+      return Response.json(
+        {
+          company: {
+            id: company.companyId,
+            name: company.name,
+            role: membership.role,
+          },
+        },
+        { headers: noStore() },
+      );
+    }
+
+    if (url.pathname === COMPANY_PATH) {
+      if (request.method === 'GET') {
+        const token = parseSessionCookie(request.headers.get('cookie'));
+        const session = token ? await validateSession(this.db, token) : null;
+        if (!session) return unauthorized(true);
+        const membership = readActiveMembership(this.db, session.accountId);
+        const company = membership
+          ? readCompany(this.db, membership.companyId)
+          : null;
+        if (!membership || !company || company.state !== 'active') {
+          return Response.json(
+            { company: null, members: [], subscription: null },
+            { headers: noStore() },
+          );
+        }
+        const subscription = readCompanySubscription(this.db, membership.companyId);
+        return Response.json(
+          {
+            company: companyJson(company, membership.role),
+            members: listActiveMembers(this.db, membership.companyId).map(
+              membershipJson,
+            ),
+            subscription: subscription
+              ? {
+                  quantity: subscription.quantity,
+                  pendingQuantity: subscription.pendingQuantity,
+                  status: subscription.status,
+                  collectionMethod: subscription.collectionMethod,
+                  currentPeriodEnd: subscription.currentPeriodEnd,
+                  firstPaidAt: subscription.firstPaidAt,
+                }
+              : null,
+          },
+          { headers: noStore() },
+        );
+      }
+
+      if (request.method === 'PATCH') {
+        const token = parseSessionCookie(request.headers.get('cookie'));
+        const session = token ? await validateSession(this.db, token) : null;
+        if (!session) return unauthorized(true);
+        const membership = readActiveMembership(this.db, session.accountId);
+        if (!membership) {
+          return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+        }
+        if (membership.role === 'member') {
+          return Response.json({ error: 'Forbidden' }, { status: 403, headers: noStore() });
+        }
+        const parsed = await readExactJson(request, isCompanyNameBody);
+        if ('response' in parsed) return parsed.response;
+        const now = Date.now();
+        this.db
+          .prepare(
+            `UPDATE companies SET name = ?, updated_at = ? WHERE company_id = ?`,
+          )
+          .run(parsed.body.name.trim(), now, membership.companyId);
+        const company = readCompany(this.db, membership.companyId);
+        if (!company) {
+          return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+        }
+        return Response.json(
+          { company: companyJson(company, membership.role) },
+          { headers: noStore() },
+        );
+      }
+
+      if (request.method === 'DELETE') {
+        const token = parseSessionCookie(request.headers.get('cookie'));
+        const session = token ? await validateSession(this.db, token) : null;
+        if (!session) return unauthorized(true);
+        const membership = readActiveMembership(this.db, session.accountId);
+        if (!membership) {
+          return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+        }
+        const now = Date.now();
+        let outcome: ReturnType<typeof disableCompany>;
+        try {
+          outcome = this.db.transaction(() => {
+            const result = disableCompany(this.db, {
+              companyId: membership.companyId,
+              actorAccountId: session.accountId,
+              now,
+            });
+            if (result.outcome === 'disabled') {
+              for (const accountId of result.revokedAccountIds) {
+                deleteCompanyEntitlement(this.db, {
+                  companyId: membership.companyId,
+                  accountId,
+                  cause: {
+                    kind: 'membership',
+                    id: crypto.randomUUID(),
+                    actor: session.accountId,
+                    reason: 'company disabled',
+                  },
+                  now,
+                });
+              }
+            }
+            return result;
+          })();
+        } catch (error) {
+          if (error instanceof CompanyOwnerAssertionError) {
+            return Response.json({ error: 'Conflict' }, { status: 409, headers: noStore() });
+          }
+          throw error;
+        }
+        if (outcome.outcome === 'disabled') {
+          return Response.json(
+            { outcome: 'disabled', revokedAccountIds: outcome.revokedAccountIds },
+            { headers: noStore() },
+          );
+        }
+        if (outcome.outcome === 'forbidden') {
+          return Response.json({ error: 'Forbidden' }, { status: 403, headers: noStore() });
+        }
+        return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+      }
+
+      if (request.method !== 'POST') return methodNotAllowed('GET, POST, PATCH, DELETE');
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      const parsed = await readRawJson(request);
+      if ('response' in parsed) return parsed.response;
+      if (!isCompanyCreateBody(parsed.body)) {
+        return Response.json({ error: 'Invalid body' }, { status: 400 });
+      }
+      const createBody = parsed.body;
+      const requestHash = await sha256Hex(parsed.raw);
+      const now = Date.now();
+      const limit = takeRateSlot(
+        this.db,
+        `company:create:${session.accountId}`,
+        COMPANY_CREATE_RATE_MAX,
+        now,
+      );
+      if (!limit.allowed) return rateLimitedResponse(limit.retryAfterMs);
+
+      type CreateOutcome =
+        | { conflict: true }
+        | {
+            conflict?: undefined;
+            status: number;
+            company: CompanyRecord;
+            membership: CompanyMemberRecord;
+            operation: { id: string; status: string };
+          };
+      let outcome: CreateOutcome;
+      try {
+        outcome = this.db.transaction((): CreateOutcome => {
+          const existing = readActiveMembership(this.db, session.accountId);
+          if (existing) {
+            const record = this.db
+              .prepare(
+                `SELECT status, request_hash FROM billing_operations
+                 WHERE subject_kind = 'company' AND subject_id = ?
+                   AND operation_id = ? AND kind = 'company-create'`,
+              )
+              .get(existing.companyId, createBody.operationId) as
+              | { status: string; request_hash: string }
+              | undefined;
+            const company = readCompany(this.db, existing.companyId);
+            if (record && record.request_hash === requestHash && company) {
+              return {
+                status: 200,
+                company,
+                membership: existing,
+                operation: { id: createBody.operationId, status: record.status },
+              };
+            }
+            return { conflict: true };
+          }
+
+          const created = createCompany(this.db, {
+            name: createBody.name.trim(),
+            ownerAccountId: session.accountId,
+            now,
+          });
+          if (created.outcome !== 'created') return { conflict: true };
+          const operation = recordUserOperation(
+            this.db,
+            {
+              subjectKind: 'company',
+              subjectId: created.company.companyId,
+              operationId: createBody.operationId,
+              kind: 'company-create',
+            },
+            { requestHash, now },
+          );
+          return {
+            status: 201,
+            company: created.company,
+            membership: created.membership,
+            operation: {
+              id: createBody.operationId,
+              status: operation.record?.status ?? 'pending',
+            },
+          };
+        })();
+      } catch (error) {
+        if (error instanceof CompanyOwnerAssertionError) {
+          return Response.json({ error: 'Conflict' }, { status: 409, headers: noStore() });
+        }
+        throw error;
+      }
+
+      if (outcome.conflict) {
+        return Response.json({ error: 'Conflict' }, { status: 409, headers: noStore() });
+      }
+      return Response.json(
+        {
+          company: companyJson(outcome.company, outcome.membership.role),
+          membership: membershipJson(outcome.membership),
+          operation: outcome.operation,
+        },
+        { status: outcome.status, headers: noStore() },
+      );
+    }
+
+    if (url.pathname === COMPANY_CUSTOMER_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      const parsed = await readExactJson(request, isCompanyCustomerBody);
+      if ('response' in parsed) return parsed.response;
+      const membership = readActiveMembership(this.db, session.accountId);
+      if (
+        !membership ||
+        membership.companyId !== parsed.body.companyId ||
+        membership.role !== 'owner'
+      ) {
+        return Response.json({ error: 'Forbidden' }, { status: 403, headers: noStore() });
+      }
+      const now = Date.now();
+      const outcome = this.db.transaction(() => {
+        const operation = this.db
+          .prepare(
+            `SELECT status FROM billing_operations
+             WHERE subject_kind = 'company' AND subject_id = ?
+               AND operation_id = ? AND kind = 'company-create'`,
+          )
+          .get(parsed.body.companyId, parsed.body.operationId) as
+          | { status: string }
+          | undefined;
+        if (!operation) return null;
+        this.db
+          .prepare(
+            `UPDATE companies SET processor_customer_id = ?, updated_at = ?
+             WHERE company_id = ?`,
+          )
+          .run(parsed.body.processorCustomerId, now, parsed.body.companyId);
+        this.db
+          .prepare(
+            `UPDATE billing_operations
+             SET status = 'succeeded', stripe_object_id = ?, updated_at = ?
+             WHERE subject_kind = 'company' AND subject_id = ?
+               AND operation_id = ? AND kind = 'company-create'`,
+          )
+          .run(parsed.body.processorCustomerId, now, parsed.body.companyId, parsed.body.operationId);
+        return readCompany(this.db, parsed.body.companyId);
+      })();
+      if (!outcome) {
+        return Response.json({ error: 'Conflict' }, { status: 409, headers: noStore() });
+      }
+      return Response.json(
+        {
+          company: companyJson(outcome, membership.role),
+          membership: membershipJson(membership),
+          operation: { id: parsed.body.operationId, status: 'succeeded' },
+        },
+        { headers: noStore() },
+      );
+    }
+
+    if (url.pathname === COMPANY_INVITES_PATH) {
+      if (request.method !== 'POST' && request.method !== 'DELETE') {
+        return methodNotAllowed('POST, DELETE');
+      }
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      const membership = readActiveMembership(this.db, session.accountId);
+      if (!membership || membership.state !== 'active') {
+        return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+      }
+      const now = Date.now();
+      const limit = takeRateSlot(
+        this.db,
+        `company:invites:${membership.companyId}`,
+        COMPANY_INVITE_RATE_MAX,
+        now,
+      );
+      if (!limit.allowed) return rateLimitedResponse(limit.retryAfterMs);
+
+      if (request.method === 'POST') {
+        const parsed = await readExactJson(request, isCompanyInviteBody);
+        if ('response' in parsed) return parsed.response;
+        const outcome = await mintInvite(this.db, {
+          companyId: membership.companyId,
+          role: parsed.body.role,
+          createdBy: session.accountId,
+          now,
+        });
+        if (outcome.outcome === 'forbidden') {
+          return Response.json({ error: 'Forbidden' }, { status: 403, headers: noStore() });
+        }
+        return Response.json(outcome.invite, { status: 201, headers: noStore() });
+      }
+
+      const parsed = await readExactJson(request, isCompanyInviteRevokeBody);
+      if ('response' in parsed) return parsed.response;
+      const outcome = revokeInvite(this.db, {
+        companyId: membership.companyId,
+        inviteHash: parsed.body.inviteHash,
+        actorAccountId: session.accountId,
+        now,
+      });
+      if (outcome.outcome === 'revoked') {
+        return Response.json({ outcome: 'revoked' }, { headers: noStore() });
+      }
+      if (outcome.outcome === 'forbidden') {
+        return Response.json({ error: 'Forbidden' }, { status: 403, headers: noStore() });
+      }
+      if (outcome.outcome === 'not_found') {
+        return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+      }
+      return Response.json({ error: 'Conflict' }, { status: 409, headers: noStore() });
+    }
+
+    if (url.pathname === COMPANY_INVITE_REDEEM_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      const now = Date.now();
+      const limit = takeRateSlot(
+        this.db,
+        `company:redeem:${session.accountId}`,
+        COMPANY_REDEEM_RATE_MAX,
+        now,
+      );
+      if (!limit.allowed) return rateLimitedResponse(limit.retryAfterMs);
+      const parsed = await readExactJson(request, isCompanyInviteRedeemBody);
+      if ('response' in parsed) return parsed.response;
+      const outcome = await redeemInvite(this.db, {
+        token: parsed.body.token,
+        accountId: session.accountId,
+        now,
+      });
+      if (outcome.outcome === 'redeemed') {
+        return Response.json(
+          { companyId: outcome.companyId, role: outcome.role },
+          { headers: noStore() },
+        );
+      }
+      if (outcome.outcome === 'no_capacity') {
+        return Response.json(
+          { error: PLAN_LIMIT_ERROR },
+          { status: PLAN_LIMIT_STATUS, headers: noStore() },
+        );
+      }
+      if (outcome.outcome === 'already_member') {
+        return Response.json({ error: 'Conflict' }, { status: 409, headers: noStore() });
+      }
+      return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+    }
+
+    if (url.pathname === COMPANY_SEATS_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      const membership = readActiveMembership(this.db, session.accountId);
+      if (!membership) {
+        return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+      }
+      const parsed = await readRawJson(request);
+      if ('response' in parsed) return parsed.response;
+      if (!isCompanySeatBody(parsed.body)) {
+        return Response.json({ error: 'Invalid body' }, { status: 400 });
+      }
+      const now = Date.now();
+      const limit = takeRateSlot(
+        this.db,
+        `company:seats:${membership.companyId}`,
+        COMPANY_SEAT_RATE_MAX,
+        now,
+      );
+      if (!limit.allowed) return rateLimitedResponse(limit.retryAfterMs);
+      const requestHash = await sha256Hex(parsed.raw);
+      const outcome = reserveSeatChange(this.db, {
+        companyId: membership.companyId,
+        actorAccountId: session.accountId,
+        targetQuantity: parsed.body.quantity,
+        operationId: parsed.body.operationId,
+        requestHash,
+        now,
+      });
+      if (outcome.outcome === 'reserved') {
+        const subscription = readCompanySubscription(this.db, membership.companyId);
+        if (!subscription) {
+          return Response.json({ error: 'Conflict' }, { status: 409, headers: noStore() });
+        }
+        return Response.json(
+          {
+            status: 'reserved',
+            companyId: membership.companyId,
+            operationId: outcome.operationId,
+            targetQuantity: outcome.targetQuantity,
+            direction: outcome.direction,
+            prorationBehavior: outcome.prorationBehavior,
+            processorSubscriptionId: subscription.processorSubscriptionId,
+          },
+          { headers: noStore() },
+        );
+      }
+      if (outcome.outcome === 'forbidden') {
+        return Response.json({ error: 'Forbidden' }, { status: 403, headers: noStore() });
+      }
+      return Response.json(
+        { error: 'Conflict', reason: outcome.outcome },
+        { status: 409, headers: noStore() },
+      );
+    }
+
+    if (url.pathname === COMPANY_SEAT_SETTLE_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      const membership = readActiveMembership(this.db, session.accountId);
+      if (!membership) {
+        return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+      }
+      const parsed = await readExactJson(request, isCompanySeatSettleBody);
+      if ('response' in parsed) return parsed.response;
+      const now = Date.now();
+      if (parsed.body.outcome === 'unknown') {
+        return Response.json({ status: 'pending' }, { headers: noStore() });
+      }
+      if (parsed.body.outcome === 'success') {
+        const result = settleSeatChange(this.db, {
+          companyId: membership.companyId,
+          operationId: parsed.body.operationId,
+          now,
+        });
+        if (!result.settled) {
+          return Response.json({ error: 'Conflict' }, { status: 409, headers: noStore() });
+        }
+        return Response.json({ status: 'settled' }, { headers: noStore() });
+      }
+      const released = releaseSeatChange(this.db, {
+        companyId: membership.companyId,
+        operationId: parsed.body.operationId,
+        now,
+      });
+      if (!released.released) {
+        return Response.json({ error: 'Conflict' }, { status: 409, headers: noStore() });
+      }
+      return Response.json({ status: 'released' }, { headers: noStore() });
+    }
+
+    if (url.pathname === COMPANY_MEMBER_REVOKE_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      const membership = readActiveMembership(this.db, session.accountId);
+      if (!membership) {
+        return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+      }
+      const limited = takeRateSlot(
+        this.db,
+        `company:members:${membership.companyId}`,
+        COMPANY_MEMBER_RATE_MAX,
+        Date.now(),
+      );
+      if (!limited.allowed) return rateLimitedResponse(limited.retryAfterMs);
+      const parsed = await readExactJson(request, isCompanyMemberBody);
+      if ('response' in parsed) return parsed.response;
+      const now = Date.now();
+      const outcome = this.db.transaction(() => {
+        const result = revokeMember(this.db, {
+          companyId: membership.companyId,
+          accountId: parsed.body.accountId,
+          actorAccountId: session.accountId,
+          now,
+        });
+        if (result.outcome === 'revoked') {
+          deleteCompanyEntitlement(this.db, {
+            companyId: membership.companyId,
+            accountId: result.accountId,
+            cause: {
+              kind: 'membership',
+              id: crypto.randomUUID(),
+              actor: session.accountId,
+              reason: 'company member revoked',
+            },
+            now,
+          });
+        }
+        return result;
+      })();
+      if (outcome.outcome === 'revoked') {
+        return Response.json(
+          { outcome: 'revoked', accountId: outcome.accountId },
+          { headers: noStore() },
+        );
+      }
+      if (outcome.outcome === 'forbidden') {
+        return Response.json({ error: 'Forbidden' }, { status: 403, headers: noStore() });
+      }
+      if (outcome.outcome === 'owner') {
+        return Response.json({ error: 'Conflict' }, { status: 409, headers: noStore() });
+      }
+      return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+    }
+
+    if (url.pathname === COMPANY_OWNER_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const token = parseSessionCookie(request.headers.get('cookie'));
+      const session = token ? await validateSession(this.db, token) : null;
+      if (!session) return unauthorized(true);
+      const membership = readActiveMembership(this.db, session.accountId);
+      if (!membership) {
+        return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+      }
+      const limited = takeRateSlot(
+        this.db,
+        `company:members:${membership.companyId}`,
+        COMPANY_MEMBER_RATE_MAX,
+        Date.now(),
+      );
+      if (!limited.allowed) return rateLimitedResponse(limited.retryAfterMs);
+      const parsed = await readExactJson(request, isCompanyMemberBody);
+      if ('response' in parsed) return parsed.response;
+      const now = Date.now();
+      let outcome: ReturnType<typeof transferOwnership>;
+      try {
+        outcome = this.db.transaction(() =>
+          transferOwnership(this.db, {
+            companyId: membership.companyId,
+            actorAccountId: session.accountId,
+            targetAccountId: parsed.body.accountId,
+            now,
+          }),
+        )();
+      } catch (error) {
+        if (error instanceof CompanyOwnerAssertionError) {
+          return Response.json({ error: 'Conflict' }, { status: 409, headers: noStore() });
+        }
+        throw error;
+      }
+      if (outcome.outcome === 'transferred') {
+        return Response.json(
+          { outcome: 'transferred', accountId: outcome.accountId },
+          { headers: noStore() },
+        );
+      }
+      if (outcome.outcome === 'forbidden') {
+        return Response.json({ error: 'Forbidden' }, { status: 403, headers: noStore() });
+      }
+      return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
     }
 
     return Response.json({ error: 'Not found' }, { status: 404 });

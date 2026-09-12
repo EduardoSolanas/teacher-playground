@@ -896,7 +896,7 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
     });
   });
 
-  describe('billing checkout and portal route boundary (spec ┬º6.1)', () => {
+  describe('billing checkout and portal route boundary (spec §6.1)', () => {
     it('allows only POST /api/billing/checkout and POST /api/billing/portal on the teacher host', () => {
       for (const pathname of ['/api/billing/checkout', '/api/billing/portal']) {
         expect(isRouteAllowedOnHost(pathname, 'POST', 'teacher'), pathname).toBe(true);
@@ -922,6 +922,52 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
         '/api/billing/portals/me',
       ]) {
         expect(isRouteAllowedOnHost(pathname, 'POST', 'teacher'), pathname).toBe(false);
+      }
+    });
+  });
+
+  describe('company route boundary (spec §6.1)', () => {
+    it('allows /api/company and its subpaths on the teacher host only', () => {
+      for (const pathname of [
+        '/api/company',
+        '/api/company/invites',
+        '/api/company/invites/redeem',
+        '/api/company/seats',
+        '/api/company/members/revoke',
+        '/api/company/owner',
+      ]) {
+        for (const method of ['GET', 'POST', 'PATCH', 'DELETE']) {
+          expect(isRouteAllowedOnHost(pathname, method, 'teacher'), `${method} ${pathname}`).toBe(true);
+        }
+        expect(isRouteAllowedOnHost(pathname, 'GET', 'guest'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'guest'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'marketing'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'unknown'), pathname).toBe(false);
+      }
+    });
+
+    it('keeps bare-prefix variants of /api/company out of the allowance', () => {
+      for (const pathname of ['/api/companyevil', '/api/companies', '/api/company2']) {
+        expect(isRouteAllowedOnHost(pathname, 'GET', 'teacher'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'teacher'), pathname).toBe(false);
+      }
+    });
+
+    it('origin-guards every company mutation but not the read-only summary', () => {
+      expect(isOriginGuardedPath('/api/company', 'GET')).toBe(false);
+      expect(isOriginGuardedPath('/api/company', 'HEAD')).toBe(false);
+      for (const [pathname, method] of [
+        ['/api/company', 'POST'],
+        ['/api/company', 'PATCH'],
+        ['/api/company', 'DELETE'],
+        ['/api/company/invites', 'POST'],
+        ['/api/company/invites', 'DELETE'],
+        ['/api/company/invites/redeem', 'POST'],
+        ['/api/company/seats', 'POST'],
+        ['/api/company/members/revoke', 'POST'],
+        ['/api/company/owner', 'POST'],
+      ] as const) {
+        expect(isOriginGuardedPath(pathname, method), `${method} ${pathname}`).toBe(true);
       }
     });
   });
