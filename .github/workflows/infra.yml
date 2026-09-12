@@ -172,8 +172,12 @@ jobs:
           # A plain plan exits 0 either way and throws away the one bit that
           # separates "matches" from "does not match", which is the whole signal
           # drift detection needs.
-          terraform plan -input=false -lock=false -detailed-exitcode -var-file="environments/${TP_ENV}.tfvars" -out=tfplan
-          code=$?
+          #
+          # Captured with || because GitHub runs steps as `bash -e`: exit 2 is a
+          # RESULT here, not a failure, and left bare it kills the step before
+          # the code can be read. That is exactly what it did on the first run.
+          code=0
+          terraform plan -input=false -lock=false -detailed-exitcode -var-file="environments/${TP_ENV}.tfvars" -out=tfplan || code=$?
           if [ "$code" = "1" ]; then exit 1; fi
           if [ "$code" = "2" ]; then
             echo "changes=true" >> "$GITHUB_OUTPUT"
