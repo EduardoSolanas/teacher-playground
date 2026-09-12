@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { env } from 'cloudflare:workers';
 import {
   createExecutionContext,
@@ -7,7 +7,11 @@ import {
   SELF,
 } from 'cloudflare:test';
 import worker, { parseFetchedSubscriptionPricing, runBillingReconcile } from './worker';
-import { parseReconcileResult, RECONCILE_IN_FLIGHT_TIMEOUT_MS } from './lib/billing/reconcile';
+import {
+  parseReconcileResult,
+  RECONCILE_IN_FLIGHT_TIMEOUT_MS,
+  type OutboundSeatChangeOperation,
+} from './lib/billing/reconcile';
 import {
   BILLING_OPERATION_RATE_MAX,
   getIdentityObject,
@@ -16,12 +20,13 @@ import {
 import { bootstrapLocalSession, authenticatedFetch, localAccessToken } from './test/workerAuth';
 import { writeEntitlement } from './lib/identity/entitlementWriter';
 import { ensureReferralCode } from './lib/referrals/codes';
-import { readBillingEnv } from './lib/billing/stripeConfig';
+import { readBillingEnv, type BillingEnv } from './lib/billing/stripeConfig';
 import {
   claimCollectionExecution,
   companyCustomerRequest,
   completeCollectionClaim,
   parseCollectionSubject,
+  retrySeatChange,
   runCollectionExecutor,
   seatItemUpdateRequest,
 } from './lib/billing/executor';
@@ -1114,8 +1119,10 @@ describe('identity outbound retries (spec §7.2)', () => {
           companyId: 'co_parse',
           operationId: 'op_parse_seat',
           processorSubscriptionId: 'sub_parse',
+          previousQuantity: 3,
           targetQuantity: 4,
           prorationBehavior: 'create_prorations',
+          attemptedAt: 1_700_000_000_000,
         },
         {
           kind: 'company-create',
@@ -1132,8 +1139,10 @@ describe('identity outbound retries (spec §7.2)', () => {
         companyId: 'co_parse',
         operationId: 'op_parse_seat',
         processorSubscriptionId: 'sub_parse',
+        previousQuantity: 3,
         targetQuantity: 4,
         prorationBehavior: 'create_prorations',
+        attemptedAt: 1_700_000_000_000,
       },
       {
         kind: 'company-create',
@@ -1148,6 +1157,22 @@ describe('identity outbound retries (spec §7.2)', () => {
         collections: [],
         subscriptions: [],
         outboundOperations: [{ kind: 'seat-change', companyId: 'co_parse' }],
+      }),
+    ).toBeNull();
+    expect(
+      parseReconcileResult({
+        collections: [],
+        subscriptions: [],
+        outboundOperations: [
+          {
+            kind: 'seat-change',
+            companyId: 'co_parse',
+            operationId: 'op_parse_seat',
+            processorSubscriptionId: 'sub_parse',
+            targetQuantity: 4,
+            prorationBehavior: 'create_prorations',
+          },
+        ],
       }),
     ).toBeNull();
   });
@@ -1211,6 +1236,221 @@ describe('identity outbound retries (spec §7.2)', () => {
     expect(params.get('name')).toBe('Retry Co');
     expect(params.get('metadata[company_id]')).toBe('co_retry');
     expect(params.get('metadata[account_id]')).toBe('acct_retry');
+  });
+});
+
+describe('seat-change 24-hour-window recovery (spec §3.2 step 4)', () => {
+  const WINDOW_MS = 24 * 60 * 60 * 1_000;
+
+  async function seedPendingSeatChange(subject: string): Promise<{
+    companyId: string;
+    operationId: string;
+  }> {
+    const session = await bootstrapLocalSession(subject);
+    const created = await authenticatedFetch('/api/company', session, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: `Window ${subject}`,
+        operationId: `op_${subject}_create`,
+      }),
+    });
+    expect(created.status).toBe(201);
+    const companyId = ((await created.json()) as { company: { id: string } }).company.id;
+
+    const writeback = await identityStub().fetch('https://identity/billing/settle', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'company-create',
+        companyId,
+        operationId: `op_${subject}_create`,
+        processorCustomerId: `cus_${subject.replaceAll('-', '_')}`,
+      }),
+    });
+    expect(writeback.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(
+          `INSERT INTO company_subscriptions (
+             company_id, processor_subscription_id, quantity, status,
+             collection_method, updated_at
+           ) VALUES (?, ?, 2, 'active', 'charge_automatically', 1)`,
+        )
+        .run(companyId, `sub_${companyId}`);
+    });
+
+    const operationId = `op_${subject}_seat`;
+    const reserved = await authenticatedFetch('/api/company/seats', session, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ quantity: 4, operationId }),
+    });
+    expect(reserved.status).toBe(202);
+    expect(await reserved.json()).toMatchObject({ status: 'pending' });
+    return { companyId, operationId };
+  }
+
+  function operationFor(
+    companyId: string,
+    operationId: string,
+    attemptedAt: number | null,
+  ): OutboundSeatChangeOperation {
+    return {
+      kind: 'seat-change',
+      companyId,
+      operationId,
+      processorSubscriptionId: `sub_${companyId}`,
+      previousQuantity: 2,
+      targetQuantity: 4,
+      prorationBehavior: 'create_prorations',
+      attemptedAt,
+    };
+  }
+
+  function depsForFetched(subscription: unknown): {
+    identityFetch: (request: Request) => Promise<Response>;
+    billing: BillingEnv;
+  } {
+    return {
+      identityFetch: (request: Request) => identityStub().fetch(request),
+      billing: {
+        apiBaseUrl: `data:application/json,${encodeURIComponent(JSON.stringify(subscription))}#`,
+        secretKey: 'sk_test_window_recovery',
+        webhookSecret: null,
+        apiBaseAllowed: true,
+      },
+    };
+  }
+
+  function fetchedSeat(quantity: number): unknown {
+    return { id: 'sub_window', items: { data: [{ id: 'si_window', quantity }] } };
+  }
+
+  function readSeatState(
+    companyId: string,
+    operationId: string,
+  ): Promise<{
+    subscription: unknown;
+    operation: unknown;
+  }> {
+    return runInDurableObject(identityStub(), (instance) => ({
+      subscription: instance.db
+        .prepare(
+          `SELECT quantity, pending_quantity AS pendingQuantity,
+                  pending_operation_id AS pendingOperationId
+           FROM company_subscriptions WHERE company_id = ?`,
+        )
+        .get(companyId),
+      operation: instance.db
+        .prepare(
+          `SELECT status FROM billing_operations
+           WHERE subject_kind = 'company' AND subject_id = ?
+             AND operation_id = ? AND kind = 'seat-change'`,
+        )
+        .get(companyId, operationId),
+    }));
+  }
+
+  it('settles a fetched target quantity without re-sending', async () => {
+    const { companyId, operationId } = await seedPendingSeatChange('window-target');
+
+    const outcome = await retrySeatChange(
+      depsForFetched(fetchedSeat(4)),
+      operationFor(companyId, operationId, null),
+    );
+
+    expect(outcome).toBe('settled');
+    expect(await readSeatState(companyId, operationId)).toEqual({
+      subscription: { quantity: 4, pendingQuantity: null, pendingOperationId: null },
+      operation: { status: 'succeeded' },
+    });
+  });
+
+  it('releases a fetched previous quantity after the idempotency window', async () => {
+    const { companyId, operationId } = await seedPendingSeatChange('window-release');
+
+    const outcome = await retrySeatChange(
+      depsForFetched(fetchedSeat(2)),
+      operationFor(companyId, operationId, Date.now() - WINDOW_MS),
+    );
+
+    expect(outcome).toBe('released');
+    expect(await readSeatState(companyId, operationId)).toEqual({
+      subscription: { quantity: 2, pendingQuantity: null, pendingOperationId: null },
+      operation: { status: 'failed' },
+    });
+  });
+
+  it('re-sends a fetched previous quantity inside the window and stays pending when Stripe does not answer', async () => {
+    const { companyId, operationId } = await seedPendingSeatChange('window-retry');
+
+    const outcome = await retrySeatChange(
+      depsForFetched(fetchedSeat(2)),
+      operationFor(companyId, operationId, Date.now() - 1),
+    );
+
+    expect(outcome).toBe('pending');
+    expect(await readSeatState(companyId, operationId)).toEqual({
+      subscription: { quantity: 2, pendingQuantity: 4, pendingOperationId: operationId },
+      operation: { status: 'pending' },
+    });
+
+    const cleaned = await identityStub().fetch('https://identity/billing/settle', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'seat-change',
+        companyId,
+        operationId,
+        outcome: 'failure',
+      }),
+    });
+    expect(cleaned.status).toBe(200);
+  });
+
+  it('releases a drifted seat change and alerts with the fetched quantity', async () => {
+    const { companyId, operationId } = await seedPendingSeatChange('window-drift');
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      logged.push(args.map((arg) => (typeof arg === 'string' ? arg : String(arg))).join(' '));
+    });
+    let outcome: string;
+    try {
+      outcome = await retrySeatChange(
+        depsForFetched(fetchedSeat(7)),
+        operationFor(companyId, operationId, Date.now() - 1),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(outcome).toBe('released');
+    const alerts = logged
+      .map((line) => {
+        const start = line.indexOf('{');
+        return start === -1 ? null : JSON.parse(line.slice(start));
+      })
+      .filter(
+        (entry): entry is { alert?: string } =>
+          entry !== null && typeof entry === 'object',
+      )
+      .filter((entry) => entry.alert === 'seat_change_drift');
+    expect(alerts).toEqual([
+      expect.objectContaining({
+        companyId,
+        operationId,
+        previousQuantity: 2,
+        targetQuantity: 4,
+        fetchedQuantity: 7,
+        outcome: 'released',
+      }),
+    ]);
+    expect(await readSeatState(companyId, operationId)).toEqual({
+      subscription: { quantity: 2, pendingQuantity: null, pendingOperationId: null },
+      operation: { status: 'failed' },
+    });
   });
 });
 
@@ -1446,6 +1686,91 @@ describe('Worker scheduled billing reconcile', () => {
         kind: 'seat-change',
         companyId,
         operationId: 'op_cron_seat_retry',
+        outcome: 'failure',
+      }),
+    });
+    expect(cleaned.status).toBe(200);
+  });
+
+  it('keeps an out-of-window pending seat change pending when Stripe is unreachable', async () => {
+    const session = await bootstrapLocalSession('billing-cron-seat-window');
+    const created = await authenticatedFetch('/api/company', session, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Cron Window Co', operationId: 'op_cron_window_create' }),
+    });
+    expect(created.status).toBe(201);
+    const companyId = ((await created.json()) as { company: { id: string } }).company.id;
+
+    const writeback = await identityStub().fetch('https://identity/billing/settle', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'company-create',
+        companyId,
+        operationId: 'op_cron_window_create',
+        processorCustomerId: 'cus_cron_window_create',
+      }),
+    });
+    expect(writeback.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(
+          `INSERT INTO company_subscriptions (
+             company_id, processor_subscription_id, quantity, status,
+             collection_method, updated_at
+           ) VALUES (?, ?, 2, 'active', 'charge_automatically', 1)`,
+        )
+        .run(companyId, `sub_${companyId}`);
+    });
+
+    const operationId = 'op_cron_seat_window';
+    const reserved = await authenticatedFetch('/api/company/seats', session, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ quantity: 4, operationId }),
+    });
+    expect(reserved.status).toBe(202);
+
+    const attemptedAt = Date.now() - 25 * 60 * 60 * 1_000;
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(
+          `UPDATE billing_operations SET created_at = ?, updated_at = ?
+           WHERE subject_kind = 'company' AND subject_id = ?
+             AND operation_id = ? AND kind = 'seat-change'`,
+        )
+        .run(attemptedAt, attemptedAt, companyId, operationId);
+    });
+
+    const summary = await runBillingReconcile(env, Date.now());
+    expect(summary).not.toBeNull();
+    expect(summary?.outboundRetries).toBe(1);
+    expect(summary?.outboundSettled).toBe(0);
+
+    const stored = await runInDurableObject(identityStub(), (instance) =>
+      instance.db
+        .prepare(
+          `SELECT quantity, pending_quantity AS pendingQuantity,
+                  pending_operation_id AS pendingOperationId
+           FROM company_subscriptions WHERE company_id = ?`,
+        )
+        .get(companyId),
+    );
+    expect(stored).toEqual({
+      quantity: 2,
+      pendingQuantity: 4,
+      pendingOperationId: operationId,
+    });
+
+    const cleaned = await identityStub().fetch('https://identity/billing/settle', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'seat-change',
+        companyId,
+        operationId,
         outcome: 'failure',
       }),
     });

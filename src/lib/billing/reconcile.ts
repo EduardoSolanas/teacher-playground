@@ -76,8 +76,10 @@ export interface OutboundSeatChangeOperation {
   companyId: string;
   operationId: string;
   processorSubscriptionId: string;
+  previousQuantity: number;
   targetQuantity: number;
   prorationBehavior: 'create_prorations' | 'none';
+  attemptedAt: number | null;
 }
 
 export interface OutboundCompanyCreateOperation {
@@ -435,11 +437,20 @@ export function parseOutboundOperation(value: unknown): OutboundOperation | null
   }
   if (kind === 'seat-change') {
     const processorSubscriptionId = operation.processorSubscriptionId;
+    const previousQuantity = operation.previousQuantity;
     const targetQuantity = operation.targetQuantity;
     const prorationBehavior = operation.prorationBehavior;
+    const attemptedAt = operation.attemptedAt ?? null;
     if (
       typeof processorSubscriptionId !== 'string' ||
       processorSubscriptionId.length < 1
+    ) {
+      return null;
+    }
+    if (
+      typeof previousQuantity !== 'number' ||
+      !Number.isInteger(previousQuantity) ||
+      previousQuantity < 1
     ) {
       return null;
     }
@@ -453,13 +464,18 @@ export function parseOutboundOperation(value: unknown): OutboundOperation | null
     if (prorationBehavior !== 'create_prorations' && prorationBehavior !== 'none') {
       return null;
     }
+    if (attemptedAt !== null && typeof attemptedAt !== 'number') {
+      return null;
+    }
     return {
       kind,
       companyId,
       operationId,
       processorSubscriptionId,
+      previousQuantity,
       targetQuantity,
       prorationBehavior,
+      attemptedAt,
     };
   }
   if (kind === 'company-create') {
@@ -710,7 +726,8 @@ export function reconcileBilling(
   const pendingSeatChanges = db
     .prepare(
       `SELECT cs.company_id, cs.processor_subscription_id, cs.quantity,
-              cs.pending_quantity, cs.pending_operation_id
+              cs.pending_quantity, cs.pending_operation_id,
+              o.created_at AS operation_created_at
        FROM company_subscriptions cs
        JOIN billing_operations o
          ON o.subject_kind = 'company' AND o.subject_id = cs.company_id
@@ -725,6 +742,7 @@ export function reconcileBilling(
     quantity: number;
     pending_quantity: number;
     pending_operation_id: string;
+    operation_created_at: number;
   }>;
   for (const row of pendingSeatChanges) {
     const targetQuantity = Number(row.pending_quantity);
@@ -733,9 +751,11 @@ export function reconcileBilling(
       companyId: row.company_id,
       operationId: row.pending_operation_id,
       processorSubscriptionId: row.processor_subscription_id,
+      previousQuantity: Number(row.quantity),
       targetQuantity,
       prorationBehavior:
         targetQuantity > Number(row.quantity) ? 'create_prorations' : 'none',
+      attemptedAt: row.operation_created_at,
     });
   }
 

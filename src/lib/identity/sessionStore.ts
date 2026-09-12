@@ -1,9 +1,12 @@
 import type { RoomDatabase } from '../whiteboard/db';
 import {
   disableCompany,
+  listActiveMembers,
   readActiveMembership,
+  readCompany,
   transferOwnershipForErasure,
 } from '../company/membership';
+import type { CompanyRole } from '../company/membership';
 import {
   type AccountState,
   type AuditContext,
@@ -11,13 +14,19 @@ import {
   MAX_AUTHORIZATION_BATCH,
   isTutorCapReached,
   listOwnedRooms,
+  readPreferredDisplayName,
   recordAuthorizationAudit,
   resolveAccountForSubject,
 } from './identityStore';
 import {
   deleteCompanyEntitlement,
   pseudonymizeEntitlementAuditSubject,
+  readEntitlementsForAccount,
 } from './entitlementWriter';
+import type { EntitlementRow } from '../plan/effectivePlan';
+import { readReferralCode } from '../referrals/codes';
+import type { ReferralCodeRecord } from '../referrals/codes';
+import type { ReferralEventRecord } from '../referrals/ledger';
 
 export const SESSION_COOKIE_NAME = '__Host-teacher-session';
 // Fixed local policy: 30-minute inactivity, 12-hour maximum lifetime, and at
@@ -483,6 +492,18 @@ export async function rotateSession(
   return null;
 }
 
+export interface AccountMembershipExport {
+  companyId: string;
+  companyName: string;
+  role: CompanyRole;
+  createdAt: number;
+  members: Array<{
+    accountId: string;
+    role: CompanyRole;
+    displayName: string | null;
+  }>;
+}
+
 export interface AccountDataExport {
   accountId: string;
   createdAt: number;
@@ -496,6 +517,10 @@ export interface AccountDataExport {
     subject: string;
     createdAt: number;
   }>;
+  entitlements: EntitlementRow[];
+  memberships: AccountMembershipExport[];
+  referralCode: ReferralCodeRecord | null;
+  referrals: ReferralEventRecord[];
 }
 
 /**
@@ -544,12 +569,55 @@ export async function exportOwnAccountData(
     createdAt: number;
   }>;
 
+  const membership = readActiveMembership(db, session.accountId);
+  const company = membership ? readCompany(db, membership.companyId) : null;
+  const memberships: AccountMembershipExport[] =
+    membership && company
+      ? [
+          {
+            companyId: membership.companyId,
+            companyName: company.name,
+            role: membership.role,
+            createdAt: membership.createdAt,
+            members: listActiveMembers(db, membership.companyId)
+              .filter((member) => member.accountId !== session.accountId)
+              .map((member) => ({
+                accountId: member.accountId,
+                role: member.role,
+                displayName: readPreferredDisplayName(db, member.accountId),
+              })),
+          },
+        ]
+      : [];
+
+  const referralCode = readReferralCode(db, session.accountId);
+  const referrals = db
+    .prepare(
+      `SELECT e.record_id AS recordId, e.processor_event_id AS processorEventId,
+              e.code AS code, e.kind AS kind,
+              e.referred_account_id AS referredAccountId,
+              e.referred_customer_id AS referredCustomerId,
+              e.object_id AS objectId, e.amount_cents AS amountCents,
+              e.currency AS currency, e.reward_status AS rewardStatus,
+              e.confirmed_at AS confirmedAt, e.occurred_at AS occurredAt,
+              e.recorded_at AS recordedAt
+       FROM referral_events e
+       JOIN referral_codes c ON c.code = e.code
+       WHERE c.owner_account_id = ? OR e.referred_account_id = ?
+       ORDER BY e.recorded_at ASC, e.record_id ASC`,
+    )
+    .all(session.accountId, session.accountId) as ReferralEventRecord[];
+
   return {
     accountId: account.accountId,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt,
     sessions,
     accessSubjects,
+    entitlements: readEntitlementsForAccount(db, session.accountId),
+    memberships,
+    referralCode,
+    referrals,
   };
 }
 

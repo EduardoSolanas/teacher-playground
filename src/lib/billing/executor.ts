@@ -9,6 +9,7 @@
 import { STRIPE_API_VERSION, type BillingEnv } from './stripeConfig';
 import { collectionStateRequest } from './stripeRequest';
 import { executeStripeRequest, type StripeExecutionResult } from './stripeClient';
+import { decideSeatChangeRecovery } from './seatRecovery';
 import type { BillingSubjectKind, DesiredCollection } from '../identity/entitlementWriter';
 import type {
   OutboundCompanyCreateOperation,
@@ -110,13 +111,26 @@ function recordOf(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-export function stripeSubscriptionItemId(json: unknown): string | null {
+function firstSubscriptionItem(json: unknown): Record<string, unknown> | null {
   const items = recordOf(json)?.items;
-  if (!Array.isArray(items)) return null;
-  const first = items[0];
-  if (typeof first !== 'object' || first === null || Array.isArray(first)) return null;
-  const id = (first as Record<string, unknown>).id;
+  if (Array.isArray(items)) return recordOf(items[0]);
+  const list = recordOf(items);
+  if (list === null || !Array.isArray(list.data)) return null;
+  return recordOf(list.data[0]);
+}
+
+export function stripeSubscriptionItemId(json: unknown): string | null {
+  const first = firstSubscriptionItem(json);
+  if (first === null) return null;
+  const id = first.id;
   return typeof id === 'string' && id.length > 0 ? id : null;
+}
+
+export function stripeSubscriptionItemQuantity(json: unknown): number | null {
+  const first = firstSubscriptionItem(json);
+  if (first === null) return null;
+  const quantity = first.quantity;
+  return typeof quantity === 'number' && Number.isInteger(quantity) ? quantity : null;
 }
 
 function isDesiredCollection(value: unknown): value is DesiredCollection {
@@ -324,6 +338,22 @@ async function settleOutboundViaSystem(
   }
 }
 
+async function settleSeatChangeOutcome(
+  deps: CollectionExecutorDeps,
+  operation: OutboundSeatChangeOperation,
+  outcome: 'success' | 'failure' | 'unknown',
+): Promise<OutboundRetryOutcome> {
+  const settled = await settleOutboundViaSystem(deps, {
+    kind: 'seat-change',
+    companyId: operation.companyId,
+    operationId: operation.operationId,
+    outcome,
+  });
+  if (outcome === 'success') return settled ? 'settled' : 'pending';
+  if (outcome === 'failure') return 'released';
+  return 'pending';
+}
+
 export async function retrySeatChange(
   deps: CollectionExecutorDeps,
   operation: OutboundSeatChangeOperation,
@@ -344,24 +374,39 @@ export async function retrySeatChange(
     fetched = null;
   }
   if (fetched === null || !fetched.ok) {
-    await settleOutboundViaSystem(deps, {
-      kind: 'seat-change',
+    return settleSeatChangeOutcome(deps, operation, 'unknown');
+  }
+
+  const decision = decideSeatChangeRecovery({
+    previousQuantity: operation.previousQuantity,
+    targetQuantity: operation.targetQuantity,
+    fetchedQuantity: stripeSubscriptionItemQuantity(fetched.json),
+    attemptedAt: operation.attemptedAt,
+    now: Date.now(),
+  });
+  if (decision.kind === 'settled') {
+    return settleSeatChangeOutcome(deps, operation, 'success');
+  }
+  if (decision.kind === 'released') {
+    return settleSeatChangeOutcome(deps, operation, 'failure');
+  }
+  if (decision.kind === 'pending') {
+    return 'pending';
+  }
+  if (decision.kind === 'drift') {
+    console.error('[billing]', JSON.stringify({
+      ...decision.alert,
       companyId: operation.companyId,
       operationId: operation.operationId,
-      outcome: 'unknown',
-    });
-    return 'pending';
+      processorSubscriptionId: operation.processorSubscriptionId,
+      outcome: 'released',
+    }));
+    return settleSeatChangeOutcome(deps, operation, 'failure');
   }
 
   const itemId = stripeSubscriptionItemId(fetched.json);
   if (itemId === null) {
-    await settleOutboundViaSystem(deps, {
-      kind: 'seat-change',
-      companyId: operation.companyId,
-      operationId: operation.operationId,
-      outcome: 'failure',
-    });
-    return 'released';
+    return settleSeatChangeOutcome(deps, operation, 'failure');
   }
 
   let updated: StripeExecutionResult | null;
@@ -381,39 +426,15 @@ export async function retrySeatChange(
     updated = null;
   }
   if (updated === null) {
-    await settleOutboundViaSystem(deps, {
-      kind: 'seat-change',
-      companyId: operation.companyId,
-      operationId: operation.operationId,
-      outcome: 'unknown',
-    });
-    return 'pending';
+    return settleSeatChangeOutcome(deps, operation, 'unknown');
   }
   if (updated.ok) {
-    const settled = await settleOutboundViaSystem(deps, {
-      kind: 'seat-change',
-      companyId: operation.companyId,
-      operationId: operation.operationId,
-      outcome: 'success',
-    });
-    return settled ? 'settled' : 'pending';
+    return settleSeatChangeOutcome(deps, operation, 'success');
   }
   if (updated.status >= 400 && updated.status < 500) {
-    await settleOutboundViaSystem(deps, {
-      kind: 'seat-change',
-      companyId: operation.companyId,
-      operationId: operation.operationId,
-      outcome: 'failure',
-    });
-    return 'released';
+    return settleSeatChangeOutcome(deps, operation, 'failure');
   }
-  await settleOutboundViaSystem(deps, {
-    kind: 'seat-change',
-    companyId: operation.companyId,
-    operationId: operation.operationId,
-    outcome: 'unknown',
-  });
-  return 'pending';
+  return settleSeatChangeOutcome(deps, operation, 'unknown');
 }
 
 export async function retryCompanyCreate(

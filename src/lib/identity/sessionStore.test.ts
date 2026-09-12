@@ -40,6 +40,7 @@ import {
   listOwnedRooms,
   readAuthorizationAudit,
   recordOwnedRoom,
+  setPreferredDisplayName,
   validateAuditContext,
 } from './identityStore';
 import {
@@ -1453,6 +1454,7 @@ describe('account erasure membership and referrals (E-1/E-2)', () => {
         reason: 'seed retained billing row',
       },
     );
+
     db.prepare(
       `INSERT INTO billing_payments (
          payment_intent_id, charge_id, invoice_id, subject_kind, subject_id,
@@ -1483,5 +1485,265 @@ describe('account erasure membership and referrals (E-1/E-2)', () => {
         )
         .get(),
     ).toEqual({ chargeId: 'ch_retained_erasure' });
+  });
+});
+
+describe('account data export (§3.8)', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    applyIdentitySchema(db);
+  });
+
+  function personalState(customerId: string, subscriptionId: string) {
+    return {
+      planId: 'tutor_pro_monthly' as const,
+      status: 'active' as const,
+      graceUntil: null,
+      collectionPaused: false,
+      companyId: null,
+      currentPeriodEnd: null,
+      processorCustomerId: customerId,
+      processorSubscriptionId: subscriptionId,
+    };
+  }
+
+  it('exports the caller entitlements and no other account entitlement', async () => {
+    const mine = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+    const other = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'export-entitlement-other' },
+      T0 + 1,
+    );
+    writeEntitlement(
+      db,
+      {
+        accountId: mine.accountId,
+        source: 'personal',
+        state: personalState('cus_export_mine', 'sub_export_mine'),
+        now: T0,
+      },
+      {
+        kind: 'operator',
+        id: 'export-entitlement-mine',
+        actor: 'operator@example.com',
+        reason: 'seed caller entitlement',
+      },
+    );
+    writeEntitlement(
+      db,
+      {
+        accountId: other.accountId,
+        source: 'personal',
+        state: personalState('cus_export_other', 'sub_export_other'),
+        now: T0,
+      },
+      {
+        kind: 'operator',
+        id: 'export-entitlement-other',
+        actor: 'operator@example.com',
+        reason: 'seed other entitlement',
+      },
+    );
+
+    const exported = await exportOwnAccountData(db, mine.token, T0 + 2);
+    expect(exported?.entitlements).toEqual([
+      expect.objectContaining({
+        accountId: mine.accountId,
+        source: 'personal',
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        processorCustomerId: 'cus_export_mine',
+        processorSubscriptionId: 'sub_export_mine',
+      }),
+    ]);
+    expect(exported?.entitlements).toHaveLength(1);
+    const serialized = JSON.stringify(exported);
+    expect(serialized).not.toContain(other.accountId);
+    expect(serialized).not.toContain('cus_export_other');
+    expect(serialized).not.toContain('sub_export_other');
+  });
+
+  it('exports the caller company and only that company active members as the caller sees them', async () => {
+    const mine = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+    const mate = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'export-membership-mate' },
+      T0 + 1,
+    );
+    const outsider = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'export-membership-outsider' },
+      T0 + 2,
+    );
+    const outsiderMate = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'export-membership-outsider-mate' },
+      T0 + 3,
+    );
+    const created = createCompany(db, {
+      name: 'Export Tutoring',
+      ownerAccountId: mine.accountId,
+      now: T0,
+    });
+    if (created.outcome !== 'created') throw new Error('expected a company');
+    db.prepare(
+      `INSERT INTO company_members (company_id, account_id, role, state, created_at)
+       VALUES (?, ?, 'admin', 'active', ?)`,
+    ).run(created.company.companyId, mate.accountId, T0 + 1);
+    setPreferredDisplayName(db, mate.accountId, 'Grace Hopper', T0 + 1);
+    const otherCompany = createCompany(db, {
+      name: 'Other Export Co',
+      ownerAccountId: outsider.accountId,
+      now: T0 + 2,
+    });
+    if (otherCompany.outcome !== 'created') throw new Error('expected a company');
+    db.prepare(
+      `INSERT INTO company_members (company_id, account_id, role, state, created_at)
+       VALUES (?, ?, 'admin', 'active', ?)`,
+    ).run(otherCompany.company.companyId, outsiderMate.accountId, T0 + 3);
+    setPreferredDisplayName(db, outsiderMate.accountId, 'Outsider Name', T0 + 3);
+
+    const exported = await exportOwnAccountData(db, mine.token, T0 + 4);
+
+    expect(exported?.memberships).toEqual([
+      {
+        companyId: created.company.companyId,
+        companyName: 'Export Tutoring',
+        role: 'owner',
+        createdAt: T0,
+        members: [
+          {
+            accountId: mate.accountId,
+            role: 'admin',
+            displayName: 'Grace Hopper',
+          },
+        ],
+      },
+    ]);
+    const serialized = JSON.stringify(exported);
+    expect(serialized).not.toContain('Other Export Co');
+    expect(serialized).not.toContain('Outsider Name');
+    expect(serialized).not.toContain(outsider.accountId);
+    expect(serialized).not.toContain(outsiderMate.accountId);
+  });
+
+  it('exports the caller referral code and only the referral rows the caller participates in', async () => {
+    const referrer = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+    const referred = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'export-referral-referred' },
+      T0 + 1,
+    );
+    const stranger = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'export-referral-stranger' },
+      T0 + 2,
+    );
+    const strangerReferred = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'export-referral-stranger-referred' },
+      T0 + 3,
+    );
+    const { code } = ensureReferralCode(db, { accountId: referrer.accountId, now: T0 });
+    expect(
+      recordReferralRedemption(db, {
+        code,
+        referredAccountId: referred.accountId,
+        referredCustomerId: 'cus_export_referred',
+        objectId: 'cs_export_referral',
+        occurredAt: T0 + 1,
+        recordedAt: T0 + 1,
+      }),
+    ).toMatchObject({ outcome: 'recorded' });
+    const strangerCode = ensureReferralCode(db, {
+      accountId: stranger.accountId,
+      now: T0 + 2,
+    });
+    expect(
+      recordReferralRedemption(db, {
+        code: strangerCode.code,
+        referredAccountId: strangerReferred.accountId,
+        referredCustomerId: 'cus_export_stranger',
+        objectId: 'cs_export_stranger',
+        occurredAt: T0 + 3,
+        recordedAt: T0 + 3,
+      }),
+    ).toMatchObject({ outcome: 'recorded' });
+
+    const exported = await exportOwnAccountData(db, referrer.token, T0 + 4);
+
+    expect(exported?.referralCode).toEqual({
+      code,
+      ownerAccountId: referrer.accountId,
+      promotionCodeId: null,
+      active: true,
+      expiresAt: null,
+      maxRedemptions: null,
+      createdAt: T0,
+    });
+    expect(exported?.referrals).toEqual([
+      {
+        recordId: expect.any(String),
+        processorEventId: null,
+        code,
+        kind: 'redemption',
+        referredAccountId: referred.accountId,
+        referredCustomerId: 'cus_export_referred',
+        objectId: 'cs_export_referral',
+        amountCents: 0,
+        currency: null,
+        rewardStatus: 'pending',
+        confirmedAt: null,
+        occurredAt: T0 + 1,
+        recordedAt: T0 + 1,
+      },
+    ]);
+    const serialized = JSON.stringify(exported);
+    expect(serialized).not.toContain(stranger.accountId);
+    expect(serialized).not.toContain(strangerCode.code);
+    expect(serialized).not.toContain(strangerReferred.accountId);
+    expect(serialized).not.toContain('cs_export_stranger');
+
+    const referredExport = await exportOwnAccountData(db, referred.token, T0 + 4);
+    expect(referredExport?.referralCode).toBeNull();
+    expect(referredExport?.referrals).toEqual([
+      expect.objectContaining({
+        code,
+        kind: 'redemption',
+        referredAccountId: referred.accountId,
+        objectId: 'cs_export_referral',
+      }),
+    ]);
+  });
+
+  it('stops exporting the erased account and drops its referral rows from the referrer export', async () => {
+    const referrer = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+    const referred = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'export-erasure-referred' },
+      T0 + 1,
+    );
+    const { code } = ensureReferralCode(db, { accountId: referrer.accountId, now: T0 });
+    expect(
+      recordReferralRedemption(db, {
+        code,
+        referredAccountId: referred.accountId,
+        objectId: 'cs_export_erasure',
+        occurredAt: T0 + 1,
+        recordedAt: T0 + 1,
+      }),
+    ).toMatchObject({ outcome: 'recorded' });
+    const before = await exportOwnAccountData(db, referrer.token, T0 + 2);
+    expect(before?.referrals).toHaveLength(1);
+
+    await eraseOwnAccount(db, referred.token, T0 + 3);
+
+    expect(await exportOwnAccountData(db, referred.token, T0 + 4)).toBeNull();
+    const after = await exportOwnAccountData(db, referrer.token, T0 + 4);
+    expect(after?.referrals).toEqual([]);
+    expect(JSON.stringify(after)).not.toContain(referred.accountId);
+    expect(JSON.stringify(after)).not.toContain('cs_export_erasure');
   });
 });

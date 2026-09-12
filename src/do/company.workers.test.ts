@@ -783,6 +783,17 @@ describe('IdentityDO company routes (spec §6.2)', () => {
     });
     expect(reserved.status).toBe(200);
 
+    const attemptedAt = await runInDurableObject(identityStub(), (instance) => {
+      const row = instance.db
+        .prepare(
+          `SELECT created_at AS attemptedAt FROM billing_operations
+           WHERE subject_kind = 'company' AND subject_id = ?
+             AND operation_id = 'op_reconcile_seat' AND kind = 'seat-change'`,
+        )
+        .get(companyId) as { attemptedAt: number };
+      return row.attemptedAt;
+    });
+
     const response = await identityStub().fetch('https://identity/billing/reconcile');
     expect(response.status).toBe(200);
     const body = (await response.json()) as { outboundOperations: unknown[] };
@@ -797,8 +808,10 @@ describe('IdentityDO company routes (spec §6.2)', () => {
         companyId,
         operationId: 'op_reconcile_seat',
         processorSubscriptionId: `sub_${companyId}`,
+        previousQuantity: 2,
         targetQuantity: 5,
         prorationBehavior: 'create_prorations',
+        attemptedAt,
       },
     ]);
   });
