@@ -711,9 +711,10 @@ export function settleCollectionFailure(
 }
 
 /**
- * H1 repair: when the applied_collection is stale with no claim in flight, the
- * desired version is invalidated (desired_collection unchanged) and the next
- * claim is acquired. Canceled subscriptions are never repaired.
+ * H1 repair: with no claim in flight, the desired version is invalidated
+ * (desired_collection unchanged) and the next claim is acquired, whether the
+ * last attempt failed or a successful attempt no longer matches Stripe.
+ * Canceled subscriptions are never repaired.
  */
 export function repairCollectionVersion(
   db: RoomDatabase,
@@ -724,7 +725,7 @@ export function repairCollectionVersion(
   if (row.desired_collection === 'canceled') {
     return { repaired: false, desiredVersion: row.desired_version, inFlightState: null };
   }
-  if (row.applied_version >= row.desired_version || row.in_flight_version !== null) {
+  if (row.in_flight_version !== null) {
     return {
       repaired: false,
       desiredVersion: row.desired_version,
@@ -742,6 +743,42 @@ export function repairCollectionVersion(
     desiredVersion: row.desired_version + 1,
     inFlightState: row.desired_collection,
   };
+}
+
+/**
+ * P-6 grace expiry: records the passed deadline once per deadline without
+ * touching the entitlement row. The resolver already treats the row as
+ * non-entitling at grace_until; Stripe remains the only writer of the status.
+ */
+export function recordGraceExpiryAudit(
+  db: RoomDatabase,
+  args: {
+    accountId: string;
+    processorSubscriptionId: string;
+    graceUntil: number;
+    now: number;
+  },
+): { recorded: boolean } {
+  const causeId = `${args.processorSubscriptionId}:${args.graceUntil}`;
+  const existing = db
+    .prepare(
+      `SELECT audit_id FROM entitlement_audit
+       WHERE subject_kind = 'account' AND subject_id = ?
+         AND cause_kind = 'grace_expiry' AND cause_id = ?`,
+    )
+    .get(args.accountId, causeId);
+  if (existing) return { recorded: false };
+
+  db.prepare(
+    `INSERT INTO entitlement_audit (
+       audit_id, subject_kind, subject_id, action, cause_kind, cause_id,
+       actor, reason, previous_plan, next_plan, previous_status, next_status,
+       processor_event_id, created_at
+     ) VALUES (?, 'account', ?, 'entitlement_change', 'grace_expiry', ?,
+               'system:reconcile', 'grace deadline passed',
+               NULL, NULL, 'past_due', 'past_due', NULL, ?)`,
+  ).run(crypto.randomUUID(), args.accountId, causeId, args.now);
+  return { recorded: true };
 }
 
 /** First paid timestamp on a company subscription, set exactly once. */

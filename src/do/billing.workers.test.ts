@@ -10,6 +10,7 @@ import {
 } from '../lib/referrals/ledger';
 import { PAST_DUE_GRACE_MS } from '../lib/plan/catalog';
 import type { PlanId } from '../lib/plan/catalog';
+import { RECONCILE_IN_FLIGHT_TIMEOUT_MS } from '../lib/billing/reconcile';
 
 declare global {
   namespace Cloudflare {
@@ -1838,6 +1839,272 @@ describe('identity /billing/events/apply: checkout referral effect (P-3)', () =>
           )
           .get(),
       ).toEqual({ count: 1 });
+    });
+  });
+});
+
+describe('identity /billing/reconcile: R-1 collection sweep', () => {
+  function reconcileRequest(): Promise<Response> {
+    return identityStub().fetch('https://identity/billing/reconcile');
+  }
+
+  function reconcileObserve(body: unknown): Promise<Response> {
+    return identityStub().fetch('https://identity/billing/reconcile', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function seedPausedCollection(accountId: string, subId: string): Promise<void> {
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        processorCustomerId: `cus_${subId}`,
+        processorSubscriptionId: subId,
+      });
+    });
+    await postApply(
+      applyBody(
+        { id: `evt_reconcile_${subId}`, type: 'charge.dispute.created', created: 100 },
+        {
+          dispute: {
+            id: `dp_reconcile_${subId}`,
+            status: 'needs_response',
+            created: 100,
+            charge: { id: `ch_reconcile_${subId}`, customer: `cus_${subId}` },
+          },
+        },
+      ),
+    );
+  }
+
+  async function claimCollection(
+    accountId: string,
+    operationId: string,
+  ): Promise<void> {
+    const claim = await postOperations(
+      JSON.stringify({
+        subjectKind: 'account',
+        subjectId: accountId,
+        operationId,
+        kind: 'subscription-collection',
+      }),
+    );
+    expect(claim.status).toBe(201);
+  }
+
+  async function ageInFlightMarker(subId: string, ageMs: number): Promise<void> {
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(
+          `UPDATE billing_subscriptions SET in_flight_since = ?
+           WHERE processor_subscription_id = ?`,
+        )
+        .run(Date.now() - ageMs, subId);
+    });
+  }
+
+  it('settles a stale in-flight marker failed and claims a fresh repair generation', async () => {
+    const accountId = await newAccount('billing-reconcile-stale');
+    const subId = 'sub_reconcile_stale';
+    await seedPausedCollection(accountId, subId);
+    await claimCollection(accountId, 'op_reconcile_stale');
+    await ageInFlightMarker(subId, RECONCILE_IN_FLIGHT_TIMEOUT_MS + 1);
+
+    const response = await reconcileRequest();
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      failedMarkers: number;
+      repaired: number;
+      collections: unknown[];
+    };
+    expect(body.failedMarkers).toBe(1);
+    expect(body.repaired).toBe(1);
+    expect(body.collections).toContainEqual({
+      subjectKind: 'account',
+      subjectId: accountId,
+      processorSubscriptionId: subId,
+      version: 2,
+      state: 'paused',
+    });
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const row = readSubOrdering(instance, subId);
+      expect(row?.applied_version).toBe(0);
+      expect(row?.desired_version).toBe(2);
+      expect(row?.in_flight_version).toBe(2);
+      expect(row?.in_flight_state).toBe('paused');
+    });
+  });
+
+  it('leaves a fresh in-flight marker inside the 15-minute window alone', async () => {
+    const accountId = await newAccount('billing-reconcile-fresh');
+    const subId = 'sub_reconcile_fresh';
+    await seedPausedCollection(accountId, subId);
+    await claimCollection(accountId, 'op_reconcile_fresh');
+
+    const response = await reconcileRequest();
+    expect(response.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const row = readSubOrdering(instance, subId);
+      expect(row?.desired_version).toBe(1);
+      expect(row?.applied_version).toBe(0);
+      expect(row?.in_flight_version).toBe(1);
+      expect(row?.in_flight_state).toBe('paused');
+    });
+  });
+
+  it('re-claims a subscription whose applied_version is behind desired_version', async () => {
+    const accountId = await newAccount('billing-reconcile-pending');
+    const subId = 'sub_reconcile_pending';
+    await seedPausedCollection(accountId, subId);
+
+    const response = await reconcileRequest();
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { collections: unknown[] };
+    expect(body.collections).toContainEqual({
+      subjectKind: 'account',
+      subjectId: accountId,
+      processorSubscriptionId: subId,
+      version: 1,
+      state: 'paused',
+    });
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const row = readSubOrdering(instance, subId);
+      expect(row?.applied_version).toBe(0);
+      expect(row?.desired_version).toBe(1);
+      expect(row?.in_flight_version).toBe(1);
+      expect(row?.in_flight_state).toBe('paused');
+    });
+  });
+
+  it('R-1 repairs drift after a successful operation by opening a new generation', async () => {
+    const accountId = await newAccount('billing-reconcile-drift');
+    const subId = 'sub_reconcile_drift';
+    await seedPausedCollection(accountId, subId);
+    await claimCollection(accountId, 'op_reconcile_drift');
+    const settle = await postSettle(
+      JSON.stringify({
+        subjectKind: 'account',
+        subjectId: accountId,
+        operationId: 'op_reconcile_drift',
+        success: true,
+        expectedVersion: 1,
+      }),
+    );
+    expect(settle.status).toBe(200);
+    await runInDurableObject(identityStub(), (instance) => {
+      const row = readSubOrdering(instance, subId);
+      expect(row?.applied_version).toBe(1);
+      expect(row?.in_flight_version).toBeNull();
+    });
+
+    const response = await reconcileObserve({
+      observations: [{ processorSubscriptionId: subId, actualCollection: 'active' }],
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { repaired: number; collections: unknown[] };
+    expect(body.repaired).toBeGreaterThanOrEqual(1);
+    expect(body.collections).toContainEqual({
+      subjectKind: 'account',
+      subjectId: accountId,
+      processorSubscriptionId: subId,
+      version: 2,
+      state: 'paused',
+    });
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const row = readSubOrdering(instance, subId);
+      expect(row?.applied_version).toBe(1);
+      expect(row?.desired_version).toBe(2);
+      expect(row?.in_flight_version).toBe(2);
+      expect(row?.in_flight_state).toBe('paused');
+    });
+  });
+
+  it('accepts only GET and POST /billing/reconcile', async () => {
+    const put = await identityStub().fetch('https://identity/billing/reconcile', {
+      method: 'PUT',
+    });
+    expect(put.status).toBe(405);
+    expect(put.headers.get('allow')).toBe('GET, POST');
+
+    const invalid = await reconcileObserve({
+      observations: [{ processorSubscriptionId: '', actualCollection: 'paused' }],
+    });
+    expect(invalid.status).toBe(400);
+  });
+
+  it('audits an expired grace deadline once without changing the entitlement', async () => {
+    const accountId = await newAccount('billing-reconcile-grace');
+    const subId = 'sub_reconcile_grace';
+    const graceUntil = Date.now() - 60_000;
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'past_due',
+        graceUntil,
+        processorCustomerId: `cus_${subId}`,
+        processorSubscriptionId: subId,
+      });
+    });
+
+    const first = await reconcileRequest();
+    expect(first.status).toBe(200);
+    const second = await reconcileRequest();
+    expect(second.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const audits = instance.db
+        .prepare(
+          `SELECT cause_kind, cause_id, previous_status, next_status
+           FROM entitlement_audit
+           WHERE subject_id = ? AND cause_kind = 'grace_expiry'`,
+        )
+        .all(accountId);
+      expect(audits).toEqual([
+        {
+          cause_kind: 'grace_expiry',
+          cause_id: `${subId}:${graceUntil}`,
+          previous_status: 'past_due',
+          next_status: 'past_due',
+        },
+      ]);
+      const entitlement = readEntitlement(instance, accountId);
+      expect(entitlement?.status).toBe('past_due');
+      expect(entitlement?.grace_until).toBe(graceUntil);
+    });
+  });
+
+  it('does not audit a grace deadline that has not passed', async () => {
+    const accountId = await newAccount('billing-reconcile-grace-open');
+    const subId = 'sub_reconcile_grace_open';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'past_due',
+        graceUntil: Date.now() + 60_000,
+        processorCustomerId: `cus_${subId}`,
+        processorSubscriptionId: subId,
+      });
+    });
+
+    const response = await reconcileRequest();
+    expect(response.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(
+        instance.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM entitlement_audit
+             WHERE subject_id = ? AND cause_kind = 'grace_expiry'`,
+          )
+          .get(accountId),
+      ).toEqual({ count: 0 });
     });
   });
 });

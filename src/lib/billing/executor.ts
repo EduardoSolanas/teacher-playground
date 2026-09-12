@@ -200,6 +200,21 @@ export async function completeCollectionClaim(
   return { action: 'settled', status };
 }
 
+/**
+ * Sends and settles a claim the caller already holds. The reconcile route
+ * claims inside the IdentityDO, so the daily cron passes that claim here
+ * instead of claiming a second time, which would be a no-op.
+ */
+export async function executeCollectionClaim(
+  deps: CollectionExecutorDeps,
+  subject: CollectionSubject,
+  claim: CollectionClaim,
+  operationId: string = crypto.randomUUID(),
+): Promise<CollectionExecutionResult> {
+  const outcome = await sendCollectionState(deps, claim);
+  return completeCollectionClaim(deps, subject, operationId, claim, outcome);
+}
+
 export async function runCollectionExecutor(
   deps: CollectionExecutorDeps,
   subject: CollectionSubject,
@@ -210,6 +225,5 @@ export async function runCollectionExecutor(
   const operationId = crypto.randomUUID();
   const claim = await claimCollectionExecution(deps, subject, operationId);
   if (claim === null) return { action: 'none', reason: 'no_claim' };
-  const outcome = await sendCollectionState(deps, claim);
-  return completeCollectionClaim(deps, subject, operationId, claim, outcome);
+  return executeCollectionClaim(deps, subject, claim, operationId);
 }

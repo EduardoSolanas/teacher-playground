@@ -97,6 +97,11 @@ import {
   type BillingSubjectKind,
   type DesiredCollection,
 } from '../lib/identity/entitlementWriter';
+import {
+  parseCollectionObservation,
+  reconcileBilling,
+  type CollectionObservation,
+} from '../lib/billing/reconcile';
 
 const RESOLVE_PATH = '/subjects/resolve';
 const ISSUE_SESSION_PATH = '/sessions/issue';
@@ -125,6 +130,7 @@ const BILLING_APPLY_PATH = '/billing/events/apply';
 const BILLING_STATUS_PATH = '/billing/events/status';
 const BILLING_OPERATIONS_PATH = '/billing/operations';
 const BILLING_SETTLE_PATH = '/billing/operations/settle';
+const BILLING_RECONCILE_PATH = '/billing/reconcile';
 const BILLING_RATE_LIMIT_PATH = '/billing/rate-limit';
 const BILLING_CUSTOMER_PATH = '/billing/customer';
 const REFERRALS_ME_PATH = '/referrals/me';
@@ -766,6 +772,19 @@ function isBillingSettleBody(
     return false;
   }
   return true;
+}
+
+function isBillingReconcileBody(
+  value: unknown,
+): value is { observations?: CollectionObservation[] } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  if (!Object.keys(body).every((key) => key === 'observations')) return false;
+  if (body.observations === undefined) return true;
+  if (!Array.isArray(body.observations)) return false;
+  return body.observations.every(
+    (entry) => parseCollectionObservation(entry) !== null,
+  );
 }
 
 function applyVerdictJson(verdict: ApplyVerdict): Record<string, string | undefined> {
@@ -1442,6 +1461,34 @@ export class IdentityDO extends DurableObject {
           }),
         );
         return Response.json({ error: 'settle_failed' }, { status: 500, headers: noStore() });
+      }
+    }
+
+    if (url.pathname === BILLING_RECONCILE_PATH) {
+      let observations: readonly CollectionObservation[] = [];
+      if (request.method === 'POST') {
+        const parsed = await readRawJson(request);
+        if ('response' in parsed) return parsed.response;
+        if (!isBillingReconcileBody(parsed.body)) {
+          return Response.json({ error: 'Invalid body' }, { status: 400 });
+        }
+        observations = parsed.body.observations ?? [];
+      } else if (request.method !== 'GET') {
+        return methodNotAllowed('GET, POST');
+      }
+      try {
+        const result = this.db.transaction(() =>
+          reconcileBilling(this.db, { now: Date.now(), observations }),
+        )();
+        return Response.json(result, { status: 200, headers: noStore() });
+      } catch (error) {
+        console.error(
+          '[billing:reconcile]',
+          JSON.stringify({
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+        return Response.json({ error: 'reconcile_failed' }, { status: 500, headers: noStore() });
       }
     }
 

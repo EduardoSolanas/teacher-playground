@@ -45,6 +45,9 @@ custom_domain = true
 [observability]
 enabled = true
 
+[triggers]
+crons = ["17 3 * * *"]
+
 [assets]
 directory = "./out"
 binding = "ASSETS"

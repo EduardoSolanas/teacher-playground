@@ -69,7 +69,12 @@ import {
   portalSessionRequest,
 } from './lib/billing/stripeRequest';
 import { executeStripeRequest } from './lib/billing/stripeClient';
-import { parseCollectionSubject, runCollectionExecutor } from './lib/billing/executor';
+import {
+  executeCollectionClaim,
+  parseCollectionSubject,
+  runCollectionExecutor,
+} from './lib/billing/executor';
+import { parseReconcileResult } from './lib/billing/reconcile';
 
 export interface Env {
   ROOMS: DurableObjectNamespace;
@@ -156,6 +161,7 @@ const IDENTITY_COMPANY_INVITE_REDEEM = 'https://identity/companies/invites/redee
 const IDENTITY_BILLING_OPERATIONS = 'https://identity/billing/operations';
 const IDENTITY_BILLING_RATE_LIMIT = 'https://identity/billing/rate-limit';
 const IDENTITY_BILLING_CUSTOMER = 'https://identity/billing/customer';
+const IDENTITY_BILLING_RECONCILE = 'https://identity/billing/reconcile';
 const IDENTITY_REFERRALS_ME = 'https://identity/referrals/me';
 const IDENTITY_REFERRAL_VALIDATE = 'https://identity/referrals/validate';
 
@@ -1946,6 +1952,61 @@ function billingEnvFor(env: Env): BillingEnv {
   });
 }
 
+/**
+ * Daily Cron Trigger (spec §7.5): the IdentityDO owns row R-1's state
+ * transitions, and the Worker sends the collection calls that remain in
+ * flight afterwards. A failed reconcile only defers convergence to the next
+ * run, so it logs and returns rather than throwing.
+ */
+async function runBillingReconcile(env: Env): Promise<void> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  let response: Response;
+  try {
+    response = await identity.fetch(IDENTITY_BILLING_RECONCILE);
+  } catch {
+    console.error('[billing]', JSON.stringify({
+      alert: 'reconcile_unreachable',
+      outcome: 'failed',
+    }));
+    return;
+  }
+  if (!response.ok) {
+    console.error('[billing]', JSON.stringify({
+      alert: 'reconcile_failed',
+      status: response.status,
+      outcome: 'failed',
+    }));
+    return;
+  }
+  const result = parseReconcileResult(await response.json().catch(() => null));
+  if (result === null) {
+    console.error('[billing]', JSON.stringify({
+      alert: 'reconcile_invalid_response',
+      outcome: 'failed',
+    }));
+    return;
+  }
+  const billing = billingEnvFor(env);
+  if (!billing.apiBaseAllowed || billing.secretKey === null) return;
+  for (const collection of result.collections) {
+    await executeCollectionClaim(
+      { identityFetch: (request) => identity.fetch(request), billing },
+      { subjectKind: collection.subjectKind, subjectId: collection.subjectId },
+      {
+        processorSubscriptionId: collection.processorSubscriptionId,
+        version: collection.version,
+        state: collection.state,
+      },
+    ).catch((error) => {
+      console.error('[billing:reconcile]', JSON.stringify({
+        subjectKind: collection.subjectKind,
+        subjectId: collection.subjectId,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    });
+  }
+}
+
 function billingPriceId(env: Env, planId: PlanId): string | null {
   const priceEnv = PLAN_CATALOG[planId].priceEnv;
   if (priceEnv === null) return null;
@@ -2917,6 +2978,14 @@ const worker = {
     return withNonceHtmlSecurityHeaders(await env.ASSETS.fetch(request), {
       connectSrc: connectSrcForPageOrigin(url.origin, env.LIVEKIT_URL),
     });
+  },
+
+  async scheduled(
+    _controller: ScheduledController,
+    env: Env,
+    _ctx: ExecutionContext,
+  ): Promise<void> {
+    await runBillingReconcile(env);
   },
 };
 

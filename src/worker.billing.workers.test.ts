@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
-import { runInDurableObject, SELF } from 'cloudflare:test';
+import {
+  createExecutionContext,
+  createScheduledController,
+  runInDurableObject,
+  SELF,
+} from 'cloudflare:test';
+import worker from './worker';
+import { RECONCILE_IN_FLIGHT_TIMEOUT_MS } from './lib/billing/reconcile';
 import {
   BILLING_OPERATION_RATE_MAX,
   getIdentityObject,
@@ -20,6 +27,7 @@ import {
 declare global {
   namespace Cloudflare {
     interface Env {
+      ASSETS: Fetcher;
       IDENTITY: DurableObjectNamespace<IdentityDO>;
       STRIPE_API_BASE: string;
       STRIPE_SECRET_KEY: string;
@@ -1072,5 +1080,144 @@ describe('identity collection executor (D-6)', () => {
     expect(await readCollectionOperation(session.accountId, operationId)).toEqual({
       status: 'pending',
     });
+  });
+});
+
+describe('Worker scheduled billing reconcile', () => {
+  async function seedPausedCollection(accountId: string, subId: string): Promise<void> {
+    await runInDurableObject(identityStub(), (instance) => {
+      writeEntitlement(
+        instance.db,
+        {
+          accountId,
+          source: 'personal',
+          state: {
+            planId: 'tutor_pro_monthly',
+            status: 'active',
+            graceUntil: null,
+            collectionPaused: false,
+            companyId: null,
+            currentPeriodEnd: null,
+            processorCustomerId: `cus_${subId}`,
+            processorSubscriptionId: subId,
+          },
+          now: Date.now(),
+        },
+        {
+          kind: 'operator',
+          id: `seed-cron-${subId}`,
+          actor: 'test-operator',
+          reason: 'seed paid state',
+        },
+      );
+    });
+    const applied = await identityStub().fetch('https://identity/billing/events/apply', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        signatureVerified: true,
+        payloadHash: '7d'.repeat(32),
+        event: {
+          id: `evt_cron_${subId}`,
+          type: 'charge.dispute.created',
+          livemode: true,
+          created: 100,
+        },
+        objects: {
+          dispute: {
+            id: `dp_cron_${subId}`,
+            status: 'needs_response',
+            created: 100,
+            charge: { id: `ch_cron_${subId}`, customer: `cus_${subId}` },
+          },
+        },
+      }),
+    });
+    expect(applied.status).toBe(200);
+  }
+
+  it('daily cron runs the reconcile and records an expired grace deadline', async () => {
+    const session = await bootstrapLocalSession('billing-cron-grace');
+    const subId = 'sub_cron_grace';
+    const graceUntil = Date.now() - 60_000;
+    await runInDurableObject(identityStub(), (instance) => {
+      writeEntitlement(
+        instance.db,
+        {
+          accountId: session.accountId,
+          source: 'personal',
+          state: {
+            planId: 'tutor_pro_monthly',
+            status: 'past_due',
+            graceUntil,
+            collectionPaused: false,
+            companyId: null,
+            currentPeriodEnd: null,
+            processorCustomerId: `cus_${subId}`,
+            processorSubscriptionId: subId,
+          },
+          now: Date.now(),
+        },
+        {
+          kind: 'operator',
+          id: `seed-cron-${subId}`,
+          actor: 'test-operator',
+          reason: 'seed paid state',
+        },
+      );
+    });
+
+    await worker.scheduled(
+      createScheduledController(),
+      env,
+      createExecutionContext(),
+    );
+
+    const audits = await runInDurableObject(identityStub(), (instance) =>
+      instance.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM entitlement_audit
+           WHERE subject_id = ? AND cause_kind = 'grace_expiry'`,
+        )
+        .get(session.accountId),
+    );
+    expect(audits).toEqual({ count: 1 });
+  });
+
+  it('daily cron sends the repaired collection through the executor', async () => {
+    const session = await bootstrapLocalSession('billing-cron-collection');
+    const subId = 'sub_cron_collection';
+    await seedPausedCollection(session.accountId, subId);
+    const claim = await identityStub().fetch('https://identity/billing/operations', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        subjectKind: 'account',
+        subjectId: session.accountId,
+        operationId: 'op_cron_collection',
+        kind: 'subscription-collection',
+      }),
+    });
+    expect(claim.status).toBe(201);
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(
+          `UPDATE billing_subscriptions SET in_flight_since = ?
+           WHERE processor_subscription_id = ?`,
+        )
+        .run(Date.now() - RECONCILE_IN_FLIGHT_TIMEOUT_MS - 1, subId);
+    });
+
+    await worker.scheduled(
+      createScheduledController(),
+      env,
+      createExecutionContext(),
+    );
+
+    const row = await readSubOrdering(subId);
+    expect(row?.applied_version).toBe(0);
+    expect(row?.desired_version).toBe(2);
+    expect(row?.in_flight_version).toBeNull();
+    expect(await countCollectionOperations(session.accountId)).toEqual({ n: 2 });
   });
 });
