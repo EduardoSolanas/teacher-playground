@@ -149,6 +149,11 @@ clean when all of the following hold:
   not a half-implemented guard.
 - `npm test`, `npm run test:workers`, and `npm run typecheck` are green, plus
   `npm run test:e2e` when the change is browser/HTTP/session-reachable.
+- Every mutant in the `src/lib/**/*.ts` files this task changed is killed:
+  run `npx stryker run --mutate <changed lib files>` (or `npm run mutation`
+  for the whole unit layer) and confirm the surviving set for those lines is
+  empty. Worker/DO/e2e-only changes instead need the targeted manual mutants
+  from the Mutation testing section.
 - Required mutants for new or changed guards were killed and reverted.
 - The staged diff contains only this task's intended changes: no scratch
   output, `[dbg]` logging, `.data/`, or temporary specs. Unrelated work may
