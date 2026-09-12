@@ -865,18 +865,40 @@ describe('signaling message rate limit', () => {
     const ws = await connectGranted(owner, roomId);
     const closed = closeSignal(ws);
 
-    // Send 361 messages in window 1 (exceeds ceiling of 360, breach 1)
-    for (let i = 0; i < 361; i += 1) {
-      ws.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
-    }
+    /*
+     * Deliver each 361-message burst through the DO's own message handler.
+     * A loaded suite can stretch 361 `ws.send`s past the 1000 ms sliding
+     * window, after which no single window reaches the ceiling and the test
+     * flakes for reasons the limiter does not have. The handler is the real
+     * code path; only transport timing is removed.
+     */
+    const deliverBurst = () => runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      async (instance: RoomDO) => {
+        const server = (instance as unknown as { ctx: DurableObjectState }).ctx
+          .getWebSockets()
+          .find((socket) => {
+            const attachment = socket.deserializeAttachment() as { accountId?: string } | null;
+            return attachment?.accountId === owner.accountId;
+          });
+        if (!server) throw new Error('no server-side socket for the owner');
+        for (let i = 0; i < 361; i += 1) {
+          await instance.webSocketMessage(
+            server,
+            JSON.stringify({ type: 'subscribe', topics: ['room'] }),
+          );
+        }
+      },
+    );
+
+    // Burst 1 exceeds the ceiling of 360 (breach 1)
+    await deliverBurst();
 
     // Wait for window 1 to pass
     await new Promise((r) => setTimeout(r, 1100));
 
-    // Send 361 messages in window 2 (consecutive ceiling breach 2 -> close)
-    for (let i = 0; i < 361; i += 1) {
-      ws.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
-    }
+    // Burst 2 breaches the next window -> close
+    await deliverBurst();
 
     expect(await closed).toBe(1008);
   }, 60_000);
