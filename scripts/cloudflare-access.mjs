@@ -179,8 +179,31 @@ function reportCheck(hosts, state) {
   }
 
   // Invariant 1 — exactly one teacher application.
+  //
+  // Zero is a FAILURE once the environment declares an audience, not a note.
+  // This check previously passed while seeing nothing at all: a token without
+  // Access permissions gets an empty list rather than an error, and "no
+  // applications exist" and "I cannot see any applications" are indistinguishable
+  // from here. Reporting OK for either is the worst outcome available -- the
+  // whole point of this script is to prove these invariants, and it was
+  // certifying them while blind.
+  //
+  // An audience in the manifest means an application was created and its AUD
+  // copied out, so one MUST exist. A brand-new environment has no audience yet,
+  // and there zero is genuinely just a note.
   if (state.teacherApps.length === 0) {
-    notes.push(`No application covers ${hosts.teacher} yet. Run: apply-app`);
+    if (environment.access?.audience) {
+      problems.push(
+        `No application covers ${hosts.teacher}, but access.audience is set in `
+        + 'infra/environments.json -- so one is supposed to exist. Either it was '
+        + 'deleted, or this token cannot see Access applications. '
+        + `The account returned ${state.apps.length} application(s) in total; if `
+        + 'that is also zero, grant the token Access: Apps and Policies (Read) '
+        + 'and run this again. Do not treat this as a pass.',
+      );
+    } else {
+      notes.push(`No application covers ${hosts.teacher} yet. Run: apply-app`);
+    }
   } else if (state.teacherApps.length > 1) {
     problems.push(`${state.teacherApps.length} applications cover ${hosts.teacher}. Keep exactly one.`);
   }
