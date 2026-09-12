@@ -127,6 +127,15 @@ function readEvent(instance: IdentityDO, eventId: string): EventRow | undefined 
     .get(eventId) as EventRow | undefined;
 }
 
+function readPayloadHash(instance: IdentityDO, eventId: string): string | undefined {
+  const row = instance.db
+    .prepare('SELECT payload_hash FROM billing_events WHERE event_id = ?')
+    .get(eventId) as { payload_hash: string } | undefined;
+  return row?.payload_hash;
+}
+
+const FORWARDED_PAYLOAD_HASH = '7d'.repeat(32);
+
 function postApply(raw: string): Promise<Response> {
   return identityStub().fetch('https://identity/billing/events/apply', {
     method: 'POST',
@@ -161,8 +170,11 @@ function postSettle(raw: string): Promise<Response> {
 function applyBody(
   event: { id: string; type: string; livemode?: boolean; created: number },
   objects: Record<string, unknown>,
+  payloadHash = FORWARDED_PAYLOAD_HASH,
 ): string {
   return JSON.stringify({
+    signatureVerified: true,
+    payloadHash,
     event: {
       id: event.id,
       type: event.type,
@@ -218,6 +230,71 @@ function invoiceBody(
     payments: opts.payments ?? [],
   };
 }
+
+describe('identity /billing/events/apply: verified-caller attestation', () => {
+  it('rejects an apply without signatureVerified: true and writes nothing', async () => {
+    const missingMarker = JSON.stringify({
+      event: { id: 'evt_missing_marker', type: 'customer.subscription.updated', livemode: true, created: 100 },
+      objects: { subscription: subscriptionBody('sub_missing_marker', 'active') },
+    });
+    const missing = await postApply(missingMarker);
+    expect(missing.status).toBe(400);
+
+    const falseMarker = JSON.stringify({
+      signatureVerified: false,
+      payloadHash: FORWARDED_PAYLOAD_HASH,
+      event: { id: 'evt_false_marker', type: 'customer.subscription.updated', livemode: true, created: 100 },
+      objects: { subscription: subscriptionBody('sub_false_marker', 'active') },
+    });
+    const forged = await postApply(falseMarker);
+    expect(forged.status).toBe(400);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(readEvent(instance, 'evt_missing_marker')).toBeUndefined();
+      expect(readEvent(instance, 'evt_false_marker')).toBeUndefined();
+    });
+  });
+
+  it('rejects an apply with a missing or malformed payloadHash and writes nothing', async () => {
+    const missingHash = JSON.stringify({
+      signatureVerified: true,
+      event: { id: 'evt_missing_hash', type: 'customer.subscription.updated', livemode: true, created: 100 },
+      objects: { subscription: subscriptionBody('sub_missing_hash', 'active') },
+    });
+    const missing = await postApply(missingHash);
+    expect(missing.status).toBe(400);
+
+    const malformed = await postApply(
+      applyBody(
+        { id: 'evt_malformed_hash', type: 'customer.subscription.updated', created: 100 },
+        { subscription: subscriptionBody('sub_malformed_hash', 'active') },
+        'not-a-sha256',
+      ),
+    );
+    expect(malformed.status).toBe(400);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(readEvent(instance, 'evt_missing_hash')).toBeUndefined();
+      expect(readEvent(instance, 'evt_malformed_hash')).toBeUndefined();
+    });
+  });
+
+  it('stores the forwarded payload hash verbatim (known SHA-256 vector)', async () => {
+    const vector = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
+    const response = await postApply(
+      applyBody(
+        { id: 'evt_hash_vector', type: 'customer.subscription.updated', created: 100 },
+        { subscription: subscriptionBody('sub_hash_vector', 'active') },
+        vector,
+      ),
+    );
+    expect(response.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(readPayloadHash(instance, 'evt_hash_vector')).toBe(vector);
+    });
+  });
+});
 
 describe('identity /billing/events/apply: event idempotency', () => {
   it('dedupes a repeated event id: one billing_events row, one effect, one payment', async () => {
@@ -1018,6 +1095,31 @@ describe('identity /billing/operations: subscription-collection executor', () =>
     });
   }
 
+  it('returns the subscription id with the claim so the executor can call Stripe', async () => {
+    const accountId = await newAccount('billing-coll-claim-payload');
+    const subPayload = 'sub_coll_claim_payload';
+    await seedPausedDesire(accountId, subPayload);
+
+    const claim = await postOperations(
+      JSON.stringify({
+        subjectKind: 'account',
+        subjectId: accountId,
+        operationId: 'op_coll_claim_payload',
+        kind: 'subscription-collection',
+      }),
+    );
+    expect(claim.status).toBe(201);
+    expect(await claim.json()).toEqual({
+      status: 'pending',
+      claim: {
+        claimed: true,
+        inFlightVersion: 1,
+        inFlightState: 'paused',
+        processorSubscriptionId: subPayload,
+      },
+    });
+  });
+
   it('claims collection through the operation and settles it as success (H4)', async () => {
     const accountId = await newAccount('billing-coll-claim');
     const sub15 = 'sub_coll_claim';
@@ -1353,5 +1455,65 @@ describe('identity /billing/operations: subscription-collection executor', () =>
       expect(row?.in_flight_version).toBe(2);
       expect(row?.in_flight_state).toBe('active');
     });
+  });
+});
+
+describe('identity /billing/events/apply: collection handoff (D-6)', () => {
+  it('names the account whose pending collection the executor must run', async () => {
+    const accountId = await newAccount('billing-apply-handoff');
+    const subHandoff = 'sub_apply_handoff';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        processorCustomerId: `cus_${subHandoff}`,
+        processorSubscriptionId: subHandoff,
+      });
+    });
+
+    const response = await postApply(
+      applyBody(
+        { id: `evt_apply_handoff_${subHandoff}`, type: 'charge.dispute.created', created: 100 },
+        {
+          dispute: {
+            id: `dp_apply_handoff_${subHandoff}`,
+            status: 'needs_response',
+            created: 100,
+            charge: { id: `ch_apply_handoff_${subHandoff}`, customer: `cus_${subHandoff}` },
+          },
+        },
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      outcome: 'applied',
+      collection: { subjectKind: 'account', subjectId: accountId },
+    });
+  });
+
+  it('omits the handoff when nothing is pending after the apply', async () => {
+    const accountId = await newAccount('billing-apply-no-handoff');
+    const subSettled = 'sub_apply_no_handoff';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        processorCustomerId: `cus_${subSettled}`,
+        processorSubscriptionId: subSettled,
+      });
+    });
+
+    const response = await postApply(
+      applyBody(
+        { id: `evt_apply_no_handoff_${subSettled}`, type: 'customer.subscription.updated', created: 100 },
+        {
+          subscription: subscriptionBody(subSettled, 'active', {
+            customer: `cus_${subSettled}`,
+          }),
+        },
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ outcome: 'applied' });
   });
 });

@@ -207,13 +207,13 @@ export function UserProfileMenu({
     }
   };
 
-  const startBilling = async (path: string, body?: unknown) => {
+  const startBilling = async (path: string, body: Record<string, unknown> = {}) => {
     setBillingError(null);
     try {
       const response = await request(path, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body ?? {}),
+        body: JSON.stringify({ ...body, operationId: crypto.randomUUID() }),
       });
       if (!response.ok) throw new Error('billing');
       const parsed: unknown = await response.json();

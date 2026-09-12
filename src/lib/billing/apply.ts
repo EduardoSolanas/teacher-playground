@@ -39,6 +39,7 @@ export interface BillingApplyInput {
   event: BillingEventReceipt;
   objects?: Record<string, unknown> | null;
   payloadHash: string;
+  signatureVerified: true;
 }
 
 export type ApplyVerdict =

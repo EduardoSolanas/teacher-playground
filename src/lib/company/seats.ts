@@ -1,4 +1,9 @@
 import type { RoomDatabase } from '../whiteboard/db';
+import {
+  releaseCompanySeatChange,
+  reserveCompanySeatChange,
+  settleCompanySeatChange,
+} from '../identity/entitlementWriter';
 import { readMember } from './membership';
 
 export type CompanySubscriptionStatus =
@@ -226,6 +231,13 @@ export function reserveSeatChange(
       input.now,
     );
 
+    reserveCompanySeatChange(db, {
+      companyId: input.companyId,
+      operationId: input.operationId,
+      targetQuantity: input.targetQuantity,
+      now: input.now,
+    });
+
     return {
       outcome: 'reserved',
       operationId: input.operationId,
@@ -242,15 +254,33 @@ function transitionSeatChange(
   input: { companyId: string; operationId: string; now: number },
   next: 'succeeded' | 'failed',
 ): boolean {
-  return (
-    db
-      .prepare(
-        `UPDATE billing_operations SET status = ?, updated_at = ?
-         WHERE subject_kind = 'company' AND subject_id = ?
-           AND operation_id = ? AND kind = 'seat-change' AND status = 'pending'`,
-      )
-      .run(next, input.now, input.companyId, input.operationId).changes === 1
-  );
+  return db.transaction(() => {
+    const transitioned =
+      db
+        .prepare(
+          `UPDATE billing_operations SET status = ?, updated_at = ?
+           WHERE subject_kind = 'company' AND subject_id = ?
+             AND operation_id = ? AND kind = 'seat-change' AND status = 'pending'`,
+        )
+        .run(next, input.now, input.companyId, input.operationId).changes === 1;
+    if (!transitioned) return false;
+
+    if (next === 'succeeded') {
+      settleCompanySeatChange(db, {
+        companyId: input.companyId,
+        operationId: input.operationId,
+        now: input.now,
+      });
+    } else {
+      releaseCompanySeatChange(db, {
+        companyId: input.companyId,
+        operationId: input.operationId,
+        now: input.now,
+      });
+    }
+
+    return true;
+  })();
 }
 
 export function settleSeatChange(

@@ -68,6 +68,7 @@ import {
 } from '../lib/billing/operations';
 import {
   claimCollection,
+  type BillingSubjectKind,
   type DesiredCollection,
 } from '../lib/identity/entitlementWriter';
 
@@ -100,6 +101,7 @@ const BILLING_OPERATIONS_PATH = '/billing/operations';
 const BILLING_SETTLE_PATH = '/billing/operations/settle';
 const BILLING_RATE_LIMIT_PATH = '/billing/rate-limit';
 const BILLING_CUSTOMER_PATH = '/billing/customer';
+const BILLING_PAYLOAD_HASH_PATTERN = /^[0-9a-f]{64}$/;
 export const GLOBAL_IDENTITY_OBJECT_NAME = 'global';
 
 export const BILLING_OPERATION_RATE_MAX = 10;
@@ -449,7 +451,7 @@ async function readRawJson(
   }
 }
 
-function isBillingApplyBody(value: unknown): value is Omit<BillingApplyInput, 'payloadHash'> {
+function isBillingApplyBody(value: unknown): value is BillingApplyInput {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const body = value as Record<string, unknown>;
   const event = body.event as Record<string, unknown> | undefined;
@@ -459,6 +461,9 @@ function isBillingApplyBody(value: unknown): value is Omit<BillingApplyInput, 'p
     body.objects === null ||
     (typeof body.objects === 'object' && !Array.isArray(body.objects));
   return (
+    body.signatureVerified === true &&
+    typeof body.payloadHash === 'string' &&
+    BILLING_PAYLOAD_HASH_PATTERN.test(body.payloadHash) &&
     typeof event.id === 'string' &&
     event.id.length >= 1 &&
     typeof event.type === 'string' &&
@@ -527,6 +532,72 @@ function applyVerdictJson(verdict: ApplyVerdict): Record<string, string | undefi
   return verdict.outcome === 'ignored'
     ? { outcome: 'ignored', outcomeDetail: verdict.outcomeDetail }
     : { outcome: 'applied' };
+}
+
+function billingObjectRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function billingObjectId(value: unknown): string | null {
+  if (typeof value === 'string' && value.length > 0) return value;
+  const id = billingObjectRecord(value)?.id;
+  return typeof id === 'string' && id.length > 0 ? id : null;
+}
+
+/**
+ * D-6 handoff: after an apply, names the subject whose ordering row still
+ * needs a collection state sent (no in-flight marker, applied behind
+ * desired). Best effort — a miss only delays convergence to R-1, and the
+ * executor re-checks the claim inside the DO before calling Stripe.
+ */
+function pendingCollectionSubject(
+  db: RoomDatabase,
+  objects: unknown,
+): { subjectKind: BillingSubjectKind; subjectId: string } | null {
+  const record = billingObjectRecord(objects);
+  if (record === null) return null;
+  const subscription = billingObjectRecord(record.subscription);
+  const invoice = billingObjectRecord(record.invoice);
+  const dispute = billingObjectRecord(record.dispute);
+  const charge = billingObjectRecord(dispute?.charge);
+
+  let subscriptionId = billingObjectId(subscription?.id);
+  if (subscriptionId === null && typeof invoice?.subscription === 'string') {
+    subscriptionId = invoice.subscription.length > 0 ? invoice.subscription : null;
+  }
+  if (subscriptionId === null) {
+    const customerId =
+      billingObjectId(charge?.customer)
+      ?? (typeof invoice?.customer === 'string' && invoice.customer.length > 0
+        ? invoice.customer
+        : null)
+      ?? billingObjectId(subscription?.customer);
+    if (customerId !== null) {
+      const entitlement = db
+        .prepare(
+          `SELECT processor_subscription_id FROM entitlements
+           WHERE processor_customer_id = ?`,
+        )
+        .get(customerId) as { processor_subscription_id: string | null } | undefined;
+      subscriptionId = entitlement?.processor_subscription_id ?? null;
+    }
+  }
+  if (subscriptionId === null) return null;
+
+  const pending = db
+    .prepare(
+      `SELECT subject_kind, subject_id FROM billing_subscriptions
+       WHERE processor_subscription_id = ?
+         AND in_flight_version IS NULL AND applied_version < desired_version`,
+    )
+    .get(subscriptionId) as
+    | { subject_kind: BillingSubjectKind; subject_id: string }
+    | undefined;
+  return pending === undefined
+    ? null
+    : { subjectKind: pending.subject_kind, subjectId: pending.subject_id };
 }
 
 /** Singleton Durable Object containing global account and session authority. */
@@ -987,21 +1058,24 @@ export class IdentityDO extends DurableObject {
         return Response.json({ error: 'Invalid body' }, { status: 400 });
       }
       const applyInput = parsed.body;
-      const payloadHash = await sha256Hex(parsed.raw);
       try {
-        const verdict = this.db.transaction(() =>
-          applyEvent(this.db, { ...applyInput, payloadHash }),
-        )();
-        return Response.json(applyVerdictJson(verdict), {
-          status: 200,
-          headers: noStore(),
-        });
+        const verdict = this.db.transaction(() => applyEvent(this.db, applyInput))();
+        const collection = verdict.outcome === 'applied'
+          ? pendingCollectionSubject(this.db, applyInput.objects)
+          : null;
+        return Response.json(
+          { ...applyVerdictJson(verdict), ...(collection ? { collection } : {}) },
+          {
+            status: 200,
+            headers: noStore(),
+          },
+        );
       } catch (error) {
         console.error(
           '[billing:apply]',
           JSON.stringify({
-            eventId: parsed.body.event.id,
-            type: parsed.body.event.type,
+            eventId: applyInput.event.id,
+            type: applyInput.event.type,
             error: error instanceof Error ? error.message : String(error),
           }),
         );
@@ -1065,11 +1139,14 @@ export class IdentityDO extends DurableObject {
             | { processor_subscription_id: string }
             | undefined;
           const claim = row
-            ? claimCollection(this.db, {
+            ? {
+                ...claimCollection(this.db, {
+                  processorSubscriptionId: row.processor_subscription_id,
+                  now,
+                }),
                 processorSubscriptionId: row.processor_subscription_id,
-                now,
-              })
-            : { claimed: false, inFlightVersion: null, inFlightState: null };
+              }
+            : { claimed: false, inFlightVersion: null, inFlightState: null, processorSubscriptionId: null };
           return { recorded, claim };
         })();
         if (recorded.status === 'conflict') {

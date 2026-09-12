@@ -8,6 +8,13 @@ import {
 } from './do/IdentityDO';
 import { bootstrapLocalSession, authenticatedFetch, localAccessToken } from './test/workerAuth';
 import { writeEntitlement } from './lib/identity/entitlementWriter';
+import { readBillingEnv } from './lib/billing/stripeConfig';
+import {
+  claimCollectionExecution,
+  completeCollectionClaim,
+  parseCollectionSubject,
+  runCollectionExecutor,
+} from './lib/billing/executor';
 
 declare global {
   namespace Cloudflare {
@@ -63,6 +70,10 @@ async function hmacSha256Hex(secret: string, message: string): Promise<string> {
   return hex(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message)));
 }
 
+async function sha256Hex(value: string): Promise<string> {
+  return hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
+}
+
 async function stripeSignatureHeader(
   body: string,
   options: { secret?: string; timestampSec?: number } = {},
@@ -87,7 +98,9 @@ async function postWebhook(
 async function eventRow(eventId: string): Promise<unknown> {
   return runInDurableObject(identityStub(), (instance) =>
     instance.db
-      .prepare('SELECT outcome, outcome_detail, event_created FROM billing_events WHERE event_id = ?')
+      .prepare(
+        'SELECT outcome, outcome_detail, event_created, payload_hash FROM billing_events WHERE event_id = ?',
+      )
       .get(eventId),
   );
 }
@@ -183,6 +196,8 @@ describe('Worker POST /api/billing/webhook boundary', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
+        signatureVerified: true,
+        payloadHash: '5a'.repeat(32),
         event: { id: eventId, type: 'invoice.paid', livemode: true, created: 1 },
       }),
     });
@@ -242,6 +257,25 @@ describe('Worker POST /api/billing/webhook boundary', () => {
     expect(row?.outcome).toBe('ignored');
     expect(row?.outcome_detail).toBe('unknown_type');
     expect(row?.event_created).toBe(2000);
+  });
+
+  it('stores the SHA-256 of the raw signed body as payload_hash (SEC-A18)', async () => {
+    const eventId = 'evt_payload_hash_provenance';
+    const body = eventBody(eventId, 'charge.created', true, 2, 'ch_payload_hash_provenance');
+    const response = await postWebhook(body, await stripeSignatureHeader(body));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      outcome: 'ignored',
+      outcomeDetail: 'unknown_type',
+    });
+
+    const row = (await eventRow(eventId)) as { payload_hash: string } | undefined;
+    expect(row?.payload_hash).toBe(await sha256Hex(body));
+
+    const internalBody = JSON.stringify({
+      event: { id: eventId, type: 'charge.created', livemode: true, created: 2000 },
+    });
+    expect(row?.payload_hash).not.toBe(await sha256Hex(internalBody));
   });
 
   it('returns 500 and writes no event row when the authoritative Stripe fetch fails', async () => {
@@ -683,5 +717,355 @@ describe('Worker POST /api/billing/portal', () => {
       returnUrl: 'https://attacker.example/other',
     });
     expect(changed.status).toBe(502);
+  });
+});
+
+interface SubOrderingRow {
+  desired_collection: string;
+  desired_version: number;
+  applied_version: number;
+  in_flight_version: number | null;
+  in_flight_state: string | null;
+}
+
+function readSubOrdering(subId: string): Promise<SubOrderingRow | undefined> {
+  return runInDurableObject(identityStub(), (instance) =>
+    instance.db
+      .prepare(
+        `SELECT desired_collection, desired_version, applied_version,
+                in_flight_version, in_flight_state
+         FROM billing_subscriptions WHERE processor_subscription_id = ?`,
+      )
+      .get(subId) as SubOrderingRow | undefined,
+  );
+}
+
+function countCollectionOperations(accountId: string): Promise<unknown> {
+  return runInDurableObject(identityStub(), (instance) =>
+    instance.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM billing_operations
+         WHERE subject_kind = 'account' AND subject_id = ?
+           AND kind = 'subscription-collection'`,
+      )
+      .get(accountId),
+  );
+}
+
+function readCollectionOperation(
+  accountId: string,
+  operationId: string,
+): Promise<{ status: string } | undefined> {
+  return runInDurableObject(identityStub(), (instance) =>
+    instance.db
+      .prepare(
+        `SELECT status FROM billing_operations
+         WHERE subject_kind = 'account' AND subject_id = ? AND operation_id = ?`,
+      )
+      .get(accountId, operationId) as { status: string } | undefined,
+  );
+}
+
+async function seedPausedDesire(accountId: string, subId: string): Promise<void> {
+  await runInDurableObject(identityStub(), (instance) => {
+    writeEntitlement(
+      instance.db,
+      {
+        accountId,
+        source: 'personal',
+        state: {
+          planId: 'tutor_pro_monthly',
+          status: 'active',
+          graceUntil: null,
+          collectionPaused: false,
+          companyId: null,
+          currentPeriodEnd: null,
+          processorCustomerId: `cus_${subId}`,
+          processorSubscriptionId: subId,
+        },
+        now: Date.now(),
+      },
+      {
+        kind: 'operator',
+        id: `seed-paused-${subId}`,
+        actor: 'test-operator',
+        reason: 'seed paid state',
+      },
+    );
+  });
+  const applied = await identityStub().fetch('https://identity/billing/events/apply', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      signatureVerified: true,
+      payloadHash: '7d'.repeat(32),
+      event: {
+        id: `evt_executor_${subId}`,
+        type: 'charge.dispute.created',
+        livemode: true,
+        created: 100,
+      },
+      objects: {
+        dispute: {
+          id: `dp_executor_${subId}`,
+          status: 'needs_response',
+          created: 100,
+          charge: { id: `ch_executor_${subId}`, customer: `cus_${subId}` },
+        },
+      },
+    }),
+  });
+  expect(applied.status).toBe(200);
+}
+
+function executorBillingEnv() {
+  return readBillingEnv({
+    STRIPE_API_BASE: env.STRIPE_API_BASE,
+    STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
+    STRIPE_WEBHOOK_SECRET: env.STRIPE_WEBHOOK_SECRET,
+  });
+}
+
+describe('identity collection executor (D-6)', () => {
+  it('accepts only a bounded account or company collection handoff', async () => {
+    expect(
+      parseCollectionSubject({
+        outcome: 'applied',
+        collection: { subjectKind: 'account', subjectId: 'acct_handoff' },
+      }),
+    ).toEqual({ subjectKind: 'account', subjectId: 'acct_handoff' });
+    expect(
+      parseCollectionSubject({ collection: { subjectKind: 'company', subjectId: 'co_handoff' } }),
+    ).toEqual({ subjectKind: 'company', subjectId: 'co_handoff' });
+
+    const rejected: unknown[] = [
+      null,
+      {},
+      { collection: null },
+      { collection: {} },
+      { collection: { subjectKind: 'operator', subjectId: 'acct_handoff' } },
+      { collection: { subjectKind: 'account' } },
+      { collection: { subjectKind: 'account', subjectId: '' } },
+      { collection: { subjectKind: 'account', subjectId: 42 } },
+    ];
+    for (const value of rejected) {
+      expect(parseCollectionSubject(value), JSON.stringify(value)).toBeNull();
+    }
+  });
+
+  it('does not claim or contact Stripe when the executor has no billing config', async () => {
+    const session = await bootstrapLocalSession('billing-executor-unconfigured');
+    const subId = 'sub_executor_unconfigured';
+    await seedPausedDesire(session.accountId, subId);
+
+    const result = await runCollectionExecutor(
+      {
+        identityFetch: (request) => identityStub().fetch(request),
+        billing: readBillingEnv({}),
+      },
+      { subjectKind: 'account', subjectId: session.accountId },
+    );
+    expect(result).toEqual({ action: 'none', reason: 'unavailable' });
+
+    const row = await readSubOrdering(subId);
+    expect(row?.in_flight_version).toBeNull();
+    expect(await countCollectionOperations(session.accountId)).toEqual({ n: 0 });
+  });
+
+  it('settles a claimed collection as failed and clears the marker when Stripe is unreachable', async () => {
+    const session = await bootstrapLocalSession('billing-executor-failed');
+    const subId = 'sub_executor_failed';
+    await seedPausedDesire(session.accountId, subId);
+
+    const result = await runCollectionExecutor(
+      {
+        identityFetch: (request) => identityStub().fetch(request),
+        billing: executorBillingEnv(),
+      },
+      { subjectKind: 'account', subjectId: session.accountId },
+    );
+    expect(result).toEqual({ action: 'settled', status: 'failed' });
+
+    const row = await readSubOrdering(subId);
+    expect(row?.applied_version).toBe(0);
+    expect(row?.in_flight_version).toBeNull();
+    expect(row?.desired_version).toBe(1);
+
+    const operations = await runInDurableObject(identityStub(), (instance) =>
+      instance.db
+        .prepare(
+          `SELECT status FROM billing_operations
+           WHERE subject_kind = 'account' AND subject_id = ?
+             AND kind = 'subscription-collection'`,
+        )
+        .all(session.accountId) as Array<{ status: string }>,
+    );
+    expect(operations).toEqual([{ status: 'failed' }]);
+  });
+
+  it('does not contact Stripe when the collection is already claimed', async () => {
+    const session = await bootstrapLocalSession('billing-executor-no-claim');
+    const subId = 'sub_executor_no_claim';
+    await seedPausedDesire(session.accountId, subId);
+
+    const preClaim = await identityStub().fetch('https://identity/billing/operations', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        subjectKind: 'account',
+        subjectId: session.accountId,
+        operationId: 'op_executor_preclaim',
+        kind: 'subscription-collection',
+      }),
+    });
+    expect(preClaim.status).toBe(201);
+
+    const result = await runCollectionExecutor(
+      {
+        identityFetch: (request) => identityStub().fetch(request),
+        billing: executorBillingEnv(),
+      },
+      { subjectKind: 'account', subjectId: session.accountId },
+    );
+    expect(result).toEqual({ action: 'none', reason: 'no_claim' });
+
+    const row = await readSubOrdering(subId);
+    expect(row?.in_flight_version).toBe(1);
+    expect(row?.in_flight_state).toBe('paused');
+    expect(row?.applied_version).toBe(0);
+    expect(await readCollectionOperation(session.accountId, 'op_executor_preclaim')).toEqual({
+      status: 'pending',
+    });
+    expect(await countCollectionOperations(session.accountId)).toEqual({ n: 2 });
+  });
+
+  it('keeps the in-flight marker when the Stripe outcome is unknown', async () => {
+    const session = await bootstrapLocalSession('billing-executor-unknown');
+    const subId = 'sub_executor_unknown';
+    await seedPausedDesire(session.accountId, subId);
+
+    const deps = {
+      identityFetch: (request: Request) => identityStub().fetch(request),
+      billing: executorBillingEnv(),
+    };
+    const subject = { subjectKind: 'account' as const, subjectId: session.accountId };
+    const operationId = 'op_executor_unknown';
+    const claim = await claimCollectionExecution(deps, subject, operationId);
+    expect(claim?.version).toBe(1);
+
+    const result = await completeCollectionClaim(deps, subject, operationId, claim!, {
+      kind: 'unknown',
+      status: 503,
+    });
+    expect(result).toEqual({ action: 'unknown', status: 503 });
+
+    const row = await readSubOrdering(subId);
+    expect(row?.applied_version).toBe(0);
+    expect(row?.in_flight_version).toBe(1);
+    expect(await readCollectionOperation(session.accountId, operationId)).toEqual({
+      status: 'pending',
+    });
+  });
+
+  it('advances applied_version and clears the marker when the claimed send succeeds', async () => {
+    const session = await bootstrapLocalSession('billing-executor-success');
+    const subId = 'sub_executor_success';
+    await seedPausedDesire(session.accountId, subId);
+
+    const deps = {
+      identityFetch: (request: Request) => identityStub().fetch(request),
+      billing: executorBillingEnv(),
+    };
+    const subject = { subjectKind: 'account' as const, subjectId: session.accountId };
+    const operationId = 'op_executor_success';
+    const claim = await claimCollectionExecution(deps, subject, operationId);
+    expect(claim?.version).toBe(1);
+
+    const result = await completeCollectionClaim(deps, subject, operationId, claim!, {
+      kind: 'success',
+    });
+    expect(result).toEqual({ action: 'settled', status: 'succeeded' });
+
+    const row = await readSubOrdering(subId);
+    expect(row?.applied_version).toBe(1);
+    expect(row?.in_flight_version).toBeNull();
+    expect(await readCollectionOperation(session.accountId, operationId)).toEqual({
+      status: 'succeeded',
+    });
+  });
+
+  it('changes nothing when a claimed version is superseded before its response settles', async () => {
+    const session = await bootstrapLocalSession('billing-executor-superseded');
+    const subId = 'sub_executor_superseded';
+    await seedPausedDesire(session.accountId, subId);
+
+    const deps = {
+      identityFetch: (request: Request) => identityStub().fetch(request),
+      billing: executorBillingEnv(),
+    };
+    const subject = { subjectKind: 'account' as const, subjectId: session.accountId };
+    const operationId = 'op_executor_superseded';
+    const claim = await claimCollectionExecution(deps, subject, operationId);
+    expect(claim?.version).toBe(1);
+
+    const resumed = await identityStub().fetch('https://identity/billing/events/apply', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        signatureVerified: true,
+        payloadHash: '7d'.repeat(32),
+        event: {
+          id: `evt_executor_resume_${subId}`,
+          type: 'charge.dispute.closed',
+          livemode: true,
+          created: 200,
+        },
+        objects: {
+          dispute: {
+            id: `dp_executor_${subId}`,
+            status: 'won',
+            created: 200,
+            charge: { id: `ch_executor_${subId}`, customer: `cus_${subId}` },
+          },
+        },
+      }),
+    });
+    expect(resumed.status).toBe(200);
+
+    const confirmed = await identityStub().fetch('https://identity/billing/operations/settle', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        subjectKind: 'account',
+        subjectId: session.accountId,
+        operationId: 'op_executor_confirm',
+        actualCollectionState: 'paused',
+      }),
+    });
+    expect(confirmed.status).toBe(200);
+
+    const before = await readSubOrdering(subId);
+    expect(before).toMatchObject({
+      desired_version: 2,
+      applied_version: 1,
+      in_flight_version: 2,
+      in_flight_state: 'active',
+    });
+
+    const result = await completeCollectionClaim(deps, subject, operationId, claim!, {
+      kind: 'success',
+    });
+    expect(result).toEqual({ action: 'settled', status: 'stale' });
+
+    const after = await readSubOrdering(subId);
+    expect(after).toMatchObject({
+      desired_version: 2,
+      applied_version: 1,
+      in_flight_version: 2,
+      in_flight_state: 'active',
+    });
+    expect(await readCollectionOperation(session.accountId, operationId)).toEqual({
+      status: 'pending',
+    });
   });
 });

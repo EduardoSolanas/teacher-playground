@@ -5,7 +5,7 @@ import { materializeCompanyMemberEntitlement } from './companyEntitlements';
 
 export type InviteRole = 'admin' | 'member';
 
-export const COMPANY_INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
+export const COMPANY_INVITE_TTL_MS = 72 * 60 * 60 * 1_000;
 
 export interface MintedInvite {
   token: string;

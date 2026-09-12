@@ -68,6 +68,7 @@ import {
   portalSessionRequest,
 } from './lib/billing/stripeRequest';
 import { executeStripeRequest } from './lib/billing/stripeClient';
+import { parseCollectionSubject, runCollectionExecutor } from './lib/billing/executor';
 
 export interface Env {
   ROOMS: DurableObjectNamespace;
@@ -1001,9 +1002,12 @@ function parseStripeEvent(value: unknown): StripeWebhookEvent | null {
 
 function webhookApplyBody(
   event: StripeWebhookEvent,
+  payloadHash: string,
   objects?: Record<string, unknown>,
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
+    signatureVerified: true,
+    payloadHash,
     event: {
       id: event.id,
       type: event.type,
@@ -1018,12 +1022,13 @@ function webhookApplyBody(
 async function forwardWebhookEvent(
   env: Env,
   event: StripeWebhookEvent,
+  payloadHash: string,
   objects?: Record<string, unknown>,
 ): Promise<Response> {
   const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
   const verdict = await identity.fetch(new Request(
     'https://identity/billing/events/apply',
-    internalJson(webhookApplyBody(event, objects)),
+    internalJson(webhookApplyBody(event, payloadHash, objects)),
   ));
   return withSecurityHeaders(verdict);
 }
@@ -1231,7 +1236,11 @@ async function fetchWebhookObjects(
   return {};
 }
 
-async function handleStripeWebhook(env: Env, request: Request): Promise<Response> {
+async function handleStripeWebhook(
+  env: Env,
+  request: Request,
+  ctx: ExecutionContext,
+): Promise<Response> {
   const declaredLength = request.headers.get('content-length');
   if (declaredLength !== null && Number(declaredLength) > BILLING_WEBHOOK_MAX_BODY_BYTES) {
     return withSecurityHeaders(new Response('Body too large', { status: 413 }));
@@ -1279,17 +1288,55 @@ async function handleStripeWebhook(env: Env, request: Request): Promise<Response
   }
 
   if (!event.livemode) {
-    return forwardWebhookEvent(env, event);
+    return forwardWebhookEvent(env, event, verification.payloadHash);
   }
 
   const objects = await fetchWebhookObjects(billing, event);
   if (objects === null) {
     return withSecurityHeaders(new Response(null, { status: 500 }));
   }
-  return forwardWebhookEvent(
+  const verdict = await forwardWebhookEvent(
     env,
     event,
+    verification.payloadHash,
     Object.keys(objects).length > 0 ? objects : undefined,
+  );
+  const verdictBody = await verdict.clone().json().catch(() => null);
+  scheduleCollectionExecutor(env, ctx, verdictBody, billing);
+  return verdict;
+}
+
+/**
+ * D-6 step 1: an applied event whose ordering row is still missing its
+ * collection state comes back naming the subject to run. Claim, Stripe, and
+ * settle then run after the webhook response (`waitUntil`, spec §7.5); a
+ * missed schedule only defers convergence to R-1. The executor re-checks the
+ * claim inside the IdentityDO, so a stale handoff sends nothing.
+ */
+function scheduleCollectionExecutor(
+  env: Env,
+  ctx: ExecutionContext,
+  verdictBody: unknown,
+  billing: BillingEnv,
+): void {
+  if (!billing.apiBaseAllowed || billing.secretKey === null) return;
+  const subject = parseCollectionSubject(verdictBody);
+  if (subject === null) return;
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  ctx.waitUntil(
+    runCollectionExecutor(
+      { identityFetch: (request) => identity.fetch(request), billing },
+      subject,
+    ).catch((error) => {
+      console.error(
+        '[billing:executor]',
+        JSON.stringify({
+          subjectKind: subject.subjectKind,
+          subjectId: subject.subjectId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }),
   );
 }
 
@@ -1700,7 +1747,7 @@ const worker = {
     const isGuestHost = hostKind === 'guest';
 
     if (hostKind === 'teacher' && url.pathname === BILLING_WEBHOOK_PATH) {
-      return handleStripeWebhook(env, request);
+      return handleStripeWebhook(env, request, ctx);
     }
 
     // SEC-015 sales-surface exemption: marketing pages must be reachable and

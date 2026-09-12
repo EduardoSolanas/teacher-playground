@@ -7,6 +7,7 @@ import {
 } from '../identity/identityStore';
 import { createCompany, readMember } from './membership';
 import { COMPANY_INVITE_TTL_MS, mintInvite, redeemInvite, revokeInvite } from './invites';
+import { reserveSeatChange } from './seats';
 
 function accessAccount(db: Database.Database, subject: string): string {
   const outcome = resolveAccountForSubject(db, {
@@ -91,6 +92,7 @@ describe('company invites', () => {
     expect(first.invite.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(first.invite.inviteHash).toBe(await sha256Hex(first.invite.token));
     expect(first.invite.expiresAt).toBe(10_000 + COMPANY_INVITE_TTL_MS);
+    expect(first.invite.expiresAt).toBe(10_000 + 72 * 60 * 60 * 1_000);
 
     const row = db
       .prepare(
@@ -409,12 +411,21 @@ describe('company invites', () => {
 
   it('refuses a redemption above the target of a pending seat decrease', async () => {
     const { companyId, ownerId } = await companyWithOwner('redeem-pending-owner');
-    insertSubscription(db, { companyId, quantity: 5, pendingQuantity: 2 });
+    insertSubscription(db, { companyId, quantity: 5 });
     const memberId = accessAccount(db, 'redeem-pending-member');
     db.prepare(
       `INSERT INTO company_members (company_id, account_id, role, state, created_at)
        VALUES (?, ?, 'member', 'active', 1_500)`,
     ).run(companyId, memberId);
+    const reserved = reserveSeatChange(db, {
+      companyId,
+      actorAccountId: ownerId,
+      targetQuantity: 2,
+      operationId: 'op-pending-decrease',
+      requestHash: 'hash-pending-decrease',
+      now: 1_600,
+    });
+    expect(reserved.outcome).toBe('reserved');
     const candidateId = accessAccount(db, 'redeem-pending-candidate');
     const minted = await mintInvite(db, {
       companyId,

@@ -10,7 +10,13 @@ import {
   isTutorCapReached,
   resolveAccountForSubject,
 } from './identityStore';
-import { readEntitlementsForAccount, writeEntitlement } from './entitlementWriter';
+import {
+  readEntitlementsForAccount,
+  releaseCompanySeatChange,
+  reserveCompanySeatChange,
+  settleCompanySeatChange,
+  writeEntitlement,
+} from './entitlementWriter';
 import type {
   EntitlementCause,
   EntitlementCauseKind,
@@ -355,5 +361,103 @@ describe('entitlementWriter', () => {
       ]),
     );
     expect(readEntitlementsForAccount(db, otherId)).toHaveLength(1);
+  });
+});
+
+describe('entitlementWriter company seat reservations', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    applyIdentitySchema(db);
+  });
+
+  function seatSubscription(companyId: string, quantity: number): void {
+    db.prepare(
+      `INSERT INTO companies (company_id, name, created_at, updated_at)
+       VALUES (?, 'Seat Co', 1, 1)`,
+    ).run(companyId);
+    db.prepare(
+      `INSERT INTO company_subscriptions (
+         company_id, processor_subscription_id, quantity, status,
+         collection_method, updated_at
+       ) VALUES (?, ?, ?, 'active', 'charge_automatically', 1_000)`,
+    ).run(companyId, `sub_${companyId}`, quantity);
+  }
+
+  function subscriptionRow(companyId: string): unknown {
+    return db
+      .prepare(
+        `SELECT quantity, pending_quantity, pending_operation_id, updated_at
+         FROM company_subscriptions WHERE company_id = ?`,
+      )
+      .get(companyId);
+  }
+
+  it('reserves a pending change without changing the billed quantity', () => {
+    seatSubscription('seat-reserve', 3);
+
+    const result = reserveCompanySeatChange(db, {
+      companyId: 'seat-reserve',
+      operationId: 'op-reserve',
+      targetQuantity: 5,
+      now: 2_000,
+    });
+
+    expect(result).toEqual({ updated: true });
+    expect(subscriptionRow('seat-reserve')).toEqual({
+      quantity: 3,
+      pending_quantity: 5,
+      pending_operation_id: 'op-reserve',
+      updated_at: 2_000,
+    });
+  });
+
+  it('applies the pending quantity when a reservation settles', () => {
+    seatSubscription('seat-settle', 3);
+    reserveCompanySeatChange(db, {
+      companyId: 'seat-settle',
+      operationId: 'op-settle',
+      targetQuantity: 5,
+      now: 2_000,
+    });
+
+    const result = settleCompanySeatChange(db, {
+      companyId: 'seat-settle',
+      operationId: 'op-settle',
+      now: 3_000,
+    });
+
+    expect(result).toEqual({ updated: true });
+    expect(subscriptionRow('seat-settle')).toEqual({
+      quantity: 5,
+      pending_quantity: null,
+      pending_operation_id: null,
+      updated_at: 3_000,
+    });
+  });
+
+  it('clears a reservation without applying it when it is released', () => {
+    seatSubscription('seat-release', 5);
+    reserveCompanySeatChange(db, {
+      companyId: 'seat-release',
+      operationId: 'op-release',
+      targetQuantity: 2,
+      now: 2_000,
+    });
+
+    const result = releaseCompanySeatChange(db, {
+      companyId: 'seat-release',
+      operationId: 'op-release',
+      now: 3_000,
+    });
+
+    expect(result).toEqual({ updated: true });
+    expect(subscriptionRow('seat-release')).toEqual({
+      quantity: 5,
+      pending_quantity: null,
+      pending_operation_id: null,
+      updated_at: 3_000,
+    });
   });
 });

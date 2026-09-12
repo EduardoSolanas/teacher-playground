@@ -95,7 +95,13 @@ describe('UserProfileMenu plan section', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].path).toBe('/api/billing/checkout');
     expect(calls[0].init?.method).toBe('POST');
-    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ planId: 'tutor_pro_monthly' });
+    const checkoutBody = JSON.parse(String(calls[0].init?.body)) as {
+      planId?: unknown;
+      operationId?: unknown;
+    };
+    expect(checkoutBody.planId).toBe('tutor_pro_monthly');
+    expect(typeof checkoutBody.operationId).toBe('string');
+    expect(checkoutBody.operationId).toMatch(/^[A-Za-z0-9_-]{1,128}$/);
   });
 
   it('manages the subscription through the server-issued portal URL', async () => {
@@ -122,6 +128,39 @@ describe('UserProfileMenu plan section', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].path).toBe('/api/billing/portal');
     expect(calls[0].init?.method).toBe('POST');
+    const portalBody = JSON.parse(String(calls[0].init?.body)) as { operationId?: unknown };
+    expect(typeof portalBody.operationId).toBe('string');
+    expect(portalBody.operationId).toMatch(/^[A-Za-z0-9_-]{1,128}$/);
+  });
+
+  it('sends a fresh operationId for every billing click', async () => {
+    const calls: { path: string; init?: RequestInit }[] = [];
+    const request: AjaxFetch = async (input, init) => {
+      calls.push({ path: String(input), init });
+      return jsonResponse(200, { url: `https://checkout.stripe.com/c/pay/cs_click_${calls.length}` });
+    };
+
+    openMenu({
+      plan: { planId: 'free', status: 'free' },
+      request,
+      navigate: () => undefined,
+    });
+    const upgrade = screen.getByTestId('whiteboard-profile-plan-upgrade');
+    fireEvent.click(upgrade);
+    await waitFor(() => {
+      expect(calls).toHaveLength(1);
+    });
+    fireEvent.click(upgrade);
+    await waitFor(() => {
+      expect(calls).toHaveLength(2);
+    });
+
+    const operationIds = calls.map(
+      (call) => (JSON.parse(String(call.init?.body)) as { operationId?: unknown }).operationId,
+    );
+    expect(operationIds[0]).toMatch(/^[A-Za-z0-9_-]{1,128}$/);
+    expect(operationIds[1]).toMatch(/^[A-Za-z0-9_-]{1,128}$/);
+    expect(operationIds[1]).not.toBe(operationIds[0]);
   });
 
   it('shows the localized payment overdue date during grace', () => {
@@ -154,7 +193,10 @@ describe('UserProfileMenu plan section', () => {
   });
 
   it('reports a failed billing request without leaving the menu', async () => {
-    const request: AjaxFetch = async () => jsonResponse(503, { error: 'unavailable' });
+    const request: AjaxFetch = async () => jsonResponse(503, {
+      error: 'unavailable',
+      url: 'https://checkout.stripe.com/c/pay/cs_must_not_follow',
+    });
     const navigated: string[] = [];
 
     openMenu({

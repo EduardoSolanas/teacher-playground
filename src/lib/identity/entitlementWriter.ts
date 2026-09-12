@@ -624,3 +624,46 @@ export function setCompanyFirstPaidAt(
     .run(args.occurredAt, args.processorSubscriptionId);
   return { updated: result.changes === 1 };
 }
+
+export function reserveCompanySeatChange(
+  db: RoomDatabase,
+  args: { companyId: string; operationId: string; targetQuantity: number; now: number },
+): { updated: boolean } {
+  const result = db
+    .prepare(
+      `UPDATE company_subscriptions
+       SET pending_quantity = ?, pending_operation_id = ?, updated_at = ?
+       WHERE company_id = ?`,
+    )
+    .run(args.targetQuantity, args.operationId, args.now, args.companyId);
+  return { updated: result.changes === 1 };
+}
+
+export function settleCompanySeatChange(
+  db: RoomDatabase,
+  args: { companyId: string; operationId: string; now: number },
+): { updated: boolean } {
+  const result = db
+    .prepare(
+      `UPDATE company_subscriptions
+       SET quantity = pending_quantity, pending_quantity = NULL,
+           pending_operation_id = NULL, updated_at = ?
+       WHERE company_id = ? AND pending_operation_id = ?`,
+    )
+    .run(args.now, args.companyId, args.operationId);
+  return { updated: result.changes === 1 };
+}
+
+export function releaseCompanySeatChange(
+  db: RoomDatabase,
+  args: { companyId: string; operationId: string; now: number },
+): { updated: boolean } {
+  const result = db
+    .prepare(
+      `UPDATE company_subscriptions
+       SET pending_quantity = NULL, pending_operation_id = NULL, updated_at = ?
+       WHERE company_id = ? AND pending_operation_id = ?`,
+    )
+    .run(args.now, args.companyId, args.operationId);
+  return { updated: result.changes === 1 };
+}

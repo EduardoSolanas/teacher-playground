@@ -138,6 +138,12 @@ describe('company seats', () => {
       requestHash: 'hash-increase',
       status: 'pending',
     });
+    expect(readCompanySubscription(db, companyId)).toMatchObject({
+      quantity: 3,
+      pendingQuantity: 5,
+      pendingOperationId: 'op-reserve-increase',
+    });
+    expect(seatCapacity(db, companyId)).toBe(3);
 
     const decreaseOwner = accessAccount(db, 'reserve-decrease-owner');
     const created = createCompany(db, {
@@ -169,6 +175,12 @@ describe('company seats', () => {
       direction: 'decrease',
       prorationBehavior: 'none',
     });
+    expect(readCompanySubscription(db, created.company.companyId)).toMatchObject({
+      quantity: 5,
+      pendingQuantity: 3,
+      pendingOperationId: 'op-reserve-decrease',
+    });
+    expect(seatCapacity(db, created.company.companyId)).toBe(3);
   });
 
   it('refuses a seat change while another is pending or below active members', () => {
@@ -301,5 +313,83 @@ describe('company seats', () => {
     expect(
       releaseSeatChange(db, { companyId, operationId: 'op-unknown', now: 7_000 }),
     ).toEqual({ released: false });
+  });
+
+  it('applies the reserved target and clears it when a seat change settles', () => {
+    const { companyId, ownerId } = createSeatedCompany(db, {
+      ownerSubject: 'settle-applies',
+      quantity: 3,
+    });
+
+    expect(
+      reserveSeatChange(db, {
+        companyId,
+        actorAccountId: ownerId,
+        targetQuantity: 5,
+        operationId: 'op-settle-applies',
+        requestHash: 'hash-settle-applies',
+        now: 2_000,
+      }).outcome,
+    ).toBe('reserved');
+    expect(seatCapacity(db, companyId)).toBe(3);
+
+    expect(
+      settleSeatChange(db, {
+        companyId,
+        operationId: 'op-settle-applies',
+        now: 3_000,
+      }),
+    ).toEqual({ settled: true });
+    expect(readCompanySubscription(db, companyId)).toMatchObject({
+      quantity: 5,
+      pendingQuantity: null,
+      pendingOperationId: null,
+    });
+    expect(seatCapacity(db, companyId)).toBe(5);
+
+    expect(
+      reserveSeatChange(db, {
+        companyId,
+        actorAccountId: ownerId,
+        targetQuantity: 4,
+        operationId: 'op-after-settle',
+        requestHash: 'hash-after-settle',
+        now: 4_000,
+      }).outcome,
+    ).toBe('reserved');
+    expect(seatCapacity(db, companyId)).toBe(4);
+  });
+
+  it('clears the reservation without applying it when a seat change is released', () => {
+    const { companyId, ownerId } = createSeatedCompany(db, {
+      ownerSubject: 'release-clears',
+      quantity: 5,
+    });
+
+    expect(
+      reserveSeatChange(db, {
+        companyId,
+        actorAccountId: ownerId,
+        targetQuantity: 2,
+        operationId: 'op-release-clears',
+        requestHash: 'hash-release-clears',
+        now: 2_000,
+      }).outcome,
+    ).toBe('reserved');
+    expect(seatCapacity(db, companyId)).toBe(2);
+
+    expect(
+      releaseSeatChange(db, {
+        companyId,
+        operationId: 'op-release-clears',
+        now: 3_000,
+      }),
+    ).toEqual({ released: true });
+    expect(readCompanySubscription(db, companyId)).toMatchObject({
+      quantity: 5,
+      pendingQuantity: null,
+      pendingOperationId: null,
+    });
+    expect(seatCapacity(db, companyId)).toBe(5);
   });
 });
