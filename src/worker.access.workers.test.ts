@@ -1747,6 +1747,8 @@ describe('real local Access boundary through workerd', () => {
         companyId: null,
         status: 'free',
         limits: PLAN_CATALOG.free.limits,
+        graceUntil: null,
+        collectionPaused: false,
       });
       expect(body.company).toBeNull();
     });
@@ -1768,6 +1770,8 @@ describe('real local Access boundary through workerd', () => {
         source: 'personal',
         companyId: null,
         status: 'active',
+        graceUntil: null,
+        collectionPaused: false,
       });
       expect(body.plan?.limits).toEqual(PLAN_CATALOG.tutor_pro_monthly.limits);
       expect(body.company).toBeNull();
@@ -1786,7 +1790,12 @@ describe('real local Access boundary through workerd', () => {
       const inGrace = await authenticatedFetch('/auth/session/current', session);
       expect(inGrace.status).toBe(200);
       expect(await inGrace.json()).toMatchObject({
-        plan: { planId: 'tutor_pro_annual', status: 'past_due' },
+        plan: {
+          planId: 'tutor_pro_annual',
+          status: 'past_due',
+          graceUntil: now + 60_000,
+          collectionPaused: false,
+        },
       });
 
       await seedWorkerEntitlement(session.accountId, {
@@ -1799,7 +1808,33 @@ describe('real local Access boundary through workerd', () => {
       const expired = await authenticatedFetch('/auth/session/current', session);
       expect(expired.status).toBe(200);
       expect(await expired.json()).toMatchObject({
-        plan: { planId: 'free', status: 'free' },
+        plan: {
+          planId: 'free',
+          status: 'free',
+          graceUntil: null,
+          collectionPaused: false,
+        },
+      });
+    });
+
+    it('carries a paused collection on the session boundary', async () => {
+      const session = await bootstrapLocalSession(`session-plan-paused-${crypto.randomUUID()}`);
+      await seedWorkerEntitlement(session.accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        graceUntil: null,
+        collectionPaused: true,
+      });
+
+      const response = await authenticatedFetch('/auth/session/current', session);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        plan: {
+          planId: 'free',
+          status: 'free',
+          graceUntil: null,
+          collectionPaused: true,
+        },
       });
     });
 
@@ -1819,7 +1854,12 @@ describe('real local Access boundary through workerd', () => {
       );
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
-        plan: { planId: 'free', status: 'free' },
+        plan: {
+          planId: 'free',
+          status: 'free',
+          graceUntil: null,
+          collectionPaused: false,
+        },
         company: null,
       });
     });

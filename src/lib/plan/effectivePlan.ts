@@ -24,6 +24,8 @@ export interface EffectivePlan {
   companyId: string | null;
   status: EntitlementStatus;
   limits: PlanDefinition['limits'];
+  graceUntil: number | null;
+  collectionPaused: boolean;
 }
 
 export function isEntitlingEntitlement(row: EntitlementRow, now: number): boolean {
@@ -40,13 +42,17 @@ export function resolveEffectivePlan(
 ): EffectivePlan {
   let personal: EntitlementRow | null = null;
   let company: EntitlementRow | null = null;
+  let collectionPaused = false;
 
   for (const candidate of rows) {
-    if (!isEntitlingEntitlement(candidate, now)) continue;
-    if (candidate.source === 'company') {
-      company = candidate;
-    } else {
-      personal = candidate;
+    if (isEntitlingEntitlement(candidate, now)) {
+      if (candidate.source === 'company') {
+        company = candidate;
+      } else {
+        personal = candidate;
+      }
+    } else if (candidate.collectionPaused) {
+      collectionPaused = true;
     }
   }
 
@@ -58,6 +64,8 @@ export function resolveEffectivePlan(
       companyId: selected.companyId,
       status: selected.status,
       limits: PLAN_CATALOG[selected.planId].limits,
+      graceUntil: selected.graceUntil,
+      collectionPaused: false,
     };
   }
 
@@ -67,5 +75,7 @@ export function resolveEffectivePlan(
     companyId: null,
     status: 'free',
     limits: PLAN_CATALOG.free.limits,
+    graceUntil: null,
+    collectionPaused,
   };
 }

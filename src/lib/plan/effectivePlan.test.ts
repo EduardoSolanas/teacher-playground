@@ -67,6 +67,8 @@ describe('resolveEffectivePlan', () => {
     expect(plan.companyId).toBeNull();
     expect(plan.status).toBe('free');
     expect(plan.limits).toBe(PLAN_CATALOG.free.limits);
+    expect(plan.graceUntil).toBeNull();
+    expect(plan.collectionPaused).toBe(false);
   });
 
   it('returns an entitling row with its own status and catalog limits', () => {
@@ -103,5 +105,56 @@ describe('resolveEffectivePlan', () => {
     expect(plan.planId).toBe('tutor_pro_annual');
     expect(plan.source).toBe('personal');
     expect(plan.companyId).toBeNull();
+  });
+
+  it('carries the grace deadline of an entitling past_due row', () => {
+    const plan = resolveEffectivePlan(
+      [row({ status: 'past_due', graceUntil: 9_000 })],
+      1_000,
+    );
+
+    expect(plan.planId).toBe('tutor_pro_monthly');
+    expect(plan.graceUntil).toBe(9_000);
+    expect(plan.collectionPaused).toBe(false);
+  });
+
+  it('takes the notice fields from the selected row, not another entitlement', () => {
+    const personal = row({ source: 'personal', status: 'active', graceUntil: null });
+    const company = row({
+      source: 'company',
+      companyId: 'co-1',
+      planId: 'corporate_seat',
+      status: 'past_due',
+      graceUntil: 7_000,
+    });
+
+    const plan = resolveEffectivePlan([personal, company], 1_000);
+
+    expect(plan.source).toBe('company');
+    expect(plan.graceUntil).toBe(7_000);
+    expect(plan.collectionPaused).toBe(false);
+  });
+
+  it('reports a paused row when no entitlement entitles', () => {
+    const plan = resolveEffectivePlan(
+      [row({ status: 'active', collectionPaused: true })],
+      1_000,
+    );
+
+    expect(plan.planId).toBe('free');
+    expect(plan.status).toBe('free');
+    expect(plan.graceUntil).toBeNull();
+    expect(plan.collectionPaused).toBe(true);
+  });
+
+  it('does not borrow a hold from a row that did not win selection', () => {
+    const pausedCompany = row({ source: 'company', companyId: 'co-1', collectionPaused: true });
+    const personal = row({ source: 'personal', planId: 'tutor_pro_annual' });
+
+    const plan = resolveEffectivePlan([pausedCompany, personal], 1_000);
+
+    expect(plan.planId).toBe('tutor_pro_annual');
+    expect(plan.graceUntil).toBeNull();
+    expect(plan.collectionPaused).toBe(false);
   });
 });

@@ -1658,6 +1658,8 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
       companyId: null,
       status: 'free',
       limits: PLAN_CATALOG.free.limits,
+      graceUntil: null,
+      collectionPaused: false,
     });
 
     const unknown = await planRequest('account-that-does-not-exist');
@@ -1668,6 +1670,8 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
       companyId: null,
       status: 'free',
       limits: PLAN_CATALOG.free.limits,
+      graceUntil: null,
+      collectionPaused: false,
     });
   });
 
@@ -1710,12 +1714,15 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
       companyId: null,
       status: 'active',
       limits: PLAN_CATALOG.tutor_pro_monthly.limits,
+      graceUntil: null,
+      collectionPaused: false,
     });
   });
 
   it('entitles a past_due row only while now is before grace_until', async () => {
     const response = await resolveSubject('https://access.example.com', 'plan-grace');
     const { account } = await response.json() as { account: { accountId: string } };
+    const graceUntil = Date.now() + 60_000;
 
     await runInDurableObject(identityStub(), (instance: IdentityDO) => {
       writeEntitlement(
@@ -1726,7 +1733,7 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
           state: {
             planId: 'tutor_pro_annual',
             status: 'past_due',
-            graceUntil: Date.now() + 60_000,
+            graceUntil,
             collectionPaused: false,
             companyId: null,
             currentPeriodEnd: null,
@@ -1746,6 +1753,8 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
 
     const entitled = await (await planRequest(account.accountId)).json() as EffectivePlan;
     expect(entitled.planId).toBe('tutor_pro_annual');
+    expect(entitled.graceUntil).toBe(graceUntil);
+    expect(entitled.collectionPaused).toBe(false);
 
     await runInDurableObject(identityStub(), (instance: IdentityDO) => {
       writeEntitlement(
@@ -1777,6 +1786,52 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     const expired = await (await planRequest(account.accountId)).json() as EffectivePlan;
     expect(expired.planId).toBe('free');
     expect(expired.status).toBe('free');
+    expect(expired.graceUntil).toBeNull();
+    expect(expired.collectionPaused).toBe(false);
+  });
+
+  it('reports a paused collection on a plan that stopped entitling', async () => {
+    const response = await resolveSubject('https://access.example.com', 'plan-paused');
+    const { account } = await response.json() as { account: { accountId: string } };
+
+    await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+      writeEntitlement(
+        instance.db,
+        {
+          accountId: account.accountId,
+          source: 'personal',
+          state: {
+            planId: 'tutor_pro_monthly',
+            status: 'active',
+            graceUntil: null,
+            collectionPaused: true,
+            companyId: null,
+            currentPeriodEnd: null,
+            processorCustomerId: null,
+            processorSubscriptionId: 'sub_paused',
+          },
+          now: Date.now(),
+        },
+        {
+          kind: 'processor_event',
+          id: 'evt-paused',
+          actor: 'stripe',
+          reason: 'dispute.created',
+        },
+      );
+    });
+
+    const plan = await planRequest(account.accountId);
+    expect(plan.status).toBe(200);
+    expect(await plan.json()).toEqual({
+      planId: 'free',
+      source: null,
+      companyId: null,
+      status: 'free',
+      limits: PLAN_CATALOG.free.limits,
+      graceUntil: null,
+      collectionPaused: true,
+    });
   });
 
   it('prefers an entitling company row over an entitling personal row', async () => {
@@ -1838,6 +1893,8 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
       companyId: 'plan-company-row',
       status: 'active',
       limits: PLAN_CATALOG.corporate_seat.limits,
+      graceUntil: null,
+      collectionPaused: false,
     });
   });
 

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import { UserProfileMenu } from './UserProfileMenu';
+import { resolveEffectivePlan } from '@/lib/plan/effectivePlan';
+import type { EntitlementRow } from '@/lib/plan/effectivePlan';
 import type { AjaxFetch } from '@/lib/whiteboard/teacherRooms';
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -9,6 +11,23 @@ function jsonResponse(status: number, body: unknown): Response {
     status,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+function entitlementRow(overrides: Partial<EntitlementRow> = {}): EntitlementRow {
+  return {
+    accountId: 'acc-1',
+    source: 'personal',
+    planId: 'tutor_pro_monthly',
+    status: 'active',
+    graceUntil: null,
+    collectionPaused: false,
+    companyId: null,
+    currentPeriodEnd: null,
+    processorCustomerId: 'cus_1',
+    processorSubscriptionId: 'sub_1',
+    updatedAt: 500,
+    ...overrides,
+  };
 }
 
 function openMenu(props: Partial<Parameters<typeof UserProfileMenu>[0]> = {}) {
@@ -107,7 +126,8 @@ describe('UserProfileMenu plan section', () => {
 
   it('shows the localized payment overdue date during grace', () => {
     const graceUntil = Date.UTC(2026, 8, 19);
-    openMenu({ plan: { planId: 'tutor_pro_monthly', status: 'past_due', graceUntil } });
+    const pastDue = entitlementRow({ status: 'past_due', graceUntil });
+    openMenu({ plan: resolveEffectivePlan([pastDue], graceUntil - 1) });
 
     const notice = screen.getByTestId('whiteboard-profile-plan-grace');
     expect(notice.textContent).toContain('payment overdue until');
@@ -115,7 +135,8 @@ describe('UserProfileMenu plan section', () => {
   });
 
   it('shows that billing is on hold while collection is paused', () => {
-    openMenu({ plan: { planId: 'tutor_pro_monthly', status: 'active', collectionPaused: true } });
+    const paused = entitlementRow({ collectionPaused: true });
+    openMenu({ plan: resolveEffectivePlan([paused], 1_000) });
 
     expect(screen.getByTestId('whiteboard-profile-plan-hold').textContent).toContain('billing on hold');
   });
