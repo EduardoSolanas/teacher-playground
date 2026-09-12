@@ -11,30 +11,36 @@
 # which is how an import block is made conditional. A brand-new environment
 # leaves them all unset and Terraform creates everything.
 #
+# The id format is "<parent id>/<resource id>" -- the parent being the account,
+# or the zone for a zone-scoped resource. NOT "accounts/<id>/<id>": the provider
+# splits on "/" and builds the request path from the parts, so that prefix
+# produced GET /accounts/accounts/r2/buckets/<account id> and a 404. Only a real
+# plan against the real API could have found that, and it did.
+#
 # infra/README.md carries the runbook for reading each id.
 
 import {
   for_each = var.adopt_access_application_id == null ? {} : { this = var.adopt_access_application_id }
   to       = cloudflare_zero_trust_access_application.teacher
-  id       = "accounts/${local.account_id}/${each.value}"
+  id       = "${local.account_id}/${each.value}"
 }
 
 import {
   for_each = var.adopt_access_policy_id == null ? {} : { this = var.adopt_access_policy_id }
   to       = cloudflare_zero_trust_access_policy.allow_teachers
-  id       = "accounts/${local.account_id}/${each.value}"
+  id       = "${local.account_id}/${each.value}"
 }
 
 import {
   for_each = var.adopt_r2_bucket ? { this = local.env.r2.boardFilesBucket } : {}
   to       = cloudflare_r2_bucket.board_files
-  id       = "accounts/${local.account_id}/${each.value}"
+  id       = "${local.account_id}/${each.value}"
 }
 
 import {
   for_each = var.adopt_guest_rate_limit_ruleset_id == null ? {} : { this = var.adopt_guest_rate_limit_ruleset_id }
   to       = cloudflare_ruleset.guest_auth_rate_limit
-  id       = "zones/${data.cloudflare_zone.this.id}/${each.value}"
+  id       = "${data.cloudflare_zone.this.id}/${each.value}"
 }
 
 # The Zero Trust organization is a singleton that always exists once Zero Trust

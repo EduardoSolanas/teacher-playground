@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { readManifest } from '../../scripts/lib/environments.mjs';
+import { GUEST_AUTH_RATE_MAX } from '../lib/worker/rateLimits';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -200,9 +201,18 @@ describe('infra/environments.json is the single source of truth', () => {
     // tighter, a legitimate client would meet an opaque edge block instead of
     // the Worker's considered 429, and the product limit would stop being the
     // thing that decides.
+    //
+    // Compared as RATES, not as raw counts. This first asserted the period was
+    // 60, which was never the real invariant and was also wrong: the free plan
+    // entitles a 10s period only, and the API refuses anything else. A test
+    // pinning an incidental number fails when the number legitimately changes
+    // and says nothing when the relationship it cared about breaks.
     const { requestsPerPeriod, periodSeconds } = environment.guestRateLimit;
-    expect(periodSeconds).toBe(60);
-    expect(requestsPerPeriod).toBeGreaterThan(5);
+    expect(periodSeconds).toBeGreaterThan(0);
+
+    const edgePerSecond = requestsPerPeriod / periodSeconds;
+    const workerPerSecond = GUEST_AUTH_RATE_MAX / 60;
+    expect(edgePerSecond).toBeGreaterThan(workerPerSecond);
   });
 });
 
