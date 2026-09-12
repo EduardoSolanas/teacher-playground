@@ -114,6 +114,9 @@ async function waitForProxy(accessProxyPort, upstreamPort, token, proxy, upstrea
   const teacherHost = `app.localhost:${accessProxyPort}`;
   const guestHost = `join.localhost:${upstreamPort}`;
   const guestRoomPath = `/whiteboard/${'a'.repeat(32)}`;
+  // The marketing host has no Access application (in production or here), so
+  // it answers directly on the upstream port like the guest host.
+  const marketingHost = `playground.localhost:${upstreamPort}`;
   for (let attempt = 0; attempt < 120; attempt += 1) {
     if (proxy.exitCode !== null) throw new Error(`local Access proxy exited with ${proxy.exitCode}`);
     if (upstream.exitCode !== null) throw new Error(`local Wrangler exited with ${upstream.exitCode}`);
@@ -124,7 +127,8 @@ async function waitForProxy(accessProxyPort, upstreamPort, token, proxy, upstrea
       `CF_Authorization=${token}`,
     );
     const guestStatus = await probeLoopback(upstreamPort, guestHost, guestRoomPath);
-    if (httpOk(teacherStatus) && httpOk(guestStatus)) return;
+    const marketingStatus = await probeLoopback(upstreamPort, marketingHost, '/pricing');
+    if (httpOk(teacherStatus) && httpOk(guestStatus) && httpOk(marketingStatus)) return;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
   }
   throw new Error('local Access proxy/workerd did not start');
@@ -144,6 +148,7 @@ const upstreamPort = await getAvailablePort();
 const accessProxyPort = Number(appPort);
 const teacherOrigin = `http://app.localhost:${accessProxyPort}`;
 const guestOrigin = `http://join.localhost:${upstreamPort}`;
+const marketingOrigin = `http://playground.localhost:${upstreamPort}`;
 const accessIssuer = `http://127.0.0.1:${accessPort}`;
 const accessProxy = resolve(process.cwd(), 'scripts/local-access-proxy.mjs');
 const wrangler = resolve(process.cwd(), 'node_modules/wrangler/bin/wrangler.js');
@@ -238,6 +243,7 @@ try {
       '--var', `ACCESS_JWKS_URL:${accessIssuer}/jwks`,
       '--var', 'TEACHER_HOSTNAME:app.localhost',
       '--var', 'GUEST_HOSTNAME:join.localhost',
+      '--var', 'MARKETING_HOSTNAME:playground.localhost',
       '--ip', '127.0.0.1',
       '--port', String(upstreamPort),
     ], { stdio: 'inherit' });
@@ -262,6 +268,7 @@ try {
           E2E_PORT: String(accessProxyPort),
           PLAYWRIGHT_BASE_URL: teacherOrigin,
           E2E_GUEST_ORIGIN: guestOrigin,
+          E2E_MARKETING_ORIGIN: marketingOrigin,
           E2E_ACCESS_ISSUER: accessIssuer,
           E2E_ACCESS_TOKEN: accessToken,
         },

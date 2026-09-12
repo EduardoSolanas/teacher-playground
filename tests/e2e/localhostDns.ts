@@ -1,12 +1,17 @@
 /**
- * Windows Node cannot resolve `*.localhost` (Chromium can). Dual-host e2e
- * uses `app.localhost` / `join.localhost`, and Playwright's Node-side
- * `page.request` / `fetch` must reach the same loopback listeners.
+ * Windows Node cannot resolve `*.localhost` (Chromium can). The split-host e2e
+ * uses `app.localhost` / `join.localhost` / `playground.localhost`, and
+ * Playwright's Node-side `page.request` / `fetch` must reach the same loopback
+ * listeners.
  */
 import dns from 'node:dns';
 import dnsPromises from 'node:dns/promises';
 
-const LOOPBACK_HOSTS = new Set(['app.localhost', 'join.localhost']);
+const LOOPBACK_HOSTS = new Set([
+  'app.localhost',
+  'join.localhost',
+  'playground.localhost',
+]);
 
 function rewrite(hostname: string): string {
   return LOOPBACK_HOSTS.has(hostname.toLowerCase()) ? '127.0.0.1' : hostname;

@@ -1,4 +1,9 @@
-/** Shared E2E origins and Access-cookie domain. Teacher host is app.localhost. */
+/**
+ * Shared E2E origins and Access-cookie domain. The three local hosts mirror
+ * production's host kinds: app.localhost (teacher, behind the Access edge),
+ * join.localhost (guest), and playground.localhost (marketing). Only the
+ * teacher origin carries an Access edge locally.
+ */
 
 export function playwrightBaseURL(): string {
   const baseURL = process.env.PLAYWRIGHT_BASE_URL;
@@ -13,6 +18,12 @@ export function accessCookieDomain(): string {
 export function guestOrigin(): string {
   const origin = process.env.E2E_GUEST_ORIGIN;
   if (!origin) throw new Error('E2E_GUEST_ORIGIN is missing; use npm run test:e2e');
+  return origin;
+}
+
+export function marketingOrigin(): string {
+  const origin = process.env.E2E_MARKETING_ORIGIN;
+  if (!origin) throw new Error('E2E_MARKETING_ORIGIN is missing; use npm run test:e2e');
   return origin;
 }
 
