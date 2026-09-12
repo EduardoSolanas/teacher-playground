@@ -110,13 +110,17 @@
           "periodSeconds is 10 because it is the ONLY period this plan entitles.",
           "The API refuses anything else: 'not entitled to use the period 60, can",
           "only use a period among [10]'. 20 per 10s is 120/min, still far looser",
-          "than the Worker's 5/min, which keeps the product limit the deciding one."
+          "than the Worker's 5/min, which keeps the product limit the deciding one.",
+          "",
+          "mitigationTimeoutSeconds is 10 for the same reason: the API says 'not",
+          "entitled to use a mitigation timeout different from 10'. Both numbers are",
+          "the plan's, not a choice this repository gets to make."
         ],
         "path": "/auth/guest",
         "method": "POST",
         "requestsPerPeriod": 20,
         "periodSeconds": 10,
-        "mitigationTimeoutSeconds": 60
+        "mitigationTimeoutSeconds": 10
       },
 
       "excalidraw": {

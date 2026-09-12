@@ -31,10 +31,14 @@ import {
   id       = "${local.account_id}/${each.value}"
 }
 
+# R2 takes a THIRD segment, the jurisdiction. "default" is the ordinary one; a
+# bucket created under a jurisdiction (eu, fedramp) names that instead. The
+# provider is explicit when it is wrong: expected urlencoded segments
+# "<account_id>/<bucket_name>/<jurisdiction>".
 import {
   for_each = var.adopt_r2_bucket ? { this = local.env.r2.boardFilesBucket } : {}
   to       = cloudflare_r2_bucket.board_files
-  id       = "${local.account_id}/${each.value}"
+  id       = "${local.account_id}/${each.value}/default"
 }
 
 import {
