@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { isGuestHostname } from '@/lib/guest/guestHost';
 import BackToRoomsLink from './BackToRoomsLink';
-import { UserProfileMenu } from './UserProfileMenu';
+import { UserProfileMenu, type UserProfileCompany, type UserProfilePlan } from './UserProfileMenu';
 
 export default function RoomTopNav({
   displayName,
@@ -11,11 +11,15 @@ export default function RoomTopNav({
   onNavigate,
   center,
   people,
+  plan = null,
+  company = null,
 }: {
   displayName: string | null;
   onDisplayNameChange: (name: string) => void;
   onNavigate?: () => void;
   rosterExpanded: boolean;
+  plan?: UserProfilePlan | null;
+  company?: UserProfileCompany | null;
   /**
    * What to hold in the width of empty slate between the link and the avatar.
    * A node rather than anything specific, so the bar stays ignorant of what it
@@ -57,6 +61,8 @@ export default function RoomTopNav({
           displayName={displayName}
           onDisplayNameChange={onDisplayNameChange}
           showDisplayName={false}
+          plan={plan}
+          company={company}
           triggerClassName="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-600 bg-slate-800 text-sm font-semibold text-slate-100 transition-colors hover:border-slate-400 hover:bg-slate-700 active:bg-slate-600"
         />
       </div>

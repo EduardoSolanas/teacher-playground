@@ -493,6 +493,20 @@ async function issueSession(
   return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
 }
 
+async function resolveSessionPlan(env: Env, accountId: string): Promise<unknown | null> {
+  try {
+    const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+    const response = await identity.fetch(new Request(
+      `${IDENTITY_ACCOUNT_PLAN}?accountId=${encodeURIComponent(accountId)}`,
+    ));
+    if (!response.ok) return null;
+    const body: unknown = await response.json();
+    return body !== null && typeof body === 'object' ? body : null;
+  } catch {
+    return null;
+  }
+}
+
 async function sessionCurrent(
   env: Env,
   request: Request,
@@ -514,8 +528,10 @@ async function sessionCurrent(
   };
   const { preferredDisplayName, ...publicSession } = session;
   const displayName = preferredDisplayName || principal.displayName;
+  const plan = await resolveSessionPlan(env, session.accountId);
+  const payload = { ...publicSession, plan, company: null };
   return withSecurityHeaders(Response.json(
-    displayName ? { ...publicSession, displayName } : publicSession,
+    displayName ? { ...payload, displayName } : payload,
     { status: 200, headers: result.headers },
   ));
 }

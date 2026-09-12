@@ -12,6 +12,7 @@ import { ORPHAN_GRACE_MS } from './lib/whiteboard/orphanFiles';
 import { getFileBytesTotal, setFileBytes } from './lib/whiteboard/roomSchema';
 import { RoomDO } from './do/RoomDO';
 import { writeEntitlement } from './lib/identity/entitlementWriter';
+import { PLAN_CATALOG } from './lib/plan/catalog';
 
 declare global {
   namespace Cloudflare {
@@ -1698,6 +1699,142 @@ describe('real local Access boundary through workerd', () => {
     );
     expect(response.status).toBe(404);
     expect(await response.text()).toBe('');
+  });
+
+  describe('current session plan and company', () => {
+    function seedWorkerEntitlement(
+      accountId: string,
+      state: {
+        planId: 'free' | 'tutor_pro_monthly' | 'tutor_pro_annual' | 'corporate_seat';
+        status: 'free' | 'trialing' | 'active' | 'past_due' | 'canceled';
+        graceUntil: number | null;
+        collectionPaused: boolean;
+      },
+    ): Promise<void> {
+      return runInDurableObject(capIdentityStub(), (instance: IdentityDO) => {
+        writeEntitlement(
+          instance.db,
+          {
+            accountId,
+            source: 'personal',
+            state: {
+              ...state,
+              companyId: null,
+              currentPeriodEnd: null,
+              processorCustomerId: `cus_${accountId}`,
+              processorSubscriptionId: `sub_${accountId}`,
+            },
+            now: Date.now(),
+          },
+          {
+            kind: 'operator',
+            id: `session-plan-seed-${crypto.randomUUID()}`,
+            actor: 'test-operator',
+            reason: 'seed paid state',
+          },
+        );
+      });
+    }
+
+    it('carries the caller Free effective plan and a null company', async () => {
+      const session = await bootstrapLocalSession(`session-plan-free-${crypto.randomUUID()}`);
+      const response = await authenticatedFetch('/auth/session/current', session);
+      expect(response.status).toBe(200);
+      const body = await response.json() as { plan?: unknown; company?: unknown };
+      expect(body.plan).toEqual({
+        planId: 'free',
+        source: null,
+        companyId: null,
+        status: 'free',
+        limits: PLAN_CATALOG.free.limits,
+      });
+      expect(body.company).toBeNull();
+    });
+
+    it('carries the seeded paid plan with its status at the session boundary', async () => {
+      const session = await bootstrapLocalSession(`session-plan-paid-${crypto.randomUUID()}`);
+      await seedWorkerEntitlement(session.accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        graceUntil: null,
+        collectionPaused: false,
+      });
+
+      const response = await authenticatedFetch('/auth/session/current', session);
+      expect(response.status).toBe(200);
+      const body = await response.json() as { plan?: { limits?: unknown }; company?: unknown };
+      expect(body.plan).toMatchObject({
+        planId: 'tutor_pro_monthly',
+        source: 'personal',
+        companyId: null,
+        status: 'active',
+      });
+      expect(body.plan?.limits).toEqual(PLAN_CATALOG.tutor_pro_monthly.limits);
+      expect(body.company).toBeNull();
+    });
+
+    it('keeps the paid plan through a live grace window and drops it once grace expires', async () => {
+      const session = await bootstrapLocalSession(`session-plan-grace-${crypto.randomUUID()}`);
+      const now = Date.now();
+      await seedWorkerEntitlement(session.accountId, {
+        planId: 'tutor_pro_annual',
+        status: 'past_due',
+        graceUntil: now + 60_000,
+        collectionPaused: false,
+      });
+
+      const inGrace = await authenticatedFetch('/auth/session/current', session);
+      expect(inGrace.status).toBe(200);
+      expect(await inGrace.json()).toMatchObject({
+        plan: { planId: 'tutor_pro_annual', status: 'past_due' },
+      });
+
+      await seedWorkerEntitlement(session.accountId, {
+        planId: 'tutor_pro_annual',
+        status: 'past_due',
+        graceUntil: now - 1_000,
+        collectionPaused: false,
+      });
+
+      const expired = await authenticatedFetch('/auth/session/current', session);
+      expect(expired.status).toBe(200);
+      expect(await expired.json()).toMatchObject({
+        plan: { planId: 'free', status: 'free' },
+      });
+    });
+
+    it('ignores a client-supplied account or plan on the session route', async () => {
+      const caller = await bootstrapLocalSession(`session-plan-tamper-${crypto.randomUUID()}`);
+      const paid = await bootstrapLocalSession(`session-plan-target-${crypto.randomUUID()}`);
+      await seedWorkerEntitlement(paid.accountId, {
+        planId: 'tutor_pro_annual',
+        status: 'active',
+        graceUntil: null,
+        collectionPaused: false,
+      });
+
+      const response = await authenticatedFetch(
+        `/auth/session/current?accountId=${encodeURIComponent(paid.accountId)}&plan=tutor_pro_annual&planId=tutor_pro_annual`,
+        caller,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        plan: { planId: 'free', status: 'free' },
+        company: null,
+      });
+    });
+
+    it('leaves the unauthorized current-session response unchanged', async () => {
+      const response = await accessFetch(
+        '/auth/session/current',
+        `session-plan-unauthorized-${crypto.randomUUID()}`,
+      );
+      expect(response.status).toBe(401);
+      const body = await response.json();
+      expect(body).toEqual({ error: 'Unauthorized' });
+      expect(body).not.toHaveProperty('plan');
+      expect(body).not.toHaveProperty('company');
+    });
   });
 
   describe('board file upload and download', () => {
