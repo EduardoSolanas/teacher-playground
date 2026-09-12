@@ -19,9 +19,11 @@ export async function localAccessToken(
   subject: string,
   variant = 'valid',
   name?: string,
+  email?: string,
 ): Promise<string> {
   const params = new URLSearchParams({ sub: subject, variant });
   if (name) params.set('name', name);
+  if (email) params.set('email', email);
   const response = await fetch(`${localIssuer()}/token?${params.toString()}`);
   if (!response.ok) throw new Error(`local issuer token failed: ${response.status}`);
   return ((await response.json()) as { token: string }).token;

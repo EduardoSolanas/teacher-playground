@@ -121,7 +121,7 @@ describe('Cloudflare Access request verification', () => {
     };
   }
 
-  it('exposes the verified IdP full name and never uses email as the display name', async () => {
+  it('exposes the verified IdP full name and email without using email as the display name', async () => {
     const token = await signToken(privateKey, claims({
       name: 'Ada Lovelace',
       email: 'ada@example.test',
@@ -137,6 +137,7 @@ describe('Cloudflare Access request verification', () => {
       issuer: ISSUER,
       subject: 'human-1',
       displayName: 'Ada Lovelace',
+      email: 'ada@example.test',
     });
   });
 

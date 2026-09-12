@@ -8,6 +8,10 @@ import {
   localAccessToken,
 } from './test/workerAuth';
 import { createCompany } from './lib/company/membership';
+import {
+  ensureBillingSubscription,
+  upsertDisputeHold,
+} from './lib/identity/entitlementWriter';
 
 declare global {
   namespace Cloudflare {
@@ -506,4 +510,163 @@ describe('Worker /api/company routes', () => {
     });
     expect(transferLimited.status).toBe(429);
   }, 30_000);
+
+  const OPERATOR_INVOICE_APPROVAL_API = '/api/company/operator/invoice-approval';
+  const OPERATOR_DISPUTE_REVIEW_API = '/api/company/operator/disputes/review';
+
+  function operatorPost(
+    path: string,
+    token: string,
+    body: unknown,
+  ): Promise<Response> {
+    return SELF.fetch(`${TEACHER_BASE}${path}`, {
+      method: 'POST',
+      headers: {
+        Origin: TEACHER_BASE,
+        'Cf-Access-Jwt-Assertion': token,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('an allowlisted operator approves invoicing; a non-operator is refused with nothing written', async () => {
+    const owner = await bootstrapLocalSession('operator-approve-owner');
+    const companyId = await createCompanyViaApi(owner, 'Operator API Co', 'op_operator_create');
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(`UPDATE companies SET processor_customer_id = ? WHERE company_id = ?`)
+        .run('cus_operator_api', companyId);
+    });
+
+    const denied = await operatorPost(
+      OPERATOR_INVOICE_APPROVAL_API,
+      await localAccessToken('operator-outsider', 'valid', undefined, 'outsider@example.test'),
+      { companyId, quantity: 12, operationId: 'op_operator_denied' },
+    );
+    expect(denied.status).toBe(403);
+
+    const selfServe = await operatorPost(OPERATOR_INVOICE_APPROVAL_API, owner.token, {
+      companyId,
+      quantity: 12,
+      operationId: 'op_operator_selfserve',
+    });
+    expect(selfServe.status).toBe(403);
+
+    const afterDenied = await runInDurableObject(identityStub(), (instance) => ({
+      company: instance.db
+        .prepare(`SELECT invoice_approved AS invoiceApproved FROM companies WHERE company_id = ?`)
+        .get(companyId),
+      operations: instance.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM billing_operations
+           WHERE subject_id = ? AND kind = 'invoice-approve'`,
+        )
+        .get(companyId),
+    }));
+    expect(afterDenied.company).toEqual({ invoiceApproved: 0 });
+    expect(afterDenied.operations).toEqual({ count: 0 });
+
+    const approved = await operatorPost(
+      OPERATOR_INVOICE_APPROVAL_API,
+      await localAccessToken('operator-approver', 'valid', undefined, 'OPS@Example.Test'),
+      { companyId, quantity: 12, operationId: 'op_operator_approved' },
+    );
+    expect(approved.status).toBe(202);
+    expect(await approved.json()).toEqual({
+      status: 'pending',
+      operationId: 'op_operator_approved',
+    });
+
+    const stored = await runInDurableObject(identityStub(), (instance) => ({
+      company: instance.db
+        .prepare(`SELECT invoice_approved AS invoiceApproved FROM companies WHERE company_id = ?`)
+        .get(companyId),
+      operation: instance.db
+        .prepare(
+          `SELECT kind, status FROM billing_operations
+           WHERE subject_id = ? AND operation_id = 'op_operator_approved'`,
+        )
+        .get(companyId),
+      audit: instance.db
+        .prepare(
+          `SELECT actor, cause_kind AS causeKind FROM entitlement_audit
+           WHERE cause_id = 'op_operator_approved'`,
+        )
+        .get(),
+    }));
+    expect(stored.company).toEqual({ invoiceApproved: 1 });
+    expect(stored.operation).toEqual({ kind: 'invoice-approve', status: 'pending' });
+    expect(stored.audit).toEqual({
+      actor: 'operator:ops@example.test',
+      causeKind: 'operator',
+    });
+
+    for (const base of [GUEST_BASE, MARKETING_BASE]) {
+      const response = await SELF.fetch(`${base}${OPERATOR_INVOICE_APPROVAL_API}`, {
+        method: 'POST',
+      });
+      expect(response.status, base).toBe(404);
+    }
+  });
+
+  it('an allowlisted operator reviews a dispute; a non-operator is refused with the hold unchanged', async () => {
+    const owner = await bootstrapLocalSession('operator-dispute-owner');
+    const companyId = await createCompanyViaApi(
+      owner,
+      'Operator Dispute Co',
+      'op_operator_dispute_create',
+    );
+    await seedCompanySubscription(companyId, 3);
+    await runInDurableObject(identityStub(), (instance) => {
+      ensureBillingSubscription(instance.db, {
+        processorSubscriptionId: `sub_${companyId}`,
+        subjectKind: 'company',
+        subjectId: companyId,
+        now: 1,
+      });
+      upsertDisputeHold(instance.db, {
+        disputeId: 'dp_worker_operator',
+        processorSubscriptionId: `sub_${companyId}`,
+        state: 'review',
+        now: 2,
+      });
+    });
+
+    const denied = await operatorPost(
+      OPERATOR_DISPUTE_REVIEW_API,
+      await localAccessToken('operator-dispute-outsider', 'valid', undefined, 'outsider@example.test'),
+      { disputeId: 'dp_worker_operator', outcome: 'won', operationId: 'op_worker_review_denied' },
+    );
+    expect(denied.status).toBe(403);
+    expect(
+      await runInDurableObject(identityStub(), (instance) =>
+        instance.db
+          .prepare(`SELECT state FROM billing_dispute_holds WHERE dispute_id = 'dp_worker_operator'`)
+          .get(),
+      ),
+    ).toEqual({ state: 'review' });
+
+    const resolved = await operatorPost(
+      OPERATOR_DISPUTE_REVIEW_API,
+      await localAccessToken('operator-dispute-reviewer', 'valid', undefined, 'ops@example.test'),
+      { disputeId: 'dp_worker_operator', outcome: 'won', operationId: 'op_worker_review' },
+    );
+    expect(resolved.status).toBe(200);
+    expect(await resolved.json()).toEqual({
+      outcome: 'resolved',
+      disputeId: 'dp_worker_operator',
+      state: 'won',
+      desiredCollection: 'active',
+    });
+    expect(
+      await runInDurableObject(identityStub(), (instance) =>
+        instance.db
+          .prepare(
+            `SELECT actor FROM entitlement_audit WHERE cause_id = 'op_worker_review'`,
+          )
+          .get(),
+      ),
+    ).toEqual({ actor: 'operator:ops@example.test' });
+  });
 });

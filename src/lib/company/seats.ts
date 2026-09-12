@@ -30,6 +30,7 @@ export interface CompanySubscriptionRecord {
   collectionMethod: CollectionMethod;
   currentPeriodEnd: number | null;
   firstPaidAt: number | null;
+  hostedInvoiceUrl: string | null;
   updatedAt: number;
 }
 
@@ -45,6 +46,7 @@ interface CompanySubscriptionDbRow {
   collection_method: CollectionMethod;
   current_period_end: number | null;
   first_paid_at: number | null;
+  hosted_invoice_url: string | null;
   updated_at: number;
 }
 
@@ -56,7 +58,8 @@ export function readCompanySubscription(
     .prepare(
       `SELECT company_id, processor_subscription_id, quantity, pending_quantity,
               pending_operation_id, status, grace_until, collection_paused,
-              collection_method, current_period_end, first_paid_at, updated_at
+              collection_method, current_period_end, first_paid_at,
+              hosted_invoice_url, updated_at
        FROM company_subscriptions WHERE company_id = ?`,
     )
     .get(companyId) as CompanySubscriptionDbRow | undefined;
@@ -74,6 +77,7 @@ export function readCompanySubscription(
     collectionMethod: row.collection_method,
     currentPeriodEnd: row.current_period_end,
     firstPaidAt: row.first_paid_at,
+    hostedInvoiceUrl: row.hosted_invoice_url,
     updatedAt: row.updated_at,
   };
 }

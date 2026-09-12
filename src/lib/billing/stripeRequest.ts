@@ -160,6 +160,60 @@ export interface PortalSessionInput {
   returnUrl: string;
 }
 
+export interface InvoiceSubscriptionInput {
+  companyId: string;
+  operationId: string;
+  processorCustomerId: string;
+  priceId: string;
+  quantity: number;
+}
+
+const IDEMPOTENCY_KEY_PART_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+function assertIdempotencyKeyPart(value: string, field: string): void {
+  if (!IDEMPOTENCY_KEY_PART_RE.test(value)) {
+    throw new InvalidStripeIdError(`Invalid operation key for ${field}`);
+  }
+}
+
+/**
+ * O-1/C-3: the invoice-first corporate subscription. `latest_invoice` is
+ * expanded so the created subscription's response carries the hosted invoice
+ * URL the company page shows while payment is outstanding.
+ */
+export function invoiceSubscriptionRequest(
+  apiBaseUrl: string,
+  secretKey: string,
+  input: InvoiceSubscriptionInput,
+): Request {
+  assertStripeId(input.processorCustomerId, 'processorCustomerId');
+  assertStripeId(input.priceId, 'priceId');
+  assertIdempotencyKeyPart(input.companyId, 'companyId');
+  assertIdempotencyKeyPart(input.operationId, 'operationId');
+  if (!Number.isInteger(input.quantity) || input.quantity < 1 || input.quantity > 10_000) {
+    throw new InvalidStripeIdError('Invalid quantity for subscription');
+  }
+
+  const params = new URLSearchParams();
+  params.append('customer', input.processorCustomerId);
+  params.append('collection_method', 'send_invoice');
+  params.append('days_until_due', '30');
+  params.append('items[0][price]', input.priceId);
+  params.append('items[0][quantity]', String(input.quantity));
+  params.append('expand[0]', 'latest_invoice');
+
+  const headers: Record<string, string> = {
+    ...stripeHeaders(secretKey),
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'Idempotency-Key': `op:company:${input.companyId}:${input.operationId}`,
+  };
+  return new Request(endpoint(apiBaseUrl, '/v1/subscriptions'), {
+    method: 'POST',
+    headers,
+    body: params.toString(),
+  });
+}
+
 export function portalSessionRequest(
   apiBaseUrl: string,
   secretKey: string,

@@ -5,15 +5,18 @@ import { getIdentityObject, type IdentityDO } from './IdentityDO';
 import {
   ensureBillingSubscription,
   readEntitlementsForAccount,
+  recomputeDesiredCollection,
+  upsertDisputeHold,
   writeEntitlement,
 } from '../lib/identity/entitlementWriter';
-import { recordOwnedRoom } from '../lib/identity/identityStore';
+import { recordOwnedRoom, setPreferredDisplayName } from '../lib/identity/identityStore';
 import { PAST_DUE_GRACE_MS } from '../lib/plan/catalog';
 
 declare global {
   namespace Cloudflare {
     interface Env {
       IDENTITY: DurableObjectNamespace<IdentityDO>;
+      OPERATOR_EMAILS?: string;
     }
   }
 }
@@ -1550,5 +1553,378 @@ describe('IdentityDO company routes (spec §6.2)', () => {
         .sort()
         .map((accountId) => ({ accountId })),
     );
+  });
+
+  const OPERATOR_EMAIL =
+    (env as unknown as { OPERATOR_EMAILS?: string }).OPERATOR_EMAILS
+      ?.split(',', 1)[0]
+      .trim() ?? 'ops@example.test';
+
+  function operatorFetch(path: string, body: unknown): Promise<Response> {
+    return identityStub().fetch(`https://identity${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  function setCompanyCustomer(companyId: string, customerId: string): Promise<void> {
+    return runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(`UPDATE companies SET processor_customer_id = ? WHERE company_id = ?`)
+        .run(customerId, companyId);
+    });
+  }
+
+  function seedDisputeHold(
+    subscriptionId: string,
+    disputeId: string,
+    state: 'open' | 'review',
+  ): Promise<void> {
+    return runInDurableObject(identityStub(), (instance) => {
+      upsertDisputeHold(instance.db, {
+        disputeId,
+        processorSubscriptionId: subscriptionId,
+        state,
+        now: 2_000,
+      });
+    });
+  }
+
+  it('summary carries each active member preferred display name and never another company’s', async () => {
+    const owner = await accessSession('company-display-owner');
+    const member = await accessSession('company-display-member');
+    const outsider = await accessSession('company-display-outsider');
+    const companyId = await createCompanyFor(owner, 'Display Co');
+    await createCompanyFor(outsider, 'Other Display Co');
+    await seedCompanySubscription(companyId, 3);
+    await admitMember(owner, member, companyId);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      setPreferredDisplayName(instance.db, owner.accountId, 'Owner Name');
+      setPreferredDisplayName(instance.db, outsider.accountId, 'Other Owner Name');
+    });
+
+    const response = await companyFetch('/companies', owner.cookie);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      members: Array<{ accountId: string; preferredDisplayName: string | null }>;
+    };
+    const ownerRow = body.members.find((entry) => entry.accountId === owner.accountId);
+    const memberRow = body.members.find((entry) => entry.accountId === member.accountId);
+    expect(ownerRow).toMatchObject({ preferredDisplayName: 'Owner Name' });
+    expect(memberRow).toMatchObject({ preferredDisplayName: null });
+    expect(body.members.map((entry) => entry.preferredDisplayName)).not.toContain(
+      'Other Owner Name',
+    );
+  });
+
+  it('self-serve caller cannot approve invoicing; an allowlisted operator records the decision, operation, and audit', async () => {
+    const owner = await accessSession('company-o1-owner');
+    const companyId = await createCompanyFor(owner, 'Invoice Approval Co');
+    await setCompanyCustomer(companyId, 'cus_o1_do');
+
+    const denied = await operatorFetch('/operator/invoice-approval', {
+      operatorEmail: 'outsider@example.test',
+      companyId,
+      quantity: 12,
+      operationId: 'op_o1_denied',
+    });
+    expect(denied.status).toBe(403);
+    const afterDenied = await runInDurableObject(identityStub(), (instance) => ({
+      company: instance.db
+        .prepare(`SELECT invoice_approved AS invoiceApproved FROM companies WHERE company_id = ?`)
+        .get(companyId),
+      operations: instance.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM billing_operations
+           WHERE subject_id = ? AND kind = 'invoice-approve'`,
+        )
+        .get(companyId),
+      audits: instance.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM entitlement_audit
+           WHERE cause_kind = 'operator' AND cause_id = 'op_o1_denied'`,
+        )
+        .get(),
+    }));
+    expect(afterDenied.company).toEqual({ invoiceApproved: 0 });
+    expect(afterDenied.operations).toEqual({ count: 0 });
+    expect(afterDenied.audits).toEqual({ count: 0 });
+
+    const approved = await operatorFetch('/operator/invoice-approval', {
+      operatorEmail: OPERATOR_EMAIL,
+      companyId,
+      quantity: 12,
+      operationId: 'op_o1_approved',
+    });
+    expect(approved.status).toBe(200);
+    expect(await approved.json()).toEqual({
+      status: 'pending',
+      companyId,
+      operationId: 'op_o1_approved',
+      quantity: 12,
+      processorCustomerId: 'cus_o1_do',
+    });
+
+    const stored = await runInDurableObject(identityStub(), (instance) => ({
+      company: instance.db
+        .prepare(`SELECT invoice_approved AS invoiceApproved FROM companies WHERE company_id = ?`)
+        .get(companyId),
+      operation: instance.db
+        .prepare(
+          `SELECT kind, status FROM billing_operations
+           WHERE subject_kind = 'company' AND subject_id = ? AND operation_id = 'op_o1_approved'`,
+        )
+        .get(companyId),
+      audit: instance.db
+        .prepare(
+          `SELECT subject_kind AS subjectKind, actor, cause_kind AS causeKind,
+                  cause_id AS causeId
+           FROM entitlement_audit
+           WHERE cause_kind = 'operator' AND cause_id = 'op_o1_approved'`,
+        )
+        .get(),
+    }));
+    expect(stored.company).toEqual({ invoiceApproved: 1 });
+    expect(stored.operation).toEqual({ kind: 'invoice-approve', status: 'pending' });
+    expect(stored.audit).toEqual({
+      subjectKind: 'company',
+      actor: `operator:${OPERATOR_EMAIL}`,
+      causeKind: 'operator',
+      causeId: 'op_o1_approved',
+    });
+  });
+
+  it('operator invoice approval refuses under ten seats and an already subscribed company', async () => {
+    const owner = await accessSession('company-o1-limits-owner');
+    const companyId = await createCompanyFor(owner, 'Invoice Limits Co');
+
+    const belowMinimum = await operatorFetch('/operator/invoice-approval', {
+      operatorEmail: OPERATOR_EMAIL,
+      companyId,
+      quantity: 9,
+      operationId: 'op_o1_below',
+    });
+    expect(belowMinimum.status).toBe(409);
+    expect(await belowMinimum.json()).toEqual({ error: 'Conflict', reason: 'below_minimum' });
+
+    await seedCompanySubscription(companyId, 3);
+    const subscribed = await operatorFetch('/operator/invoice-approval', {
+      operatorEmail: OPERATOR_EMAIL,
+      companyId,
+      quantity: 12,
+      operationId: 'op_o1_subscribed',
+    });
+    expect(subscribed.status).toBe(409);
+    expect(await subscribed.json()).toEqual({
+      error: 'Conflict',
+      reason: 'already_subscribed',
+    });
+  });
+
+  it('a settled invoice approval attaches a send_invoice subscription that entitles nobody', async () => {
+    const owner = await accessSession('company-o1-settle-owner');
+    const companyId = await createCompanyFor(owner, 'Invoice Settle Co');
+    await setCompanyCustomer(companyId, 'cus_o1_settle');
+
+    const approved = await operatorFetch('/operator/invoice-approval', {
+      operatorEmail: OPERATOR_EMAIL,
+      companyId,
+      quantity: 12,
+      operationId: 'op_o1_settle',
+    });
+    expect(approved.status).toBe(200);
+
+    const settled = await operatorFetch('/operator/invoice-approval/settle', {
+      operatorEmail: OPERATOR_EMAIL,
+      companyId,
+      operationId: 'op_o1_settle',
+      quantity: 12,
+      outcome: 'success',
+      processorSubscriptionId: 'sub_o1_settle',
+      status: 'active',
+      hostedInvoiceUrl: 'https://invoice.stripe.test/in_o1_settle',
+    });
+    expect(settled.status).toBe(200);
+    expect(await settled.json()).toEqual({ status: 'settled' });
+
+    const stored = await runInDurableObject(identityStub(), (instance) => ({
+      subscription: instance.db
+        .prepare(
+          `SELECT processor_subscription_id AS processorSubscriptionId,
+                  quantity, collection_method AS collectionMethod,
+                  first_paid_at AS firstPaidAt,
+                  hosted_invoice_url AS hostedInvoiceUrl
+           FROM company_subscriptions WHERE company_id = ?`,
+        )
+        .get(companyId),
+      operation: instance.db
+        .prepare(
+          `SELECT status, stripe_object_id AS stripeObjectId FROM billing_operations
+           WHERE subject_id = ? AND operation_id = 'op_o1_settle'`,
+        )
+        .get(companyId),
+      entitlements: readEntitlementsForAccount(instance.db, owner.accountId),
+    }));
+    expect(stored.subscription).toEqual({
+      processorSubscriptionId: 'sub_o1_settle',
+      quantity: 12,
+      collectionMethod: 'send_invoice',
+      firstPaidAt: null,
+      hostedInvoiceUrl: 'https://invoice.stripe.test/in_o1_settle',
+    });
+    expect(stored.operation).toEqual({ status: 'succeeded', stripeObjectId: 'sub_o1_settle' });
+    expect(stored.entitlements).toEqual([]);
+
+    const summary = await companyFetch('/companies', owner.cookie);
+    const summaryBody = (await summary.json()) as {
+      subscription: {
+        collectionMethod: string;
+        firstPaidAt: number | null;
+        hostedInvoiceUrl: string | null;
+      } | null;
+    };
+    expect(summaryBody.subscription).toMatchObject({
+      collectionMethod: 'send_invoice',
+      firstPaidAt: null,
+      hostedInvoiceUrl: 'https://invoice.stripe.test/in_o1_settle',
+    });
+  });
+
+  it('operator dispute review resolves a review hold, audits the actor, and a non-operator cannot', async () => {
+    const owner = await accessSession('company-o2-owner');
+    const companyId = await createCompanyFor(owner, 'Dispute Review Co');
+    await seedCompanySubscription(companyId, 3);
+    await runInDurableObject(identityStub(), (instance) => {
+      ensureBillingSubscription(instance.db, {
+        processorSubscriptionId: `sub_${companyId}`,
+        subjectKind: 'company',
+        subjectId: companyId,
+        now: 1,
+      });
+    });
+    await seedDisputeHold(`sub_${companyId}`, 'dp_o2_review', 'review');
+
+    const denied = await operatorFetch('/operator/disputes/review', {
+      operatorEmail: 'outsider@example.test',
+      disputeId: 'dp_o2_review',
+      outcome: 'won',
+      operationId: 'op_o2_denied',
+    });
+    expect(denied.status).toBe(403);
+
+    const unresolved = await runInDurableObject(identityStub(), (instance) => ({
+      hold: instance.db
+        .prepare(`SELECT state FROM billing_dispute_holds WHERE dispute_id = 'dp_o2_review'`)
+        .get(),
+      audits: instance.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM entitlement_audit
+           WHERE cause_kind = 'operator' AND cause_id = 'op_o2_denied'`,
+        )
+        .get(),
+    }));
+    expect(unresolved.hold).toEqual({ state: 'review' });
+    expect(unresolved.audits).toEqual({ count: 0 });
+
+    const resolved = await operatorFetch('/operator/disputes/review', {
+      operatorEmail: OPERATOR_EMAIL,
+      disputeId: 'dp_o2_review',
+      outcome: 'won',
+      operationId: 'op_o2_won',
+    });
+    expect(resolved.status).toBe(200);
+    expect(await resolved.json()).toEqual({
+      outcome: 'resolved',
+      disputeId: 'dp_o2_review',
+      state: 'won',
+      desiredCollection: 'active',
+    });
+
+    const stored = await runInDurableObject(identityStub(), (instance) => ({
+      hold: instance.db
+        .prepare(`SELECT state FROM billing_dispute_holds WHERE dispute_id = 'dp_o2_review'`)
+        .get(),
+      audit: instance.db
+        .prepare(
+          `SELECT subject_kind AS subjectKind, subject_id AS subjectId, actor, cause_id AS causeId
+           FROM entitlement_audit
+           WHERE cause_kind = 'operator' AND cause_id = 'op_o2_won'`,
+        )
+        .get(),
+      entitlements: readEntitlementsForAccount(instance.db, owner.accountId),
+    }));
+    expect(stored.hold).toEqual({ state: 'won' });
+    expect(stored.audit).toEqual({
+      subjectKind: 'company',
+      subjectId: companyId,
+      actor: `operator:${OPERATOR_EMAIL}`,
+      causeId: 'op_o2_won',
+    });
+    expect(stored.entitlements).toEqual([]);
+  });
+
+  it('operator dispute review never releases collection while another dispute still holds', async () => {
+    const owner = await accessSession('company-o2-holds-owner');
+    const companyId = await createCompanyFor(owner, 'Dispute Holds Co');
+    await seedCompanySubscription(companyId, 3);
+    await runInDurableObject(identityStub(), (instance) => {
+      ensureBillingSubscription(instance.db, {
+        processorSubscriptionId: `sub_${companyId}`,
+        subjectKind: 'company',
+        subjectId: companyId,
+        now: 1,
+      });
+      upsertDisputeHold(instance.db, {
+        disputeId: 'dp_o2_other_open',
+        processorSubscriptionId: `sub_${companyId}`,
+        state: 'open',
+        now: 2,
+      });
+      recomputeDesiredCollection(instance.db, {
+        processorSubscriptionId: `sub_${companyId}`,
+        cause: { kind: 'processor_event', id: 'evt_o2_pause', actor: 'stripe', reason: 'seed' },
+        now: 2,
+      });
+    });
+    await seedDisputeHold(`sub_${companyId}`, 'dp_o2_review_holds', 'review');
+    await runInDurableObject(identityStub(), (instance) => {
+      recomputeDesiredCollection(instance.db, {
+        processorSubscriptionId: `sub_${companyId}`,
+        cause: { kind: 'processor_event', id: 'evt_o2_pause_two', actor: 'stripe', reason: 'seed' },
+        now: 3,
+      });
+    });
+
+    const resolved = await operatorFetch('/operator/disputes/review', {
+      operatorEmail: OPERATOR_EMAIL,
+      disputeId: 'dp_o2_review_holds',
+      outcome: 'won',
+      operationId: 'op_o2_holds',
+    });
+    expect(resolved.status).toBe(200);
+    expect(await resolved.json()).toMatchObject({
+      outcome: 'resolved',
+      state: 'won',
+      desiredCollection: 'paused',
+    });
+
+    const stored = await runInDurableObject(identityStub(), (instance) => ({
+      ordering: instance.db
+        .prepare(
+          `SELECT desired_collection AS desiredCollection FROM billing_subscriptions
+           WHERE processor_subscription_id = ?`,
+        )
+        .get(`sub_${companyId}`),
+      openHolds: instance.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM billing_dispute_holds
+           WHERE processor_subscription_id = ? AND state IN ('open','review')`,
+        )
+        .get(`sub_${companyId}`),
+    }));
+    expect(stored.ordering).toEqual({ desiredCollection: 'paused' });
+    expect(stored.openHolds).toEqual({ count: 1 });
   });
 });

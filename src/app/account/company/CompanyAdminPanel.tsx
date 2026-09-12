@@ -430,6 +430,20 @@ export default function CompanyAdminPanel({
         <p data-testid="company-capacity" className="app-small">
           Capacity: {summary.capacity} seats
         </p>
+        {summary.awaitingPayment && (
+          <div data-testid="company-awaiting-payment" className="callout">
+            <p className="app-small">Awaiting payment</p>
+            {summary.hostedInvoiceUrl !== null && (
+              <a
+                data-testid="company-invoice-link"
+                href={summary.hostedInvoiceUrl}
+                className="app-small break-all underline"
+              >
+                View invoice
+              </a>
+            )}
+          </div>
+        )}
         {summary.pendingSeats !== null && (
           <div data-testid="company-pending-seats" className="callout">
             <p className="app-small">
@@ -459,7 +473,7 @@ export default function CompanyAdminPanel({
         <ul className="mt-3">
           {summary.members.map((member) => (
             <li key={member.accountId} data-testid={`company-member-${member.accountId}`} className="app-small">
-              {member.accountId} · {member.role} · joined{' '}
+              {member.displayName ?? member.accountId} · {member.role} · joined{' '}
               {member.joinedAt === null ? 'unknown' : new Date(member.joinedAt).toLocaleDateString()}
             </li>
           ))}

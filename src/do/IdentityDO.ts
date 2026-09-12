@@ -77,6 +77,14 @@ import {
   reserveSeatChange,
   settleSeatChange,
 } from '../lib/company/seats';
+import {
+  approveCompanyInvoice,
+  isAttachableSubscriptionStatus,
+  operatorEmailFor,
+  parseOperatorEmails,
+  reviewDisputeHold,
+  settleCompanyInvoice,
+} from '../lib/company/operator';
 import { resolveEffectivePlan } from '../lib/plan/effectivePlan';
 import { findReferralCode } from '../lib/referrals/codes';
 import { readReferralSummary } from '../lib/referrals/summary';
@@ -148,6 +156,10 @@ const COMPANY_SEATS_PATH = '/companies/seats';
 const COMPANY_SEAT_SETTLE_PATH = '/companies/seats/settle';
 const COMPANY_MEMBER_REVOKE_PATH = '/companies/members/revoke';
 const COMPANY_OWNER_PATH = '/companies/owner';
+const OPERATOR_INVOICE_APPROVAL_PATH = '/operator/invoice-approval';
+const OPERATOR_INVOICE_SETTLE_PATH = '/operator/invoice-approval/settle';
+const OPERATOR_DISPUTE_REVIEW_PATH = '/operator/disputes/review';
+const STRIPE_SUBSCRIPTION_ID_PATTERN = /^[A-Za-z0-9_]{1,255}$/;
 const BILLING_PAYLOAD_HASH_PATTERN = /^[0-9a-f]{64}$/;
 const OPERATION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 export const GLOBAL_IDENTITY_OBJECT_NAME = 'global';
@@ -238,13 +250,17 @@ function companyJson(
   };
 }
 
-function membershipJson(membership: CompanyMemberRecord): Record<string, unknown> {
+function membershipJson(
+  membership: CompanyMemberRecord,
+  preferredDisplayName: string | null,
+): Record<string, unknown> {
   return {
     accountId: membership.accountId,
     role: membership.role,
     state: membership.state,
     createdAt: membership.createdAt,
     revokedAt: membership.revokedAt,
+    preferredDisplayName,
   };
 }
 
@@ -265,6 +281,12 @@ function configuredTutorAccountCap(env: unknown): number | undefined {
   if (typeof raw !== 'string') return undefined;
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function configuredOperatorEmails(env: unknown): string | undefined {
+  if (typeof env !== 'object' || env === null) return undefined;
+  const raw = (env as { OPERATOR_EMAILS?: unknown }).OPERATOR_EMAILS;
+  return typeof raw === 'string' ? raw : undefined;
 }
 
 /**
@@ -734,6 +756,146 @@ function isCompanySeatSettleBody(value: unknown): value is {
   );
 }
 
+function isOperatorInvoiceApprovalBody(value: unknown): value is {
+  operatorEmail: string;
+  companyId: string;
+  quantity: number;
+  operationId: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 4 &&
+    typeof body.operatorEmail === 'string' &&
+    body.operatorEmail.length >= 3 &&
+    body.operatorEmail.length <= 254 &&
+    typeof body.companyId === 'string' &&
+    body.companyId.length >= 1 &&
+    body.companyId.length <= 128 &&
+    typeof body.quantity === 'number' &&
+    Number.isInteger(body.quantity) &&
+    body.quantity >= 1 &&
+    body.quantity <= 10_000 &&
+    typeof body.operationId === 'string' &&
+    OPERATION_ID_PATTERN.test(body.operationId)
+  );
+}
+
+interface OperatorInvoiceSettleBody {
+  operatorEmail: string;
+  companyId: string;
+  operationId: string;
+  quantity: number;
+  outcome: 'success' | 'failure' | 'unknown';
+  processorSubscriptionId?: string;
+  status?: string;
+  currentPeriodEnd?: number | null;
+  hostedInvoiceUrl?: string | null;
+}
+
+function isOperatorInvoiceSettleBody(
+  value: unknown,
+): value is OperatorInvoiceSettleBody {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  const allowed = new Set([
+    'operatorEmail',
+    'companyId',
+    'operationId',
+    'quantity',
+    'outcome',
+    'processorSubscriptionId',
+    'status',
+    'currentPeriodEnd',
+    'hostedInvoiceUrl',
+  ]);
+  if (!Object.keys(body).every((key) => allowed.has(key))) return false;
+  if (
+    typeof body.operatorEmail !== 'string' ||
+    body.operatorEmail.length < 3 ||
+    body.operatorEmail.length > 254 ||
+    typeof body.companyId !== 'string' ||
+    body.companyId.length < 1 ||
+    body.companyId.length > 128 ||
+    typeof body.operationId !== 'string' ||
+    !OPERATION_ID_PATTERN.test(body.operationId) ||
+    typeof body.quantity !== 'number' ||
+    !Number.isInteger(body.quantity) ||
+    body.quantity < 10 ||
+    body.quantity > 10_000
+  ) {
+    return false;
+  }
+  if (body.outcome === 'success') {
+    if (
+      typeof body.processorSubscriptionId !== 'string' ||
+      !STRIPE_SUBSCRIPTION_ID_PATTERN.test(body.processorSubscriptionId) ||
+      !isAttachableSubscriptionStatus(body.status)
+    ) {
+      return false;
+    }
+  } else if (body.outcome !== 'failure' && body.outcome !== 'unknown') {
+    return false;
+  }
+  if (
+    body.currentPeriodEnd !== undefined &&
+    body.currentPeriodEnd !== null &&
+    typeof body.currentPeriodEnd !== 'number'
+  ) {
+    return false;
+  }
+  if (
+    body.hostedInvoiceUrl !== undefined &&
+    body.hostedInvoiceUrl !== null &&
+    (typeof body.hostedInvoiceUrl !== 'string' ||
+      body.hostedInvoiceUrl.length > 2_048)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isOperatorDisputeReviewBody(value: unknown): value is {
+  operatorEmail: string;
+  disputeId: string;
+  outcome: 'won' | 'lost';
+  operationId: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 4 &&
+    typeof body.operatorEmail === 'string' &&
+    body.operatorEmail.length >= 3 &&
+    body.operatorEmail.length <= 254 &&
+    typeof body.disputeId === 'string' &&
+    body.disputeId.length >= 1 &&
+    body.disputeId.length <= 255 &&
+    (body.outcome === 'won' || body.outcome === 'lost') &&
+    typeof body.operationId === 'string' &&
+    OPERATION_ID_PATTERN.test(body.operationId)
+  );
+}
+
+function operatorAuthorizationError(
+  operatorEmails: string | undefined,
+  operatorEmail: string,
+): Response | null {
+  if (parseOperatorEmails(operatorEmails).size === 0) {
+    return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+  }
+  if (operatorEmailFor(operatorEmails, operatorEmail) === null) {
+    return Response.json({ error: 'Forbidden' }, { status: 403, headers: noStore() });
+  }
+  return null;
+}
+
 function isCompanyMemberBody(value: unknown): value is { accountId: string } {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false;
@@ -956,10 +1118,12 @@ function pendingCollectionSubject(
 export class IdentityDO extends DurableObject {
   readonly db: RoomDatabase;
   readonly tutorAccountCap: number | undefined;
+  readonly operatorEmails: string | undefined;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
     this.tutorAccountCap = configuredTutorAccountCap(env);
+    this.operatorEmails = configuredOperatorEmails(env);
     this.db = new DODatabase(ctx.storage.sql, ctx.storage);
     applyIdentitySchema(this.db);
     applyBillingRateLimitSchema(this.db);
@@ -969,6 +1133,126 @@ export class IdentityDO extends DurableObject {
     purgeExpiredSessions(this.db);
     purgeExpiredGuestAccounts(this.db);
     const url = new URL(request.url);
+
+    if (url.pathname === OPERATOR_INVOICE_APPROVAL_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readExactJson(request, isOperatorInvoiceApprovalBody);
+      if ('response' in parsed) return parsed.response;
+      const denied = operatorAuthorizationError(
+        this.operatorEmails,
+        parsed.body.operatorEmail,
+      );
+      if (denied) return denied;
+      const operatorEmail = operatorEmailFor(
+        this.operatorEmails,
+        parsed.body.operatorEmail,
+      )!;
+      const now = Date.now();
+      const requestHash = await sha256Hex(
+        `${parsed.body.companyId}:${parsed.body.quantity}`,
+      );
+      const outcome = approveCompanyInvoice(this.db, {
+        companyId: parsed.body.companyId,
+        quantity: parsed.body.quantity,
+        operationId: parsed.body.operationId,
+        operatorEmail,
+        requestHash,
+        now,
+      });
+      if (outcome.outcome === 'approved') {
+        const subscription = readCompanySubscription(this.db, outcome.companyId);
+        return Response.json(
+          {
+            status: outcome.operationStatus,
+            companyId: outcome.companyId,
+            operationId: outcome.operationId,
+            quantity: outcome.quantity,
+            processorCustomerId: outcome.processorCustomerId,
+            ...(subscription
+              ? { processorSubscriptionId: subscription.processorSubscriptionId }
+              : {}),
+          },
+          { headers: noStore() },
+        );
+      }
+      if (outcome.outcome === 'not_found') {
+        return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+      }
+      return Response.json(
+        { error: 'Conflict', reason: outcome.outcome },
+        { status: 409, headers: noStore() },
+      );
+    }
+
+    if (url.pathname === OPERATOR_INVOICE_SETTLE_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readExactJson(request, isOperatorInvoiceSettleBody);
+      if ('response' in parsed) return parsed.response;
+      const denied = operatorAuthorizationError(
+        this.operatorEmails,
+        parsed.body.operatorEmail,
+      );
+      if (denied) return denied;
+      const outcome = settleCompanyInvoice(this.db, {
+        companyId: parsed.body.companyId,
+        operationId: parsed.body.operationId,
+        quantity: parsed.body.quantity,
+        outcome: parsed.body.outcome,
+        processorSubscriptionId: parsed.body.processorSubscriptionId,
+        status: isAttachableSubscriptionStatus(parsed.body.status)
+          ? parsed.body.status
+          : undefined,
+        currentPeriodEnd: parsed.body.currentPeriodEnd,
+        hostedInvoiceUrl: parsed.body.hostedInvoiceUrl,
+        now: Date.now(),
+      });
+      if (outcome.outcome === 'settled') {
+        return Response.json({ status: 'settled' }, { headers: noStore() });
+      }
+      if (outcome.outcome === 'failed') {
+        return Response.json({ status: 'failed' }, { headers: noStore() });
+      }
+      if (outcome.outcome === 'pending') {
+        return Response.json({ status: 'pending' }, { status: 202, headers: noStore() });
+      }
+      return Response.json(
+        { error: 'Conflict', reason: outcome.outcome },
+        { status: 409, headers: noStore() },
+      );
+    }
+
+    if (url.pathname === OPERATOR_DISPUTE_REVIEW_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readExactJson(request, isOperatorDisputeReviewBody);
+      if ('response' in parsed) return parsed.response;
+      const denied = operatorAuthorizationError(
+        this.operatorEmails,
+        parsed.body.operatorEmail,
+      );
+      if (denied) return denied;
+      const operatorEmail = operatorEmailFor(
+        this.operatorEmails,
+        parsed.body.operatorEmail,
+      )!;
+      const outcome = reviewDisputeHold(this.db, {
+        disputeId: parsed.body.disputeId,
+        state: parsed.body.outcome,
+        operationId: parsed.body.operationId,
+        operatorEmail,
+        now: Date.now(),
+      });
+      if (outcome.outcome === 'resolved') {
+        return Response.json(outcome, { headers: noStore() });
+      }
+      if (outcome.outcome === 'not_review') {
+        return Response.json(
+          { error: 'Conflict', reason: 'not_review' },
+          { status: 409, headers: noStore() },
+        );
+      }
+      return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+    }
+
     if (url.pathname === RESOLVE_PATH) {
       if (request.method !== 'POST') return methodNotAllowed('POST');
       const parsed = await readExactJson(request, isSubjectBody);
@@ -1804,7 +2088,11 @@ export class IdentityDO extends DurableObject {
           {
             company: companyJson(company, membership.role),
             members: listActiveMembers(this.db, membership.companyId).map(
-              membershipJson,
+              (member) =>
+                membershipJson(
+                  member,
+                  readPreferredDisplayName(this.db, member.accountId),
+                ),
             ),
               subscription: subscription
                 ? {
@@ -1815,6 +2103,7 @@ export class IdentityDO extends DurableObject {
                   collectionMethod: subscription.collectionMethod,
                   currentPeriodEnd: subscription.currentPeriodEnd,
                   firstPaidAt: subscription.firstPaidAt,
+                  hostedInvoiceUrl: subscription.hostedInvoiceUrl,
                 }
               : null,
           },
@@ -1997,7 +2286,10 @@ export class IdentityDO extends DurableObject {
       return Response.json(
         {
           company: companyJson(outcome.company, outcome.membership.role),
-          membership: membershipJson(outcome.membership),
+          membership: membershipJson(
+            outcome.membership,
+            readPreferredDisplayName(this.db, outcome.membership.accountId),
+          ),
           operation: outcome.operation,
         },
         { status: outcome.status, headers: noStore() },
@@ -2053,7 +2345,10 @@ export class IdentityDO extends DurableObject {
       return Response.json(
         {
           company: companyJson(outcome, membership.role),
-          membership: membershipJson(membership),
+          membership: membershipJson(
+            membership,
+            readPreferredDisplayName(this.db, membership.accountId),
+          ),
           operation: { id: parsed.body.operationId, status: 'succeeded' },
         },
         { headers: noStore() },

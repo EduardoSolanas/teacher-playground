@@ -501,4 +501,66 @@ describe('CompanyAdminPanel summary', () => {
     expect(ownerRow.textContent).toContain(new Date(joinedAt).toLocaleDateString());
     expect(screen.getByTestId('company-member-acc_tutor').textContent).toContain('member');
   });
+
+  it('renders each member preferred display name and falls back to the account id', async () => {
+    const namedBody = {
+      ...summaryBody,
+      members: [
+        { ...summaryBody.members[0], preferredDisplayName: 'Ada Lovelace' },
+        { ...summaryBody.members[1], preferredDisplayName: null },
+      ],
+    };
+    const request: AjaxFetch = async () => jsonResponse(200, namedBody);
+
+    render(<CompanyAdminPanel request={request} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-summary')).toBeTruthy();
+    });
+    expect(screen.getByTestId('company-member-acc_owner').textContent).toContain(
+      'Ada Lovelace',
+    );
+    const fallbackRow = screen.getByTestId('company-member-acc_tutor');
+    expect(fallbackRow.textContent).toContain('acc_tutor');
+    expect(fallbackRow.textContent).not.toContain('null');
+  });
+
+  it('shows the hosted invoice link and awaiting-payment state until the first payment', async () => {
+    const awaitingBody = {
+      ...summaryBody,
+      subscription: {
+        ...summaryBody.subscription,
+        firstPaidAt: null,
+        hostedInvoiceUrl: 'https://invoice.stripe.test/in_awaiting',
+      },
+    };
+    const request: AjaxFetch = async () => jsonResponse(200, awaitingBody);
+
+    render(<CompanyAdminPanel request={request} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-awaiting-payment')).toBeTruthy();
+    });
+    const link = screen.getByTestId('company-invoice-link') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('https://invoice.stripe.test/in_awaiting');
+  });
+
+  it('hides the awaiting-payment state once the first invoice is paid', async () => {
+    const paidBody = {
+      ...summaryBody,
+      subscription: {
+        ...summaryBody.subscription,
+        firstPaidAt: joinedAt,
+        hostedInvoiceUrl: 'https://invoice.stripe.test/in_paid',
+      },
+    };
+    const request: AjaxFetch = async () => jsonResponse(200, paidBody);
+
+    render(<CompanyAdminPanel request={request} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-summary')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('company-awaiting-payment')).toBeNull();
+  });
 });

@@ -1,8 +1,8 @@
 import type { RoomDatabase } from '../whiteboard/db';
-import { validateAuditContext } from './identityStore';
+import { validateAuditContext, IdentityInputError } from './identityStore';
 import type { EntitlementRow, EntitlementSource, EntitlementStatus } from '../plan/effectivePlan';
 import { PAST_DUE_GRACE_MS, type PlanId } from '../plan/catalog';
-import type { CompanySubscriptionStatus } from '../company/seats';
+import type { CollectionMethod, CompanySubscriptionStatus } from '../company/seats';
 
 export type EntitlementCauseKind =
   | 'processor_event'
@@ -882,4 +882,88 @@ export function releaseCompanySeatChange(
     )
     .run(args.now, args.companyId, args.operationId);
   return { updated: result.changes === 1 };
+}
+
+/**
+ * O-1/C-3: projects a freshly created corporate subscription. Members stay
+ * unentitled because first_paid_at is NULL until C-4; the hosted invoice link
+ * lets the company page show the awaiting-payment state.
+ */
+export function attachCompanySubscription(
+  db: RoomDatabase,
+  args: {
+    companyId: string;
+    processorSubscriptionId: string;
+    quantity: number;
+    status: CompanySubscriptionStatus;
+    collectionMethod: CollectionMethod;
+    currentPeriodEnd: number | null;
+    hostedInvoiceUrl: string | null;
+    now: number;
+  },
+): { created: boolean } {
+  const inserted = db
+    .prepare(
+      `INSERT OR IGNORE INTO company_subscriptions (
+         company_id, processor_subscription_id, quantity, status,
+         collection_method, current_period_end, first_paid_at,
+         hosted_invoice_url, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+    )
+    .run(
+      args.companyId,
+      args.processorSubscriptionId,
+      args.quantity,
+      args.status,
+      args.collectionMethod,
+      args.currentPeriodEnd,
+      args.hostedInvoiceUrl,
+      args.now,
+    );
+  return { created: inserted.changes === 1 };
+}
+
+/**
+ * O-1/O-2: records the operator action itself when no entitlement write already
+ * carried the same cause. Exactly-once per (subject, cause); the actor comes
+ * from the verified operator identity only.
+ */
+export function recordOperatorAction(
+  db: RoomDatabase,
+  args: {
+    subjectKind: 'account' | 'company';
+    subjectId: string;
+    cause: EntitlementCause;
+    now: number;
+  },
+): { recorded: boolean } {
+  if (args.cause.kind !== 'operator') {
+    throw new IdentityInputError('operator cause required');
+  }
+  const { actor, reason } = validateAuditContext(args.cause);
+  const existing = db
+    .prepare(
+      `SELECT audit_id FROM entitlement_audit
+       WHERE subject_kind = ? AND subject_id = ?
+         AND cause_kind = 'operator' AND cause_id = ?`,
+    )
+    .get(args.subjectKind, args.subjectId, args.cause.id);
+  if (existing) return { recorded: false };
+
+  db.prepare(
+    `INSERT INTO entitlement_audit (
+       audit_id, subject_kind, subject_id, action, cause_kind, cause_id,
+       actor, reason, previous_plan, next_plan, previous_status, next_status,
+       processor_event_id, created_at
+     ) VALUES (?, ?, ?, 'operator_action', 'operator', ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?)`,
+  ).run(
+    crypto.randomUUID(),
+    args.subjectKind,
+    args.subjectId,
+    args.cause.id,
+    actor,
+    reason,
+    args.now,
+  );
+  return { recorded: true };
 }

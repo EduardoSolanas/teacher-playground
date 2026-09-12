@@ -5,6 +5,7 @@ import {
   checkoutSessionRequest,
   collectionStateRequest,
   eventsFetchMapRequest,
+  invoiceSubscriptionRequest,
   portalSessionRequest,
 } from './stripeRequest';
 
@@ -126,6 +127,53 @@ describe('collectionStateRequest', () => {
     expect(params.get('pause_collection')).toBe('');
     expect(params.get('pause_collection[behavior]')).toBeNull();
     expectStripeHeaders(request);
+  });
+});
+
+describe('invoiceSubscriptionRequest', () => {
+  it('creates an invoice-first subscription with the thirty-day due window and invoice link', async () => {
+    const request = invoiceSubscriptionRequest(BASE, KEY, {
+      companyId: 'co_1',
+      operationId: 'op_invoice_1',
+      processorCustomerId: 'cus_1',
+      priceId: 'price_corporate_seat',
+      quantity: 12,
+    });
+    expect(request.method).toBe('POST');
+    expect(new URL(request.url).pathname).toBe('/v1/subscriptions');
+    expect(request.headers.get('content-type')).toBe('application/x-www-form-urlencoded');
+    expect(request.headers.get('idempotency-key')).toBe(
+      'op:company:co_1:op_invoice_1',
+    );
+    expectStripeHeaders(request);
+    const body = Object.fromEntries(new URLSearchParams(await request.text()));
+    expect(body).toEqual({
+      customer: 'cus_1',
+      collection_method: 'send_invoice',
+      days_until_due: '30',
+      'items[0][price]': 'price_corporate_seat',
+      'items[0][quantity]': '12',
+      'expand[0]': 'latest_invoice',
+    });
+  });
+
+  it('refuses malformed Stripe ids and a non-positive quantity', () => {
+    const valid = {
+      companyId: 'co_1',
+      operationId: 'op_invoice_1',
+      processorCustomerId: 'cus_1',
+      priceId: 'price_corporate_seat',
+      quantity: 12,
+    };
+    expect(() =>
+      invoiceSubscriptionRequest(BASE, KEY, { ...valid, processorCustomerId: 'not a customer' }),
+    ).toThrow(InvalidStripeIdError);
+    expect(() =>
+      invoiceSubscriptionRequest(BASE, KEY, { ...valid, priceId: 'price with spaces' }),
+    ).toThrow(InvalidStripeIdError);
+    expect(() =>
+      invoiceSubscriptionRequest(BASE, KEY, { ...valid, quantity: 0 }),
+    ).toThrow(InvalidStripeIdError);
   });
 });
 

@@ -66,6 +66,7 @@ import { verifyStripeSignature } from './lib/billing/stripeSignature';
 import {
   checkoutSessionRequest,
   eventsFetchMapRequest,
+  invoiceSubscriptionRequest,
   portalSessionRequest,
 } from './lib/billing/stripeRequest';
 import { executeStripeRequest } from './lib/billing/stripeClient';
@@ -86,6 +87,11 @@ import {
   type FetchedReconcileSubscription,
   type ReconcileDispute,
 } from './lib/billing/reconcile';
+import {
+  isAttachableSubscriptionStatus,
+  operatorEmailFor,
+  parseOperatorEmails,
+} from './lib/company/operator';
 
 export interface Env {
   ROOMS: DurableObjectNamespace;
@@ -114,6 +120,8 @@ export interface Env {
   STRIPE_API_BASE?: string;
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
+  /** Comma-separated operator allowlist. Unset disables the operator surface. */
+  OPERATOR_EMAILS?: string;
 }
 
 // Room ids cannot be enumerated at build time, so the static export contains a
@@ -156,6 +164,8 @@ const COMPANY_INVITE_REDEEM_API = '/api/company/invites/redeem';
 const COMPANY_SEATS_API = '/api/company/seats';
 const COMPANY_MEMBER_REVOKE_API = '/api/company/members/revoke';
 const COMPANY_OWNER_API = '/api/company/owner';
+const OPERATOR_INVOICE_APPROVAL_API = '/api/company/operator/invoice-approval';
+const OPERATOR_DISPUTE_REVIEW_API = '/api/company/operator/disputes/review';
 const AUTH_GUEST = '/auth/guest';
 const IDENTITY_ACCOUNT_ROOMS = 'https://identity/accounts/rooms';
 const IDENTITY_GUESTS_PURGE = 'https://identity/guests/purge';
@@ -169,6 +179,9 @@ const IDENTITY_COMPANY_MEMBERS_REVOKE = 'https://identity/companies/members/revo
 const IDENTITY_COMPANY_OWNER = 'https://identity/companies/owner';
 const IDENTITY_COMPANY_INVITES = 'https://identity/companies/invites';
 const IDENTITY_COMPANY_INVITE_REDEEM = 'https://identity/companies/invites/redeem';
+const IDENTITY_OPERATOR_INVOICE_APPROVAL = 'https://identity/operator/invoice-approval';
+const IDENTITY_OPERATOR_INVOICE_SETTLE = 'https://identity/operator/invoice-approval/settle';
+const IDENTITY_OPERATOR_DISPUTE_REVIEW = 'https://identity/operator/disputes/review';
 const IDENTITY_BILLING_OPERATIONS = 'https://identity/billing/operations';
 const IDENTITY_BILLING_RATE_LIMIT = 'https://identity/billing/rate-limit';
 const IDENTITY_BILLING_CUSTOMER = 'https://identity/billing/customer';
@@ -1202,6 +1215,253 @@ async function companyOwnerRoute(
   ));
 }
 
+function isOperatorInvoiceApprovalApiBody(value: unknown): value is {
+  companyId: string;
+  quantity: number;
+  operationId: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 3 &&
+    typeof body.companyId === 'string' &&
+    body.companyId.length >= 1 &&
+    body.companyId.length <= 128 &&
+    typeof body.quantity === 'number' &&
+    Number.isInteger(body.quantity) &&
+    body.quantity >= 1 &&
+    body.quantity <= 10_000 &&
+    typeof body.operationId === 'string' &&
+    BILLING_OPERATION_ID_RE.test(body.operationId)
+  );
+}
+
+function isOperatorDisputeReviewApiBody(value: unknown): value is {
+  disputeId: string;
+  outcome: 'won' | 'lost';
+  operationId: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 3 &&
+    typeof body.disputeId === 'string' &&
+    body.disputeId.length >= 1 &&
+    body.disputeId.length <= 255 &&
+    (body.outcome === 'won' || body.outcome === 'lost') &&
+    typeof body.operationId === 'string' &&
+    BILLING_OPERATION_ID_RE.test(body.operationId)
+  );
+}
+
+function operatorSurfaceGuard(
+  env: Env,
+  principal: VerifiedAccessPrincipal,
+): { email: string } | Response {
+  if (parseOperatorEmails(env.OPERATOR_EMAILS).size === 0) {
+    return withSecurityHeaders(Response.json(
+      { error: 'Not found' },
+      { status: 404, headers: { 'Cache-Control': 'no-store' } },
+    ));
+  }
+  const email = operatorEmailFor(env.OPERATOR_EMAILS, principal.email);
+  if (email === null) {
+    return withSecurityHeaders(Response.json(
+      { error: 'Forbidden' },
+      { status: 403, headers: { 'Cache-Control': 'no-store' } },
+    ));
+  }
+  return { email };
+}
+
+async function identityOperatorFetch(
+  env: Env,
+  path: string,
+  body: unknown,
+): Promise<Response> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  return identity.fetch(new Request(`https://identity${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }));
+}
+
+async function settleOperatorInvoiceViaDo(
+  env: Env,
+  body: Record<string, unknown>,
+): Promise<boolean> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const response = await identity.fetch(new Request(IDENTITY_OPERATOR_INVOICE_SETTLE, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }));
+  return response.ok;
+}
+
+function operatorInvoicePending(operationId: string): Response {
+  return withSecurityHeaders(Response.json(
+    { status: 'pending', operationId },
+    { status: 202, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+async function operatorInvoiceApprovalRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    ));
+  }
+  const guard = operatorSurfaceGuard(env, principal);
+  if (guard instanceof Response) return guard;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+  if (!isOperatorInvoiceApprovalApiBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+
+  const reservationResponse = await identityOperatorFetch(
+    env,
+    '/operator/invoice-approval',
+    {
+      operatorEmail: guard.email,
+      companyId: read.body.companyId,
+      quantity: read.body.quantity,
+      operationId: read.body.operationId,
+    },
+  );
+  if (!reservationResponse.ok) {
+    return withSecurityHeaders(new Response(reservationResponse.body, {
+      status: reservationResponse.status,
+      headers: reservationResponse.headers,
+    }));
+  }
+  const reservation = (await reservationResponse.json()) as {
+    status: 'pending' | 'failed' | 'succeeded';
+    companyId: string;
+    operationId: string;
+    quantity: number;
+    processorCustomerId: string;
+    processorSubscriptionId?: string;
+  };
+  if (reservation.status === 'succeeded') {
+    return withSecurityHeaders(Response.json(
+      {
+        status: 'created',
+        operationId: reservation.operationId,
+        processorSubscriptionId: reservation.processorSubscriptionId ?? null,
+      },
+      { headers: { 'Cache-Control': 'no-store' } },
+    ));
+  }
+
+  const billing = billingEnvFor(env);
+  const priceId = billingPriceId(env, 'corporate_seat');
+  if (!billing.apiBaseAllowed || billing.secretKey === null || priceId === null) {
+    return billingUnavailable();
+  }
+  const settleBase = {
+    operatorEmail: guard.email,
+    companyId: reservation.companyId,
+    operationId: reservation.operationId,
+    quantity: reservation.quantity,
+  };
+  let stripeResult;
+  try {
+    stripeResult = await executeStripeRequest(
+      invoiceSubscriptionRequest(billing.apiBaseUrl, billing.secretKey, {
+        companyId: reservation.companyId,
+        operationId: reservation.operationId,
+        processorCustomerId: reservation.processorCustomerId,
+        priceId,
+        quantity: reservation.quantity,
+      }),
+      billing.secretKey,
+    );
+  } catch {
+    stripeResult = null;
+  }
+
+  if (stripeResult === null) {
+    await settleOperatorInvoiceViaDo(env, { ...settleBase, outcome: 'unknown' });
+    return operatorInvoicePending(reservation.operationId);
+  }
+  if (stripeResult.ok) {
+    const subscription = normalizeSubscription(stripeResult.json);
+    if (
+      subscription === null ||
+      !isAttachableSubscriptionStatus(subscription.status)
+    ) {
+      await settleOperatorInvoiceViaDo(env, { ...settleBase, outcome: 'failure' });
+      return stripeRequestFailed();
+    }
+    const settled = await settleOperatorInvoiceViaDo(env, {
+      ...settleBase,
+      outcome: 'success',
+      processorSubscriptionId: subscription.id,
+      status: subscription.status,
+      currentPeriodEnd: subscription.currentPeriodEnd,
+      hostedInvoiceUrl: subscription.hostedInvoiceUrl,
+    });
+    if (!settled) return billingConflict();
+    return withSecurityHeaders(Response.json(
+      {
+        status: 'created',
+        operationId: reservation.operationId,
+        processorSubscriptionId: subscription.id,
+        hostedInvoiceUrl: subscription.hostedInvoiceUrl,
+      },
+      { headers: { 'Cache-Control': 'no-store' } },
+    ));
+  }
+  if (stripeResult.status >= 400 && stripeResult.status < 500) {
+    await settleOperatorInvoiceViaDo(env, { ...settleBase, outcome: 'failure' });
+    return stripeRequestFailed();
+  }
+  await settleOperatorInvoiceViaDo(env, { ...settleBase, outcome: 'unknown' });
+  return operatorInvoicePending(reservation.operationId);
+}
+
+async function operatorDisputeReviewRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    ));
+  }
+  const guard = operatorSurfaceGuard(env, principal);
+  if (guard instanceof Response) return guard;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+  if (!isOperatorDisputeReviewApiBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  const result = await identityOperatorFetch(env, '/operator/disputes/review', {
+    operatorEmail: guard.email,
+    disputeId: read.body.disputeId,
+    outcome: read.body.outcome,
+    operationId: read.body.operationId,
+  });
+  return withSecurityHeaders(new Response(result.body, {
+    status: result.status,
+    headers: result.headers,
+  }));
+}
+
 async function accountExport(
   env: Env,
   request: Request,
@@ -1640,6 +1900,7 @@ interface NormalizedSubscription {
   pauseCollection: { behavior: string } | null;
   quantity: number | null;
   unitAmount: number | null;
+  hostedInvoiceUrl: string | null;
 }
 
 function normalizeSubscription(value: unknown): NormalizedSubscription | null {
@@ -1651,6 +1912,8 @@ function normalizeSubscription(value: unknown): NormalizedSubscription | null {
   const firstItem = Array.isArray(items?.data) ? recordOf(items.data[0]) : null;
   const price = recordOf(firstItem?.price);
   const pauseCollection = recordOf(record.pause_collection);
+  const latestInvoice = recordOf(record.latest_invoice);
+  const hostedInvoiceUrl = latestInvoice?.hosted_invoice_url;
   return {
     id,
     customer: idValue(record.customer),
@@ -1671,6 +1934,10 @@ function normalizeSubscription(value: unknown): NormalizedSubscription | null {
     unitAmount:
       typeof price?.unit_amount === 'number' && Number.isFinite(price.unit_amount)
         ? price.unit_amount
+        : null,
+    hostedInvoiceUrl:
+      typeof hostedInvoiceUrl === 'string' && hostedInvoiceUrl.length > 0
+        ? hostedInvoiceUrl
         : null,
   };
 }
@@ -2829,6 +3096,12 @@ const worker = {
       }
       if (url.pathname === COMPANY_OWNER_API) {
         return companyOwnerRoute(env, request, principal);
+      }
+      if (url.pathname === OPERATOR_INVOICE_APPROVAL_API) {
+        return operatorInvoiceApprovalRoute(env, request, principal);
+      }
+      if (url.pathname === OPERATOR_DISPUTE_REVIEW_API) {
+        return operatorDisputeReviewRoute(env, request, principal);
       }
       if (url.pathname === BILLING_CHECKOUT_PATH) {
         return billingCheckout(env, request, principal);

@@ -26,6 +26,8 @@ export interface VerifiedAccessPrincipal {
   readonly subject: string;
   /** IdP profile label only. Never used to select or merge an account. */
   readonly displayName?: string;
+  /** Verified IdP email, only read for the explicit operator allowlist. */
+  readonly email?: string;
 }
 
 export class AccessVerificationError extends Error {
@@ -51,6 +53,7 @@ interface JwtClaims {
   type?: unknown;
   service_token_id?: unknown;
   token_type?: unknown;
+  email?: unknown;
 }
 
 interface CachedJwks {
@@ -251,9 +254,18 @@ function validateClaims(
   const nbf = asFiniteNumber(claims.nbf);
   if (nbf > current + CLOCK_SKEW_SECONDS || nbf >= exp) fail();
   const displayName = displayNameFromAccessClaims(claims as Record<string, unknown>);
-  return displayName
-    ? { issuer, subject: claims.sub, displayName }
-    : { issuer, subject: claims.sub };
+  const email =
+    typeof claims.email === 'string' &&
+    claims.email.length >= 1 &&
+    claims.email.length <= 512
+      ? claims.email
+      : undefined;
+  return {
+    issuer,
+    subject: claims.sub,
+    ...(displayName ? { displayName } : {}),
+    ...(email ? { email } : {}),
+  };
 }
 
 /** Clears a process-local cache in tests or during an explicit key-rotation hook. */

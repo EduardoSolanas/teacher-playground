@@ -2,6 +2,7 @@ export type CompanyRole = 'owner' | 'admin' | 'member';
 
 export interface CompanyMemberSummary {
   accountId: string;
+  displayName: string | null;
   role: CompanyRole;
   joinedAt: number | null;
 }
@@ -18,6 +19,8 @@ export interface CompanySummary {
   role: CompanyRole;
   capacity: number;
   pendingSeats: PendingSeatChange | null;
+  awaitingPayment: boolean;
+  hostedInvoiceUrl: string | null;
   members: CompanyMemberSummary[];
 }
 
@@ -25,6 +28,8 @@ interface CompanySubscriptionSummary {
   quantity: number;
   pendingQuantity: number | null;
   pendingOperationId: string | null;
+  firstPaidAt: number | null;
+  hostedInvoiceUrl: string | null;
 }
 
 function isRole(value: unknown): value is CompanyRole {
@@ -39,8 +44,13 @@ function toMember(entry: unknown): CompanyMemberSummary | null {
   const role = record.role;
   if (!isRole(role)) return null;
   const joinedAt = record.createdAt;
+  const displayName = record.preferredDisplayName;
   return {
     accountId,
+    displayName:
+      typeof displayName === 'string' && displayName.trim().length > 0
+        ? displayName
+        : null,
     role,
     joinedAt: typeof joinedAt === 'number' ? joinedAt : null,
   };
@@ -59,6 +69,12 @@ function toSubscription(value: unknown): CompanySubscriptionSummary | null {
       typeof record.pendingQuantity === 'number' ? record.pendingQuantity : null,
     pendingOperationId:
       typeof record.pendingOperationId === 'string' ? record.pendingOperationId : null,
+    firstPaidAt:
+      typeof record.firstPaidAt === 'number' ? record.firstPaidAt : null,
+    hostedInvoiceUrl:
+      typeof record.hostedInvoiceUrl === 'string' && record.hostedInvoiceUrl.length > 0
+        ? record.hostedInvoiceUrl
+        : null,
   };
 }
 
@@ -139,6 +155,8 @@ export function parseCompanySummary(payload: unknown): CompanySummary | null {
     role,
     capacity,
     pendingSeats,
+    awaitingPayment: subscription !== null && subscription.firstPaidAt === null,
+    hostedInvoiceUrl: subscription?.hostedInvoiceUrl ?? null,
     members,
   };
 }

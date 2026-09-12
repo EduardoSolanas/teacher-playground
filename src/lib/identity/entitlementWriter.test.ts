@@ -11,7 +11,9 @@ import {
   resolveAccountForSubject,
 } from './identityStore';
 import {
+  attachCompanySubscription,
   readEntitlementsForAccount,
+  recordOperatorAction,
   releaseCompanySeatChange,
   reserveCompanySeatChange,
   settleCompanySeatChange,
@@ -580,5 +582,152 @@ describe('entitlementWriter company entitlement deletion (C-11/C-13)', () => {
     });
     expect(replay).toEqual({ deleted: false });
     expect(auditRows(db).filter((row) => row.causeId === 'delete-once')).toHaveLength(1);
+  });
+});
+
+describe('entitlementWriter operator actions and invoice subscription (O-1/O-2)', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    applyIdentitySchema(db);
+  });
+
+  it('records one operator audit row per cause and skips a replayed cause', () => {
+    const cause = {
+      kind: 'operator' as const,
+      id: 'op-approve-1',
+      actor: 'operator:ops@example.test',
+      reason: 'invoice approval',
+    };
+
+    const recorded = recordOperatorAction(db, {
+      subjectKind: 'company',
+      subjectId: 'co-audit',
+      cause,
+      now: 7_000,
+    });
+    expect(recorded).toEqual({ recorded: true });
+
+    const replay = recordOperatorAction(db, {
+      subjectKind: 'company',
+      subjectId: 'co-audit',
+      cause,
+      now: 8_000,
+    });
+    expect(replay).toEqual({ recorded: false });
+
+    expect(auditRows(db)).toEqual([
+      {
+        auditId: expect.any(String),
+        subjectKind: 'company',
+        subjectId: 'co-audit',
+        action: 'operator_action',
+        causeKind: 'operator',
+        causeId: 'op-approve-1',
+        actor: 'operator:ops@example.test',
+        reason: 'invoice approval',
+        previousPlan: null,
+        nextPlan: null,
+        previousStatus: null,
+        nextStatus: null,
+        processorEventId: null,
+        createdAt: 7_000,
+      },
+    ]);
+  });
+
+  it('rejects an operator audit without an actor or reason', () => {
+    expect(() =>
+      recordOperatorAction(db, {
+        subjectKind: 'company',
+        subjectId: 'co-blank',
+        cause: { kind: 'operator', id: 'op-blank', actor: '  ', reason: 'why' },
+        now: 1_000,
+      }),
+    ).toThrow(IdentityInputError);
+    expect(() =>
+      recordOperatorAction(db, {
+        subjectKind: 'company',
+        subjectId: 'co-blank',
+        cause: { kind: 'operator', id: 'op-blank', actor: 'operator:x', reason: '' },
+        now: 1_000,
+      }),
+    ).toThrow(IdentityInputError);
+    expect(auditRows(db)).toEqual([]);
+  });
+
+  it('attaches a send_invoice company subscription awaiting its first payment', () => {
+    db.prepare(
+      `INSERT INTO companies (company_id, name, created_at, updated_at)
+       VALUES ('co-attach', 'Attach Co', 1, 1)`,
+    ).run();
+
+    const result = attachCompanySubscription(db, {
+      companyId: 'co-attach',
+      processorSubscriptionId: 'sub_attach_1',
+      quantity: 12,
+      status: 'active',
+      collectionMethod: 'send_invoice',
+      currentPeriodEnd: 9_000,
+      hostedInvoiceUrl: 'https://invoice.stripe.test/in_attach_1',
+      now: 5_000,
+    });
+
+    expect(result).toEqual({ created: true });
+    expect(
+      db
+        .prepare(
+          `SELECT quantity, status, collection_method AS collectionMethod,
+                  collection_paused AS collectionPaused, first_paid_at AS firstPaidAt,
+                  hosted_invoice_url AS hostedInvoiceUrl,
+                  current_period_end AS currentPeriodEnd, grace_until AS graceUntil
+           FROM company_subscriptions WHERE company_id = 'co-attach'`,
+        )
+        .get(),
+    ).toEqual({
+      quantity: 12,
+      status: 'active',
+      collectionMethod: 'send_invoice',
+      collectionPaused: 0,
+      firstPaidAt: null,
+      hostedInvoiceUrl: 'https://invoice.stripe.test/in_attach_1',
+      currentPeriodEnd: 9_000,
+      graceUntil: null,
+    });
+  });
+
+  it('refuses to attach a second subscription to the same company', () => {
+    db.prepare(
+      `INSERT INTO companies (company_id, name, created_at, updated_at)
+       VALUES ('co-attach-twice', 'Attach Twice Co', 1, 1)`,
+    ).run();
+    const input = {
+      companyId: 'co-attach-twice',
+      processorSubscriptionId: 'sub_attach_twice',
+      quantity: 12,
+      status: 'active' as const,
+      collectionMethod: 'send_invoice' as const,
+      currentPeriodEnd: null,
+      hostedInvoiceUrl: null,
+      now: 5_000,
+    };
+
+    expect(attachCompanySubscription(db, input)).toEqual({ created: true });
+    expect(
+      attachCompanySubscription(db, {
+        ...input,
+        processorSubscriptionId: 'sub_attach_other',
+        now: 6_000,
+      }),
+    ).toEqual({ created: false });
+    expect(
+      db
+        .prepare(
+          `SELECT processor_subscription_id AS processorSubscriptionId
+           FROM company_subscriptions WHERE company_id = 'co-attach-twice'`,
+        )
+        .get(),
+    ).toEqual({ processorSubscriptionId: 'sub_attach_twice' });
   });
 });
