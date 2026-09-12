@@ -47,6 +47,7 @@ import {
   clearErasureTarget,
 } from '../lib/identity/sessionStore';
 import {
+  FREE_MAX_ROOMS,
   PLAN_LIMIT_ERROR,
   PLAN_LIMIT_STATUS,
   canAddOwnedRoom,
@@ -134,6 +135,17 @@ function isArchivedOwnedRoom(
 ): boolean {
   if (ownedRoomIdsNewestFirst.length <= maxOwnedRooms) return false;
   return !ownedRoomIdsNewestFirst.slice(0, maxOwnedRooms).includes(roomId);
+}
+
+function effectiveMaxOwnedRooms(db: RoomDatabase, accountId: string): number {
+  try {
+    return resolveEffectivePlan(
+      readEntitlementsForAccount(db, accountId),
+      Date.now(),
+    ).limits.maxOwnedRooms;
+  } catch {
+    return FREE_MAX_ROOMS;
+  }
 }
 
 function isSubjectBody(value: unknown): value is {
@@ -784,6 +796,7 @@ export class IdentityDO extends DurableObject {
             !canAddOwnedRoom(
               listOwnedRooms(this.db, session.accountId).length,
               ownedRoomExists(this.db, session.accountId, parsed.body.roomId),
+              effectiveMaxOwnedRooms(this.db, session.accountId),
             )
           ) {
             return Response.json(

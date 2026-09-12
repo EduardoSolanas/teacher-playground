@@ -15,7 +15,7 @@ import {
   listPendingErasures,
   clearErasureTarget,
 } from '../lib/identity/sessionStore';
-import { readAuthorizationAudit } from '../lib/identity/identityStore';
+import { applyIdentitySchema, readAuthorizationAudit } from '../lib/identity/identityStore';
 import { writeEntitlement } from '../lib/identity/entitlementWriter';
 import { PLAN_CATALOG } from '../lib/plan/catalog';
 import type { EffectivePlan } from '../lib/plan/effectivePlan';
@@ -989,6 +989,118 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     const listed = await sessionRequest('/accounts/rooms', cookie);
     const body = await listed.json() as { rooms: Array<{ roomId: string }> };
     expect(body.rooms.map((room) => room.roomId)).toEqual(['room-free-one']);
+  });
+
+  it('lets a Tutor Pro owner reserve a second owned room from the effective plan', async () => {
+    const issued = await issueSession('do-rooms-tutor-pro');
+    const cookie = cookiePair(issued);
+    const { accountId } = await issued.json() as { accountId: string };
+
+    await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+      writeEntitlement(
+        instance.db,
+        {
+          accountId,
+          source: 'personal',
+          state: {
+            planId: 'tutor_pro_monthly',
+            status: 'active',
+            graceUntil: null,
+            collectionPaused: false,
+            companyId: null,
+            currentPeriodEnd: null,
+            processorCustomerId: 'cus_rooms',
+            processorSubscriptionId: 'sub_rooms',
+          },
+          now: Date.now(),
+        },
+        {
+          kind: 'operator',
+          id: `seed-rooms-${crypto.randomUUID()}`,
+          actor: 'test-operator',
+          reason: 'seed paid state',
+        },
+      );
+    });
+
+    const first = await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-paid-one' }),
+    });
+    expect(first.status).toBe(200);
+
+    const second = await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-paid-two' }),
+    });
+    expect(second.status).toBe(200);
+
+    const listed = await sessionRequest('/accounts/rooms', cookie);
+    const body = await listed.json() as { rooms: Array<{ roomId: string }> };
+    expect(body.rooms.map((room) => room.roomId).sort()).toEqual([
+      'room-paid-one',
+      'room-paid-two',
+    ]);
+  });
+
+  it('falls back to the Free cap when the entitlements read throws', async () => {
+    const issued = await issueSession('do-rooms-entitlement-fault');
+    const cookie = cookiePair(issued);
+    const { accountId } = await issued.json() as { accountId: string };
+
+    await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+      writeEntitlement(
+        instance.db,
+        {
+          accountId,
+          source: 'personal',
+          state: {
+            planId: 'tutor_pro_monthly',
+            status: 'active',
+            graceUntil: null,
+            collectionPaused: false,
+            companyId: null,
+            currentPeriodEnd: null,
+            processorCustomerId: 'cus_rooms_fault',
+            processorSubscriptionId: 'sub_rooms_fault',
+          },
+          now: Date.now(),
+        },
+        {
+          kind: 'operator',
+          id: `seed-rooms-fault-${crypto.randomUUID()}`,
+          actor: 'test-operator',
+          reason: 'seed paid state',
+        },
+      );
+    });
+
+    const first = await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-fault-one' }),
+    });
+    expect(first.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+      instance.db.exec('DROP TABLE entitlements');
+    });
+
+    try {
+      const second = await identityStub().fetch('https://identity/accounts/rooms', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({ roomId: 'room-fault-two' }),
+      });
+      expect(second.status).toBe(402);
+      expect(await second.json()).toEqual({ error: 'Plan limit reached' });
+    } finally {
+      await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+        applyIdentitySchema(instance.db);
+      });
+    }
   });
 
   it('allows another owned room after the first is deleted', async () => {

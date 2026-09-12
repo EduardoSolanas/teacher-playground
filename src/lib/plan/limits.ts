@@ -13,9 +13,13 @@ export const MIN_MAX_USERS = 1;
 export const PLAN_LIMIT_STATUS = 402;
 export const PLAN_LIMIT_ERROR = 'Plan limit reached';
 
-export function canAddOwnedRoom(ownedCount: number, alreadyOwnsThisRoom: boolean): boolean {
+export function canAddOwnedRoom(
+  ownedCount: number,
+  alreadyOwnsThisRoom: boolean,
+  maxOwnedRooms: number = FREE_MAX_ROOMS,
+): boolean {
   if (alreadyOwnsThisRoom) return true;
-  return ownedCount < FREE_MAX_ROOMS;
+  return ownedCount < maxOwnedRooms;
 }
 
 export function maxUsersAllowedOnPlan(maxUsers: number, planMaxUsers: number): boolean {
