@@ -11,8 +11,8 @@ environment = "prod"
 # Applying with these unset would create a SECOND Access application covering
 # the teacher hostname, which `npm run access:check` reports as a failure, and
 # would fail outright on the taken bucket name.
-adopt_access_application_id       = null
-adopt_access_policy_id            = null
+adopt_access_application_id       = "39a3ab67-0fa4-4a72-bb2d-f7177e37ce4e"
+adopt_access_policy_id            = "6c497882-44e7-43e8-a85e-fa572fb02278"
 adopt_guest_rate_limit_ruleset_id = null
 
 # The bucket exists: scripts/cloudflare-r2.mjs created it.

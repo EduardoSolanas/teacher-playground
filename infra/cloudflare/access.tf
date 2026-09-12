@@ -22,17 +22,30 @@ resource "cloudflare_zero_trust_access_policy" "allow_teachers" {
   name       = "Allow signed-in teachers"
   decision   = "allow"
 
-  # Anyone who completes one of the organization's configured identity
-  # providers. The product's own authorization -- which account may open which
-  # room -- is enforced by IdentityDO behind this, never by Access.
+  # An explicit allowlist of addresses -- NOT `everyone`.
   #
-  # NOTE when adopting an existing production policy: scripts/cloudflare-access.mjs
-  # created its policy with `login_method` carrying an empty id. If the live rule
-  # normalised to something other than `everyone`, the first plan will propose a
-  # change to an authorization rule. Read that diff before applying it.
-  include = [{
-    everyone = {}
-  }]
+  # This said `everyone = {}` until the live policy was read: production allows
+  # exactly one address. `everyone` means anyone who completes any configured
+  # identity provider, so applying that would have opened the teacher surface to
+  # every person on the internet with a Google account. Terraform would have
+  # reported it as a one-line change to an `include` rule.
+  #
+  # The addresses are personal data, so they are not in this repository: they
+  # arrive as TF_VAR_teacher_allowed_emails, the same way every other credential
+  # reaches this stack. The tracked files never hold one, and the secret scan
+  # keeps it that way.
+  include = [
+    for address in var.teacher_allowed_emails : {
+      email = { email = address }
+    }
+  ]
+
+  lifecycle {
+    precondition {
+      condition     = length(var.teacher_allowed_emails) > 0
+      error_message = "teacher_allowed_emails is empty. An Access policy with no include rule is not 'open to nobody' -- refuse to build one rather than risk the meaning of an empty allowlist."
+    }
+  }
 }
 
 resource "cloudflare_zero_trust_access_application" "teacher" {

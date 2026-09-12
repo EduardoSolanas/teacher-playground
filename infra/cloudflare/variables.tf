@@ -59,3 +59,20 @@ variable "manage_login_branding" {
     set this true, or the two will fight over the same object on every apply.
   DESC
 }
+
+
+variable "teacher_allowed_emails" {
+  type      = list(string)
+  sensitive = true
+
+  description = <<-DESC
+    Addresses the teacher Access policy admits, supplied as
+    TF_VAR_teacher_allowed_emails.
+
+    Deliberately not in infra/environments.json and deliberately without a
+    default. It is personal data, the manifest is tracked, and CI's secret scan
+    reads every tracked file. No default means a run that forgets to supply it
+    FAILS rather than quietly planning a policy that admits nobody -- or, worse,
+    one that a later edit turns into `everyone`.
+  DESC
+}

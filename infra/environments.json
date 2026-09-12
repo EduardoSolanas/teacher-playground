@@ -60,7 +60,7 @@
           "rejects every token when it disagrees, and `npm run access:check` compares",
           "this value against the live application."
         ],
-        "applicationName": "Teacher Playground (teachers)",
+        "applicationName": "Teacher Playground",
         "$comment_organizationName": [
           "The Zero Trust team name, as the dashboard shows it. Null until an",
           "owner reads the real value: cloudflare_zero_trust_organization requires",
