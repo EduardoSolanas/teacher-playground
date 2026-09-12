@@ -7,10 +7,13 @@ name: Infrastructure
 # zone's single rate-limit rule. Those move on different cadences, and coupling
 # them would put an infrastructure apply behind every application commit.
 #
-# Plans are automatic on anything that touches infrastructure. Applies are never
-# automatic: they are a named manual run against a GitHub environment, so a
-# reviewer approves the account change itself rather than inheriting approval
-# from a code review.
+# Plans are automatic on anything that touches infrastructure, and so are
+# applies -- but only once the change is on main. A pull request plans and stops;
+# merging is the approval, and the plan the reviewer read is the plan that runs,
+# because apply consumes the saved file rather than re-planning.
+#
+# The schedule below asks the other question: the triggers only fire when the
+# CODE changes, so nothing here would notice the account being edited by hand.
 
 on:
   pull_request:
@@ -30,6 +33,13 @@ on:
       - 'scripts/cloudflare-r2.mjs'
       - 'scripts/lib/environments.mjs'
       - '.github/workflows/infra.yml'
+  # The triggers above fire when the CODE changes. Nothing in them notices the
+  # ACCOUNT changing -- a policy widened in the dashboard, a public domain
+  # switched on, a rule disabled -- which leaves every push green while reality
+  # walks away from the repository. This asks the opposite question on a cadence.
+  schedule:
+    - cron: '17 7 * * 1-5'
+
   workflow_dispatch:
     inputs:
       environment:
@@ -125,7 +135,7 @@ jobs:
       # reports success, and "the apply ran" is what a green run would be taken
       # to mean.
       - name: Refuse an apply with no state backend
-        if: steps.backend.outputs.ready != 'true' && github.event_name == 'workflow_dispatch' && inputs.apply
+        if: steps.backend.outputs.ready != 'true' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.apply))
         run: |
           echo "Cannot apply: the Terraform state backend is not configured." >&2
           echo "Bootstrap the state bucket and set TFSTATE_ACCESS_KEY_ID and TFSTATE_SECRET_ACCESS_KEY; see infra/README.md." >&2
@@ -154,14 +164,49 @@ jobs:
       # a plan writes nothing, and the concurrency group above is what serialises
       # the applies that do.
       - name: Plan
+        id: plan
         if: steps.backend.outputs.ready == 'true'
         run: |
-          terraform plan -input=false -lock=false \
-            -var-file="environments/${TP_ENV}.tfvars" \
-            -out=tfplan
+          set -uo pipefail
+          # -detailed-exitcode: 0 nothing to do, 1 error, 2 changes pending.
+          # A plain plan exits 0 either way and throws away the one bit that
+          # separates "matches" from "does not match", which is the whole signal
+          # drift detection needs.
+          terraform plan -input=false -lock=false -detailed-exitcode -var-file="environments/${TP_ENV}.tfvars" -out=tfplan
+          code=$?
+          if [ "$code" = "1" ]; then exit 1; fi
+          if [ "$code" = "2" ]; then
+            echo "changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changes=false" >> "$GITHUB_OUTPUT"
+          fi
 
+      # Scheduled runs only. A pull request is SUPPOSED to have a non-empty plan
+      # -- that is what it is for -- so failing on one would make every
+      # infrastructure change red by definition. On a schedule, after every merge
+      # has applied itself, a non-empty plan means something moved that this
+      # repository did not move.
+      - name: Fail on drift
+        if: github.event_name == 'schedule' && steps.plan.outputs.changes == 'true'
+        run: |
+          echo "The plan is not empty: the Cloudflare account no longer matches this repository." >&2
+          echo "Either it was changed outside Terraform, or a merge did not apply." >&2
+          echo "Read the plan above before deciding which." >&2
+          exit 1
+
+      # Applied automatically on a push to main, because the pull request that
+      # merged it already showed this exact plan and someone approved it. A
+      # manual button would just be that approval asked for a second time, later,
+      # by which point the plan on screen is not the plan that was reviewed.
+      #
+      # It applies the SAVED tfplan from the step above, not a fresh one, so what
+      # runs is what was printed -- it cannot drift between plan and apply.
+      #
+      # A pull request never reaches here: a plan on an unmerged branch is a
+      # proposal, and applying proposals is how two open PRs fight over one
+      # account. workflow_dispatch with apply:true stays for out-of-band runs.
       - name: Apply
-        if: steps.backend.outputs.ready == 'true' && github.event_name == 'workflow_dispatch' && inputs.apply
+        if: steps.backend.outputs.ready == 'true' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.apply))
         run: terraform apply -input=false -lock=false tfplan
 
       # The AUD is generated by Cloudflare, so it flows OUT of Terraform and
@@ -169,7 +214,7 @@ jobs:
       # what makes the copy step visible instead of forgotten; it is an audience
       # identifier, not a credential.
       - name: Show outputs
-        if: steps.backend.outputs.ready == 'true' && github.event_name == 'workflow_dispatch' && inputs.apply
+        if: steps.backend.outputs.ready == 'true' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.apply))
         run: terraform output
 
   invariants:
