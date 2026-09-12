@@ -87,6 +87,7 @@ const ACCOUNT_PROFILE_PATH = '/accounts/profile';
 const ACCOUNT_PLAN_PATH = '/accounts/plan';
 const ACCOUNT_ROOMS_PATH = '/accounts/rooms';
 const ACCOUNT_ROOMS_TOUCH_PATH = '/accounts/rooms/touch';
+const ACCOUNT_ROOMS_ARCHIVE_PATH = '/accounts/rooms/archive-state';
 const REVOKE_ALL_PATH = '/accounts/revoke-all';
 const DISABLE_ACCOUNT_PATH = '/accounts/disable';
 const ENABLE_ACCOUNT_PATH = '/accounts/enable';
@@ -115,6 +116,24 @@ function configuredTutorAccountCap(env: unknown): number | undefined {
   if (typeof raw !== 'string') return undefined;
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+/**
+ * Whether one owned room falls outside the effective plan's room quota.
+ *
+ * The most recently used rooms, newest first, keep the available slots; the
+ * rest are the excess SEC-015 archives. Re-evaluating this at the boundary is
+ * what makes re-upgrading restore every room: no state is written, so there is
+ * nothing to forget to undo. `roomId` breaks ties so the same room is not
+ * archived on one read and active on the next.
+ */
+function isArchivedOwnedRoom(
+  ownedRoomIdsNewestFirst: readonly string[],
+  maxOwnedRooms: number,
+  roomId: string,
+): boolean {
+  if (ownedRoomIdsNewestFirst.length <= maxOwnedRooms) return false;
+  return !ownedRoomIdsNewestFirst.slice(0, maxOwnedRooms).includes(roomId);
 }
 
 function isSubjectBody(value: unknown): value is {
@@ -707,6 +726,42 @@ export class IdentityDO extends DurableObject {
         Date.now(),
       );
       return Response.json({ ok: true, touched }, { headers: noStore() });
+    }
+
+    /*
+     * Internal: the room object asks whether this room is over its owner's
+     * effective room quota, so an archived room can refuse writes and new
+     * admissions while staying readable. Same trust model as the touch route
+     * above: only the room object calls it, and it returns a single boolean.
+     */
+    if (url.pathname === ACCOUNT_ROOMS_ARCHIVE_PATH) {
+      if (request.method !== 'GET') return methodNotAllowed('GET');
+      const accountId = url.searchParams.get('accountId');
+      const roomId = url.searchParams.get('roomId');
+      if (
+        accountId === null
+        || accountId.length < 1
+        || accountId.length > 128
+        || roomId === null
+        || !isValidRoomId(roomId)
+      ) {
+        return Response.json({ error: 'Invalid request' }, { status: 400 });
+      }
+      const plan = resolveEffectivePlan(
+        readEntitlementsForAccount(this.db, accountId),
+        Date.now(),
+      );
+      const archived = isArchivedOwnedRoom(
+        listOwnedRooms(this.db, accountId)
+          .sort((left, right) =>
+            right.updatedAt - left.updatedAt
+            || (left.roomId < right.roomId ? -1 : left.roomId > right.roomId ? 1 : 0),
+          )
+          .map((room) => room.roomId),
+        plan.limits.maxOwnedRooms,
+        roomId,
+      );
+      return Response.json({ archived }, { headers: noStore() });
     }
 
     if (url.pathname === ACCOUNT_ROOMS_PATH) {

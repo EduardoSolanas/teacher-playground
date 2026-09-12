@@ -520,6 +520,20 @@ export class RoomDO extends DurableObject {
         purgeExpiredRoomLifecycle(this.db, roomId, now);
       }
 
+      /*
+       * Archived rooms stay readable but stop accepting board writes. The
+       * owner's effective plan is re-read at this boundary, so the archive
+       * follows a downgrade and a re-upgrade without any stored flag.
+       */
+      if (
+        method === 'POST'
+        && roomExists(this.db, roomId)
+        && (section === '' || section === 'clear')
+      ) {
+        const archived = await this.archivedRoomRefusal(roomId);
+        if (archived) return archived;
+      }
+
       if (
         method === 'POST'
         && stringField(body, 'action') === 'approve'
@@ -1576,7 +1590,43 @@ export class RoomDO extends DurableObject {
     }
   }
 
+  /**
+   * Plan-limit refusal when the room's owner holds more owned rooms than the
+   * effective plan covers. Archived rooms stay readable and their data stays
+   * put; this is called on write and admission boundaries, and a failed plan
+   * read fails closed rather than opening the room.
+   */
+  private async archivedRoomRefusal(roomId: string): Promise<Response | null> {
+    const owner = this.db.prepare(
+      `SELECT account_id AS accountId FROM room_members
+       WHERE room_id = ? AND role = 'owner'`,
+    ).get(roomId) as { accountId: string } | undefined;
+    if (!owner) return forbidden();
+
+    let archived: boolean;
+    try {
+      const identity = this.roomEnv.IDENTITY.get(
+        this.roomEnv.IDENTITY.idFromName(GLOBAL_IDENTITY_OBJECT_NAME),
+      );
+      const response = await identity.fetch(new Request(
+        `https://identity/accounts/rooms/archive-state?accountId=${encodeURIComponent(owner.accountId)}&roomId=${encodeURIComponent(roomId)}`,
+        { method: 'GET' },
+      ));
+      if (!response.ok) return forbidden();
+      const body = await response.json() as { archived?: unknown };
+      if (typeof body.archived !== 'boolean') return forbidden();
+      archived = body.archived;
+    } catch {
+      return forbidden();
+    }
+
+    return archived ? planLimitJsonResponse() : null;
+  }
+
   private async admitWithinOwnerPlan(roomId: string): Promise<Response | null> {
+    const archived = await this.archivedRoomRefusal(roomId);
+    if (archived) return archived;
+
     const owner = this.db.prepare(
       `SELECT account_id AS accountId FROM room_members
        WHERE room_id = ? AND role = 'owner'`,
