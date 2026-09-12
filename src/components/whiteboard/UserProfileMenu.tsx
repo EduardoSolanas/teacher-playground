@@ -2,9 +2,11 @@
 
 import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { useRouter } from 'next/navigation';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import { completeSignOut } from '@/lib/identity/completeSignOut';
+import type { PlanId } from '@/lib/plan/catalog';
+import type { EntitlementStatus } from '@/lib/plan/effectivePlan';
+import type { AjaxFetch } from '@/lib/whiteboard/teacherRooms';
 
 /**
  * The trigger's default skin is tuned for the rooms-list header, which sits on
@@ -14,24 +16,56 @@ import { completeSignOut } from '@/lib/identity/completeSignOut';
 const DEFAULT_TRIGGER_CLASS =
   'inline-flex h-11 max-w-[min(100%,16rem)] shrink-0 items-center gap-2 rounded-xl border border-white/30 bg-white/10 px-3 text-sm font-semibold text-white backdrop-blur-md transition-colors hover:bg-white/20 active:bg-white/25 sm:px-4';
 
+export interface UserProfilePlan {
+  planId: PlanId;
+  status: EntitlementStatus;
+  graceUntil?: number | null;
+  collectionPaused?: boolean;
+}
+
+export interface UserProfileCompany {
+  id: string;
+  name: string;
+  role: 'owner' | 'admin' | 'member';
+}
+
+const PLAN_NAMES: Record<PlanId, string> = {
+  free: 'Free',
+  tutor_pro_monthly: 'Tutor Pro',
+  tutor_pro_annual: 'Tutor Pro',
+  corporate_seat: 'Corporate seat',
+};
+
+const UPGRADE_PLAN_ID: PlanId = 'tutor_pro_monthly';
+
 export function UserProfileMenu({
   displayName,
   onDisplayNameChange,
   triggerClassName = DEFAULT_TRIGGER_CLASS,
   showDisplayName = true,
+  plan = null,
+  company = null,
+  request = ajaxFetch,
+  navigate = (url: string) => {
+    window.location.assign(url);
+  },
 }: {
   displayName: string | null;
   onDisplayNameChange: (name: string) => void;
   triggerClassName?: string;
   showDisplayName?: boolean;
+  plan?: UserProfilePlan | null;
+  company?: UserProfileCompany | null;
+  request?: AjaxFetch;
+  navigate?: (url: string) => void;
 }) {
-  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [draftName, setDraftName] = useState(displayName ?? '');
   const [confirmText, setConfirmText] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [billingError, setBillingError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -166,10 +200,30 @@ export function UserProfileMenu({
         response = await eraseAccount();
       }
       if (!response.ok) throw new Error('erase');
-      router.replace('/');
+      navigate('/');
     } catch {
       setError('Could not delete this account. Try again.');
       setBusy(false);
+    }
+  };
+
+  const startBilling = async (path: string, body?: unknown) => {
+    setBillingError(null);
+    try {
+      const response = await request(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body ?? {}),
+      });
+      if (!response.ok) throw new Error('billing');
+      const parsed: unknown = await response.json();
+      const url = parsed && typeof parsed === 'object'
+        ? (parsed as { url?: unknown }).url
+        : undefined;
+      if (typeof url !== 'string' || url.length === 0) throw new Error('billing');
+      navigate(url);
+    } catch {
+      setBillingError('Could not open billing. Try again.');
     }
   };
 
@@ -181,7 +235,7 @@ export function UserProfileMenu({
         data-testid="whiteboard-profile-btn"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-controls={labelId}
+        aria-controls={open ? labelId : undefined}
         aria-label={`Open profile for ${label}`}
         title={label}
         onClick={() => {
@@ -189,6 +243,7 @@ export function UserProfileMenu({
           setEditing(false);
           setDeleting(false);
           setError(null);
+          setBillingError(null);
         }}
         className={triggerClassName}
       >
@@ -209,6 +264,78 @@ export function UserProfileMenu({
           onKeyDown={onMenuKeyDown}
           className="absolute right-0 z-30 mt-2 w-64 overflow-hidden rounded-xl border border-slate-700 bg-slate-800 text-slate-200 shadow-xl shadow-slate-950/40"
         >
+          {!editing && !deleting && plan && (
+            <div className="border-b border-slate-700 p-1.5">
+              <p className="truncate px-3 py-2 text-[0.6875rem] font-semibold uppercase tracking-wider text-slate-400">
+                Plan
+              </p>
+              <p
+                data-testid="whiteboard-profile-plan"
+                className="truncate px-3 pb-1 text-sm font-medium text-slate-100"
+              >
+                {PLAN_NAMES[plan.planId]}
+              </p>
+              {company && (
+                <p
+                  data-testid="whiteboard-profile-company"
+                  className="truncate px-3 pb-1 text-[0.75rem] text-slate-400"
+                >
+                  {company.name} · {company.role}
+                </p>
+              )}
+              {plan.status === 'past_due' && typeof plan.graceUntil === 'number' && (
+                <p
+                  data-testid="whiteboard-profile-plan-grace"
+                  className="px-3 pb-1 text-[0.75rem] font-medium text-amber-400"
+                >
+                  payment overdue until {new Date(plan.graceUntil).toLocaleDateString()}
+                </p>
+              )}
+              {plan.collectionPaused === true && (
+                <p
+                  data-testid="whiteboard-profile-plan-hold"
+                  className="px-3 pb-1 text-[0.75rem] font-medium text-amber-400"
+                >
+                  billing on hold
+                </p>
+              )}
+              {plan.planId === 'free' ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="whiteboard-profile-plan-upgrade"
+                  onClick={() => {
+                    void startBilling('/api/billing/checkout', { planId: UPGRADE_PLAN_ID });
+                  }}
+                  className="flex w-full items-center rounded-md px-3 py-2.5 text-left text-sm font-medium text-slate-200 transition-colors hover:bg-slate-700"
+                >
+                  Upgrade
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="whiteboard-profile-plan-manage"
+                  onClick={() => {
+                    void startBilling('/api/billing/portal');
+                  }}
+                  className="flex w-full items-center rounded-md px-3 py-2.5 text-left text-sm font-medium text-slate-200 transition-colors hover:bg-slate-700"
+                >
+                  Manage
+                </button>
+              )}
+              {billingError && (
+                <p
+                  role="alert"
+                  data-testid="whiteboard-profile-plan-error"
+                  className="px-3 pb-1 text-[0.75rem] font-medium text-red-400"
+                >
+                  {billingError}
+                </p>
+              )}
+            </div>
+          )}
+
           {!editing && !deleting && (
             <div className="p-1.5">
               <p className="truncate px-3 py-2 text-[0.6875rem] font-semibold uppercase tracking-wider text-slate-400">
