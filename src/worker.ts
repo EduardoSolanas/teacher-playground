@@ -70,12 +70,17 @@ import {
 } from './lib/billing/stripeRequest';
 import { executeStripeRequest } from './lib/billing/stripeClient';
 import {
+  companyCustomerRequest,
   executeCollectionClaim,
   parseCollectionSubject,
+  retryOutboundOperation,
   runCollectionExecutor,
+  seatItemUpdateRequest,
+  stripeSubscriptionItemId,
 } from './lib/billing/executor';
 import {
   actualCollectionOf,
+  corporateSeatBandMismatch,
   parseReconcileResult,
   type CollectionObservation,
   type FetchedReconcileSubscription,
@@ -740,17 +745,11 @@ async function createCompanyCustomer(
   if (!billing.apiBaseAllowed || billing.secretKey === null) {
     return { customerReady: false, company };
   }
-  const params = new URLSearchParams();
-  params.append('name', company.name);
-  params.append('metadata[company_id]', company.id);
-  params.append('metadata[account_id]', accountId);
-  const stripeRequest = new Request(`${billing.apiBaseUrl}/v1/customers`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/x-www-form-urlencoded',
-      'idempotency-key': `op:company:${company.id}:${operationId}`,
-    },
-    body: params.toString(),
+  const stripeRequest = companyCustomerRequest(billing.apiBaseUrl, billing.secretKey, {
+    companyId: company.id,
+    operationId,
+    name: company.name,
+    accountId,
   });
   let result;
   try {
@@ -997,15 +996,6 @@ function isCompanySeatApiBody(value: unknown): value is {
   );
 }
 
-function stripeSubscriptionItemId(json: unknown): string | null {
-  const items = recordOf(json)?.items;
-  if (!Array.isArray(items)) return null;
-  const first = items[0];
-  if (typeof first !== 'object' || first === null || Array.isArray(first)) return null;
-  const id = (first as Record<string, unknown>).id;
-  return typeof id === 'string' && id.length > 0 ? id : null;
-}
-
 async function settleSeatChangeViaDo(
   env: Env,
   cookie: string,
@@ -1072,20 +1062,19 @@ async function applySeatChange(
     return stripeRequestFailed();
   }
 
-  const params = new URLSearchParams();
-  params.append('items[0][id]', itemId);
-  params.append('items[0][quantity]', String(reservation.targetQuantity));
-  params.append('proration_behavior', reservation.prorationBehavior);
   let updateResult;
   try {
     updateResult = await executeStripeRequest(
-      new Request(`${billing.apiBaseUrl}/v1/subscriptions/${reservation.processorSubscriptionId}`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          'idempotency-key': `op:company:${reservation.companyId}:${reservation.operationId}`,
-        },
-        body: params.toString(),
+      seatItemUpdateRequest(billing.apiBaseUrl, billing.secretKey, {
+        companyId: reservation.companyId,
+        operationId: reservation.operationId,
+        processorSubscriptionId: reservation.processorSubscriptionId,
+        itemId,
+        targetQuantity: reservation.targetQuantity,
+        prorationBehavior:
+          reservation.prorationBehavior === 'create_prorations'
+            ? 'create_prorations'
+            : 'none',
       }),
       billing.secretKey,
     );
@@ -1649,6 +1638,8 @@ interface NormalizedSubscription {
   canceledAt: number | null;
   currentPeriodEnd: number | null;
   pauseCollection: { behavior: string } | null;
+  quantity: number | null;
+  unitAmount: number | null;
 }
 
 function normalizeSubscription(value: unknown): NormalizedSubscription | null {
@@ -1658,6 +1649,7 @@ function normalizeSubscription(value: unknown): NormalizedSubscription | null {
   if (id === null) return null;
   const items = recordOf(record.items);
   const firstItem = Array.isArray(items?.data) ? recordOf(items.data[0]) : null;
+  const price = recordOf(firstItem?.price);
   const pauseCollection = recordOf(record.pause_collection);
   return {
     id,
@@ -1672,6 +1664,38 @@ function normalizeSubscription(value: unknown): NormalizedSubscription | null {
             ? pauseCollection.behavior
             : 'void',
         },
+    quantity:
+      typeof firstItem?.quantity === 'number' && Number.isInteger(firstItem.quantity)
+        ? firstItem.quantity
+        : null,
+    unitAmount:
+      typeof price?.unit_amount === 'number' && Number.isFinite(price.unit_amount)
+        ? price.unit_amount
+        : null,
+  };
+}
+
+export interface FetchedSubscriptionPricing {
+  subscription: FetchedReconcileSubscription;
+  quantity: number | null;
+  unitAmount: number | null;
+}
+
+export function parseFetchedSubscriptionPricing(
+  value: unknown,
+): FetchedSubscriptionPricing | null {
+  const subscription = normalizeSubscription(value);
+  if (subscription === null) return null;
+  return {
+    subscription: {
+      status: subscription.status,
+      customer: subscription.customer,
+      currentPeriodEnd: subscription.currentPeriodEnd,
+      canceledAt: subscription.canceledAt,
+      pauseCollection: subscription.pauseCollection !== null,
+    },
+    quantity: subscription.quantity,
+    unitAmount: subscription.unitAmount,
   };
 }
 
@@ -1978,12 +2002,18 @@ export interface BillingReconcileRunSummary {
   appliedSubscriptions: number;
   disputesApplied: number;
   collections: number;
+  outboundRetries: number;
+  outboundSettled: number;
 }
 
 async function readReconcileSubscription(
   billing: BillingEnv,
   processorSubscriptionId: string,
-): Promise<CollectionObservation | null> {
+): Promise<{
+  observation: CollectionObservation;
+  quantity: number | null;
+  unitAmount: number | null;
+} | null> {
   const secretKey = billing.secretKey;
   if (secretKey === null) return null;
   const request = eventsFetchMapRequest(
@@ -2000,19 +2030,16 @@ async function readReconcileSubscription(
     return null;
   }
   if (!result.ok) return null;
-  const subscription = normalizeSubscription(result.json);
-  if (subscription === null) return null;
-  const fetched: FetchedReconcileSubscription = {
-    status: subscription.status,
-    customer: subscription.customer,
-    currentPeriodEnd: subscription.currentPeriodEnd,
-    canceledAt: subscription.canceledAt,
-    pauseCollection: subscription.pauseCollection !== null,
-  };
+  const pricing = parseFetchedSubscriptionPricing(result.json);
+  if (pricing === null) return null;
   return {
-    processorSubscriptionId,
-    actualCollection: actualCollectionOf(fetched),
-    subscription: fetched,
+    observation: {
+      processorSubscriptionId,
+      actualCollection: actualCollectionOf(pricing.subscription),
+      subscription: pricing.subscription,
+    },
+    quantity: pricing.quantity,
+    unitAmount: pricing.unitAmount,
   };
 }
 
@@ -2120,16 +2147,32 @@ export async function runBillingReconcile(
     });
   }
 
+  let outboundRetries = 0;
+  let outboundSettled = 0;
+  for (const operation of initial.outboundOperations) {
+    outboundRetries += 1;
+    const outcome = await retryOutboundOperation(deps, operation).catch((error) => {
+      console.error('[billing:reconcile]', JSON.stringify({
+        kind: operation.kind,
+        companyId: operation.companyId,
+        operationId: operation.operationId,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+      return 'pending' as const;
+    });
+    if (outcome === 'settled') outboundSettled += 1;
+  }
+
   const observations: CollectionObservation[] = [];
   let subscriptionReads = 0;
   let subscriptionReadsFailed = 0;
   for (const subscription of initial.subscriptions) {
     subscriptionReads += 1;
-    const observation = await readReconcileSubscription(
+    const read = await readReconcileSubscription(
       billing,
       subscription.processorSubscriptionId,
     );
-    if (observation === null) {
+    if (read === null) {
       subscriptionReadsFailed += 1;
       console.error('[billing]', JSON.stringify({
         alert: 'reconcile_subscription_fetch_failed',
@@ -2138,7 +2181,21 @@ export async function runBillingReconcile(
       }));
       continue;
     }
-    observations.push(observation);
+    if (
+      subscription.subjectKind === 'company' &&
+      read.quantity !== null &&
+      read.unitAmount !== null &&
+      corporateSeatBandMismatch(read.quantity, read.unitAmount)
+    ) {
+      console.error('[billing]', JSON.stringify({
+        alert: 'corporate_price_tier_mismatch',
+        processorSubscriptionId: subscription.processorSubscriptionId,
+        quantity: read.quantity,
+        unitAmount: read.unitAmount,
+        outcome: 'alerted',
+      }));
+    }
+    observations.push(read.observation);
   }
 
   const disputeRead = await fetchReconcileDisputes(billing, initial.disputesSweptAt);
@@ -2217,6 +2274,8 @@ export async function runBillingReconcile(
     appliedSubscriptions,
     disputesApplied,
     collections,
+    outboundRetries,
+    outboundSettled,
   };
 }
 

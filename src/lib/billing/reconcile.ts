@@ -23,11 +23,22 @@ import {
 } from '../identity/entitlementWriter';
 import { applyEvent } from './apply';
 import type { EntitlementStatus } from '../plan/effectivePlan';
-import type { PlanId } from '../plan/catalog';
+import { CORPORATE_SEAT_BANDS, type PlanId } from '../plan/catalog';
 import type { CompanySubscriptionStatus } from '../company/seats';
 import { materializeCompanyMemberEntitlements } from '../company/companyEntitlements';
 
 export const RECONCILE_IN_FLIGHT_TIMEOUT_MS = 15 * 60 * 1_000;
+
+export function corporateSeatBandMismatch(
+  quantity: number,
+  unitAmountPence: number,
+): boolean {
+  const band = CORPORATE_SEAT_BANDS.find(
+    (entry) => quantity >= entry.min && quantity <= entry.max,
+  );
+  if (band === undefined) return true;
+  return Math.round(band.gbpPerSeatMonth * 100) !== unitAmountPence;
+}
 
 export const RECONCILE_RUN_ID_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/;
 
@@ -60,6 +71,32 @@ export interface ReconcileCollection {
   state: DesiredCollection;
 }
 
+export interface OutboundSeatChangeOperation {
+  kind: 'seat-change';
+  companyId: string;
+  operationId: string;
+  processorSubscriptionId: string;
+  targetQuantity: number;
+  prorationBehavior: 'create_prorations' | 'none';
+}
+
+export interface OutboundCompanyCreateOperation {
+  kind: 'company-create';
+  companyId: string;
+  operationId: string;
+  name: string;
+  ownerAccountId: string;
+}
+
+export type OutboundOperation =
+  | OutboundSeatChangeOperation
+  | OutboundCompanyCreateOperation;
+
+export interface ReconcileSubscriptionRef {
+  processorSubscriptionId: string;
+  subjectKind: BillingSubjectKind;
+}
+
 export interface ReconcileResult {
   failedMarkers: number;
   repaired: number;
@@ -68,8 +105,9 @@ export interface ReconcileResult {
   appliedSubscriptions: number;
   disputesApplied: number;
   disputesSweptAt: number;
-  subscriptions: Array<{ processorSubscriptionId: string }>;
+  subscriptions: ReconcileSubscriptionRef[];
   collections: ReconcileCollection[];
+  outboundOperations: OutboundOperation[];
 }
 
 export interface ReconcileInput {
@@ -379,9 +417,71 @@ export function parseReconcileDispute(value: unknown): ReconcileDispute | null {
   return { id, status, created, customer };
 }
 
+export function parseOutboundOperation(value: unknown): OutboundOperation | null {
+  const operation = recordOf(value);
+  if (operation === null) return null;
+  const kind = operation.kind;
+  const companyId = operation.companyId;
+  const operationId = operation.operationId;
+  if (
+    typeof companyId !== 'string' ||
+    companyId.length < 1 ||
+    companyId.length > 128 ||
+    typeof operationId !== 'string' ||
+    operationId.length < 1 ||
+    operationId.length > 128
+  ) {
+    return null;
+  }
+  if (kind === 'seat-change') {
+    const processorSubscriptionId = operation.processorSubscriptionId;
+    const targetQuantity = operation.targetQuantity;
+    const prorationBehavior = operation.prorationBehavior;
+    if (
+      typeof processorSubscriptionId !== 'string' ||
+      processorSubscriptionId.length < 1
+    ) {
+      return null;
+    }
+    if (
+      typeof targetQuantity !== 'number' ||
+      !Number.isInteger(targetQuantity) ||
+      targetQuantity < 1
+    ) {
+      return null;
+    }
+    if (prorationBehavior !== 'create_prorations' && prorationBehavior !== 'none') {
+      return null;
+    }
+    return {
+      kind,
+      companyId,
+      operationId,
+      processorSubscriptionId,
+      targetQuantity,
+      prorationBehavior,
+    };
+  }
+  if (kind === 'company-create') {
+    const name = operation.name;
+    const ownerAccountId = operation.ownerAccountId;
+    if (typeof name !== 'string' || name.length < 1 || name.length > 100) return null;
+    if (
+      typeof ownerAccountId !== 'string' ||
+      ownerAccountId.length < 1 ||
+      ownerAccountId.length > 128
+    ) {
+      return null;
+    }
+    return { kind, companyId, operationId, name, ownerAccountId };
+  }
+  return null;
+}
+
 export interface ParsedReconcileResult {
   collections: ReconcileCollection[];
-  subscriptions: Array<{ processorSubscriptionId: string }>;
+  subscriptions: ReconcileSubscriptionRef[];
+  outboundOperations: OutboundOperation[];
   disputesSweptAt: number;
   appliedSubscriptions: number;
   disputesApplied: number;
@@ -393,14 +493,16 @@ export function parseReconcileResult(
   const result = recordOf(value);
   if (result === null || !Array.isArray(result.collections)) return null;
   if (!Array.isArray(result.subscriptions)) return null;
-  const subscriptions: Array<{ processorSubscriptionId: string }> = [];
+  const subscriptions: ReconcileSubscriptionRef[] = [];
   for (const entry of result.subscriptions) {
     const subscription = recordOf(entry);
     const processorSubscriptionId = subscription?.processorSubscriptionId;
+    const subjectKind = subscription?.subjectKind;
     if (typeof processorSubscriptionId !== 'string' || processorSubscriptionId.length < 1) {
       return null;
     }
-    subscriptions.push({ processorSubscriptionId });
+    if (subjectKind !== 'account' && subjectKind !== 'company') return null;
+    subscriptions.push({ processorSubscriptionId, subjectKind });
   }
   const disputesSweptAt =
     typeof result.disputesSweptAt === 'number' && Number.isFinite(result.disputesSweptAt)
@@ -418,6 +520,15 @@ export function parseReconcileResult(
     result.disputesApplied >= 0
       ? result.disputesApplied
       : 0;
+  const outboundOperations: OutboundOperation[] = [];
+  if (result.outboundOperations !== undefined) {
+    if (!Array.isArray(result.outboundOperations)) return null;
+    for (const entry of result.outboundOperations) {
+      const operation = parseOutboundOperation(entry);
+      if (operation === null) return null;
+      outboundOperations.push(operation);
+    }
+  }
   const collections: ReconcileCollection[] = [];
   for (const entry of result.collections) {
     const collection = recordOf(entry);
@@ -447,7 +558,7 @@ export function parseReconcileResult(
       state,
     });
   }
-  return { collections, subscriptions, disputesSweptAt, appliedSubscriptions, disputesApplied };
+  return { collections, subscriptions, disputesSweptAt, appliedSubscriptions, disputesApplied, outboundOperations };
 }
 
 export function reconcileBilling(
@@ -467,6 +578,7 @@ export function reconcileBilling(
     disputesSweptAt: readBillingSweep(db, 'disputes')?.lastSweptAt ?? 0,
     subscriptions: [],
     collections: [],
+    outboundOperations: [],
   };
   const recorded = new Set<string>();
 
@@ -595,6 +707,68 @@ export function reconcileBilling(
     });
   }
 
+  const pendingSeatChanges = db
+    .prepare(
+      `SELECT cs.company_id, cs.processor_subscription_id, cs.quantity,
+              cs.pending_quantity, cs.pending_operation_id
+       FROM company_subscriptions cs
+       JOIN billing_operations o
+         ON o.subject_kind = 'company' AND o.subject_id = cs.company_id
+        AND o.operation_id = cs.pending_operation_id
+        AND o.kind = 'seat-change' AND o.status = 'pending'
+       WHERE cs.pending_operation_id IS NOT NULL
+       ORDER BY cs.company_id`,
+    )
+    .all() as Array<{
+    company_id: string;
+    processor_subscription_id: string;
+    quantity: number;
+    pending_quantity: number;
+    pending_operation_id: string;
+  }>;
+  for (const row of pendingSeatChanges) {
+    const targetQuantity = Number(row.pending_quantity);
+    result.outboundOperations.push({
+      kind: 'seat-change',
+      companyId: row.company_id,
+      operationId: row.pending_operation_id,
+      processorSubscriptionId: row.processor_subscription_id,
+      targetQuantity,
+      prorationBehavior:
+        targetQuantity > Number(row.quantity) ? 'create_prorations' : 'none',
+    });
+  }
+
+  const pendingCompanyCreates = db
+    .prepare(
+      `SELECT c.company_id, c.name, o.operation_id,
+              (SELECT m.account_id FROM company_members m
+               WHERE m.company_id = c.company_id AND m.state = 'active'
+                 AND m.role = 'owner'
+               ORDER BY m.created_at, m.account_id LIMIT 1) AS owner_account_id
+       FROM billing_operations o
+       JOIN companies c ON c.company_id = o.subject_id
+       WHERE o.kind = 'company-create' AND o.status = 'pending'
+         AND c.state = 'active' AND c.processor_customer_id IS NULL
+       ORDER BY c.company_id, o.operation_id`,
+    )
+    .all() as Array<{
+    company_id: string;
+    name: string;
+    operation_id: string;
+    owner_account_id: string | null;
+  }>;
+  for (const row of pendingCompanyCreates) {
+    if (row.owner_account_id === null) continue;
+    result.outboundOperations.push({
+      kind: 'company-create',
+      companyId: row.company_id,
+      operationId: row.operation_id,
+      name: row.name,
+      ownerAccountId: row.owner_account_id,
+    });
+  }
+
   const expiredGrace = db
     .prepare(
       `SELECT account_id, processor_subscription_id, grace_until
@@ -620,12 +794,18 @@ export function reconcileBilling(
   result.subscriptions = (
     db
       .prepare(
-        `SELECT processor_subscription_id FROM billing_subscriptions
+        `SELECT processor_subscription_id, subject_kind FROM billing_subscriptions
          WHERE processor_canceled_at IS NULL
          ORDER BY processor_subscription_id`,
       )
-      .all() as Array<{ processor_subscription_id: string }>
-  ).map((row) => ({ processorSubscriptionId: row.processor_subscription_id }));
+      .all() as Array<{
+      processor_subscription_id: string;
+      subject_kind: BillingSubjectKind;
+    }>
+  ).map((row) => ({
+    processorSubscriptionId: row.processor_subscription_id,
+    subjectKind: row.subject_kind,
+  }));
 
   return result;
 }

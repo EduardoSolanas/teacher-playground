@@ -6,8 +6,8 @@ import {
   runInDurableObject,
   SELF,
 } from 'cloudflare:test';
-import worker, { runBillingReconcile } from './worker';
-import { RECONCILE_IN_FLIGHT_TIMEOUT_MS } from './lib/billing/reconcile';
+import worker, { parseFetchedSubscriptionPricing, runBillingReconcile } from './worker';
+import { parseReconcileResult, RECONCILE_IN_FLIGHT_TIMEOUT_MS } from './lib/billing/reconcile';
 import {
   BILLING_OPERATION_RATE_MAX,
   getIdentityObject,
@@ -19,9 +19,11 @@ import { ensureReferralCode } from './lib/referrals/codes';
 import { readBillingEnv } from './lib/billing/stripeConfig';
 import {
   claimCollectionExecution,
+  companyCustomerRequest,
   completeCollectionClaim,
   parseCollectionSubject,
   runCollectionExecutor,
+  seatItemUpdateRequest,
 } from './lib/billing/executor';
 
 declare global {
@@ -1083,6 +1085,135 @@ describe('identity collection executor (D-6)', () => {
   });
 });
 
+describe('identity outbound retries (spec §7.2)', () => {
+  it('builds the seat item update with the deterministic operation idempotency key', async () => {
+    const request = seatItemUpdateRequest('https://api.stripe.com', 'sk_test_builder', {
+      companyId: 'co_retry',
+      operationId: 'op_retry_seat',
+      processorSubscriptionId: 'sub_retry',
+      itemId: 'si_retry',
+      targetQuantity: 4,
+      prorationBehavior: 'create_prorations',
+    });
+    expect(request.method).toBe('POST');
+    expect(request.url).toBe('https://api.stripe.com/v1/subscriptions/sub_retry');
+    expect(request.headers.get('idempotency-key')).toBe('op:company:co_retry:op_retry_seat');
+    const params = new URLSearchParams(await request.text());
+    expect(params.get('items[0][id]')).toBe('si_retry');
+    expect(params.get('items[0][quantity]')).toBe('4');
+    expect(params.get('proration_behavior')).toBe('create_prorations');
+  });
+
+  it('parses the outbound operations the reconcile hands to the worker', () => {
+    const parsed = parseReconcileResult({
+      collections: [],
+      subscriptions: [],
+      outboundOperations: [
+        {
+          kind: 'seat-change',
+          companyId: 'co_parse',
+          operationId: 'op_parse_seat',
+          processorSubscriptionId: 'sub_parse',
+          targetQuantity: 4,
+          prorationBehavior: 'create_prorations',
+        },
+        {
+          kind: 'company-create',
+          companyId: 'co_parse',
+          operationId: 'op_parse_create',
+          name: 'Parse Co',
+          ownerAccountId: 'acct_parse',
+        },
+      ],
+    });
+    expect(parsed?.outboundOperations).toEqual([
+      {
+        kind: 'seat-change',
+        companyId: 'co_parse',
+        operationId: 'op_parse_seat',
+        processorSubscriptionId: 'sub_parse',
+        targetQuantity: 4,
+        prorationBehavior: 'create_prorations',
+      },
+      {
+        kind: 'company-create',
+        companyId: 'co_parse',
+        operationId: 'op_parse_create',
+        name: 'Parse Co',
+        ownerAccountId: 'acct_parse',
+      },
+    ]);
+    expect(
+      parseReconcileResult({
+        collections: [],
+        subscriptions: [],
+        outboundOperations: [{ kind: 'seat-change', companyId: 'co_parse' }],
+      }),
+    ).toBeNull();
+  });
+
+  it('reads the per-seat quantity and amount from a fetched subscription', () => {
+    const pricing = parseFetchedSubscriptionPricing({
+      id: 'sub_price',
+      customer: 'cus_price',
+      status: 'active',
+      pause_collection: null,
+      items: {
+        data: [
+          { id: 'si_price', quantity: 10, price: { id: 'price_co', unit_amount: 650 } },
+        ],
+      },
+    });
+    expect(pricing?.subscription).toEqual({
+      status: 'active',
+      customer: 'cus_price',
+      currentPeriodEnd: null,
+      canceledAt: null,
+      pauseCollection: false,
+    });
+    expect(pricing?.quantity).toBe(10);
+    expect(pricing?.unitAmount).toBe(650);
+
+    const withoutItems = parseFetchedSubscriptionPricing({
+      id: 'sub_price_empty',
+      status: 'active',
+    });
+    expect(withoutItems?.quantity).toBeNull();
+    expect(withoutItems?.unitAmount).toBeNull();
+  });
+
+  it('never routes the system settle path on the public Worker', async () => {
+    const session = await bootstrapLocalSession('billing-system-settle-public');
+    const response = await authenticatedFetch('/api/billing/settle', session, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'seat-change',
+        companyId: 'co_public',
+        operationId: 'op_public',
+        outcome: 'failure',
+      }),
+    });
+    expect([404, 405]).toContain(response.status);
+  });
+
+  it('builds the company customer creation with the deterministic operation idempotency key', async () => {
+    const request = companyCustomerRequest('https://api.stripe.com', 'sk_test_builder', {
+      companyId: 'co_retry',
+      operationId: 'op_retry_create',
+      name: 'Retry Co',
+      accountId: 'acct_retry',
+    });
+    expect(request.method).toBe('POST');
+    expect(request.url).toBe('https://api.stripe.com/v1/customers');
+    expect(request.headers.get('idempotency-key')).toBe('op:company:co_retry:op_retry_create');
+    const params = new URLSearchParams(await request.text());
+    expect(params.get('name')).toBe('Retry Co');
+    expect(params.get('metadata[company_id]')).toBe('co_retry');
+    expect(params.get('metadata[account_id]')).toBe('acct_retry');
+  });
+});
+
 describe('Worker scheduled billing reconcile', () => {
   async function seedPausedCollection(accountId: string, subId: string): Promise<void> {
     await runInDurableObject(identityStub(), (instance) => {
@@ -1245,5 +1376,108 @@ describe('Worker scheduled billing reconcile', () => {
     expect(row?.applied_version).toBe(0);
     expect(row?.desired_version).toBe(1);
     expect(row?.in_flight_version).toBeNull();
+  });
+
+  it('retries a pending seat change once and keeps it pending when Stripe is unreachable', async () => {
+    const session = await bootstrapLocalSession('billing-cron-seat-retry');
+    const created = await authenticatedFetch('/api/company', session, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Cron Seat Co', operationId: 'op_cron_seat_create' }),
+    });
+    expect(created.status).toBe(201);
+    const companyId = ((await created.json()) as { company: { id: string } }).company.id;
+
+    const writeback = await identityStub().fetch('https://identity/billing/settle', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'company-create',
+        companyId,
+        operationId: 'op_cron_seat_create',
+        processorCustomerId: 'cus_cron_seat_create',
+      }),
+    });
+    expect(writeback.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(
+          `INSERT INTO company_subscriptions (
+             company_id, processor_subscription_id, quantity, status,
+             collection_method, updated_at
+           ) VALUES (?, ?, 2, 'active', 'charge_automatically', 1)`,
+        )
+        .run(companyId, `sub_${companyId}`);
+    });
+
+    const reserved = await authenticatedFetch('/api/company/seats', session, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ quantity: 4, operationId: 'op_cron_seat_retry' }),
+    });
+    expect(reserved.status).toBe(202);
+    expect(await reserved.json()).toMatchObject({ status: 'pending' });
+
+    const summary = await runBillingReconcile(env, 1_700_000_002_000);
+    expect(summary).not.toBeNull();
+    expect(summary?.outboundRetries).toBe(1);
+    expect(summary?.outboundSettled).toBe(0);
+
+    const stored = await runInDurableObject(identityStub(), (instance) =>
+      instance.db
+        .prepare(
+          `SELECT quantity, pending_quantity AS pendingQuantity,
+                  pending_operation_id AS pendingOperationId
+           FROM company_subscriptions WHERE company_id = ?`,
+        )
+        .get(companyId),
+    );
+    expect(stored).toEqual({
+      quantity: 2,
+      pendingQuantity: 4,
+      pendingOperationId: 'op_cron_seat_retry',
+    });
+
+    const cleaned = await identityStub().fetch('https://identity/billing/settle', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'seat-change',
+        companyId,
+        operationId: 'op_cron_seat_retry',
+        outcome: 'failure',
+      }),
+    });
+    expect(cleaned.status).toBe(200);
+  });
+
+  it('retries a pending company customer creation and keeps it pending when Stripe is unreachable', async () => {
+    const session = await bootstrapLocalSession('billing-cron-create-retry');
+    const created = await authenticatedFetch('/api/company', session, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Cron Create Co', operationId: 'op_cron_create_retry' }),
+    });
+    expect(created.status).toBe(201);
+    const company = (await created.json()) as {
+      company: { id: string; processorCustomerId: string | null };
+    };
+    expect(company.company.processorCustomerId).toBeNull();
+
+    const summary = await runBillingReconcile(env, 1_700_000_003_000);
+    expect(summary).not.toBeNull();
+    expect(summary?.outboundRetries).toBe(1);
+    expect(summary?.outboundSettled).toBe(0);
+
+    const stored = await runInDurableObject(identityStub(), (instance) =>
+      instance.db
+        .prepare(
+          `SELECT processor_customer_id AS processorCustomerId
+           FROM companies WHERE company_id = ?`,
+        )
+        .get(company.company.id),
+    );
+    expect(stored).toEqual({ processorCustomerId: null });
   });
 });

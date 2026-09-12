@@ -6,13 +6,77 @@
  * transaction, and settles the claim with the version it was claimed with so a
  * superseded version can never change `billing_subscriptions` (H4).
  */
-import type { BillingEnv } from './stripeConfig';
+import { STRIPE_API_VERSION, type BillingEnv } from './stripeConfig';
 import { collectionStateRequest } from './stripeRequest';
 import { executeStripeRequest, type StripeExecutionResult } from './stripeClient';
 import type { BillingSubjectKind, DesiredCollection } from '../identity/entitlementWriter';
+import type {
+  OutboundCompanyCreateOperation,
+  OutboundOperation,
+  OutboundSeatChangeOperation,
+} from './reconcile';
 
 const IDENTITY_OPERATIONS_URL = 'https://identity/billing/operations';
 const IDENTITY_SETTLE_URL = 'https://identity/billing/operations/settle';
+const IDENTITY_SYSTEM_SETTLE_URL = 'https://identity/billing/settle';
+
+export interface SeatItemUpdateInput {
+  companyId: string;
+  operationId: string;
+  processorSubscriptionId: string;
+  itemId: string;
+  targetQuantity: number;
+  prorationBehavior: 'create_prorations' | 'none';
+}
+
+export function seatItemUpdateRequest(
+  apiBaseUrl: string,
+  secretKey: string,
+  input: SeatItemUpdateInput,
+): Request {
+  const params = new URLSearchParams();
+  params.append('items[0][id]', input.itemId);
+  params.append('items[0][quantity]', String(input.targetQuantity));
+  params.append('proration_behavior', input.prorationBehavior);
+  return new Request(`${apiBaseUrl}/v1/subscriptions/${input.processorSubscriptionId}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      'Stripe-Version': STRIPE_API_VERSION,
+      'content-type': 'application/x-www-form-urlencoded',
+      'idempotency-key': `op:company:${input.companyId}:${input.operationId}`,
+    },
+    body: params.toString(),
+  });
+}
+
+export interface CompanyCustomerInput {
+  companyId: string;
+  operationId: string;
+  name: string;
+  accountId: string;
+}
+
+export function companyCustomerRequest(
+  apiBaseUrl: string,
+  secretKey: string,
+  input: CompanyCustomerInput,
+): Request {
+  const params = new URLSearchParams();
+  params.append('name', input.name);
+  params.append('metadata[company_id]', input.companyId);
+  params.append('metadata[account_id]', input.accountId);
+  return new Request(`${apiBaseUrl}/v1/customers`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      'Stripe-Version': STRIPE_API_VERSION,
+      'content-type': 'application/x-www-form-urlencoded',
+      'idempotency-key': `op:company:${input.companyId}:${input.operationId}`,
+    },
+    body: params.toString(),
+  });
+}
 
 export interface CollectionExecutorDeps {
   identityFetch: (request: Request) => Promise<Response>;
@@ -44,6 +108,15 @@ function recordOf(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+export function stripeSubscriptionItemId(json: unknown): string | null {
+  const items = recordOf(json)?.items;
+  if (!Array.isArray(items)) return null;
+  const first = items[0];
+  if (typeof first !== 'object' || first === null || Array.isArray(first)) return null;
+  const id = (first as Record<string, unknown>).id;
+  return typeof id === 'string' && id.length > 0 ? id : null;
 }
 
 function isDesiredCollection(value: unknown): value is DesiredCollection {
@@ -226,4 +299,171 @@ export async function runCollectionExecutor(
   const claim = await claimCollectionExecution(deps, subject, operationId);
   if (claim === null) return { action: 'none', reason: 'no_claim' };
   return executeCollectionClaim(deps, subject, claim, operationId);
+}
+
+export type OutboundRetryOutcome = 'settled' | 'released' | 'pending' | 'unavailable';
+
+async function settleOutboundViaSystem(
+  deps: CollectionExecutorDeps,
+  body: Record<string, unknown>,
+): Promise<boolean> {
+  try {
+    const response = await deps.identityFetch(new Request(IDENTITY_SYSTEM_SETTLE_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }));
+    return response.ok;
+  } catch {
+    console.error('[billing]', JSON.stringify({
+      alert: 'outbound_settle_failed',
+      kind: body.kind,
+      outcome: 'failed',
+    }));
+    return false;
+  }
+}
+
+export async function retrySeatChange(
+  deps: CollectionExecutorDeps,
+  operation: OutboundSeatChangeOperation,
+): Promise<OutboundRetryOutcome> {
+  const secretKey = deps.billing.secretKey;
+  if (!deps.billing.apiBaseAllowed || secretKey === null) return 'unavailable';
+
+  let fetched: StripeExecutionResult | null;
+  try {
+    fetched = await executeStripeRequest(
+      new Request(
+        `${deps.billing.apiBaseUrl}/v1/subscriptions/${operation.processorSubscriptionId}`,
+        { method: 'GET' },
+      ),
+      secretKey,
+    );
+  } catch {
+    fetched = null;
+  }
+  if (fetched === null || !fetched.ok) {
+    await settleOutboundViaSystem(deps, {
+      kind: 'seat-change',
+      companyId: operation.companyId,
+      operationId: operation.operationId,
+      outcome: 'unknown',
+    });
+    return 'pending';
+  }
+
+  const itemId = stripeSubscriptionItemId(fetched.json);
+  if (itemId === null) {
+    await settleOutboundViaSystem(deps, {
+      kind: 'seat-change',
+      companyId: operation.companyId,
+      operationId: operation.operationId,
+      outcome: 'failure',
+    });
+    return 'released';
+  }
+
+  let updated: StripeExecutionResult | null;
+  try {
+    updated = await executeStripeRequest(
+      seatItemUpdateRequest(deps.billing.apiBaseUrl, secretKey, {
+        companyId: operation.companyId,
+        operationId: operation.operationId,
+        processorSubscriptionId: operation.processorSubscriptionId,
+        itemId,
+        targetQuantity: operation.targetQuantity,
+        prorationBehavior: operation.prorationBehavior,
+      }),
+      secretKey,
+    );
+  } catch {
+    updated = null;
+  }
+  if (updated === null) {
+    await settleOutboundViaSystem(deps, {
+      kind: 'seat-change',
+      companyId: operation.companyId,
+      operationId: operation.operationId,
+      outcome: 'unknown',
+    });
+    return 'pending';
+  }
+  if (updated.ok) {
+    const settled = await settleOutboundViaSystem(deps, {
+      kind: 'seat-change',
+      companyId: operation.companyId,
+      operationId: operation.operationId,
+      outcome: 'success',
+    });
+    return settled ? 'settled' : 'pending';
+  }
+  if (updated.status >= 400 && updated.status < 500) {
+    await settleOutboundViaSystem(deps, {
+      kind: 'seat-change',
+      companyId: operation.companyId,
+      operationId: operation.operationId,
+      outcome: 'failure',
+    });
+    return 'released';
+  }
+  await settleOutboundViaSystem(deps, {
+    kind: 'seat-change',
+    companyId: operation.companyId,
+    operationId: operation.operationId,
+    outcome: 'unknown',
+  });
+  return 'pending';
+}
+
+export async function retryCompanyCreate(
+  deps: CollectionExecutorDeps,
+  operation: OutboundCompanyCreateOperation,
+): Promise<OutboundRetryOutcome> {
+  const secretKey = deps.billing.secretKey;
+  if (!deps.billing.apiBaseAllowed || secretKey === null) return 'unavailable';
+
+  let result: StripeExecutionResult | null;
+  try {
+    result = await executeStripeRequest(
+      companyCustomerRequest(deps.billing.apiBaseUrl, secretKey, {
+        companyId: operation.companyId,
+        operationId: operation.operationId,
+        name: operation.name,
+        accountId: operation.ownerAccountId,
+      }),
+      secretKey,
+    );
+  } catch {
+    result = null;
+  }
+  if (result === null || !result.ok) {
+    console.error('[billing]', JSON.stringify({
+      alert: 'outbound_retry_failed',
+      kind: 'company-create',
+      companyId: operation.companyId,
+      outcome: 'pending',
+    }));
+    return 'pending';
+  }
+  const customerId = recordOf(result.json)?.id;
+  if (typeof customerId !== 'string' || !customerId.startsWith('cus_')) {
+    return 'pending';
+  }
+  const settled = await settleOutboundViaSystem(deps, {
+    kind: 'company-create',
+    companyId: operation.companyId,
+    operationId: operation.operationId,
+    processorCustomerId: customerId,
+  });
+  return settled ? 'settled' : 'pending';
+}
+
+export async function retryOutboundOperation(
+  deps: CollectionExecutorDeps,
+  operation: OutboundOperation,
+): Promise<OutboundRetryOutcome> {
+  return operation.kind === 'company-create'
+    ? retryCompanyCreate(deps, operation)
+    : retrySeatChange(deps, operation);
 }

@@ -194,6 +194,23 @@ export function readEntitlementsForAccount(
   }));
 }
 
+/**
+ * Replaces the erased account id on its entitlement audit rows with the
+ * stable erasure pseudonym. Writer-owned because entitlement_audit has
+ * exactly one writer (§3.3); callers run it inside the erasure transaction.
+ */
+export function pseudonymizeEntitlementAuditSubject(
+  db: RoomDatabase,
+  args: { accountId: string; pseudonym: string },
+): number {
+  return db
+    .prepare(
+      `UPDATE entitlement_audit SET subject_id = ?
+       WHERE subject_kind = 'account' AND subject_id = ?`,
+    )
+    .run(args.pseudonym, args.accountId).changes;
+}
+
 export function deleteCompanyEntitlement(
   db: RoomDatabase,
   args: {

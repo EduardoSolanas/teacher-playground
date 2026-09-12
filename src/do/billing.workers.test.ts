@@ -10,7 +10,7 @@ import {
 } from '../lib/referrals/ledger';
 import { PAST_DUE_GRACE_MS } from '../lib/plan/catalog';
 import type { PlanId } from '../lib/plan/catalog';
-import { RECONCILE_IN_FLIGHT_TIMEOUT_MS } from '../lib/billing/reconcile';
+import { RECONCILE_IN_FLIGHT_TIMEOUT_MS, corporateSeatBandMismatch } from '../lib/billing/reconcile';
 
 declare global {
   namespace Cloudflare {
@@ -2346,5 +2346,51 @@ describe('identity /billing/reconcile: R-1 collection sweep', () => {
           .get(accountId),
       ).toEqual({ count: 0 });
     });
+  });
+
+  it('names the subject kind of every subscription the worker must fetch', async () => {
+    const accountId = await newAccount('billing-reconcile-subject-kind');
+    const subId = 'sub_reconcile_subject_kind';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        processorCustomerId: `cus_${subId}`,
+        processorSubscriptionId: subId,
+      });
+      ensureBillingSubscription(instance.db, {
+        processorSubscriptionId: subId,
+        subjectKind: 'account',
+        subjectId: accountId,
+        now: Date.now(),
+      });
+    });
+
+    const response = await reconcileRequest();
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      subscriptions: Array<{ processorSubscriptionId: string; subjectKind: string }>;
+    };
+    expect(body.subscriptions).toContainEqual({
+      processorSubscriptionId: subId,
+      subjectKind: 'account',
+    });
+  });
+});
+
+describe('identity /billing/reconcile: corporate price tiers', () => {
+  it('flags a fetched seat price that falls outside its quantity band', () => {
+    expect(corporateSeatBandMismatch(3, 750)).toBe(false);
+    expect(corporateSeatBandMismatch(9, 750)).toBe(false);
+    expect(corporateSeatBandMismatch(10, 650)).toBe(false);
+    expect(corporateSeatBandMismatch(24, 650)).toBe(false);
+    expect(corporateSeatBandMismatch(25, 550)).toBe(false);
+    expect(corporateSeatBandMismatch(99, 550)).toBe(false);
+
+    expect(corporateSeatBandMismatch(9, 650)).toBe(true);
+    expect(corporateSeatBandMismatch(10, 750)).toBe(true);
+    expect(corporateSeatBandMismatch(24, 550)).toBe(true);
+    expect(corporateSeatBandMismatch(1, 750)).toBe(true);
+    expect(corporateSeatBandMismatch(100, 550)).toBe(true);
   });
 });

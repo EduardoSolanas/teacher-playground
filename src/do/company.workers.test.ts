@@ -61,6 +61,14 @@ function companyFetch(
   });
 }
 
+function systemSettle(body: unknown): Promise<Response> {
+  return identityStub().fetch('https://identity/billing/settle', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
 interface CompanyBody {
   company: {
     id: string;
@@ -566,6 +574,274 @@ describe('IdentityDO company routes (spec §6.2)', () => {
         .get(companyId),
     );
     expect(finalRow).toEqual({ quantity: 4, pendingQuantity: null });
+  });
+
+  it('system settle releases a pending seat change without a session and clears the marker', async () => {
+    const owner = await accessSession('company-system-settle-owner');
+    const companyId = await createCompanyFor(owner, 'System Settle Co');
+    await seedCompanySubscription(companyId, 2);
+
+    const reserved = await companyFetch('/companies/seats', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ quantity: 4, operationId: 'op_system_settle' }),
+    });
+    expect(reserved.status).toBe(200);
+
+    const released = await systemSettle({
+      kind: 'seat-change',
+      companyId,
+      operationId: 'op_system_settle',
+      outcome: 'failure',
+    });
+    expect(released.status).toBe(200);
+    expect(await released.json()).toEqual({ status: 'released' });
+
+    const stored = await runInDurableObject(identityStub(), (instance) => ({
+      subscription: instance.db
+        .prepare(
+          `SELECT quantity, pending_quantity AS pendingQuantity
+           FROM company_subscriptions WHERE company_id = ?`,
+        )
+        .get(companyId),
+      operation: instance.db
+        .prepare(
+          `SELECT status, updated_at AS updatedAt FROM billing_operations
+           WHERE subject_kind = 'company' AND subject_id = ?
+             AND operation_id = 'op_system_settle' AND kind = 'seat-change'`,
+        )
+        .get(companyId),
+    }));
+    expect(stored.subscription).toEqual({ quantity: 2, pendingQuantity: null });
+    expect(stored.operation).toMatchObject({ status: 'failed' });
+  });
+
+  it('system settle never applies a seat change a newer reservation superseded', async () => {
+    const owner = await accessSession('company-system-superseded-owner');
+    const companyId = await createCompanyFor(owner, 'System Superseded Co');
+    await seedCompanySubscription(companyId, 2);
+
+    const firstReserve = await companyFetch('/companies/seats', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ quantity: 4, operationId: 'op_system_old' }),
+    });
+    expect(firstReserve.status).toBe(200);
+    const released = await systemSettle({
+      kind: 'seat-change',
+      companyId,
+      operationId: 'op_system_old',
+      outcome: 'failure',
+    });
+    expect(released.status).toBe(200);
+
+    const secondReserve = await companyFetch('/companies/seats', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ quantity: 5, operationId: 'op_system_new' }),
+    });
+    expect(secondReserve.status).toBe(200);
+
+    const stale = await systemSettle({
+      kind: 'seat-change',
+      companyId,
+      operationId: 'op_system_old',
+      outcome: 'success',
+    });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toEqual({ error: 'Conflict', reason: 'superseded' });
+
+    const stored = await runInDurableObject(identityStub(), (instance) => ({
+      subscription: instance.db
+        .prepare(
+          `SELECT quantity, pending_quantity AS pendingQuantity,
+                  pending_operation_id AS pendingOperationId
+           FROM company_subscriptions WHERE company_id = ?`,
+        )
+        .get(companyId),
+      staleOperation: instance.db
+        .prepare(
+          `SELECT status FROM billing_operations
+           WHERE subject_kind = 'company' AND subject_id = ?
+             AND operation_id = 'op_system_old' AND kind = 'seat-change'`,
+        )
+        .get(companyId),
+    }));
+    expect(stored.subscription).toEqual({
+      quantity: 2,
+      pendingQuantity: 5,
+      pendingOperationId: 'op_system_new',
+    });
+    expect(stored.staleOperation).toEqual({ status: 'failed' });
+  });
+
+  it('system settle keeps the reservation pending on an unknown Stripe outcome', async () => {
+    const owner = await accessSession('company-system-unknown-owner');
+    const companyId = await createCompanyFor(owner, 'System Unknown Co');
+    await seedCompanySubscription(companyId, 2);
+
+    const reserved = await companyFetch('/companies/seats', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ quantity: 4, operationId: 'op_system_unknown' }),
+    });
+    expect(reserved.status).toBe(200);
+
+    const pending = await systemSettle({
+      kind: 'seat-change',
+      companyId,
+      operationId: 'op_system_unknown',
+      outcome: 'unknown',
+    });
+    expect(pending.status).toBe(200);
+    expect(await pending.json()).toEqual({ status: 'pending' });
+
+    const stored = await runInDurableObject(identityStub(), (instance) => ({
+      subscription: instance.db
+        .prepare(
+          `SELECT quantity, pending_quantity AS pendingQuantity,
+                  pending_operation_id AS pendingOperationId
+           FROM company_subscriptions WHERE company_id = ?`,
+        )
+        .get(companyId),
+      operation: instance.db
+        .prepare(
+          `SELECT status FROM billing_operations
+           WHERE subject_kind = 'company' AND subject_id = ?
+             AND operation_id = 'op_system_unknown' AND kind = 'seat-change'`,
+        )
+        .get(companyId),
+    }));
+    expect(stored.subscription).toEqual({
+      quantity: 2,
+      pendingQuantity: 4,
+      pendingOperationId: 'op_system_unknown',
+    });
+    expect(stored.operation).toEqual({ status: 'pending' });
+  });
+
+  it('system customer writeback records the customer without a session and never overwrites it', async () => {
+    const owner = await accessSession('company-system-customer-owner');
+    const companyId = await createCompanyFor(owner, 'System Customer Co');
+
+    const written = await systemSettle({
+      kind: 'company-create',
+      companyId,
+      operationId: 'op_System_Customer_Co',
+      processorCustomerId: 'cus_system_1',
+    });
+    expect(written.status).toBe(200);
+    const writtenBody = (await written.json()) as {
+      company: { processorCustomerId: string | null };
+      operation: { id: string; status: string };
+    };
+    expect(writtenBody.company.processorCustomerId).toBe('cus_system_1');
+    expect(writtenBody.operation).toEqual({
+      id: 'op_System_Customer_Co',
+      status: 'succeeded',
+    });
+
+    const replay = await systemSettle({
+      kind: 'company-create',
+      companyId,
+      operationId: 'op_System_Customer_Co',
+      processorCustomerId: 'cus_system_1',
+    });
+    expect(replay.status).toBe(200);
+
+    const overwrite = await systemSettle({
+      kind: 'company-create',
+      companyId,
+      operationId: 'op_System_Customer_Co',
+      processorCustomerId: 'cus_system_2',
+    });
+    expect(overwrite.status).toBe(409);
+
+    const stored = await runInDurableObject(identityStub(), (instance) => ({
+      company: instance.db
+        .prepare(
+          `SELECT processor_customer_id AS processorCustomerId
+           FROM companies WHERE company_id = ?`,
+        )
+        .get(companyId),
+      operation: instance.db
+        .prepare(
+          `SELECT status FROM billing_operations
+           WHERE subject_kind = 'company' AND subject_id = ?
+             AND operation_id = 'op_System_Customer_Co' AND kind = 'company-create'`,
+        )
+        .get(companyId),
+    }));
+    expect(stored.company).toEqual({ processorCustomerId: 'cus_system_1' });
+    expect(stored.operation).toEqual({ status: 'succeeded' });
+  });
+
+  it('reconcile enumerates a pending seat change for the worker to retry', async () => {
+    const owner = await accessSession('company-reconcile-seat-owner');
+    const companyId = await createCompanyFor(owner, 'Reconcile Seat Co');
+    await seedCompanySubscription(companyId, 2);
+
+    const reserved = await companyFetch('/companies/seats', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ quantity: 5, operationId: 'op_reconcile_seat' }),
+    });
+    expect(reserved.status).toBe(200);
+
+    const response = await identityStub().fetch('https://identity/billing/reconcile');
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { outboundOperations: unknown[] };
+    const seatOperations = body.outboundOperations.filter(
+      (operation) =>
+        (operation as { kind?: string; companyId?: string }).kind === 'seat-change' &&
+        (operation as { companyId?: string }).companyId === companyId,
+    );
+    expect(seatOperations).toEqual([
+      {
+        kind: 'seat-change',
+        companyId,
+        operationId: 'op_reconcile_seat',
+        processorSubscriptionId: `sub_${companyId}`,
+        targetQuantity: 5,
+        prorationBehavior: 'create_prorations',
+      },
+    ]);
+  });
+
+  it('reconcile enumerates a pending company-create with its owner and drops it once settled', async () => {
+    const owner = await accessSession('company-reconcile-create-owner');
+    const companyId = await createCompanyFor(owner, 'Reconcile Create Co');
+
+    const first = await identityStub().fetch('https://identity/billing/reconcile');
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as {
+      outboundOperations: Array<{ companyId?: string }>;
+    };
+    const creates = firstBody.outboundOperations.filter(
+      (operation) => operation.companyId === companyId,
+    );
+    expect(creates).toEqual([
+      {
+        kind: 'company-create',
+        companyId,
+        operationId: 'op_Reconcile_Create_Co',
+        name: 'Reconcile Create Co',
+        ownerAccountId: owner.accountId,
+      },
+    ]);
+
+    const written = await systemSettle({
+      kind: 'company-create',
+      companyId,
+      operationId: 'op_Reconcile_Create_Co',
+      processorCustomerId: 'cus_reconcile_create',
+    });
+    expect(written.status).toBe(200);
+
+    const second = await identityStub().fetch('https://identity/billing/reconcile');
+    const secondBody = (await second.json()) as {
+      outboundOperations: Array<{ companyId?: string }>;
+    };
+    expect(
+      secondBody.outboundOperations.filter(
+        (operation) => operation.companyId === companyId,
+      ),
+    ).toEqual([]);
   });
 
   function seedMemberCompanyEntitlement(

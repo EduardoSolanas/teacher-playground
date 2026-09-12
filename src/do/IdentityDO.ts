@@ -133,6 +133,7 @@ const BILLING_APPLY_PATH = '/billing/events/apply';
 const BILLING_STATUS_PATH = '/billing/events/status';
 const BILLING_OPERATIONS_PATH = '/billing/operations';
 const BILLING_SETTLE_PATH = '/billing/operations/settle';
+const BILLING_SYSTEM_SETTLE_PATH = '/billing/settle';
 const BILLING_RECONCILE_PATH = '/billing/reconcile';
 const BILLING_RATE_LIMIT_PATH = '/billing/rate-limit';
 const BILLING_CUSTOMER_PATH = '/billing/customer';
@@ -744,6 +745,71 @@ function isCompanyMemberBody(value: unknown): value is { accountId: string } {
     body.accountId.length >= 1 &&
     body.accountId.length <= 128
   );
+}
+
+interface BillingSystemSeatSettleBody {
+  kind: 'seat-change';
+  companyId: string;
+  operationId: string;
+  outcome: 'success' | 'failure' | 'unknown';
+}
+
+function isBillingSystemSeatSettleBody(
+  value: unknown,
+): value is BillingSystemSeatSettleBody {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 4 &&
+    body.kind === 'seat-change' &&
+    typeof body.companyId === 'string' &&
+    body.companyId.length >= 1 &&
+    body.companyId.length <= 128 &&
+    typeof body.operationId === 'string' &&
+    OPERATION_ID_PATTERN.test(body.operationId) &&
+    (body.outcome === 'success' ||
+      body.outcome === 'failure' ||
+      body.outcome === 'unknown')
+  );
+}
+
+interface BillingSystemCompanyCreateBody {
+  kind: 'company-create';
+  companyId: string;
+  operationId: string;
+  processorCustomerId: string;
+}
+
+function isBillingSystemCompanyCreateBody(
+  value: unknown,
+): value is BillingSystemCompanyCreateBody {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 4 &&
+    body.kind === 'company-create' &&
+    typeof body.companyId === 'string' &&
+    body.companyId.length >= 1 &&
+    body.companyId.length <= 128 &&
+    typeof body.operationId === 'string' &&
+    OPERATION_ID_PATTERN.test(body.operationId) &&
+    typeof body.processorCustomerId === 'string' &&
+    /^cus_[A-Za-z0-9_]{1,120}$/.test(body.processorCustomerId)
+  );
+}
+
+type BillingSystemSettleBody =
+  | BillingSystemSeatSettleBody
+  | BillingSystemCompanyCreateBody;
+
+function isBillingSystemSettleBody(
+  value: unknown,
+): value is BillingSystemSettleBody {
+  return isBillingSystemSeatSettleBody(value) || isBillingSystemCompanyCreateBody(value);
 }
 
 function isBillingSettleBody(
@@ -1489,6 +1555,99 @@ export class IdentityDO extends DurableObject {
         );
         return Response.json({ error: 'settle_failed' }, { status: 500, headers: noStore() });
       }
+    }
+
+    if (url.pathname === BILLING_SYSTEM_SETTLE_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readExactJson(request, isBillingSystemSettleBody);
+      if ('response' in parsed) return parsed.response;
+      const now = Date.now();
+      if (parsed.body.kind === 'company-create') {
+        const companyId = parsed.body.companyId;
+        const operationId = parsed.body.operationId;
+        const processorCustomerId = parsed.body.processorCustomerId;
+        const result = this.db.transaction(() => {
+          const operation = this.db
+            .prepare(
+              `SELECT status FROM billing_operations
+               WHERE subject_kind = 'company' AND subject_id = ?
+                 AND operation_id = ? AND kind = 'company-create'`,
+            )
+            .get(companyId, operationId) as
+            | { status: string }
+            | undefined;
+          const company = readCompany(this.db, companyId);
+          if (!operation || !company) return null;
+          if (operation.status === 'succeeded') {
+            return company.processorCustomerId === processorCustomerId
+              ? company
+              : null;
+          }
+          if (
+            company.processorCustomerId !== null &&
+            company.processorCustomerId !== processorCustomerId
+          ) {
+            return null;
+          }
+          this.db
+            .prepare(
+              `UPDATE companies SET processor_customer_id = ?, updated_at = ?
+               WHERE company_id = ?`,
+            )
+            .run(processorCustomerId, now, companyId);
+          this.db
+            .prepare(
+              `UPDATE billing_operations
+               SET status = 'succeeded', stripe_object_id = ?, updated_at = ?
+               WHERE subject_kind = 'company' AND subject_id = ?
+                 AND operation_id = ? AND kind = 'company-create'`,
+            )
+            .run(processorCustomerId, now, companyId, operationId);
+          return readCompany(this.db, companyId);
+        })();
+        if (!result) {
+          return Response.json(
+            { error: 'Conflict', reason: 'superseded' },
+            { status: 409, headers: noStore() },
+          );
+        }
+        return Response.json(
+          {
+            company: companyJson(result, 'owner'),
+            operation: { id: operationId, status: 'succeeded' },
+          },
+          { headers: noStore() },
+        );
+      }
+      if (parsed.body.outcome === 'unknown') {
+        return Response.json({ status: 'pending' }, { headers: noStore() });
+      }
+      if (parsed.body.outcome === 'success') {
+        const settled = settleSeatChange(this.db, {
+          companyId: parsed.body.companyId,
+          operationId: parsed.body.operationId,
+          now,
+        });
+        if (!settled.settled) {
+          return Response.json(
+            { error: 'Conflict', reason: 'superseded' },
+            { status: 409, headers: noStore() },
+          );
+        }
+        return Response.json({ status: 'settled' }, { headers: noStore() });
+      }
+      const released = releaseSeatChange(this.db, {
+        companyId: parsed.body.companyId,
+        operationId: parsed.body.operationId,
+        now,
+      });
+      if (!released.released) {
+        return Response.json(
+          { error: 'Conflict', reason: 'superseded' },
+          { status: 409, headers: noStore() },
+        );
+      }
+      return Response.json({ status: 'released' }, { headers: noStore() });
     }
 
     if (url.pathname === BILLING_RECONCILE_PATH) {
