@@ -17,18 +17,33 @@
 # produced GET /accounts/accounts/r2/buckets/<account id> and a 404. Only a real
 # plan against the real API could have found that, and it did.
 #
+# The id format is PER RESOURCE, and the shapes are opposites. There is no rule
+# to infer; each was learned from the provider refusing the other:
+#
+#   R2 bucket      "<account_id>/<bucket_name>/<jurisdiction>"  no discriminator
+#   Access app     "accounts/<account_id>/<app_id>"             discriminator required
+#   Access policy  "accounts/<account_id>/<policy_id>"
+#   Ruleset        "zones/<zone_id>/<ruleset_id>"
+#
+# The Access resources take "accounts" or "zones" first because they can be
+# scoped either way, and a missing one is reported as "invalid discriminator
+# segment". R2 has no such choice and reads a leading "accounts" as the account
+# id, which produced a 404 on /accounts/accounts/r2/buckets/<account id>.
+#
+# Only a real plan against the real API establishes any of this.
+#
 # infra/README.md carries the runbook for reading each id.
 
 import {
   for_each = var.adopt_access_application_id == null ? {} : { this = var.adopt_access_application_id }
   to       = cloudflare_zero_trust_access_application.teacher
-  id       = "${local.account_id}/${each.value}"
+  id       = "accounts/${local.account_id}/${each.value}"
 }
 
 import {
   for_each = var.adopt_access_policy_id == null ? {} : { this = var.adopt_access_policy_id }
   to       = cloudflare_zero_trust_access_policy.allow_teachers
-  id       = "${local.account_id}/${each.value}"
+  id       = "accounts/${local.account_id}/${each.value}"
 }
 
 # R2 takes a THIRD segment, the jurisdiction. "default" is the ordinary one; a
@@ -44,7 +59,7 @@ import {
 import {
   for_each = var.adopt_guest_rate_limit_ruleset_id == null ? {} : { this = var.adopt_guest_rate_limit_ruleset_id }
   to       = cloudflare_ruleset.guest_auth_rate_limit
-  id       = "${data.cloudflare_zone.this.id}/${each.value}"
+  id       = "zones/${data.cloudflare_zone.this.id}/${each.value}"
 }
 
 # The Zero Trust organization is a singleton that always exists once Zero Trust
