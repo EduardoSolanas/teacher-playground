@@ -57,7 +57,7 @@ export function resolveEffectivePlan(
   }
 
   const selected = company ?? personal;
-  if (selected) {
+  if (selected && Object.hasOwn(PLAN_CATALOG, selected.planId)) {
     return {
       planId: selected.planId,
       source: selected.source,
@@ -67,6 +67,12 @@ export function resolveEffectivePlan(
       graceUntil: selected.graceUntil,
       collectionPaused: false,
     };
+  }
+  if (selected) {
+    console.error(
+      '[plan]',
+      JSON.stringify({ alert: 'unknown_plan_id', planId: selected.planId }),
+    );
   }
 
   return {

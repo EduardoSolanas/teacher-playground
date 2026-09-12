@@ -781,6 +781,35 @@ export function recordGraceExpiryAudit(
   return { recorded: true };
 }
 
+export type BillingSweepKind = 'disputes';
+
+export function readBillingSweep(
+  db: RoomDatabase,
+  kind: BillingSweepKind,
+): { lastSweptAt: number; updatedAt: number } | null {
+  const row = db
+    .prepare(`SELECT last_swept_at, updated_at FROM billing_sweeps WHERE kind = ?`)
+    .get(kind) as { last_swept_at: number; updated_at: number } | undefined;
+  return row ? { lastSweptAt: row.last_swept_at, updatedAt: row.updated_at } : null;
+}
+
+export function recordBillingSweep(
+  db: RoomDatabase,
+  args: { kind: BillingSweepKind; lastSweptAt: number; now: number },
+): { recorded: boolean } {
+  const result = db
+    .prepare(
+      `INSERT INTO billing_sweeps (kind, last_swept_at, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(kind) DO UPDATE SET
+         last_swept_at = excluded.last_swept_at,
+         updated_at = excluded.updated_at
+       WHERE excluded.last_swept_at > billing_sweeps.last_swept_at`,
+    )
+    .run(args.kind, args.lastSweptAt, args.now);
+  return { recorded: result.changes === 1 };
+}
+
 /** First paid timestamp on a company subscription, set exactly once. */
 export function setCompanyFirstPaidAt(
   db: RoomDatabase,

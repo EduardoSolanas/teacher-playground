@@ -99,8 +99,11 @@ import {
 } from '../lib/identity/entitlementWriter';
 import {
   parseCollectionObservation,
+  parseReconcileDispute,
   reconcileBilling,
+  RECONCILE_RUN_ID_PATTERN,
   type CollectionObservation,
+  type ReconcileDispute,
 } from '../lib/billing/reconcile';
 
 const RESOLVE_PATH = '/subjects/resolve';
@@ -776,15 +779,39 @@ function isBillingSettleBody(
 
 function isBillingReconcileBody(
   value: unknown,
-): value is { observations?: CollectionObservation[] } {
+): value is {
+  runId?: string;
+  observations?: CollectionObservation[];
+  disputes?: ReconcileDispute[];
+} {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const body = value as Record<string, unknown>;
-  if (!Object.keys(body).every((key) => key === 'observations')) return false;
-  if (body.observations === undefined) return true;
-  if (!Array.isArray(body.observations)) return false;
-  return body.observations.every(
-    (entry) => parseCollectionObservation(entry) !== null,
-  );
+  if (
+    !Object.keys(body).every(
+      (key) => key === 'runId' || key === 'observations' || key === 'disputes',
+    )
+  ) {
+    return false;
+  }
+  if (
+    body.runId !== undefined &&
+    (typeof body.runId !== 'string' || !RECONCILE_RUN_ID_PATTERN.test(body.runId))
+  ) {
+    return false;
+  }
+  if (body.observations !== undefined) {
+    if (!Array.isArray(body.observations)) return false;
+    if (!body.observations.every((entry) => parseCollectionObservation(entry) !== null)) {
+      return false;
+    }
+  }
+  if (body.disputes !== undefined) {
+    if (!Array.isArray(body.disputes)) return false;
+    if (!body.disputes.every((entry) => parseReconcileDispute(entry) !== null)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function applyVerdictJson(verdict: ApplyVerdict): Record<string, string | undefined> {
@@ -1466,19 +1493,27 @@ export class IdentityDO extends DurableObject {
 
     if (url.pathname === BILLING_RECONCILE_PATH) {
       let observations: readonly CollectionObservation[] = [];
+      let disputes: readonly ReconcileDispute[] = [];
+      let runId: string | undefined;
       if (request.method === 'POST') {
         const parsed = await readRawJson(request);
         if ('response' in parsed) return parsed.response;
         if (!isBillingReconcileBody(parsed.body)) {
           return Response.json({ error: 'Invalid body' }, { status: 400 });
         }
-        observations = parsed.body.observations ?? [];
+        observations = (parsed.body.observations ?? [])
+          .map((entry) => parseCollectionObservation(entry))
+          .filter((entry): entry is CollectionObservation => entry !== null);
+        disputes = (parsed.body.disputes ?? [])
+          .map((entry) => parseReconcileDispute(entry))
+          .filter((entry): entry is ReconcileDispute => entry !== null);
+        runId = parsed.body.runId;
       } else if (request.method !== 'GET') {
         return methodNotAllowed('GET, POST');
       }
       try {
         const result = this.db.transaction(() =>
-          reconcileBilling(this.db, { now: Date.now(), observations }),
+          reconcileBilling(this.db, { now: Date.now(), runId, observations, disputes }),
         )();
         return Response.json(result, { status: 200, headers: noStore() });
       } catch (error) {

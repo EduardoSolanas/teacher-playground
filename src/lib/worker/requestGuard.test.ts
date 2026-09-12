@@ -439,6 +439,28 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(wrapped.headers.get('X-Frame-Options')).toBe('DENY');
     });
 
+    it('forces HTTPS on every response, including API errors and HTML', async () => {
+      const hsts = 'max-age=31536000; includeSubDomains';
+      expect(
+        withSecurityHeaders(new Response('ok', { status: 200 }))
+          .headers.get('Strict-Transport-Security'),
+      ).toBe(hsts);
+      expect(
+        withSecurityHeaders(new Response('not found', { status: 404 }))
+          .headers.get('Strict-Transport-Security'),
+      ).toBe(hsts);
+      expect(
+        withSecurityHeaders(
+          new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
+        ).headers.get('Strict-Transport-Security'),
+      ).toBe(hsts);
+      expect(
+        (await withNonceHtmlSecurityHeaders(
+          new Response('<html></html>', { headers: { 'content-type': 'text/html; charset=utf-8' } }),
+        )).headers.get('Strict-Transport-Security'),
+      ).toBe(hsts);
+    });
+
     it('marks HTML responses noindex and sends an enforced CSP', () => {
       const wrapped = withSecurityHeaders(
         new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
@@ -462,6 +484,35 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(csp).toContain("style-src 'self' 'unsafe-inline'");
       expect(csp).toContain("script-src 'self'");
       expect(wrapped.headers.get('Content-Security-Policy-Report-Only')).toBeNull();
+    });
+
+    it('blocks form submissions to other origins in the CSP', () => {
+      const csp = withSecurityHeaders(
+        new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
+      ).headers.get('Content-Security-Policy') ?? '';
+      expect(csp).toContain("form-action 'self'");
+    });
+
+    it('severs the opener relationship across cross-origin navigations', () => {
+      const html = withSecurityHeaders(
+        new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
+      );
+      expect(html.headers.get('Cross-Origin-Opener-Policy')).toBe('same-origin');
+      const api = withSecurityHeaders(
+        new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } }),
+      );
+      expect(api.headers.get('Cross-Origin-Opener-Policy')).toBe('same-origin');
+    });
+
+    it('keeps cross-origin reads of this origin resources out of scope', () => {
+      const html = withSecurityHeaders(
+        new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
+      );
+      expect(html.headers.get('Cross-Origin-Resource-Policy')).toBe('same-origin');
+      const api = withSecurityHeaders(
+        new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } }),
+      );
+      expect(api.headers.get('Cross-Origin-Resource-Policy')).toBe('same-origin');
     });
 
     it('restricts connect-src to the page origin and matching websocket origin', () => {

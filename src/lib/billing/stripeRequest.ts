@@ -26,6 +26,25 @@ function stripeHeaders(secretKey: string): Record<string, string> {
   };
 }
 
+const STRIPE_ID_RE = /^[A-Za-z0-9_]{1,255}$/;
+
+export class InvalidStripeIdError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidStripeIdError';
+  }
+}
+
+function isValidStripeId(value: string): boolean {
+  return STRIPE_ID_RE.test(value);
+}
+
+function assertStripeId(value: string, field: string): void {
+  if (!isValidStripeId(value)) {
+    throw new InvalidStripeIdError(`Invalid Stripe id for ${field}`);
+  }
+}
+
 function endpoint(apiBaseUrl: string, path: string, search?: string): string {
   const url = new URL(path, apiBaseUrl);
   if (search) url.search = search;
@@ -61,6 +80,7 @@ export function eventsFetchMapRequest(
   } else {
     return null;
   }
+  if (!isValidStripeId(id)) return null;
   return new Request(endpoint(apiBaseUrl, path, search), {
     method: 'GET',
     headers: stripeHeaders(secretKey),
@@ -78,6 +98,7 @@ export function collectionStateRequest(
   desired: CollectionState,
   version: number,
 ): Request {
+  assertStripeId(subscriptionId, 'subscriptionId');
   const url = endpoint(apiBaseUrl, `/v1/subscriptions/${subscriptionId}`);
   const headers: Record<string, string> = {
     ...stripeHeaders(secretKey),
@@ -111,10 +132,12 @@ export function checkoutSessionRequest(
   params.append('success_url', input.successUrl);
   params.append('cancel_url', input.cancelUrl);
   if (input.referralCode) {
+    assertStripeId(input.referralCode, 'referralCode');
     params.append('metadata[referrer_code]', input.referralCode);
     params.append('subscription_data[metadata][referrer_code]', input.referralCode);
   }
   if (input.promotionCodeId) {
+    assertStripeId(input.promotionCodeId, 'promotionCodeId');
     params.append('discounts[0][promotion_code]', input.promotionCodeId);
   }
 

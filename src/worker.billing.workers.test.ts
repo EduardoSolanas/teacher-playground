@@ -6,7 +6,7 @@ import {
   runInDurableObject,
   SELF,
 } from 'cloudflare:test';
-import worker from './worker';
+import worker, { runBillingReconcile } from './worker';
 import { RECONCILE_IN_FLIGHT_TIMEOUT_MS } from './lib/billing/reconcile';
 import {
   BILLING_OPERATION_RATE_MAX,
@@ -1219,5 +1219,31 @@ describe('Worker scheduled billing reconcile', () => {
     expect(row?.desired_version).toBe(2);
     expect(row?.in_flight_version).toBeNull();
     expect(await countCollectionOperations(session.accountId)).toEqual({ n: 2 });
+  });
+
+  it('reads every stored subscription against Stripe and survives the unreachable API base', async () => {
+    const session = await bootstrapLocalSession('billing-cron-reads');
+    const subId = 'sub_cron_reads';
+    await seedPausedCollection(session.accountId, subId);
+
+    const summary = await runBillingReconcile(env, 1_700_000_000_000);
+    expect(summary).not.toBeNull();
+    expect(summary).toMatchObject({
+      runId: 'reconcile:1700000000000',
+      disputeReadsFailed: 1,
+      observations: 0,
+      disputes: 0,
+      appliedSubscriptions: 0,
+      disputesApplied: 0,
+    });
+    expect(summary?.subscriptionReads).toBeGreaterThanOrEqual(1);
+    expect(summary?.subscriptionReads).toBe(summary?.subscriptions);
+    expect(summary?.subscriptionReadsFailed).toBe(summary?.subscriptionReads);
+    expect(summary?.collections).toBeGreaterThanOrEqual(1);
+
+    const row = await readSubOrdering(subId);
+    expect(row?.applied_version).toBe(0);
+    expect(row?.desired_version).toBe(1);
+    expect(row?.in_flight_version).toBeNull();
   });
 });

@@ -511,6 +511,9 @@ export function withSecurityHeaders(
   headers.set('X-Content-Type-Options', 'nosniff');
   headers.set('Referrer-Policy', 'no-referrer');
   headers.set('X-Frame-Options', 'DENY');
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+  headers.set('Cross-Origin-Resource-Policy', 'same-origin');
+  headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   // Everything unused is denied outright rather than left to whatever the
   // browser defaults to.
   //
@@ -536,6 +539,7 @@ export function withSecurityHeaders(
         "frame-ancestors 'none'",
         "object-src 'none'",
         "base-uri 'self'",
+        "form-action 'self'",
         options?.connectSrc ?? "connect-src 'self'",
         "img-src 'self' data: blob:",
         options?.fontSrc

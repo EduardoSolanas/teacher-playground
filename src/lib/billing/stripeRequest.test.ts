@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { STRIPE_API_VERSION } from './stripeConfig';
 import {
+  InvalidStripeIdError,
   checkoutSessionRequest,
   collectionStateRequest,
   eventsFetchMapRequest,
@@ -64,6 +65,37 @@ describe('eventsFetchMapRequest', () => {
 
   it('returns null for an unknown event type', () => {
     expect(eventsFetchMapRequest(BASE, KEY, 'charge.created', 'ch_123')).toBeNull();
+  });
+});
+
+describe('Stripe id grammar (SEC-A24)', () => {
+  it.each(['../sub_1', 'sub/1', 'sub?1', 'sub#1', 'sub 1', '', 'sub_1\n', 's'.repeat(256)])(
+    'builds no webhook fetch for the malformed id %j',
+    (id) => {
+      expect(eventsFetchMapRequest(BASE, KEY, 'customer.subscription.updated', id)).toBeNull();
+    },
+  );
+
+  it('refuses to build a collection request from a malformed subscription id', () => {
+    expect(() => collectionStateRequest(BASE, KEY, '../sub_1', 'canceled', 7))
+      .toThrow(InvalidStripeIdError);
+    expect(() => collectionStateRequest(BASE, KEY, 'sub 1', 'paused', 7))
+      .toThrow(InvalidStripeIdError);
+  });
+
+  it('refuses a checkout referral or promotion code outside the id grammar', () => {
+    const input = {
+      accountId: 'acc_1',
+      planId: 'tutor_pro_monthly' as const,
+      priceId: 'price_server_monthly',
+      operationId: 'op_1',
+      successUrl: 'https://app.example/whiteboard?billing=ok',
+      cancelUrl: 'https://app.example/pricing',
+    };
+    expect(() => checkoutSessionRequest(BASE, KEY, { ...input, referralCode: 'PARTNER 7' }))
+      .toThrow(InvalidStripeIdError);
+    expect(() => checkoutSessionRequest(BASE, KEY, { ...input, promotionCodeId: 'promo_7?x' }))
+      .toThrow(InvalidStripeIdError);
   });
 });
 

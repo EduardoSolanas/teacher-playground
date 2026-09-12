@@ -74,7 +74,13 @@ import {
   parseCollectionSubject,
   runCollectionExecutor,
 } from './lib/billing/executor';
-import { parseReconcileResult } from './lib/billing/reconcile';
+import {
+  actualCollectionOf,
+  parseReconcileResult,
+  type CollectionObservation,
+  type FetchedReconcileSubscription,
+  type ReconcileDispute,
+} from './lib/billing/reconcile';
 
 export interface Env {
   ROOMS: DurableObjectNamespace;
@@ -1636,7 +1642,16 @@ function secondsToMs(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value * 1000 : null;
 }
 
-function normalizeSubscription(value: unknown): Record<string, unknown> | null {
+interface NormalizedSubscription {
+  id: string;
+  customer: string | null;
+  status: string;
+  canceledAt: number | null;
+  currentPeriodEnd: number | null;
+  pauseCollection: { behavior: string } | null;
+}
+
+function normalizeSubscription(value: unknown): NormalizedSubscription | null {
   const record = recordOf(value);
   if (record === null) return null;
   const id = idValue(record.id);
@@ -1952,13 +1967,108 @@ function billingEnvFor(env: Env): BillingEnv {
   });
 }
 
-/**
- * Daily Cron Trigger (spec §7.5): the IdentityDO owns row R-1's state
- * transitions, and the Worker sends the collection calls that remain in
- * flight afterwards. A failed reconcile only defers convergence to the next
- * run, so it logs and returns rather than throwing.
- */
-async function runBillingReconcile(env: Env): Promise<void> {
+export interface BillingReconcileRunSummary {
+  runId: string;
+  subscriptions: number;
+  subscriptionReads: number;
+  subscriptionReadsFailed: number;
+  disputeReadsFailed: number;
+  observations: number;
+  disputes: number;
+  appliedSubscriptions: number;
+  disputesApplied: number;
+  collections: number;
+}
+
+async function readReconcileSubscription(
+  billing: BillingEnv,
+  processorSubscriptionId: string,
+): Promise<CollectionObservation | null> {
+  const secretKey = billing.secretKey;
+  if (secretKey === null) return null;
+  const request = eventsFetchMapRequest(
+    billing.apiBaseUrl,
+    secretKey,
+    'customer.subscription.updated',
+    processorSubscriptionId,
+  );
+  if (request === null) return null;
+  let result;
+  try {
+    result = await executeStripeRequest(request, secretKey);
+  } catch {
+    return null;
+  }
+  if (!result.ok) return null;
+  const subscription = normalizeSubscription(result.json);
+  if (subscription === null) return null;
+  const fetched: FetchedReconcileSubscription = {
+    status: subscription.status,
+    customer: subscription.customer,
+    currentPeriodEnd: subscription.currentPeriodEnd,
+    canceledAt: subscription.canceledAt,
+    pauseCollection: subscription.pauseCollection !== null,
+  };
+  return {
+    processorSubscriptionId,
+    actualCollection: actualCollectionOf(fetched),
+    subscription: fetched,
+  };
+}
+
+function disputesWindowRequest(apiBaseUrl: string, sweptAtMs: number): Request {
+  const url = new URL('/v1/disputes', apiBaseUrl);
+  url.searchParams.set('created[gt]', String(Math.floor(sweptAtMs / 1000)));
+  url.searchParams.set('limit', '100');
+  url.searchParams.append('expand[]', 'data.charge');
+  return new Request(url.toString(), { method: 'GET' });
+}
+
+function normalizeDisputeListEntry(value: unknown): ReconcileDispute | null {
+  const record = recordOf(value);
+  if (record === null) return null;
+  const id = idValue(record.id);
+  const created = secondsToMs(record.created);
+  if (id === null || created === null) return null;
+  const charge = recordOf(record.charge);
+  return {
+    id,
+    status: typeof record.status === 'string' ? record.status : 'unknown',
+    created,
+    customer: idValue(charge?.customer),
+  };
+}
+
+async function fetchReconcileDisputes(
+  billing: BillingEnv,
+  sweptAtMs: number,
+): Promise<{ disputes: ReconcileDispute[]; failed: boolean; truncated: boolean }> {
+  const secretKey = billing.secretKey;
+  if (secretKey === null) return { disputes: [], failed: true, truncated: false };
+  let result;
+  try {
+    result = await executeStripeRequest(disputesWindowRequest(billing.apiBaseUrl, sweptAtMs), secretKey);
+  } catch {
+    return { disputes: [], failed: true, truncated: false };
+  }
+  if (!result.ok) return { disputes: [], failed: true, truncated: false };
+  const list = recordOf(result.json);
+  if (list === null || !Array.isArray(list.data)) {
+    return { disputes: [], failed: true, truncated: false };
+  }
+  const disputes: ReconcileDispute[] = [];
+  for (const entry of list.data) {
+    const dispute = normalizeDisputeListEntry(entry);
+    if (dispute !== null) disputes.push(dispute);
+  }
+  return { disputes, failed: false, truncated: list.has_more === true };
+}
+
+export async function runBillingReconcile(
+  env: Env,
+  scheduledTime: number,
+): Promise<BillingReconcileRunSummary | null> {
+  const runId = `reconcile:${scheduledTime}`;
   const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
   let response: Response;
   try {
@@ -1968,7 +2078,7 @@ async function runBillingReconcile(env: Env): Promise<void> {
       alert: 'reconcile_unreachable',
       outcome: 'failed',
     }));
-    return;
+    return null;
   }
   if (!response.ok) {
     console.error('[billing]', JSON.stringify({
@@ -1976,21 +2086,25 @@ async function runBillingReconcile(env: Env): Promise<void> {
       status: response.status,
       outcome: 'failed',
     }));
-    return;
+    return null;
   }
-  const result = parseReconcileResult(await response.json().catch(() => null));
-  if (result === null) {
+  const initial = parseReconcileResult(await response.json().catch(() => null));
+  if (initial === null) {
     console.error('[billing]', JSON.stringify({
       alert: 'reconcile_invalid_response',
       outcome: 'failed',
     }));
-    return;
+    return null;
   }
   const billing = billingEnvFor(env);
-  if (!billing.apiBaseAllowed || billing.secretKey === null) return;
-  for (const collection of result.collections) {
+  if (!billing.apiBaseAllowed || billing.secretKey === null) return null;
+  const deps = { identityFetch: (request: Request) => identity.fetch(request), billing };
+
+  let collections = 0;
+  for (const collection of initial.collections) {
+    collections += 1;
     await executeCollectionClaim(
-      { identityFetch: (request) => identity.fetch(request), billing },
+      deps,
       { subjectKind: collection.subjectKind, subjectId: collection.subjectId },
       {
         processorSubscriptionId: collection.processorSubscriptionId,
@@ -2005,6 +2119,105 @@ async function runBillingReconcile(env: Env): Promise<void> {
       }));
     });
   }
+
+  const observations: CollectionObservation[] = [];
+  let subscriptionReads = 0;
+  let subscriptionReadsFailed = 0;
+  for (const subscription of initial.subscriptions) {
+    subscriptionReads += 1;
+    const observation = await readReconcileSubscription(
+      billing,
+      subscription.processorSubscriptionId,
+    );
+    if (observation === null) {
+      subscriptionReadsFailed += 1;
+      console.error('[billing]', JSON.stringify({
+        alert: 'reconcile_subscription_fetch_failed',
+        processorSubscriptionId: subscription.processorSubscriptionId,
+        outcome: 'failed',
+      }));
+      continue;
+    }
+    observations.push(observation);
+  }
+
+  const disputeRead = await fetchReconcileDisputes(billing, initial.disputesSweptAt);
+  if (disputeRead.failed) {
+    console.error('[billing]', JSON.stringify({
+      alert: 'reconcile_dispute_fetch_failed',
+      outcome: 'failed',
+    }));
+  }
+  if (disputeRead.truncated) {
+    console.error('[billing]', JSON.stringify({
+      alert: 'reconcile_disputes_truncated',
+      outcome: 'truncated',
+    }));
+  }
+
+  let appliedSubscriptions = 0;
+  let disputesApplied = 0;
+  if (observations.length > 0 || disputeRead.disputes.length > 0) {
+    let appliedResponse: Response | null = null;
+    try {
+      appliedResponse = await identity.fetch(new Request(IDENTITY_BILLING_RECONCILE, internalJson({
+        runId,
+        observations,
+        disputes: disputeRead.disputes,
+      })));
+    } catch {
+      appliedResponse = null;
+    }
+    if (appliedResponse === null || !appliedResponse.ok) {
+      console.error('[billing]', JSON.stringify({
+        alert: 'reconcile_apply_failed',
+        status: appliedResponse?.status ?? 0,
+        outcome: 'failed',
+      }));
+    } else {
+      const applied = parseReconcileResult(await appliedResponse.json().catch(() => null));
+      if (applied === null) {
+        console.error('[billing]', JSON.stringify({
+          alert: 'reconcile_invalid_response',
+          outcome: 'failed',
+        }));
+      } else {
+        appliedSubscriptions = applied.appliedSubscriptions;
+        disputesApplied = applied.disputesApplied;
+        for (const collection of applied.collections) {
+          collections += 1;
+          await executeCollectionClaim(
+            deps,
+            { subjectKind: collection.subjectKind, subjectId: collection.subjectId },
+            {
+              processorSubscriptionId: collection.processorSubscriptionId,
+              version: collection.version,
+              state: collection.state,
+            },
+          ).catch((error) => {
+            console.error('[billing:reconcile]', JSON.stringify({
+              subjectKind: collection.subjectKind,
+              subjectId: collection.subjectId,
+              error: error instanceof Error ? error.message : String(error),
+            }));
+          });
+        }
+      }
+    }
+  }
+
+  return {
+    runId,
+    subscriptions: initial.subscriptions.length,
+    subscriptionReads,
+    subscriptionReadsFailed,
+    disputeReadsFailed: disputeRead.failed ? 1 : 0,
+    observations: observations.length,
+    disputes: disputeRead.disputes.length,
+    appliedSubscriptions,
+    disputesApplied,
+    collections,
+  };
 }
 
 function billingPriceId(env: Env, planId: PlanId): string | null {
@@ -2981,11 +3194,11 @@ const worker = {
   },
 
   async scheduled(
-    _controller: ScheduledController,
+    controller: ScheduledController,
     env: Env,
     _ctx: ExecutionContext,
   ): Promise<void> {
-    await runBillingReconcile(env);
+    await runBillingReconcile(env, controller.scheduledTime);
   },
 };
 

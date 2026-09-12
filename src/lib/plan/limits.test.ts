@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { PLAN_CATALOG } from './catalog';
 import {
+  FREE_PLAN_LIMITS,
   FREE_MAX_ROOMS,
   FREE_MAX_USERS,
   DEFAULT_MAX_USERS,
@@ -10,6 +12,13 @@ import {
 } from './limits';
 
 describe('free plan limits', () => {
+  it('shares one free-limits object with the plan catalog', () => {
+    expect(PLAN_CATALOG.free.limits).toBe(FREE_PLAN_LIMITS);
+    expect(FREE_MAX_ROOMS).toBe(FREE_PLAN_LIMITS.maxOwnedRooms);
+    expect(FREE_MAX_USERS).toBe(FREE_PLAN_LIMITS.maxUsersPerRoom);
+    expect(DEFAULT_MAX_USERS).toBe(FREE_PLAN_LIMITS.maxUsersPerRoom);
+  });
+
   it('defaults a new room to host plus one student', () => {
     expect(FREE_MAX_USERS).toBe(2);
     expect(DEFAULT_MAX_USERS).toBe(2);

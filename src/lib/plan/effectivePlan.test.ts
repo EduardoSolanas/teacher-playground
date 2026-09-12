@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PLAN_CATALOG } from './catalog';
+import type { PlanId } from './catalog';
 import { isEntitlingEntitlement, resolveEffectivePlan } from './effectivePlan';
 import type { EntitlementRow } from './effectivePlan';
 
@@ -59,6 +60,18 @@ describe('isEntitlingEntitlement', () => {
 });
 
 describe('resolveEffectivePlan', () => {
+  it.each(['enterprise_2099', 'toString', 'constructor', '__proto__'])(
+    'falls back to Free for a stored plan id the catalog does not define (%s)',
+    (planId) => {
+      const plan = resolveEffectivePlan([row({ planId: planId as PlanId })], 1_000);
+
+      expect(plan.planId).toBe('free');
+      expect(plan.source).toBeNull();
+      expect(plan.status).toBe('free');
+      expect(plan.limits).toBe(PLAN_CATALOG.free.limits);
+    },
+  );
+
   it('returns Free with no source when the account has no entitlement rows', () => {
     const plan = resolveEffectivePlan([], 1_000);
 

@@ -4,9 +4,21 @@
  * plan; callers must enforce these server-side.
  */
 
-export const FREE_MAX_ROOMS = 1;
+export interface FreePlanLimits {
+  maxOwnedRooms: number;
+  maxUsersPerRoom: number;
+  retentionDays: number;
+}
+
+export const FREE_PLAN_LIMITS: FreePlanLimits = {
+  maxOwnedRooms: 1,
+  maxUsersPerRoom: 2,
+  retentionDays: 90,
+};
+
+export const FREE_MAX_ROOMS = FREE_PLAN_LIMITS.maxOwnedRooms;
 /** Occupancy including the host. Free allows one student. */
-export const FREE_MAX_USERS = 2;
+export const FREE_MAX_USERS = FREE_PLAN_LIMITS.maxUsersPerRoom;
 export const DEFAULT_MAX_USERS = FREE_MAX_USERS;
 export const MIN_MAX_USERS = 1;
 

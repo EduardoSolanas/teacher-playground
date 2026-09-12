@@ -1,4 +1,4 @@
-import { FREE_MAX_ROOMS, FREE_MAX_USERS } from './limits';
+import { FREE_PLAN_LIMITS } from './limits';
 
 export type PlanId = 'free' | 'tutor_pro_monthly' | 'tutor_pro_annual' | 'corporate_seat';
 export interface PlanDefinition {
@@ -8,7 +8,7 @@ export interface PlanDefinition {
   minSeats?: number;                  // corporate: 3
 }
 export const PLAN_CATALOG: Record<PlanId, PlanDefinition> = {
-  free:               { limits: { maxOwnedRooms: FREE_MAX_ROOMS, maxUsersPerRoom: FREE_MAX_USERS, retentionDays: 90 }, interval: null, priceEnv: null },
+  free:               { limits: FREE_PLAN_LIMITS, interval: null, priceEnv: null },
   tutor_pro_monthly:  { limits: { maxOwnedRooms: 20, maxUsersPerRoom: 10, retentionDays: 90 }, interval: 'month', priceEnv: 'STRIPE_PRICE_TUTOR_PRO_MONTHLY' },
   tutor_pro_annual:   { limits: { maxOwnedRooms: 20, maxUsersPerRoom: 10, retentionDays: 90 }, interval: 'year',  priceEnv: 'STRIPE_PRICE_TUTOR_PRO_ANNUAL' },
   corporate_seat:     { limits: { maxOwnedRooms: 20, maxUsersPerRoom: 10, retentionDays: 90 }, interval: 'year',  priceEnv: 'STRIPE_PRICE_CORPORATE_SEAT', minSeats: 3 },

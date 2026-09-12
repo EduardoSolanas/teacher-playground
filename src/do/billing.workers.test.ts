@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { runInDurableObject } from 'cloudflare:test';
 import { getIdentityObject, type IdentityDO } from './IdentityDO';
-import { writeEntitlement } from '../lib/identity/entitlementWriter';
+import { ensureBillingSubscription, writeEntitlement } from '../lib/identity/entitlementWriter';
 import { ensureReferralCode } from '../lib/referrals/codes';
 import {
   confirmReferralRedemption,
@@ -2023,6 +2023,246 @@ describe('identity /billing/reconcile: R-1 collection sweep', () => {
       expect(row?.desired_version).toBe(2);
       expect(row?.in_flight_version).toBe(2);
       expect(row?.in_flight_state).toBe('paused');
+    });
+  });
+
+  it('reconcile drift is applied once per run id', async () => {
+    const accountId = await newAccount('billing-reconcile-runid');
+    const subId = 'sub_reconcile_runid';
+    await seedPausedCollection(accountId, subId);
+    await claimCollection(accountId, 'op_reconcile_runid');
+    const settle = await postSettle(
+      JSON.stringify({
+        subjectKind: 'account',
+        subjectId: accountId,
+        operationId: 'op_reconcile_runid',
+        success: true,
+        expectedVersion: 1,
+      }),
+    );
+    expect(settle.status).toBe(200);
+
+    const first = await reconcileObserve({
+      runId: 'run-once',
+      observations: [{ processorSubscriptionId: subId, actualCollection: 'active' }],
+    });
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as { repaired: number };
+    expect(firstBody.repaired).toBe(1);
+
+    const second = await reconcileObserve({
+      runId: 'run-once',
+      observations: [{ processorSubscriptionId: subId, actualCollection: 'active' }],
+    });
+    expect(second.status).toBe(200);
+    const secondBody = (await second.json()) as { repaired: number };
+    expect(secondBody.repaired).toBe(0);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const row = readSubOrdering(instance, subId);
+      expect(row?.desired_version).toBe(2);
+      expect(row?.in_flight_version).toBe(2);
+    });
+  });
+
+  it('applies a fetched subscription once per run id', async () => {
+    const accountId = await newAccount('billing-reconcile-apply');
+    const subId = 'sub_reconcile_apply';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'trialing',
+        processorCustomerId: `cus_${subId}`,
+        processorSubscriptionId: subId,
+      });
+      ensureBillingSubscription(instance.db, {
+        processorSubscriptionId: subId,
+        subjectKind: 'account',
+        subjectId: accountId,
+        now: Date.now(),
+      });
+    });
+
+    const first = await reconcileObserve({
+      runId: 'run-apply',
+      observations: [
+        {
+          processorSubscriptionId: subId,
+          subscription: {
+            status: 'active',
+            customer: `cus_${subId}`,
+            currentPeriodEnd: 5000,
+            canceledAt: null,
+            pauseCollection: false,
+          },
+        },
+      ],
+    });
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as { appliedSubscriptions: number };
+    expect(firstBody.appliedSubscriptions).toBe(1);
+
+    const second = await reconcileObserve({
+      runId: 'run-apply',
+      observations: [
+        {
+          processorSubscriptionId: subId,
+          subscription: {
+            status: 'past_due',
+            customer: `cus_${subId}`,
+            currentPeriodEnd: 6000,
+            canceledAt: null,
+            pauseCollection: false,
+          },
+        },
+      ],
+    });
+    expect(second.status).toBe(200);
+    const secondBody = (await second.json()) as { appliedSubscriptions: number };
+    expect(secondBody.appliedSubscriptions).toBe(0);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const entitlement = readEntitlement(instance, accountId);
+      expect(entitlement?.status).toBe('active');
+      expect(entitlement?.current_period_end).toBe(5000);
+      expect(
+        instance.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM entitlement_audit
+             WHERE subject_id = ? AND cause_kind = 'reconcile' AND cause_id = 'run-apply'`,
+          )
+          .get(accountId),
+      ).toEqual({ count: 1 });
+    });
+  });
+
+  it('confirms an in-flight collection when the fetched subscription matches', async () => {
+    const accountId = await newAccount('billing-reconcile-confirm');
+    const subId = 'sub_reconcile_confirm';
+    await seedPausedCollection(accountId, subId);
+    await claimCollection(accountId, 'op_reconcile_confirm');
+
+    const response = await reconcileObserve({
+      runId: 'run-confirm',
+      observations: [
+        {
+          processorSubscriptionId: subId,
+          subscription: {
+            status: 'active',
+            customer: `cus_${subId}`,
+            currentPeriodEnd: null,
+            canceledAt: null,
+            pauseCollection: true,
+          },
+        },
+      ],
+    });
+    expect(response.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const row = readSubOrdering(instance, subId);
+      expect(row?.applied_version).toBe(1);
+      expect(row?.in_flight_version).toBeNull();
+    });
+  });
+
+  it('sweeps fetched disputes after the watermark and applies each once', async () => {
+    const accountId = await newAccount('billing-reconcile-disputes');
+    const subId = 'sub_reconcile_disputes';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        processorCustomerId: `cus_${subId}`,
+        processorSubscriptionId: subId,
+      });
+    });
+
+    const first = await reconcileObserve({
+      runId: 'run-dispute-1',
+      disputes: [
+        { id: 'dp_sweep_1', status: 'needs_response', created: 9000, customer: `cus_${subId}` },
+      ],
+    });
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as {
+      disputesApplied: number;
+      disputesSweptAt: number;
+    };
+    expect(firstBody.disputesApplied).toBe(1);
+    expect(firstBody.disputesSweptAt).toBe(9000);
+
+    const second = await reconcileObserve({
+      runId: 'run-dispute-2',
+      disputes: [
+        { id: 'dp_sweep_1', status: 'needs_response', created: 9000, customer: `cus_${subId}` },
+      ],
+    });
+    expect(second.status).toBe(200);
+    const secondBody = (await second.json()) as { disputesApplied: number };
+    expect(secondBody.disputesApplied).toBe(0);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(
+        instance.db
+          .prepare(`SELECT state FROM billing_dispute_holds WHERE dispute_id = ?`)
+          .get('dp_sweep_1'),
+      ).toEqual({ state: 'open' });
+      expect(
+        instance.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM billing_events
+             WHERE event_id = 'reconcile:dispute:dp_sweep_1:needs_response'`,
+          )
+          .get(),
+      ).toEqual({ count: 1 });
+      expect(
+        instance.db
+          .prepare(`SELECT last_swept_at FROM billing_sweeps WHERE kind = 'disputes'`)
+          .get(),
+      ).toEqual({ last_swept_at: 9000 });
+      expect(readSubOrdering(instance, subId)?.desired_collection).toBe('paused');
+    });
+  });
+
+  it('keeps the dispute watermark when a dispute cannot be mapped', async () => {
+    const baselineResponse = await reconcileObserve({ runId: 'run-unmapped-baseline' });
+    expect(baselineResponse.status).toBe(200);
+    const baseline = ((await baselineResponse.json()) as { disputesSweptAt: number })
+      .disputesSweptAt;
+
+    const response = await reconcileObserve({
+      runId: 'run-unmapped-1',
+      disputes: [
+        {
+          id: 'dp_sweep_ghost',
+          status: 'needs_response',
+          created: baseline + 1000,
+          customer: 'cus_sweep_unknown',
+        },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      disputesApplied: number;
+      disputesSweptAt: number;
+    };
+    expect(body.disputesApplied).toBe(0);
+    expect(body.disputesSweptAt).toBe(baseline);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(
+        instance.db
+          .prepare(
+            `SELECT outcome, outcome_detail FROM billing_events
+             WHERE event_id = 'reconcile:dispute:dp_sweep_ghost:needs_response'`,
+          )
+          .get(),
+      ).toEqual({ outcome: 'ignored', outcome_detail: 'unmapped_dispute' });
+      const sweep = instance.db
+        .prepare(`SELECT last_swept_at FROM billing_sweeps WHERE kind = 'disputes'`)
+        .get() as { last_swept_at: number } | undefined;
+      expect(sweep?.last_swept_at ?? 0).toBe(baseline);
     });
   });
 
