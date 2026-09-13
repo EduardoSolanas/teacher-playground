@@ -45,8 +45,12 @@ vi.mock('y-websocket', () => ({
 
 import { createYWebsocketProvider, destroyProvider, type WhiteboardProvider } from './yWebsocketProvider';
 import { PRESENCE_MESSAGE_TYPE, encodePresenceMessage } from './presenceMessage';
-import { FOLLOW_MESSAGE_TYPE, encodeFollowMessage } from './followMessage';
-import { CALL_MESSAGE_TYPE, encodeCallMessage } from './callMessage';
+import {
+  FOLLOW_MESSAGE_TYPE,
+  decodeFollowMessagePayload,
+  encodeFollowMessage,
+} from './followMessage';
+import { CALL_MESSAGE_TYPE, decodeCallMessage, encodeCallMessage } from './callMessage';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -599,6 +603,96 @@ describe('createYWebsocketProvider', () => {
       expect(onCall).toHaveBeenCalledTimes(1);
 
       destroyProvider('call-room');
+    });
+  });
+
+  describe('follow and call senders', () => {
+    const windowStub = {
+      location: {
+        protocol: 'https:',
+        hostname: 'whiteboard.example.com',
+        host: 'whiteboard.example.com',
+      },
+    };
+
+    /**
+     * The sender is the boundary between the room UI and the socket: it must
+     * refuse to send while there is no socket or the socket is not open, and
+     * what it does send must decode, through the real decoders, back into the
+     * message the caller handed over. The transport here is the same mocked
+     * WebsocketProvider this file already runs on; the frame assertions read
+     * the real encoding, not the double.
+     */
+    function openSendCollector(): { frames: Uint8Array[]; ws: unknown } {
+      const frames: Uint8Array[] = [];
+      return {
+        frames,
+        ws: { readyState: WebSocket.OPEN, send: (frame: Uint8Array) => frames.push(frame) },
+      };
+    }
+
+    it('refuses to send a follow frame while the socket is absent or not open', () => {
+      vi.stubGlobal('window', windowStub);
+      const entry = createYWebsocketProvider(new Y.Doc(), 'send-follow-closed');
+      const message = { active: true as const, viewport: { x: 1, y: 2, zoom: 3 } };
+
+      expect(entry.sendFollowMessage(message)).toBe(false);
+
+      const ws = { readyState: WebSocket.CONNECTING, send: vi.fn() };
+      entry.provider.ws = ws as unknown as WebSocket;
+      expect(entry.sendFollowMessage(message)).toBe(false);
+      expect(ws.send).not.toHaveBeenCalled();
+
+      destroyProvider('send-follow-closed');
+    });
+
+    it('sends a follow frame that decodes back through the real decoder', () => {
+      vi.stubGlobal('window', windowStub);
+      const entry = createYWebsocketProvider(new Y.Doc(), 'send-follow-open');
+      const { frames, ws } = openSendCollector();
+      entry.provider.ws = ws as unknown as WebSocket;
+      const message = { active: true as const, viewport: { x: 4, y: 5, zoom: 6 } };
+
+      expect(entry.sendFollowMessage(message)).toBe(true);
+      expect(frames).toHaveLength(1);
+
+      const decoder = decoding.createDecoder(frames[0]);
+      expect(decoding.readVarUint(decoder)).toBe(FOLLOW_MESSAGE_TYPE);
+      const decoded = decodeFollowMessagePayload(decoder);
+      expect(decoded).toEqual(message);
+
+      destroyProvider('send-follow-open');
+    });
+
+    it('refuses to send a call frame while the socket is absent or not open', () => {
+      vi.stubGlobal('window', windowStub);
+      const entry = createYWebsocketProvider(new Y.Doc(), 'send-call-closed');
+      const state = { active: true as const, hostAccountId: 'acc-9', startedAt: 42 };
+
+      expect(entry.sendCallMessage(state)).toBe(false);
+
+      const ws = { readyState: WebSocket.CONNECTING, send: vi.fn() };
+      entry.provider.ws = ws as unknown as WebSocket;
+      expect(entry.sendCallMessage(state)).toBe(false);
+      expect(ws.send).not.toHaveBeenCalled();
+
+      destroyProvider('send-call-closed');
+    });
+
+    it('sends a call frame that decodes back through the real decoder', () => {
+      vi.stubGlobal('window', windowStub);
+      const entry = createYWebsocketProvider(new Y.Doc(), 'send-call-open');
+      const { frames, ws } = openSendCollector();
+      entry.provider.ws = ws as unknown as WebSocket;
+      const state = { active: true as const, hostAccountId: 'acc-9', startedAt: 42 };
+
+      expect(entry.sendCallMessage(state)).toBe(true);
+      expect(frames).toHaveLength(1);
+
+      const decoded = decodeCallMessage(frames[0]);
+      expect(decoded).toEqual(state);
+
+      destroyProvider('send-call-open');
     });
   });
 });

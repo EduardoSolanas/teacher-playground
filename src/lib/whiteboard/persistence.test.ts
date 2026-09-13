@@ -11,6 +11,7 @@ import {
   clearOnReject,
   clearOnSuspend,
   clearRoomSessionMaterial,
+  clearRoomStorage,
   debouncedSaveBoardState,
   isOfflineBoardCacheEnabled,
   loadBoardState,
@@ -445,5 +446,51 @@ describe('whiteboard persistence (SEC-011)', () => {
     expect(localStorage.getItem(`whiteboard:${ROOM}:timestamp`)).toBeNull();
     expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
     expect(localStorage.getItem(`whiteboard:${ROOM}:offline_cache`)).toBeNull();
+  });
+
+  it('cleanup sweeps a room only once it is strictly past the expiry age', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-13T12:00:00Z'));
+    setOfflineBoardCacheEnabled(ROOM, true);
+    localStorage.setItem(
+      `whiteboard:${ROOM}:state`,
+      JSON.stringify({ elements: [ELEMENT], viewport: VIEWPORT }),
+    );
+    localStorage.setItem(
+      `whiteboard:${ROOM}:timestamp`,
+      String(Date.now() - 24 * 60 * 60 * 1000),
+    );
+
+    cleanupStaleRooms();
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).not.toBeNull();
+
+    vi.setSystemTime(new Date('2026-09-13T12:00:01Z'));
+    cleanupStaleRooms();
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
+    expect(localStorage.getItem(`whiteboard:${ROOM}:timestamp`)).toBeNull();
+  });
+
+  it('a cancelled debounced save never reaches storage', async () => {
+    vi.useFakeTimers();
+    setOfflineBoardCacheEnabled(ROOM, true);
+
+    debouncedSaveBoardState(ROOM, [ELEMENT], VIEWPORT, 1000);
+    cancelDebouncedSave();
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
+    expect(localStorage.getItem(`whiteboard:${ROOM}:timestamp`)).toBeNull();
+  });
+
+  it('clearing a room cancels its debounced save so nothing rewrites the cleared state', async () => {
+    vi.useFakeTimers();
+    setOfflineBoardCacheEnabled(ROOM, true);
+
+    debouncedSaveBoardState(ROOM, [ELEMENT], VIEWPORT, 1000);
+    clearRoomStorage(ROOM);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
+    expect(localStorage.getItem(`whiteboard:${ROOM}:timestamp`)).toBeNull();
   });
 });
