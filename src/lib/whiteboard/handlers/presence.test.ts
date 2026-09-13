@@ -1,4 +1,3 @@
-// @ts-nocheck
 ﻿import { describe, expect, it } from 'vitest';
 import { CSPRNG_ID_HEX_LENGTH } from '../../crypto/randomId';
 import { handlePresencePost, handlePresenceGet, handlePresenceDelete } from './presence';

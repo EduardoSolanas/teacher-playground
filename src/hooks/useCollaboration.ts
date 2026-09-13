@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { resolveUserColor } from '@/lib/whiteboard/userColor';
 import type {

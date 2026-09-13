@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { DurableObject } from 'cloudflare:workers';
 import { DODatabase } from '../lib/whiteboard/doDatabase';
 import { applySchema, getGrantVersion, incrementGrantVersion, purgeExpiredRoomsAndTombstones, roomExists, getFileBytesTotal, addFileBytes } from '../lib/whiteboard/roomSchema';

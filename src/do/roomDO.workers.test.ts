@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject, SELF } from 'cloudflare:test';

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { test, expect } from './fixtures';
 import {
   newAuthenticatedContext,
