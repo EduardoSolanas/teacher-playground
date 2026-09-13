@@ -181,8 +181,11 @@ turns that into an immediate `Missing entry-point` error instead.
 `package.json` and in the workflows passes `--env`.
 
 Pushes to `main` deploy automatically via
-`.github/workflows/deploy-cloudflare.yml`, which typechecks, runs both test
-suites, builds, and deploys the Worker. The workflow uses the existing
+`.github/workflows/deploy-cloudflare.yml`, which builds the production export
+and deploys the Worker. All verification — lint, typecheck, unit, Worker, and
+E2E tests, plus the secret and Semgrep scans — runs in CI
+(`.github/workflows/ci.yml`); deploy starts only after CI succeeds on the same
+commit, and the deploy job itself runs no tests. The workflow uses the existing
 production `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable;
 the Excalidraw distribution is published separately by its fork repository.
 
