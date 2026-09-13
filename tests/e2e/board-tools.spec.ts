@@ -241,6 +241,52 @@ const LINEAR_TOOLS = [
   { testId: 'toolbar-line', type: 'line' },
 ] as const;
 
+test('draw still works when an existing shared shape omitted its background colour', async ({ browser }) => {
+  test.setTimeout(60_000);
+  const board = await openBoard(browser, DESKTOP, 'missing-background');
+  const rendererErrors: string[] = [];
+  board.page.on('console', (message) => {
+    if (message.type() === 'error' && /undefined.*length/i.test(message.text())) {
+      rendererErrors.push(message.text());
+    }
+  });
+
+  try {
+    await chooseTool(board, 'toolbar-rectangle', 'rectangle');
+    await board.input.drag(spot(DESKTOP, 0.2, 0.2), spot(DESKTOP, 0.4, 0.4));
+    await expect.poll(() => ofType(board.page, 'rectangle')).toHaveLength(1);
+    const [rectangle] = await ofType(board.page, 'rectangle');
+    await expect.poll(() => sharedTypes(board.page, rectangle.id)).toBe('rectangle');
+
+    await board.page.evaluate((id) => {
+      const elements = (window as any).__whiteboardCollab.provider.doc.getArray('elements');
+      const map = elements.toArray().find((candidate: any) => candidate.get('id') === id);
+      map.delete('backgroundColor');
+    }, rectangle.id);
+    await board.page.reload();
+    await expect(board.page.getByTestId('whiteboard-canvas-area')).toBeVisible();
+    await board.page.waitForFunction(() => !!(window as any).__debugExcalidrawApi, null, { timeout: 15000 });
+    await expect.poll(async () => (await ofType(board.page, 'rectangle'))
+      .some((element) => element.id === rectangle.id)).toBe(true);
+    await expect.poll(() => board.page.evaluate((id) => {
+      const elements = (window as any).__whiteboardCollab.provider.doc.getArray('elements');
+      const map = elements.toArray().find((candidate: any) => candidate.get('id') === id);
+      return map ? { id: map.get('id'), hasBackground: map.has('backgroundColor') } : null;
+    }, rectangle.id)).toEqual({ id: rectangle.id, hasBackground: false });
+    await chooseTool(board, 'toolbar-freedraw', 'freedraw');
+    await board.input.drag(spot(DESKTOP, 0.5, 0.5), spot(DESKTOP, 0.8, 0.6));
+
+    expect(rendererErrors).toEqual([]);
+    await expect.poll(async () => (await ofType(board.page, 'freedraw'))[0]?.points ?? 0)
+      .toBeGreaterThan(8);
+    const [stroke] = await ofType(board.page, 'freedraw');
+    await expect.poll(() => sharedTypes(board.page, stroke.id)).toBe('freedraw');
+    expect(rendererErrors).toEqual([]);
+  } finally {
+    await board.close();
+  }
+});
+
 for (const device of [DESKTOP, PHONE]) {
   test.describe(`board tools on a ${device.name}`, () => {
     test.describe.configure({ timeout: 60_000 });
