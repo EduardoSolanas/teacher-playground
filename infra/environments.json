@@ -61,6 +61,16 @@
           "this value against the live application."
         ],
         "applicationName": "Teacher Playground",
+        "$comment_allowedIdpIds": [
+          "Identity providers this application accepts, pinned to what production",
+          "already has. An EMPTY list would mean 'every provider the organization",
+          "has configured', which sounds equivalent while only Google exists and",
+          "stops being equivalent the moment a second one is added -- combined with",
+          "an `everyone` policy, that would make any future provider a teacher door",
+          "without anyone editing this repository. These are identifiers, not",
+          "secrets."
+        ],
+        "allowedIdpIds": ["a1802da8-c22f-494f-84e3-07db8a797f64"],
         "$comment_organizationName": [
           "The Zero Trust team name, as the dashboard shows it. Null until an",
           "owner reads the real value: cloudflare_zero_trust_organization requires",

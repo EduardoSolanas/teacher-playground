@@ -56,13 +56,27 @@ resource "cloudflare_zero_trust_access_application" "teacher" {
 
   session_duration = local.env.access.sessionDuration
 
-  # The launcher is a directory of applications for end users; teachers reach
-  # this one by its own URL, and students never see Access at all.
-  app_launcher_visible = false
+  # Every attribute below is pinned to what the account already has, so adopting
+  # this application changes only what was actually decided: the policy rule and
+  # the rate-limit rule. An adoption that also flips half a dozen settings to
+  # provider defaults is not an adoption, it is an unreviewed change wearing one.
+  app_launcher_visible = true
 
-  # Empty means every identity provider the organization has configured, rather
-  # than a pinned list that silently excludes a provider added later.
-  allowed_idps = []
+  # Pinned, NOT empty. Empty means "every provider the organization has
+  # configured", which is the same thing only while exactly one exists. With an
+  # `everyone` policy in front, adding a second provider would silently open
+  # another teacher door with no change to this repository.
+  allowed_idps = local.env.access.allowedIdpIds
+
+  # These three keep the application's current cookie and CORS behaviour.
+  # http_only_cookie_attribute in particular would default to true, which is a
+  # genuine improvement -- and a change to a live auth cookie, which
+  # CLOUDFLARE_ACCESS_STAGING.md has a whole XHR checklist written against. It
+  # deserves its own change and its own re-run of that checklist, not a ride
+  # along with an import.
+  http_only_cookie_attribute = false
+  enable_binding_cookie      = false
+  options_preflight_bypass   = false
 
   # The login page must offer the choice. Skipping straight to one provider
   # strands every teacher who used a different one.
