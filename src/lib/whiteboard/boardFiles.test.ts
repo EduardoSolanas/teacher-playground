@@ -4,6 +4,8 @@ import {
   bytesToDataURL,
   filesToUpload,
   isAllowedMimeType,
+  isRetryableUploadStatus,
+  uploadRetryDelayMs,
 } from './boardFiles';
 
 describe('dataURLToBytes', () => {
@@ -251,5 +253,38 @@ describe('boardFiles at real image sizes', () => {
     expect(decoded!.bytes.length).toBe(bytes.length);
     expect(decoded!.bytes[0]).toBe(bytes[0]);
     expect(decoded!.bytes[999_999]).toBe(bytes[999_999]);
+  });
+});
+
+describe('isRetryableUploadStatus', () => {
+  it('retries transient server and rate-limit failures', () => {
+    for (const status of [408, 429, 500, 502, 503, 504, 599]) {
+      expect(isRetryableUploadStatus(status)).toBe(true);
+    }
+  });
+
+  it('retries a forbidden upload that may succeed after admission', () => {
+    expect(isRetryableUploadStatus(403)).toBe(true);
+  });
+
+  it('does not retry permanent client failures', () => {
+    for (const status of [400, 401, 404, 409, 413, 415, 600]) {
+      expect(isRetryableUploadStatus(status)).toBe(false);
+    }
+  });
+
+  it('does not retry success', () => {
+    for (const status of [200, 201, 204]) {
+      expect(isRetryableUploadStatus(status)).toBe(false);
+    }
+  });
+});
+
+describe('uploadRetryDelayMs', () => {
+  it('backs off exponentially and caps', () => {
+    expect(uploadRetryDelayMs(0)).toBe(3000);
+    expect(uploadRetryDelayMs(1)).toBe(6000);
+    expect(uploadRetryDelayMs(2)).toBe(12000);
+    expect(uploadRetryDelayMs(10)).toBeLessThanOrEqual(30000);
   });
 });

@@ -1120,6 +1120,157 @@ describe('ExcalidrawWrapper board files', () => {
 
     expect(getCalls).toHaveLength(0);
   });
+
+  it('fetches a delayed image when the room announces it is ready', async () => {
+    let fileAvailable = false;
+    const getCalls: string[] = [];
+    setFetchHandler((url, init) => {
+      if (url.includes('/files/file-ready') && init?.method !== 'PUT') {
+        getCalls.push(url);
+        if (!fileAvailable) return new Response(null, { status: 404 });
+        return new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: { 'content-type': 'image/png' },
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+    const { doc, array } = createYjsBoard();
+    const remote = remoteBoard();
+    const { api } = await renderWrapper({ yDoc: doc, yElementsArray: array });
+    await settleApiReady();
+    const [image] = await imageElements([{ id: 'img-ready', fileId: 'file-ready' }]);
+
+    seedRemote(remote.doc, remote.array, [image]);
+    await act(async () => {
+      syncFromRemote(doc, remote.doc);
+    });
+    await waitFor(() => {
+      expect(getCalls).toHaveLength(1);
+    });
+    expect(api.getFiles()['file-ready']).toBeUndefined();
+    // Let the 404 land and the backoff be recorded, so the second ask has to
+    // come from readiness rather than from the first request still running.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+
+    // The bytes land later; the uploader announces it. No element change and
+    // no reload: the peer must ask again.
+    fileAvailable = true;
+    await act(async () => {
+      remote.doc.transact(() => {
+        remote.doc.getMap('fileReady').set('file-ready', Date.now());
+      }, 'file-ready');
+      syncFromRemote(doc, remote.doc);
+    });
+
+    await waitFor(() => {
+      expect(api.getFiles()['file-ready']).toBeTruthy();
+    });
+    expect(getCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('uploads the same picture again in a different room', async () => {
+    const putRooms: string[] = [];
+    setFetchHandler((url, init) => {
+      if (init?.method === 'PUT') {
+        const match = /\/room\/([^/]+)\/files\//.exec(url);
+        putRooms.push(match ? match[1] : url);
+        return new Response(null, { status: 200 });
+      }
+      return new Response(null, { status: 404 });
+    });
+    const { view, props, api, ExcalidrawWrapper } = await renderWrapper({ roomId: 'room-1' });
+    const { CaptureUpdateAction } = await loadExcalidrawPackage();
+    const [first] = await rectangleElements(['room-a']);
+
+    // Same bytes, same content-addressed id, pasted in room-1.
+    await act(async () => {
+      api.addFiles([
+        {
+          id: 'file-same',
+          dataURL: 'data:image/png;base64,aGVsbG8=',
+          mimeType: 'image/png',
+          created: 1,
+        },
+      ] as never);
+    });
+    await act(async () => {
+      api.updateScene({ elements: [first], captureUpdate: CaptureUpdateAction.NEVER });
+    });
+    await waitFor(() => {
+      expect(putRooms).toContain('room-1');
+    });
+
+    // Same component, new room: per-room upload memory must not skip the PUT
+    // the new room's bucket still needs, or the second room keeps a placeholder.
+    await act(async () => {
+      view.rerender(<ExcalidrawWrapper {...props} roomId="room-2" />);
+    });
+    const [second] = await rectangleElements(['room-b']);
+    await act(async () => {
+      api.addFiles([
+        {
+          id: 'file-same',
+          dataURL: 'data:image/png;base64,aGVsbG8=',
+          mimeType: 'image/png',
+          created: 1,
+        },
+      ] as never);
+    });
+    await act(async () => {
+      api.updateScene({ elements: [second], captureUpdate: CaptureUpdateAction.NEVER });
+    });
+
+    await waitFor(() => {
+      expect(putRooms).toContain('room-2');
+    });
+  });
+
+  it('shows a failed upload with a retry', async () => {
+    const putCalls: string[] = [];
+    setFetchHandler((url, init) => {
+      if (init?.method === 'PUT') {
+        putCalls.push(url);
+        // Permanent: the room will never take it, so no background timer will
+        // save it -- the teacher has to see it and choose to retry.
+        return new Response(null, { status: 413 });
+      }
+      return new Response(null, { status: 404 });
+    });
+    const { view, api } = await renderWrapper();
+    const { CaptureUpdateAction } = await loadExcalidrawPackage();
+    const [first] = await rectangleElements(['fail-a']);
+
+    await act(async () => {
+      api.addFiles([
+        {
+          id: 'file-fail',
+          dataURL: 'data:image/png;base64,aGVsbG8=',
+          mimeType: 'image/png',
+          created: 1,
+        },
+      ] as never);
+    });
+    await act(async () => {
+      api.updateScene({ elements: [first], captureUpdate: CaptureUpdateAction.NEVER });
+    });
+
+    const status = await view.findByTestId('board-upload-status');
+    expect(status.textContent).toMatch(/failed/i);
+    const before = putCalls.length;
+    expect(before).toBeGreaterThanOrEqual(1);
+
+    const retry = view.getByRole('button', { name: /retry/i });
+    await act(async () => {
+      retry.click();
+    });
+
+    await waitFor(() => {
+      expect(putCalls.length).toBeGreaterThan(before);
+    });
+  });
 });
 
 async function libraryItems(ids: string[]): Promise<{ id: string; status: string; created: number; elements: unknown[] }[]> {

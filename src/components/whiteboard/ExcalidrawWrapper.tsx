@@ -39,7 +39,7 @@ import {
   isWhiteboardLatencyProbeEnabled,
   recordWhiteboardLatencyEvent,
 } from '@/lib/whiteboard/latencyProbe';
-import { bytesToDataURL, dataURLToBytes, filesToUpload, isAllowedMimeType } from '@/lib/whiteboard/boardFiles';
+import { bytesToDataURL, dataURLToBytes, filesToUpload, isAllowedMimeType, isRetryableUploadStatus, uploadRetryDelayMs } from '@/lib/whiteboard/boardFiles';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import {
   shouldRetryMissingImage,
@@ -58,6 +58,9 @@ type ExcalidrawChangeFiles = Parameters<ExcalidrawOnChange>[2];
 type ExcalidrawPointerPayload = Parameters<ExcalidrawPointerUpdate>[0];
 type ExcalidrawTool = Parameters<ExcalidrawImperativeAPI['setActiveTool']>[0]['type'];
 type ExcalidrawStandardTool = Exclude<ExcalidrawTool, 'custom'>;
+
+/** Background tries for one board-file PUT, including the initial attempt. */
+const MAX_UPLOAD_ATTEMPTS = 5;
 
 /**
  * The handful of board actions the room's own title menu drives.
@@ -226,6 +229,23 @@ export default function ExcalidrawWrapper({
   const fetchingFileIdsRef = useRef<Set<string>>(new Set());
   /** Files this room answered 404 for: retry with bounded backoff. */
   const missingFileIdsRef = useRef<Map<string, MissingImageEntry>>(new Map());
+  /**
+   * FileIds the room has confirmed holding.
+   *
+   * An element carries only a fileId while the bytes travel in a separate
+   * PUT. Peers that see the reference before the PUT succeeds answer 404 and
+   * retry with backoff; when the PUT lands this set (and the shared fileReady
+   * map below) tells them to ask again without reloading.
+   */
+  const confirmedFileIdsRef = useRef<Set<string>>(new Set());
+  /** Uploads in flight right now, so a burst of onChange calls sends once. */
+  const uploadInFlightRef = useRef<Set<string>>(new Set());
+  /** Pending background retries: fileId -> attempts made and timer, if any. */
+  const pendingUploadsRef = useRef<Map<string, { dataUrl: string; attempts: number; timer: ReturnType<typeof setTimeout> | null; failed: boolean }>>(new Map());
+  /** Image uploads still needing the room store: shown so leaving is a choice. */
+  const [pendingUploadCount, setPendingUploadCount] = useState(0);
+  /** Uploads that failed permanently: shown with a retry. */
+  const [failedUploadIds, setFailedUploadIds] = useState<string[]>([]);
 
   /**
    * Adopt a scene that arrived from a peer as the publish baseline.
@@ -346,19 +366,80 @@ export default function ExcalidrawWrapper({
    *
    * Fire and forget: a slow or failed upload must never hold up a stroke. The
    * id is marked before the request so a burst of onChange calls sends the
-   * picture once, and un-marked on failure -- leaving the mark in place would
-   * strand the image for good and every peer would show a broken picture for
-   * the rest of the lesson.
+   * picture once.
+   *
+   * A failed transient upload is retried in the background as well as on the
+   * next scene change: pasting and then leaving the board alone used to strand
+   * the image in memory, and every reload showed a placeholder. Permanent
+   * failures (a type the room will never store, a body it will never take)
+   * are not retried automatically -- they are shown with a retry instead of
+   * spamming the room on every stroke.
+   *
+   * On success the fileId is confirmed and announced over the shared document
+   * so peers waiting on a 404 ask again without reloading. The element itself
+   * was already published with the paste; only the readiness is new.
    *
    * The editor hands over WebP already: the fork converts an inserted image at
    * ingest, so what arrives here is what belongs in the bucket. This used to
    * convert as well, and re-encoding a WebP into a WebP only spends quality.
    */
+  const syncUploadUi = useCallback(() => {
+    let pending = 0;
+    const failed: string[] = [];
+    for (const [fileId, entry] of pendingUploadsRef.current) {
+      if (entry.failed) failed.push(fileId);
+      else pending += 1;
+    }
+    setPendingUploadCount(pending);
+    setFailedUploadIds(failed);
+  }, []);
+
+  /**
+   * The uploader, reachable from its own retry timers.
+   *
+   * A retry timer is scheduled by the upload it belongs to, so the callback
+   * cannot close over the function directly without lint reading it as
+   * use-before-declare -- and a closure would also pin whatever room and
+   * document the function was created for. A ref the effect below keeps
+   * current makes the indirection explicit, the way useCollaboration reaches
+   * its presence applier.
+   */
+  const uploadBoardFileRef = useRef<((fileId: string, dataUrl: string) => Promise<void>) | null>(null);
+
   const uploadBoardFile = useCallback(
     async (fileId: string, dataUrl: string) => {
+      if (confirmedFileIdsRef.current.has(fileId)) return;
+      if (uploadInFlightRef.current.has(fileId)) return;
+      const pending = pendingUploadsRef.current.get(fileId);
+      if (pending?.failed) return;
+      const attempts = pending?.attempts ?? 0;
+      if (attempts >= MAX_UPLOAD_ATTEMPTS) return;
+      if (!pending) {
+        pendingUploadsRef.current.set(fileId, { dataUrl, attempts: 0, timer: null, failed: false });
+        syncUploadUi();
+      } else if (pending.dataUrl !== dataUrl) {
+        pending.dataUrl = dataUrl;
+      }
+      uploadInFlightRef.current.add(fileId);
       try {
         const converted = dataURLToBytes(dataUrl);
-        if (!converted || !isAllowedMimeType(converted.mimeType)) return;
+        if (!converted || !isAllowedMimeType(converted.mimeType)) {
+          // Permanent: the bytes will never be storable. Keep the attempted
+          // mark so every pointer sample does not re-parse them, and show the
+          // failure instead of stranding a placeholder silently.
+          const entry = pendingUploadsRef.current.get(fileId);
+          if (entry) {
+            entry.failed = true;
+            if (entry.timer) {
+              clearTimeout(entry.timer);
+              entry.timer = null;
+            }
+          } else {
+            pendingUploadsRef.current.set(fileId, { dataUrl, attempts: MAX_UPLOAD_ATTEMPTS, timer: null, failed: true });
+          }
+          syncUploadUi();
+          return;
+        }
         const response = await ajaxFetch(
           `/api/whiteboard/room/${roomId}/files/${fileId}`,
           {
@@ -367,13 +448,113 @@ export default function ExcalidrawWrapper({
             headers: { 'content-type': converted.mimeType },
           },
         );
-        if (!response.ok) uploadedFileIdsRef.current.delete(fileId);
-      } catch {
+        if (response.ok) {
+          confirmedFileIdsRef.current.add(fileId);
+          const entry = pendingUploadsRef.current.get(fileId);
+          if (entry?.timer) clearTimeout(entry.timer);
+          pendingUploadsRef.current.delete(fileId);
+          syncUploadUi();
+          try {
+            if (yDoc) {
+              yDoc.transact(() => {
+                yDoc.getMap('fileReady').set(fileId, Date.now());
+              }, 'file-ready');
+            }
+          } catch {
+            // Readiness is a hint; the bytes are already stored.
+          }
+          return;
+        }
+        const retryable = isRetryableUploadStatus(response.status);
+        const entry = pendingUploadsRef.current.get(fileId);
+        const nextAttempts = attempts + 1;
+        if (entry) entry.attempts = nextAttempts;
+        if (!retryable || nextAttempts >= MAX_UPLOAD_ATTEMPTS) {
+          // Permanent or exhausted: keep the attempted mark so strokes do not
+          // spam the room, and show the failure with a manual retry.
+          if (entry) {
+            entry.failed = !retryable || nextAttempts >= MAX_UPLOAD_ATTEMPTS;
+            if (entry.timer) {
+              clearTimeout(entry.timer);
+              entry.timer = null;
+            }
+          }
+          syncUploadUi();
+          return;
+        }
+        // Transient: allow the next scene change to retry immediately, and
+        // also retry in the background so an idle board still recovers.
         uploadedFileIdsRef.current.delete(fileId);
+        if (entry && !entry.timer) {
+          entry.timer = setTimeout(() => {
+            const current = pendingUploadsRef.current.get(fileId);
+            if (current) current.timer = null;
+            if (confirmedFileIdsRef.current.has(fileId)) return;
+            if (uploadInFlightRef.current.has(fileId)) return;
+            const latest = pendingUploadsRef.current.get(fileId);
+            if (!latest || latest.failed) return;
+            void uploadBoardFileRef.current?.(fileId, latest.dataUrl);
+          }, uploadRetryDelayMs(attempts));
+        }
+        syncUploadUi();
+      } catch {
+        const entry = pendingUploadsRef.current.get(fileId);
+        const nextAttempts = attempts + 1;
+        if (entry) entry.attempts = nextAttempts;
+        if (nextAttempts >= MAX_UPLOAD_ATTEMPTS) {
+          if (entry) {
+            entry.failed = true;
+            if (entry.timer) {
+              clearTimeout(entry.timer);
+              entry.timer = null;
+            }
+          }
+          syncUploadUi();
+          return;
+        }
+        uploadedFileIdsRef.current.delete(fileId);
+        if (entry && !entry.timer) {
+          entry.timer = setTimeout(() => {
+            const current = pendingUploadsRef.current.get(fileId);
+            if (current) current.timer = null;
+            if (confirmedFileIdsRef.current.has(fileId)) return;
+            if (uploadInFlightRef.current.has(fileId)) return;
+            const latest = pendingUploadsRef.current.get(fileId);
+            if (!latest || latest.failed) return;
+            void uploadBoardFileRef.current?.(fileId, latest.dataUrl);
+          }, uploadRetryDelayMs(attempts));
+        }
+        syncUploadUi();
+      } finally {
+        uploadInFlightRef.current.delete(fileId);
       }
     },
-    [roomId],
+    [roomId, yDoc, syncUploadUi],
   );
+
+  useEffect(() => {
+    uploadBoardFileRef.current = uploadBoardFile;
+  }, [uploadBoardFile]);
+
+  const retryFailedUploads = useCallback(() => {
+    /*
+     * Entries are replaced, not edited in place: the failed flag and the
+     * attempt count live on objects that earlier reads may still be holding,
+     * and a stale holder must not see a retry it did not start.
+     */
+    const failed = [...pendingUploadsRef.current].filter(([, entry]) => entry.failed);
+    for (const [fileId, entry] of failed) {
+      if (entry.timer) {
+        clearTimeout(entry.timer);
+      }
+      pendingUploadsRef.current.set(fileId, { dataUrl: entry.dataUrl, attempts: 0, timer: null, failed: false });
+      uploadedFileIdsRef.current.delete(fileId);
+    }
+    syncUploadUi();
+    for (const [fileId, entry] of failed) {
+      void uploadBoardFileRef.current?.(fileId, entry.dataUrl);
+    }
+  }, [syncUploadUi]);
 
   /**
    * Fetches an image this peer was never sent.
@@ -553,6 +734,64 @@ export default function ExcalidrawWrapper({
     };
   }, []);
 
+  /*
+   * Per-room upload and fetch memory.
+   *
+   * FileIds are content-addressed, so the same screenshot pasted in two rooms
+   * shares an id while naming two different R2 keys. Carrying attempted,
+   * confirmed, in-flight, pending, fetching or backed-off ids from one room
+   * into the next would skip the PUT the new room still needs -- or refuse the
+   * GET it can already serve -- and leave a placeholder where a picture
+   * belongs. Clear the whole set when the room changes (and stop any retry
+   * timers for the room left behind); unmount clears through the same path.
+   */
+  useEffect(() => {
+    /*
+     * The sets are stable (each ref is created once), so capturing them here
+     * is the same memory the cleanup would reach through `.current` -- and it
+     * stops the cleanup reading a ref that lint warns may have moved on.
+     */
+    const pending = pendingUploadsRef.current;
+    const uploaded = uploadedFileIdsRef.current;
+    const confirmed = confirmedFileIdsRef.current;
+    const inFlight = uploadInFlightRef.current;
+    const fetching = fetchingFileIdsRef.current;
+    const missing = missingFileIdsRef.current;
+    return () => {
+      for (const entry of pending.values()) {
+        if (entry.timer) clearTimeout(entry.timer);
+      }
+      pending.clear();
+      uploaded.clear();
+      confirmed.clear();
+      inFlight.clear();
+      fetching.clear();
+      missing.clear();
+      setPendingUploadCount(0);
+      setFailedUploadIds([]);
+    };
+  }, [roomId]);
+
+  /*
+   * Leaving with images still uploading loses the only bytes.
+   *
+   * The element was already published, so coming back shows a placeholder
+   * where a picture belongs. Warn first so staying to let the background
+   * retries land is a choice rather than an accident. Exports already read
+   * the editor's local files, so a teacher that must leave can still take a
+   * copy through the room title menu.
+   */
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (pendingUploadsRef.current.size > 0) {
+        event.preventDefault();
+        event.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
+
   useEffect(() => {
     activeToolRef.current = activeTool;
   }, [activeTool]);
@@ -615,10 +854,37 @@ export default function ExcalidrawWrapper({
 
     elementsArray.observeDeep(handler);
 
+    // Readiness for images whose reference arrived before their bytes.
+    //
+    // The uploader publishes the element immediately and the bytes separately.
+    // A peer that sees the reference first answers 404 and backs off with a
+    // bounded policy; without invalidation a slow upload becomes a permanent
+    // placeholder for that mounted editor. When the PUT lands the uploader
+    // stamps fileReady, which clears the backoff so the bytes are asked for
+    // again without reloading and without a request-per-stroke flood.
+    const fileReadyMap = yDoc.getMap('fileReady');
+    const fileReadyHandler = () => {
+      let cleared = false;
+      fileReadyMap.forEach((_value, fileId) => {
+        if (typeof fileId !== 'string' || fileId.length === 0) return;
+        if (missingFileIdsRef.current.delete(String(fileId))) cleared = true;
+      });
+      if (!cleared) return;
+      const api = apiRef.current;
+      if (!api) return;
+      try {
+        fetchMissingBoardFiles(api.getSceneElements?.() as readonly unknown[] ?? []);
+      } catch {
+        // A readiness hint must never interrupt drawing.
+      }
+    };
+    fileReadyMap.observe(fileReadyHandler);
+
     return () => {
       elementsArray.unobserveDeep(handler);
+      fileReadyMap.unobserve(fileReadyHandler);
     };
-  }, [yDoc, yElementsArray, roomId, applyRemoteElements, adoptVersionBaseline]);
+  }, [yDoc, yElementsArray, roomId, applyRemoteElements, adoptVersionBaseline, fetchMissingBoardFiles]);
 
   /** Snapshot of the shared document as plain Excalidraw elements. */
   const readSharedElements = useCallback((): SharedSceneElement[] => {
@@ -1393,6 +1659,33 @@ export default function ExcalidrawWrapper({
           */}
         {footer && <Footer>{footer}</Footer>}
       </Excalidraw>
+      {(pendingUploadCount > 0 || failedUploadIds.length > 0) && (
+        <div
+          data-testid="board-upload-status"
+          className="fixed bottom-4 right-4 z-50 max-w-xs rounded-md border border-gray-300 bg-white px-3 py-2 text-sm shadow-lg"
+          role="status"
+        >
+          {pendingUploadCount > 0 && (
+            <div>
+              Uploading {pendingUploadCount} image{pendingUploadCount === 1 ? '' : 's'}…
+            </div>
+          )}
+          {failedUploadIds.length > 0 && (
+            <div className="mt-1">
+              <div>
+                {failedUploadIds.length} image{failedUploadIds.length === 1 ? '' : 's'} failed to save.
+              </div>
+              <button
+                type="button"
+                className="mt-1 underline"
+                onClick={() => retryFailedUploads()}
+              >
+                Retry
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

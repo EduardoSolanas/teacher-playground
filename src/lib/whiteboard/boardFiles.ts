@@ -90,3 +90,36 @@ export function filesToUpload(
 ): string[] {
   return Object.keys(files).filter((fileId) => !uploaded.has(fileId));
 }
+
+/**
+ * Whether a failed board-file upload is worth trying again in the background.
+ *
+ * Transient failures (a grant that has not arrived yet, a rate limit, a 5xx,
+ * a dropped connection) can succeed a moment later without the teacher drawing
+ * again. Permanent ones (a file id the room will never accept, a body it will
+ * never take, a type it will never store) will fail the same way every time,
+ * so retrying them is only spam against the room.
+ *
+ * Success (2xx) is not retryable: there is nothing to retry.
+ */
+export function isRetryableUploadStatus(status: number): boolean {
+  return (
+    status === 403 ||
+    status === 408 ||
+    status === 429 ||
+    (status >= 500 && status <= 599)
+  );
+}
+
+/**
+ * How long to wait before the nth background retry of a board-file upload.
+ *
+ * Exponential backoff from the same 3s the image fetch path waits, capped so
+ * a file that will never succeed does not schedule ever-longer timers
+ * forever. Attempt zero is the first retry, not the initial try.
+ */
+export function uploadRetryDelayMs(attempt: number): number {
+  const base = 3000;
+  const delay = base * 2 ** Math.max(0, attempt);
+  return Math.min(delay, 30000);
+}
