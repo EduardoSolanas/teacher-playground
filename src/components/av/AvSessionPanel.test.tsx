@@ -1093,6 +1093,24 @@ describe('AvSessionPanel', () => {
     expect(tile.parentElement?.className).not.toContain('basis-44');
   });
 
+  it('sizes a lone phone tile from the screen height so mute stays in the sheet', () => {
+    /*
+     * Full width at 16:9 is over half of a 40dvh sheet on a phone, which put
+     * the mic and camera below the fold. The wide-screen rail is a column and
+     * keeps the full width.
+     */
+    const av = makeAv({
+      participants: [
+        { identity: 'me', micMuted: false, micPresent: true, camOn: false, isSpeaking: false },
+      ],
+    });
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    const wrapper = screen.getByTestId('av-tile-me').parentElement?.className.split(/\s+/) ?? [];
+    expect(wrapper).toContain('max-w-[calc((40dvh_-_10.5rem)*16/9)]');
+    expect(wrapper).toContain('mx-auto');
+    expect(wrapper).toContain('sm:max-w-none');
+  });
+
 
 
   it('keeps multi-participant tiles in a scrollable rail', () => {
@@ -1126,6 +1144,21 @@ describe('AvSessionPanel', () => {
     const panel = screen.getByTestId('av-session-panel');
     expect(panel.className).toContain('max-h-[40dvh]');
     expect(panel.className).toContain('sm:max-h-none');
+  });
+
+  it('keeps the phone strip of faces from being squashed by the capped sheet', () => {
+    /*
+     * The rail is a flex item in a column capped at 40dvh, and a horizontal
+     * scroller's min-height is 0. Once the controls outgrew the cap, flexbox
+     * took the whole shortfall out of the faces: on a phone the camera was a
+     * 35px sliver above a full set of buttons.
+     */
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" />);
+    const rail = screen.getByTestId('av-tiles-rail').className.split(/\s+/);
+    expect(rail).toContain('shrink-0');
+    // The wide-screen rail is the one that must shrink, to scroll its column.
+    expect(rail).toContain('sm:shrink');
   });
 
   it('keeps clear of the safe areas on the wide-screen rail', () => {

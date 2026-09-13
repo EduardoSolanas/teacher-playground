@@ -822,13 +822,23 @@ export default function AvSessionPanel({
                 * visible face and a sideways drag to find anyone else.
                 * min-h-0 is what lets the column actually scroll rather than
                 * pushing the controls off the bottom of the panel.
+                * shrink-0 is the phone half of the same problem: a sideways
+                * scroller's min-height is 0, so in the 40dvh sheet flexbox took
+                * all of the overflow out of the faces and left a sliver.
                 */
-              className="flex gap-2.5 overflow-x-auto pb-1.5 sm:flex-1 sm:min-h-0 sm:flex-col sm:overflow-x-visible sm:overflow-y-auto"
+              className="flex shrink-0 gap-2.5 overflow-x-auto pb-1.5 sm:flex-1 sm:shrink sm:min-h-0 sm:flex-col sm:overflow-x-visible sm:overflow-y-auto"
             >
               {tiles.map((participant) => (
                 <div
                   key={participant.identity}
-                  className={`min-w-0 sm:w-full sm:shrink sm:basis-auto ${tiles.length === 1 ? 'w-full' : 'shrink-0 basis-44'}`}
+                  /*
+                    * A lone tile is sized from the screen's height on a phone,
+                    * not its width: full width at 16:9 is over half of the
+                    * 40dvh sheet and pushed mute below the fold. 10.5rem is
+                    * the header and the mic row, so the tile takes what is
+                    * left -- the full width on a tall phone, less on a short one.
+                    */
+                  className={`min-w-0 sm:w-full sm:shrink sm:basis-auto ${tiles.length === 1 ? 'mx-auto w-full max-w-[calc((40dvh_-_10.5rem)*16/9)] sm:max-w-none' : 'shrink-0 basis-44'}`}
                 >
                   <ParticipantTile
                     participant={participant}

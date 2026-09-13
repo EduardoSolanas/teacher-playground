@@ -86,3 +86,75 @@ test.describe('call identity presentation', () => {
     }
   });
 });
+
+test.describe('call panel on a phone', () => {
+  test('shows the whole camera tile rather than a squashed sliver', async ({ browser }) => {
+    const host = await newAuthenticatedContext(browser, `call-phone-${Date.now()}`);
+    const page = await host.newPage();
+    await page.setViewportSize({ width: 390, height: 844 });
+
+    try {
+      const roomId = await createRoomWithMaxUsers(page, 'PhoneHost', 1);
+      test.skip(!(await liveKitConfigured(page, roomId)), 'LiveKit is not configured in this E2E environment.');
+
+      await page.getByTestId('av-start-call').click();
+      await waitForJoinedCall(page);
+
+      /*
+       * The sheet is capped at 40dvh and the controls below the faces outgrow
+       * it, so flexbox used to take the shortfall out of the tile strip: the
+       * tile kept its 16:9 box while the strip around it was 35px tall.
+       */
+      const rail = page.getByTestId('av-tiles-rail');
+      const tile = rail.locator('[data-testid^="av-tile-"]').first();
+      await expect(tile).toBeVisible();
+      await expect.poll(async () => {
+        const [railBox, tileBox] = await Promise.all([rail.boundingBox(), tile.boundingBox()]);
+        if (!railBox || !tileBox) return false;
+        return railBox.height >= tileBox.height && tileBox.height >= (tileBox.width * 9) / 16 - 1;
+      }).toBe(true);
+    } finally {
+      await host.close();
+    }
+  });
+
+  for (const viewport of [{ width: 390, height: 844 }, { width: 360, height: 640 }]) {
+    test(`fits the face and the mic and camera in the sheet without scrolling at ${viewport.width}x${viewport.height}`, async ({ browser }) => {
+      const host = await newAuthenticatedContext(browser, `call-phone-fit-${viewport.height}-${Date.now()}`);
+      const page = await host.newPage();
+      await page.setViewportSize(viewport);
+
+      try {
+        const roomId = await createRoomWithMaxUsers(page, 'PhoneHost', 1);
+        test.skip(!(await liveKitConfigured(page, roomId)), 'LiveKit is not configured in this E2E environment.');
+
+        await page.getByTestId('av-start-call').click();
+        await waitForJoinedCall(page);
+
+        /*
+         * A lone tile ran the full width of the phone, which at 16:9 is over half
+         * the 40dvh sheet, and pushed mute below the fold. Mute is the control
+         * somebody needs without hunting for it.
+         */
+        const panel = page.getByTestId('av-session-panel');
+        const tile = page.getByTestId('av-tiles-rail').locator('[data-testid^="av-tile-"]').first();
+        const mic = page.getByTestId('av-toggle-mic');
+        await expect(tile).toBeVisible();
+        await expect.poll(async () => {
+          const [panelBox, tileBox, micBox, scrollTop] = await Promise.all([
+            panel.boundingBox(),
+            tile.boundingBox(),
+            mic.boundingBox(),
+            panel.evaluate((element) => element.scrollTop),
+          ]);
+          if (!panelBox || !tileBox || !micBox) return false;
+          return scrollTop === 0
+            && tileBox.y >= panelBox.y
+            && micBox.y + micBox.height <= panelBox.y + panelBox.height;
+        }).toBe(true);
+      } finally {
+        await host.close();
+      }
+    });
+  }
+});
