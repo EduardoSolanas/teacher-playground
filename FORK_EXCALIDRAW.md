@@ -99,7 +99,8 @@ Three gaps were identified in the pre-tp.7 public API, and tp.7 closes all three
 additively. Only two of them earned their keep in the application: the tool
 events replaced a singleton that could hold one listener, and the origin tag is
 correct labelling. The increment feed was adopted and then removed -- §A records
-why, and `EXCALIDRAW_INCREMENTS_TASK.md` is closed rather than pending.
+why, and the closed task brief was removed from the tree with it (recoverable
+from git history).
 
 ### A. The change feed exists, tp.7 exposes it, and we do not use it
 
@@ -329,8 +330,9 @@ fixture we maintain.
 ## The change worth making
 
 Items **A**, **B** and **C** are additive, non-breaking, and small — because the
-machinery already exists. The implementation brief is
-[`EXCALIDRAW_INCREMENTS_TASK.md`](EXCALIDRAW_INCREMENTS_TASK.md).
+machinery already exists. The original implementation brief was
+`EXCALIDRAW_INCREMENTS_TASK.md`; the task was closed (the feed was adopted, then
+removed) and the brief deleted with it, recoverable from git history.
 
 Sequence: raise A and B upstream first. The fork's value is that it changes
 almost nothing, and that is worth preserving; carry the patches meanwhile the
