@@ -137,6 +137,7 @@ const DISABLE_ACCOUNT_PATH = '/accounts/disable';
 const ENABLE_ACCOUNT_PATH = '/accounts/enable';
 const GUESTS_ISSUE_PATH = '/guests/issue';
 const GUESTS_PURGE_PATH = '/guests/purge';
+const ROOM_REGISTERED_PATH = '/rooms/registered';
 const BILLING_APPLY_PATH = '/billing/events/apply';
 const BILLING_STATUS_PATH = '/billing/events/status';
 const BILLING_OPERATIONS_PATH = '/billing/operations';
@@ -1702,6 +1703,25 @@ export class IdentityDO extends DurableObject {
         : null;
       if (!session) return unauthorized();
       return Response.json(session, { headers: noStore() });
+    }
+
+    /*
+     * Internal: whether a room exists, asked before the unauthenticated guest
+     * path touches a room object (SEC-005). A room object builds its schema
+     * when constructed, so asking the room itself would create one for every
+     * guessed id. Every room is recorded here when it is created, and dropped
+     * when it is deleted. Answers only yes or no; nothing about the owner.
+     */
+    if (url.pathname === ROOM_REGISTERED_PATH) {
+      if (request.method !== 'GET') return methodNotAllowed('GET');
+      const roomId = url.searchParams.get('roomId');
+      if (roomId === null || !isValidRoomId(roomId)) {
+        return Response.json({ error: 'Invalid roomId' }, { status: 400 });
+      }
+      const row = this.db.prepare(
+        `SELECT 1 AS present FROM account_rooms WHERE room_id = ? AND role = 'owner' LIMIT 1`,
+      ).get(roomId);
+      return Response.json({ registered: Boolean(row) }, { headers: noStore() });
     }
 
     if (url.pathname === GUESTS_PURGE_PATH) {

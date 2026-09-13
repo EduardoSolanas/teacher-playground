@@ -469,6 +469,20 @@ async function issueGuestAuth(env: Env, request: Request): Promise<Response> {
     ));
   }
 
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  /*
+   * The registry first (SEC-005): this path runs before anybody is signed in,
+   * and a room object builds its storage when it is constructed, so asking the
+   * room about a guessed id would leave an empty object behind for every guess.
+   * A room nobody created gets the same generic refusal as a wrong PIN.
+   */
+  const registry = await identity.fetch(new Request(
+    `https://identity/rooms/registered?roomId=${encodeURIComponent(roomId)}`,
+  ));
+  const registered = registry.ok
+    && ((await registry.json()) as { registered?: unknown }).registered === true;
+  if (!registered) return guestJoinDenied(env);
+
   const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
   const verified = await stub.fetch(new Request(
     `https://room/room/guest-verify?roomId=${encodeURIComponent(roomId)}`,
@@ -480,7 +494,6 @@ async function issueGuestAuth(env: Env, request: Request): Promise<Response> {
   ));
   if (!verified.ok) return guestJoinDenied(env);
 
-  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
   const issued = await identity.fetch(new Request(
     'https://identity/guests/issue',
     internalJson({ roomId, displayName }),

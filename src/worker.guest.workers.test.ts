@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
-import { runInDurableObject, SELF } from 'cloudflare:test';
+import { listDurableObjectIds, runInDurableObject, SELF } from 'cloudflare:test';
 import { RoomDO } from './do/RoomDO';
 import { issueGuestPin } from './lib/whiteboard/guestPin';
 import { GUEST_SESSION_COOKIE_NAME } from './lib/identity/sessionStore';
@@ -181,6 +181,36 @@ describe('Task 8b — POST /auth/guest', () => {
     const lockedBody = await locked.text();
     expect(wrongBody).toBe(disabledBody);
     expect(wrongBody).toBe(lockedBody);
+  });
+
+  it('refuses a PIN for a room that was never created without creating it (SEC-005)', async () => {
+    /*
+     * The one unauthenticated path into a room object. A room object builds
+     * its SQLite schema when it is constructed, so a PIN guessed at a random
+     * room id used to leave a new, empty object on disk for every guess. The
+     * room registry is checked first; a room nobody created is never touched,
+     * and the answer is the same generic 403 as a wrong PIN.
+     */
+    const { roomId: realRoom } = await createTeacherRoom('guest-auth-registry-real');
+    await pinForRoom(realRoom);
+    const wrong = await SELF.fetch(`${GUEST}/auth/guest`, guestAuthInit({
+      roomId: realRoom,
+      pin: '000000',
+      displayName: 'Ada',
+    }));
+
+    const neverCreated = 'feedfacefeedfacefeedfacefeedface';
+    const unknownId = env.ROOMS.idFromName(neverCreated).toString();
+    const denied = await SELF.fetch(`${GUEST}/auth/guest`, guestAuthInit({
+      roomId: neverCreated,
+      pin: '123456',
+      displayName: 'Ada',
+    }));
+
+    expect(denied.status).toBe(403);
+    expect(await denied.text()).toBe(await wrong.text());
+    const created = (await listDurableObjectIds(env.ROOMS)).map((id) => id.toString());
+    expect(created).not.toContain(unknownId);
   });
 
   it('rejects missing Origin and a teacher-host Origin on the guest URL', async () => {
