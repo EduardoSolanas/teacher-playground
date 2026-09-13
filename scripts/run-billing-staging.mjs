@@ -31,6 +31,7 @@
  */
 
 import { env, exit, stderr, stdout } from 'node:process';
+import { stagingStripeTargetError } from './lib/stripeStagingGuard.mjs';
 
 const SPEC_15_2 =
   'IMPLEMENTATION_SPEC.md §7.6/§15.2 — staging does not exist yet ' +
@@ -87,6 +88,17 @@ if (missing.length > 0) {
     'footprints, STRIPE_API_BASE for the api base, and the Access issuer and',
     'token for authenticating as staging tutors.',
   ]);
+}
+
+// Before anything could send the key: a staging run holds only a test-mode key
+// and sends it only to Stripe (SEC-A17). The base arrives as a free-text
+// dispatch input, so this is checked here rather than trusted.
+const stripeTargetError = stagingStripeTargetError({
+  apiBase: env.STRIPE_API_BASE ?? '',
+  secretKey: env.STRIPE_SECRET_KEY ?? '',
+});
+if (stripeTargetError) {
+  failBlocked([stripeTargetError]);
 }
 
 // All variables present, but there is still no honest way to run the spec:
