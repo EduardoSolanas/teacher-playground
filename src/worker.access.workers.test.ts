@@ -6,6 +6,7 @@ import { MAX_BODY_BYTES } from './lib/worker/requestGuard';
 import { MAX_ROOM_FILE_BYTES_TOTAL, MAX_BOARD_FILE_BYTES } from './lib/whiteboard/boardFileRoutes';
 import { DESTRUCTIVE_FRESH_MS, SESSION_COOKIE_NAME } from './lib/identity/sessionStore';
 import { accessFetch, authenticatedFetch, bootstrapLocalSession, localAccessToken } from './test/workerAuth';
+import { withLiveKitConfigured } from './test/workerLiveKit';
 import { resetAuthEventWriterForTests, setAuthEventWriterForTests } from './worker';
 
 import { ORPHAN_GRACE_MS } from './lib/whiteboard/orphanFiles';
@@ -2476,12 +2477,25 @@ describe('worker request-boundary branches', () => {
     });
     expect(missingRoom.status).toBe(400);
 
-    const muted = await authenticatedFetch(`/api/av/mute?roomId=${roomId}`, owner, {
+    const mute = () => authenticatedFetch(`/api/av/mute?roomId=${roomId}`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ action: 'mute', target: 'peer-1', kind: 'audio' }),
     });
-    expect(muted.status).toBe(502);
+
+    // Each world declared, not read from whatever .dev.vars holds: without
+    // LiveKit there is nothing to mute and the route says so...
+    await withLiveKitConfigured(false, async () => {
+      const skipped = await mute();
+      expect(skipped.status).toBe(200);
+      expect(await skipped.json()).toEqual({ ok: true });
+    });
+    // ...and with LiveKit that cannot be reached, it reports the upstream failure.
+    await withLiveKitConfigured(true, async () => {
+      const unreachable = await mute();
+      expect(unreachable.status).toBe(502);
+      expect(await unreachable.json()).toEqual({ ok: false });
+    });
   });
 
   it('falls back to the scene limiter when the access probe is refused', async () => {
