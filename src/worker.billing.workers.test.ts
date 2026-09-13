@@ -147,18 +147,44 @@ describe('Worker POST /api/billing/webhook boundary', () => {
     expect(nested.status).toBe(404);
   });
 
-  it('does not route the webhook on the guest or marketing host', async () => {
+  it('does not route the webhook on the guest host', async () => {
     const body = eventBody('evt_host_boundary', 'invoice.paid', true, 1, 'in_host_boundary');
-    for (const base of [GUEST_BASE, MARKETING_BASE]) {
-      const response = await SELF.fetch(`${base}${WEBHOOK_PATH}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body,
-      });
-      expect(response.status, base).toBe(404);
-    }
-
+    const response = await SELF.fetch(`${GUEST_BASE}${WEBHOOK_PATH}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(await stripeSignatureHeader(body)) },
+      body,
+    });
+    expect(response.status).toBe(404);
     expect(await eventRow('evt_host_boundary')).toBeUndefined();
+  });
+
+  it('takes a signed delivery on the marketing host, where Stripe can reach it', async () => {
+    /*
+     * Production's Access application covers the whole teacher hostname and
+     * the stack forbids a Bypass policy, so a delivery to the teacher-host
+     * route is answered with Access's login redirect and never arrives. The
+     * marketing hostname has no Access and no sessions; the Stripe signature
+     * authenticates the request, and every other check still applies there.
+     */
+    const body = eventBody('evt_marketing_host', 'customer.subscription.updated', false, 1, 'sub_marketing_host');
+    const delivered = await SELF.fetch(`${MARKETING_BASE}${WEBHOOK_PATH}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(await stripeSignatureHeader(body)) },
+      body,
+    });
+    expect(delivered.status).toBe(200);
+    expect(((await eventRow('evt_marketing_host')) as { outcome?: string } | undefined)?.outcome).toBe('ignored');
+
+    const unsigned = await SELF.fetch(`${MARKETING_BASE}${WEBHOOK_PATH}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: eventBody('evt_marketing_unsigned', 'invoice.paid', true, 1, 'in_marketing_unsigned'),
+    });
+    expect(unsigned.status).toBe(400);
+    expect(await eventRow('evt_marketing_unsigned')).toBeUndefined();
+
+    const wrongMethod = await SELF.fetch(`${MARKETING_BASE}${WEBHOOK_PATH}`);
+    expect(wrongMethod.status).toBe(404);
   });
 
   it('rejects a body above the 1 MiB webhook cap with 413 and writes no event row', async () => {

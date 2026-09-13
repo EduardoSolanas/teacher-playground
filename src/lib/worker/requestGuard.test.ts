@@ -1067,10 +1067,14 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(BILLING_WEBHOOK_MAX_BODY_BYTES).toBeLessThan(MAX_BODY_BYTES);
     });
 
-    it('allows only POST /api/billing/webhook on the teacher host', () => {
+    it('allows only POST /api/billing/webhook, on the teacher and marketing hosts', () => {
+      // Marketing because production's Access application covers the whole
+      // teacher hostname with no Bypass, so Stripe could never reach the
+      // teacher-host route; the signature is what authenticates this request.
       expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'POST', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'POST', 'marketing')).toBe(true);
+      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'GET', 'marketing')).toBe(false);
       expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'POST', 'guest')).toBe(false);
-      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'POST', 'marketing')).toBe(false);
       expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'POST', 'unknown')).toBe(false);
       expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'GET', 'teacher')).toBe(false);
       expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'HEAD', 'teacher')).toBe(false);

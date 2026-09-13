@@ -76,8 +76,15 @@ export function isRouteAllowedOnHost(
     return false;
   }
 
+  /*
+   * The Stripe webhook authenticates by signature, never by Access. Production's
+   * Access application covers the whole teacher hostname with no Bypass policy,
+   * so Stripe can only reach this route on the marketing hostname, which has no
+   * Access and no sessions. POST only; never the guest host, which carries
+   * pupils' guest sessions.
+   */
   if (pathname === BILLING_WEBHOOK_PATH) {
-    return hostKind === 'teacher' && method === 'POST';
+    return (hostKind === 'teacher' || hostKind === 'marketing') && method === 'POST';
   }
 
   if (pathname === BILLING_CHECKOUT_PATH || pathname === BILLING_PORTAL_PATH) {

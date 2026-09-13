@@ -3006,8 +3006,9 @@ const worker = {
     if (hostKind === 'unknown') return hostNotFound();
 
     // The landing surface is static and entirely public. It never verifies
-    // Access, never issues a session, and never reaches a Durable Object, so it
-    // is served and returned before any of that machinery runs.
+    // Access and never issues a session, so it is served and returned before
+    // any of that machinery runs. Its one non-static route is the Stripe
+    // webhook, which authenticates by signature rather than by Access.
     if (hostKind === 'marketing') {
       // The landing page links to /whiteboard with relative hrefs so the HTML
       // stays host-agnostic. Send those to the teacher hostname rather than
@@ -3027,6 +3028,11 @@ const worker = {
       }
       if (!isRouteAllowedOnHost(url.pathname, request.method, hostKind)) {
         return hostNotFound();
+      }
+      // Production's Access application covers the whole teacher hostname
+      // with no Bypass, so this is the hostname Stripe can actually reach.
+      if (url.pathname === BILLING_WEBHOOK_PATH) {
+        return handleStripeWebhook(env, request, ctx);
       }
       const asset = await env.ASSETS.fetch(request);
       return withNonceHtmlSecurityHeaders(asset, {
