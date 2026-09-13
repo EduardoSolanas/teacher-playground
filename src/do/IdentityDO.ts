@@ -1411,12 +1411,50 @@ export class IdentityDO extends DurableObject {
 
     if (url.pathname === ACCOUNT_PLAN_PATH) {
       if (request.method !== 'GET') return methodNotAllowed('GET');
+      /*
+       * The account whose plan is read is proved, never taken on trust (SEC-A20).
+       * A plan names the company an account belongs to and what it pays for, so
+       * a bare `accountId` -- the shape any future route forwarding a client id
+       * would take -- is refused. Two proofs exist, one per caller:
+       *
+       *   - a session, which proves only its own account (the Worker);
+       *   - `accountId` + `roomId` where that account owns that room (RoomDO
+       *     admission, which reads the owner from its own table). Every room is
+       *     recorded in account_rooms before it can admit anyone.
+       */
       const accountId = url.searchParams.get('accountId');
-      if (accountId === null || accountId.length < 1 || accountId.length > 128) {
+      const roomId = url.searchParams.get('roomId');
+      if (accountId !== null && (accountId.length < 1 || accountId.length > 128)) {
         return Response.json({ error: 'Invalid accountId' }, { status: 400 });
       }
+      if (roomId !== null && (accountId === null || !isValidRoomId(roomId))) {
+        return Response.json({ error: 'Invalid roomId' }, { status: 400 });
+      }
+
+      let subject: string;
+      if (roomId !== null && accountId !== null) {
+        const owns = this.db.prepare(
+          `SELECT 1 AS owns FROM account_rooms
+           WHERE account_id = ? AND room_id = ? AND role = 'owner'`,
+        ).get(accountId, roomId);
+        if (!owns) return Response.json({ error: 'Forbidden' }, { status: 403, headers: noStore() });
+        subject = accountId;
+      } else {
+        const token = parseSessionCookie(request.headers.get('cookie'));
+        const session = token ? await validateSession(this.db, token) : null;
+        if (!session) {
+          return accountId === null
+            ? unauthorized()
+            : Response.json({ error: 'Forbidden' }, { status: 403, headers: noStore() });
+        }
+        if (accountId !== null && accountId !== session.accountId) {
+          return Response.json({ error: 'Forbidden' }, { status: 403, headers: noStore() });
+        }
+        subject = session.accountId;
+      }
+
       const plan = resolveEffectivePlan(
-        readEntitlementsForAccount(this.db, accountId),
+        readEntitlementsForAccount(this.db, subject),
         Date.now(),
       );
       return Response.json(plan, { headers: noStore() });

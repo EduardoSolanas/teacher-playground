@@ -71,9 +71,26 @@ function sessionRequest(
   });
 }
 
-function planRequest(accountId: string): Promise<Response> {
+/**
+ * The room-admission form of the plan route: the account must own the room it
+ * names. Seeds that ownership on the real table, the way a room creation would.
+ */
+async function seedOwnedRoom(accountId: string): Promise<string> {
+  const roomId = `plan-proof-${crypto.randomUUID().slice(0, 8)}`;
+  await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+    const now = Date.now();
+    instance.db.prepare(
+      `INSERT INTO account_rooms (account_id, room_id, role, name, created_at, updated_at)
+       VALUES (?, ?, 'owner', NULL, ?, ?)`,
+    ).run(accountId, roomId, now, now);
+  });
+  return roomId;
+}
+
+async function planRequest(accountId: string): Promise<Response> {
+  const roomId = await seedOwnedRoom(accountId);
   return identityStub().fetch(
-    `https://identity/accounts/plan?accountId=${encodeURIComponent(accountId)}`,
+    `https://identity/accounts/plan?accountId=${encodeURIComponent(accountId)}&roomId=${encodeURIComponent(roomId)}`,
   );
 }
 
@@ -1662,17 +1679,67 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
       collectionPaused: false,
     });
 
-    const unknown = await planRequest('account-that-does-not-exist');
-    expect(unknown.status).toBe(200);
-    expect(await unknown.json()).toEqual({
-      planId: 'free',
-      source: null,
-      companyId: null,
-      status: 'free',
-      limits: PLAN_CATALOG.free.limits,
-      graceUntil: null,
-      collectionPaused: false,
+  });
+
+  it('refuses a plan for an account the caller has not proved (SEC-A20)', async () => {
+    const owner = await (await resolveSubject('https://access.example.com', 'plan-proof-owner')).json() as {
+      account: { accountId: string };
+    };
+    const other = await (await resolveSubject('https://access.example.com', 'plan-proof-other')).json() as {
+      account: { accountId: string };
+    };
+    const ownerId = owner.account.accountId;
+    const otherId = other.account.accountId;
+    const plan = (query: string, init?: RequestInit) =>
+      identityStub().fetch(`https://identity/accounts/plan${query}`, init);
+
+    // A bare account id proves nothing: the shape a future route forwarding a
+    // client-supplied id would take.
+    const bare = await plan(`?accountId=${encodeURIComponent(ownerId)}`);
+    expect(bare.status).toBe(403);
+    expect(await bare.json()).toEqual({ error: 'Forbidden' });
+
+    // A room the account does not own proves nothing either.
+    const roomOfOwner = await seedOwnedRoom(ownerId);
+    const ownerForm = await plan(
+      `?accountId=${encodeURIComponent(ownerId)}&roomId=${encodeURIComponent(roomOfOwner)}`,
+    );
+    expect(ownerForm.status).toBe(200);
+    const notOwned = await plan(
+      `?accountId=${encodeURIComponent(otherId)}&roomId=${encodeURIComponent(roomOfOwner)}`,
+    );
+    expect(notOwned.status).toBe(403);
+    expect(await notOwned.json()).toEqual({ error: 'Forbidden' });
+
+    // A session is proof only of its own account.
+    const otherCookie = cookiePair(await issueSession('plan-proof-other'));
+    const crossSession = await plan(`?accountId=${encodeURIComponent(ownerId)}`, {
+      headers: { cookie: otherCookie },
     });
+    expect(crossSession.status).toBe(403);
+    expect(await crossSession.json()).toEqual({ error: 'Forbidden' });
+  });
+
+  it('serves the session caller its own plan without naming an account (SEC-A20)', async () => {
+    const resolved = await (await resolveSubject('https://access.example.com', 'plan-session-own')).json() as {
+      account: { accountId: string };
+    };
+    const cookie = cookiePair(await issueSession('plan-session-own'));
+
+    const own = await identityStub().fetch('https://identity/accounts/plan', { headers: { cookie } });
+    expect(own.status).toBe(200);
+    expect(own.headers.get('cache-control')).toBe('no-store');
+    expect(await own.json()).toMatchObject({ planId: 'free', limits: PLAN_CATALOG.free.limits });
+
+    // Naming the caller's own account with the session is the same answer.
+    const named = await identityStub().fetch(
+      `https://identity/accounts/plan?accountId=${encodeURIComponent(resolved.account.accountId)}`,
+      { headers: { cookie } },
+    );
+    expect(named.status).toBe(200);
+
+    const noSession = await identityStub().fetch('https://identity/accounts/plan');
+    expect(noSession.status).toBe(401);
   });
 
   it('answers GET /accounts/plan with the seeded personal plan and its limits', async () => {
@@ -1899,18 +1966,18 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
   });
 
   it('rejects non-GET methods and malformed accountId on /accounts/plan', async () => {
-    const [post, missing, blank, oversized] = await Promise.all([
+    const [post, blank, oversized, badRoom] = await Promise.all([
       identityStub().fetch('https://identity/accounts/plan?accountId=x', { method: 'POST' }),
-      identityStub().fetch('https://identity/accounts/plan'),
-      identityStub().fetch('https://identity/accounts/plan?accountId='),
-      identityStub().fetch(`https://identity/accounts/plan?accountId=${'a'.repeat(129)}`),
+      identityStub().fetch('https://identity/accounts/plan?accountId=&roomId=room-a'),
+      identityStub().fetch(`https://identity/accounts/plan?accountId=${'a'.repeat(129)}&roomId=room-a`),
+      identityStub().fetch(`https://identity/accounts/plan?accountId=x&roomId=${'r'.repeat(65)}`),
     ]);
 
     expect(post.status).toBe(405);
     expect(post.headers.get('allow')).toBe('GET');
-    expect(missing.status).toBe(400);
     expect(blank.status).toBe(400);
     expect(oversized.status).toBe(400);
+    expect(badRoom.status).toBe(400);
   });
 
   it('refuses a new subject at the configured cap and creates no account', async () => {

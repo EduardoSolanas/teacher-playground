@@ -1651,7 +1651,9 @@ export class RoomDO extends DurableObject {
         this.roomEnv.IDENTITY.idFromName(GLOBAL_IDENTITY_OBJECT_NAME),
       );
       const response = await identity.fetch(new Request(
-        `https://identity/accounts/plan?accountId=${encodeURIComponent(owner.accountId)}`,
+        // The room is the proof: IdentityDO serves the plan only for an account
+        // that owns the room it names (SEC-A20).
+        `https://identity/accounts/plan?accountId=${encodeURIComponent(owner.accountId)}&roomId=${encodeURIComponent(roomId)}`,
         { method: 'GET' },
       ));
       if (!response.ok) return forbidden();

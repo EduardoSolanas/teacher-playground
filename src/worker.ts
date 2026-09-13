@@ -570,12 +570,16 @@ async function issueSession(
   return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
 }
 
-async function resolveSessionPlan(env: Env, accountId: string): Promise<unknown | null> {
+/**
+ * The session caller's own plan. The session cookie is the proof IdentityDO
+ * reads the account from; an account id is never passed (SEC-A20).
+ */
+async function resolveSessionPlan(env: Env, request: Request): Promise<unknown | null> {
   try {
     const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
-    const response = await identity.fetch(new Request(
-      `${IDENTITY_ACCOUNT_PLAN}?accountId=${encodeURIComponent(accountId)}`,
-    ));
+    const response = await identity.fetch(new Request(IDENTITY_ACCOUNT_PLAN, {
+      headers: { cookie: request.headers.get('cookie') ?? '' },
+    }));
     if (!response.ok) return null;
     const body: unknown = await response.json();
     return body !== null && typeof body === 'object' ? body : null;
@@ -620,7 +624,7 @@ async function sessionCurrent(
   };
   const { preferredDisplayName, ...publicSession } = session;
   const displayName = preferredDisplayName || principal.displayName;
-  const plan = await resolveSessionPlan(env, session.accountId);
+  const plan = await resolveSessionPlan(env, request);
   const company = await resolveSessionCompany(env, request);
   const payload = { ...publicSession, plan, company };
   return withSecurityHeaders(Response.json(
@@ -1609,12 +1613,12 @@ async function listAccountRooms(
   return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
 }
 
-async function resolvePlanMaxUsers(env: Env, accountId: string): Promise<number | null> {
+async function resolvePlanMaxUsers(env: Env, request: Request): Promise<number | null> {
   try {
     const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
-    const response = await identity.fetch(new Request(
-      `${IDENTITY_ACCOUNT_PLAN}?accountId=${encodeURIComponent(accountId)}`,
-    ));
+    const response = await identity.fetch(new Request(IDENTITY_ACCOUNT_PLAN, {
+      headers: { cookie: request.headers.get('cookie') ?? '' },
+    }));
     if (!response.ok) return null;
     const body = await response.json() as { limits?: { maxUsersPerRoom?: unknown } };
     const cap = body.limits?.maxUsersPerRoom;
@@ -3459,7 +3463,7 @@ const worker = {
           || ((request.method === 'POST' || request.method === 'PATCH') && subpath === '/settings')
         )
       ) {
-        planMaxUsers = await resolvePlanMaxUsers(env, session.accountId);
+        planMaxUsers = await resolvePlanMaxUsers(env, request);
       }
       const response = await forward(
         env,
