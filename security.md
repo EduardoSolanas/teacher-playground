@@ -1,10 +1,19 @@
 # Security remediation plan
 
-Last reviewed: 2026-08-18 (Phase 0 gate re-checked against live Cloudflare Worker)
+Last reviewed: 2026-09-12 (post-billing sweep; Phase 0 gate last re-checked
+2026-08-18 against the live Cloudflare Worker)
 
 This is a task backlog for the current working tree, not a statement that the
 application is secure. Findings were derived from source review and local
 tests; no production penetration test was performed.
+
+Open findings from the two most recent reviews live outside the SEC-0xx
+backlog below:
+
+- `SECURITY_AUDIT_2026-09-10.md` — independent audit, SEC-A01 to SEC-A16.
+- [Post-billing security sweep — 2026-09-12](#post-billing-security-sweep--2026-09-12)
+  — SEC-A17 to SEC-A28, covering the Phase 7 billing surface and the response
+  headers that were never in SEC-012's scope. One High: SEC-A17.
 
 Priority meanings:
 
@@ -1852,3 +1861,463 @@ This section records the current status of Phase 1 and Phase 6 operational gates
 | Phase 6: Staging penetration test (auth bypass, IDOR, privilege escalation, CSRF, WebSocket abuse, resource exhaustion, revocation, retention, alternate-origin) | Open | Local adversarial tests exist: `src/do/signalingAdversarial.workers.test.ts` (pending GET 403, viewer 403, wrong origin denied, rate 1008, oversized 1009, kick 4401, stale grant 4401); E2E `tests/e2e/signaling-adversarial.spec.ts` (2 passed); no production staging URL available for real penetration test | **Owner**: arrange staging Cloudflare account with real Google/Facebook Access; **Penetration tester**: run real staging probes covering authentication bypass, IDOR (cross-account, cross-room reads/writes), privilege escalation, CSRF, WebSocket abuse, resource exhaustion, revocation timing, retention verification, and alternate-origin access; retain detailed findings and signature |
 | Phase 6: Operational owners, deadlines, incident response, backup/restore, session/key rotation, monitoring, emergency revocation procedures documented | Open | `SECURITY_BACKUP_RESTORE.md` exists (security.md lines 479-487, 755-765); `SECURITY_REVOCATION_BOUND.md` documents revocation policy (line 50); **missing**: operational owners assigned, incident response playbook, session/key rotation schedule/procedures, monitoring alerting rules, emergency access-revocation hotline/procedure | **Operational owner**: create `SECURITY_OPERATIONS.md` documenting: incident response owner and process, on-call rotation, session rotation frequency and procedure, key rotation procedure (LiveKit/LIVEKIT_API_SECRET/CLOUDFLARE_API_TOKEN), monitoring dashboards/alerts for auth failures/rate limits/socket closures, emergency access-revocation procedure (disable account / revoke all sessions) |
 | Phase 6 gate: Every P0/P1 task complete, no high/critical finding unowned, release owner signs off | Open | All P0/P1 tasks in security.md checked except: Phase 1 product-fit, Phase 1 staging config, Phase 1 custom hostname closure, Phase 6 HTTP route review, Phase 6 staging pentesting, Phase 6 operational procedures; no release owner signature recorded | **Release owner**: review all open items above, either unblock them or record a bounded waiver, then countersign this gate with date and evidence ID |
+
+## Post-billing security sweep — 2026-09-12
+
+Scope: the current working tree after the Phase 7 billing slices
+(`546dcdc`, `64fd1b8`, `1bc6006`, `15fe06e`). Type: static source review plus
+a dependency audit; no staging deployment or live Stripe tenant was exercised.
+Identifiers continue the `SEC-A` series defined in
+`SECURITY_AUDIT_2026-09-10.md`, which ends at SEC-A16.
+
+This sweep found **no unauthenticated authorization bypass, no SQL injection,
+no hardcoded production secret, and no reachable XSS**. Every issue below is
+either on the billing surface added after the 2026-09-10 audit, or a response
+header that was never in scope for SEC-012.
+
+| ID | Severity | Finding |
+| --- | --- | --- |
+| SEC-A17 | High | `STRIPE_API_BASE` is an unvalidated destination for the Stripe secret key, and a `workflow_dispatch` input feeds it |
+| SEC-A18 | Medium | `billing_events.payload_hash` fingerprints the internal DO body, not Stripe's signed payload |
+| SEC-A19 | Medium | `/billing/events/apply` trusts its caller completely; no signature or principal assertion inside the Durable Object |
+| SEC-A20 | Medium | `/accounts/plan` authorizes on nothing and will disclose billing state for any `accountId` |
+| SEC-A21 | Medium | Webhook body is fully buffered before the 1 MiB cap is enforced, on the only unauthenticated POST route |
+| SEC-A22 | Medium | No `Strict-Transport-Security` on any of the three hostnames |
+| SEC-A23 | Medium | CSP has no `form-action`; no `Cross-Origin-Opener-Policy` or `Cross-Origin-Resource-Policy` |
+| SEC-A24 | Low | Stripe object ids are interpolated into API paths with no grammar check |
+| SEC-A25 | Low | Two sources of truth for plan limits: `FREE_MAX_ROOMS` vs `PLAN_CATALOG[...].limits.maxOwnedRooms` |
+| SEC-A26 | Low | `resolveEffectivePlan` indexes the catalog with an unvalidated `plan_id` from SQLite |
+| SEC-A27 | Low | Checkout/portal builders accept unvalidated `successUrl`/`cancelUrl`/`returnUrl` — close before wiring the routes |
+| SEC-A28 | Info | Secret-bearing `workflow_dispatch` workflows have no `environment:` reviewer gate |
+
+Priority fix order: SEC-A17 (it puts a payment credential one dispatch away
+from an attacker-named host), then SEC-A19 and SEC-A27 (both close a hole
+before the route that opens it is written, which is the cheapest they will ever
+be), then SEC-A18/A20/A21, then the header work in SEC-A22/A23.
+
+### SEC-A17 — High — `STRIPE_API_BASE` is an unvalidated destination for the Stripe secret key
+
+**Component:** `src/lib/billing/stripeConfig.ts`, `stripeRequest.ts`,
+`stripeClient.ts`, `.github/workflows/billing-staging.yml`
+**Status:** Verified by code trace; exploit path is latent, not live (see below)
+**CWE:** CWE-15 (external control of system setting), CWE-522 (insufficiently
+protected credentials), CWE-918 (SSRF)
+
+`readBillingEnv` takes the Stripe API base straight from the environment with
+no allowlist and no scheme/host check:
+
+```ts
+apiBaseUrl: env.STRIPE_API_BASE ?? DEFAULT_API_BASE_URL,   // stripeConfig.ts:30
+```
+
+Every request builder then attaches the live secret key to a request aimed at
+that base — `stripeRequest.ts:24` and again at `stripeClient.ts:54`:
+
+```ts
+Authorization: `Bearer ${secretKey}`,
+```
+
+So whoever controls `STRIPE_API_BASE` controls where `STRIPE_SECRET_KEY` is
+sent. The variable is not declared in `wrangler.toml [vars]`, so a production
+Worker resolves the default — but nothing in the code enforces that, and
+`.github/workflows/billing-staging.yml` wires the value to a free-text
+`workflow_dispatch` input (lines 26-32) and hands it to the runner alongside
+`secrets.STRIPE_SECRET_KEY` (lines 74-80), with `permissions: contents: read`
+and **no `environment:` reviewer gate**. Anyone who can dispatch a workflow on
+this repository can therefore name the host.
+
+**Why this is not yet live:** `scripts/run-billing-staging.mjs` contains no
+`fetch` at all and always terminates with `failBlocked(...)` or `exit(1)`
+(line 113), so the key is materialised into the job environment but never
+transmitted. The script's own header states the intent to "re-point this script
+at it" once staging exists — the exfiltration path opens on that commit.
+
+- [ ] Allowlist the base in `readBillingEnv`: accept `https://api.stripe.com`,
+  and any other value only when an explicit non-production marker is set.
+  Reject anything else by returning the default rather than throwing, so a
+  misconfigured deployment talks to Stripe rather than failing open to a
+  stranger.
+- [ ] Refuse to pair a `sk_live_` key with a non-production base, and refuse a
+  `sk_test_` key with the production base. Both are one string comparison and
+  they make a mis-scoped secret loud instead of silent.
+- [ ] Put `billing-staging.yml` behind a protected GitHub `environment:` with
+  required reviewers, so dispatching it with an attacker-named base needs a
+  second person.
+- [ ] Add the base-URL assertion to `run-billing-staging.mjs` before the first
+  `fetch` is ever written into it.
+
+**Acceptance tests:** `readBillingEnv` returns the default for
+`http://evil.example`, for `https://api.stripe.com.evil.example`, and for a
+non-HTTPS scheme; a `sk_live_` key with a non-production base is refused; the
+workflow cannot run without environment approval.
+
+### SEC-A18 — Medium — `billing_events.payload_hash` does not fingerprint Stripe's signed payload
+
+**Component:** `src/worker.ts`, `src/do/IdentityDO.ts`, `src/lib/billing/stripeSignature.ts`
+**Status:** Verified by code trace
+**CWE:** CWE-345 (insufficient verification of data authenticity)
+
+`verifyStripeSignature` computes exactly the right value — the SHA-256 of the
+raw body Stripe signed — and returns it (`stripeSignature.ts:109`). The Worker
+then discards it: `handleStripeWebhook` uses only `verification.valid`
+(`worker.ts:1218-1231`), and `webhookApplyBody` (`worker.ts:972-986`) does not
+carry a hash into the Durable Object. `IdentityDO` recomputes one over its own
+re-serialised `{event, objects}` body instead:
+
+```ts
+const payloadHash = await sha256Hex(parsed.raw);   // IdentityDO.ts:876
+```
+
+`verification.payloadHash` has no consumer anywhere in the tree. The column
+therefore fingerprints a body this application constructed, which proves
+nothing an auditor could not already read off the row — the one thing it was
+meant to support, re-verifying a stored event against Stripe's signature after
+the fact, is impossible.
+
+- [ ] Thread `verification.payloadHash` through `webhookApplyBody` and into
+  `BillingApplyInput.payloadHash`.
+- [ ] Keep the internal-body hash if it is wanted for transport integrity, but
+  store it in a separate column with a name that says so.
+
+**Acceptance tests:** a captured webhook body plus the stored `payload_hash`
+re-verifies against the recorded `Stripe-Signature`; changing one byte of the
+`objects` the Worker derived does not change `payload_hash`.
+
+### SEC-A19 — Medium — `/billing/events/apply` trusts its caller completely
+
+**Component:** `src/do/IdentityDO.ts:868-895`
+**Status:** Verified by code trace; not currently reachable with a forged body
+**CWE:** CWE-306 (missing authentication for critical function), CWE-602
+(client-side enforcement of server-side security)
+
+The apply route performs no principal check, no signature check, and no
+assertion that a signature was ever verified. It validates the body's *shape*
+(`isBillingApplyBody`, line 376) and then mutates entitlements, payments,
+dispute holds, company first-paid timestamps and collection desires inside one
+transaction. Signature verification lives entirely in the Worker
+(`worker.ts:1218`), one layer above.
+
+This is safe today only because the Durable Object binding is private and
+`handleStripeWebhook` is the sole caller. It is exactly the pattern the
+authorization contract at the top of this document rules out — "the Durable
+Object applies the matrix below to every operation" — and the failure mode is
+forged paid entitlements, not a leak. The webhook path already has one
+unauthenticated entry point (SEC-A21); a routing mistake there or in any future
+billing route is the whole exploit.
+
+- [ ] Pass the verified payload hash and an explicit `signatureVerified: true`
+  from the Worker, and reject an apply that lacks them.
+- [ ] Re-assert `livemode` inside the Durable Object rather than relying on the
+  Worker's check, so the "test events cannot mutate entitlements" property
+  holds at the writer, not just at the edge.
+
+**Acceptance tests:** a well-formed apply body with no verification marker is
+rejected with no row written; a body whose hash does not match its event is
+rejected; the existing replay/idempotency tests still pass.
+
+### SEC-A20 — Medium — `/accounts/plan` authorizes on nothing
+
+**Component:** `src/do/IdentityDO.ts:628-639`
+**Status:** Verified by code trace; no reachable IDOR today
+**CWE:** CWE-639 (authorization bypass through user-controlled key), CWE-359
+(exposure of private information)
+
+The route validates only the *length* of a caller-supplied `accountId`:
+
+```ts
+if (accountId === null || accountId.length < 1 || accountId.length > 128) {
+  return Response.json({ error: 'Invalid accountId' }, { status: 400 });
+}
+```
+
+and returns the full effective plan — `planId`, `status`, `source`,
+`companyId`, `limits`. Its sibling routes in the same `fetch` all call
+`parseSessionCookie` first; this one calls nothing. It is safe only because
+both callers pass a server-derived id: `session.accountId` (`worker.ts:1776`)
+and the room's owner row (`RoomDO.ts:1592`). One future route that forwards a
+client-supplied `accountId` — the obvious shape of an admin or support view —
+turns this into cross-account billing disclosure, including company membership.
+
+- [ ] Require a session cookie and serve only the caller's own account, or
+  require an explicit internal marker and keep the accountId server-derived.
+- [ ] Add a negative test asserting the route refuses an `accountId` that does
+  not belong to the caller.
+
+**Acceptance tests:** a request for another account's id returns 403 with no
+plan body; the two existing callers are unaffected.
+
+### SEC-A21 — Medium — Webhook body is buffered in full before the size cap applies
+
+**Component:** `src/worker.ts:1203-1211`, `src/lib/worker/requestGuard.ts:218`
+**Status:** Verified by code trace
+**CWE:** CWE-770 (allocation without limits), CWE-400 (uncontrolled resource
+consumption)
+
+```ts
+const declaredLength = request.headers.get('content-length');
+if (declaredLength !== null && Number(declaredLength) > BILLING_WEBHOOK_MAX_BODY_BYTES) { ... }
+const rawBody = await request.text();
+if (new TextEncoder().encode(rawBody).byteLength > BILLING_WEBHOOK_MAX_BODY_BYTES) { ... }
+```
+
+The declared-length check is skipped when the header is absent and evaluates
+`NaN > cap` (false) when it is unparseable. A chunked request therefore reaches
+`request.text()` and is buffered whole before the 1 MiB cap is measured.
+
+This is the one route on the teacher host that runs before Access and is
+exempted from the origin guard (`requestGuard.ts:218` returns `false` for
+`BILLING_WEBHOOK_PATH`) — correctly, since Stripe carries neither an Access JWT
+nor an `Origin`. It is also not rate-limited. So an unauthenticated caller can
+drive Worker memory and CPU with oversized, chunked, signature-failing bodies.
+The cost per request is bounded (one HMAC over the body, no Durable Object
+round trip until the signature verifies), which is why this is Medium and not
+High.
+
+- [ ] Reject a missing or unparseable `Content-Length` on this route, or read
+  the body through a counting stream that aborts at `BILLING_WEBHOOK_MAX_BODY_BYTES`.
+- [ ] Add a per-IP rate limit on `/api/billing/webhook` sized above Stripe's
+  real retry behaviour.
+
+**Acceptance tests:** a chunked 8 MiB body is rejected without being buffered;
+a request with no `Content-Length` is rejected; genuine Stripe deliveries and
+their retries are unaffected.
+
+### SEC-A22 — Medium — No `Strict-Transport-Security` on any hostname
+
+**Component:** `src/lib/worker/requestGuard.ts:495-535` (`withSecurityHeaders`)
+**Status:** Verified — the string appears nowhere in the tree
+**CWE:** CWE-319 (cleartext transmission of sensitive information)
+
+`withSecurityHeaders` sets `nosniff`, `Referrer-Policy`, `X-Frame-Options`,
+`Permissions-Policy`, `Cache-Control`, and a full CSP on HTML — but no HSTS.
+Session cookies are `Secure` (`sessionStore.ts:766,815`), so they are not sent
+over a stripped connection, and Cloudflare terminates TLS. What remains exposed
+is the *first* navigation to `app-playground.sen-tutor.co.uk` and every
+navigation to the marketing host, which is where the sign-in link lives.
+
+- [ ] Set `Strict-Transport-Security: max-age=31536000; includeSubDomains`
+  on every response from all three hostnames.
+- [ ] Decide on `preload` explicitly: `includeSubDomains` plus preload commits
+  the whole `sen-tutor.co.uk` zone, which is a decision for the zone owner, not
+  this Worker. Record the decision either way.
+
+**Acceptance tests:** the header is asserted on HTML, on API 2xx and 4xx, and
+on all three host kinds.
+
+### SEC-A23 — Medium — CSP has no `form-action`; no COOP or CORP
+
+**Component:** `src/lib/worker/requestGuard.ts:513-533`
+**Status:** Verified by reading the directive list
+**CWE:** CWE-1021 (improper restriction of rendered UI layers), CWE-693
+(protection mechanism failure)
+
+The policy covers `default-src`, `frame-ancestors`, `object-src`, `base-uri`,
+`connect-src`, `img-src`, `font-src`, `style-src` and a nonce'd `script-src`
+with `strict-dynamic`. `form-action` is absent, so injected markup can still
+POST the DOM to an external origin even though it cannot execute script —
+`base-uri 'self'` is already present, and `form-action` is its sibling.
+
+`Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy` are also
+absent. COOP matters specifically for Phase 7: Stripe Checkout and the Customer
+Portal are cross-origin navigations away from and back into an authenticated
+window, and COOP is what severs the opener relationship across them.
+
+- [ ] Add `form-action 'self'` to the CSP.
+- [ ] Add `Cross-Origin-Opener-Policy: same-origin` and
+  `Cross-Origin-Resource-Policy: same-origin`. Verify against a real Excalidraw
+  session and the LiveKit A/V panel before enforcing — COOP can break popup
+  flows, which is the point, so the checkout return path must be a redirect and
+  not a popup handshake.
+- [ ] Consider `require-trusted-types-for 'script'` once the Excalidraw fork's
+  DOM writes are known to be Trusted-Types clean; do not enforce it blind.
+
+**Acceptance tests:** CSP unit tests assert `form-action`; an E2E run reports no
+new CSP violations on a real board; the A/V panel still starts.
+
+### SEC-A24 — Low — Stripe object ids are interpolated into API paths unchecked
+
+**Component:** `src/lib/billing/stripeRequest.ts:44-95`
+**Status:** Verified by code trace; bounded by URL resolution semantics
+**CWE:** CWE-20 (improper input validation)
+
+`eventsFetchMapRequest` splices the webhook's `objectId` straight into the path
+(`/v1/subscriptions/${id}` and four siblings), and `collectionStateRequest`
+does the same with `subscriptionId`. Neither validates a grammar.
+
+The blast radius is small: `endpoint()` builds the URL as
+`new URL(path, apiBaseUrl)` with a path that always begins `/v1/`, so the host
+cannot be changed even by an id such as `//evil.example/x`, and the id is only
+reached after signature verification. What an id containing `../` *can* do is
+reshape the path within the Stripe API. Cheap to close, so close it.
+
+- [ ] Assert `/^[A-Za-z0-9_]{1,255}$/` on every id before building a request.
+- [ ] Apply the same check to `referralCode` before it becomes
+  `metadata[referrer_code]`, and to `promotionCodeId`.
+
+**Acceptance tests:** an id containing `../`, `/`, `?`, `#`, or a space is
+rejected before any request is built.
+
+### SEC-A25 — Low — Two sources of truth for plan limits
+
+**Component:** `src/lib/plan/limits.ts:16-19`, `src/lib/plan/catalog.ts:10-15`
+**Status:** Verified by code trace
+**CWE:** CWE-710 (improper adherence to coding standards) — divergence risk
+
+Occupancy is resolved through the plan catalog: `RoomDO.admitWithinOwnerPlan`
+fetches `/accounts/plan` and reads `limits.maxUsersPerRoom`
+(`RoomDO.ts:1596-1599`). Owned-room count is not:
+
+```ts
+export function canAddOwnedRoom(ownedCount: number, alreadyOwnsThisRoom: boolean): boolean {
+  if (alreadyOwnsThisRoom) return true;
+  return ownedCount < FREE_MAX_ROOMS;          // never reads maxOwnedRooms
+}
+```
+
+`PLAN_CATALOG[...].limits.maxOwnedRooms` has no reader anywhere. Today this
+errs safe — a paying tutor is capped at one room, which is a billing bug rather
+than a security one — but two independent limit sources are how a cap ends up
+enforced on one path and not the other once the paid tiers go live.
+
+- [ ] Derive every cap from the resolved effective plan; keep `FREE_MAX_*` as
+  the catalog's free-row values only.
+- [ ] Add a test asserting a `tutor_pro_*` account may own more than one room
+  and a `free` account may not.
+
+### SEC-A26 — Low — `resolveEffectivePlan` indexes the catalog with an unvalidated `plan_id`
+
+**Component:** `src/lib/plan/effectivePlan.ts:60`, `src/lib/billing/apply.ts:310`
+**Status:** Verified by code trace; fails closed today
+**CWE:** CWE-754 (improper check for unusual conditions)
+
+`applyClass1` reads the entitlement row and casts a TEXT column with no
+validation (`apply.ts:310`: `planId: entitlement.plan_id as PlanId`), and
+`resolveEffectivePlan` then indexes the catalog with it:
+
+```ts
+limits: PLAN_CATALOG[selected.planId].limits,   // effectivePlan.ts:60
+```
+
+An unrecognised `plan_id` — a row written by a newer deployment, a migration
+mid-rollout, a manual repair — dereferences `undefined` and throws. The room
+paths handle that safely: `RoomDO.admitWithinOwnerPlan` treats a non-OK plan
+response as `forbidden()` and wraps the whole fetch in `try`/`catch`
+(`RoomDO.ts:1586-1601`), and `resolvePlanMaxUsers` returns `null`. So the
+outcome is denial, not a bypass — which is why this is Low, and why it should
+still be made explicit rather than left to depend on two callers' error
+handling.
+
+- [ ] Validate `plan_id` against `PLAN_CATALOG` at the read boundary and fall
+  back to the `free` row, logging the unknown value.
+
+### SEC-A27 — Low — Checkout and portal builders accept unvalidated return URLs
+
+**Component:** `src/lib/billing/stripeRequest.ts:101-155`
+**Status:** Verified — builders exist, no non-test caller
+**CWE:** CWE-601 (open redirect)
+
+`checkoutSessionRequest` and `portalSessionRequest` take `successUrl`,
+`cancelUrl` and `returnUrl` as free strings and pass them to Stripe verbatim.
+Neither function has a caller outside `stripeRequest.test.ts` — the last commit
+added the builders, not the routes.
+
+That is the reason to fix it now. When the routes land, any handler that reads
+these from the request body hands an attacker an open redirect laundered
+through `checkout.stripe.com`, which is a domain users are being trained to
+trust with card details. SEC-A05 in the 2026-09-10 audit was the same class of
+bug in `safeRedirectPath`; this is the chance to not write it twice.
+
+- [ ] Build all three URLs server-side from `TEACHER_HOSTNAME` and a fixed
+  path set. Never accept them from a request body.
+- [ ] If a return path must vary, accept an opaque key and map it to a URL
+  server-side; reuse `safeRedirectPath` only after confirming its backslash fix
+  from SEC-A05 is in place.
+
+**Acceptance tests:** a checkout request carrying `successUrl` in its body has
+that field ignored; the built URL always has the teacher hostname.
+
+### SEC-A28 — Info — Secret-bearing dispatch workflows have no environment gate
+
+**Component:** `.github/workflows/billing-staging.yml`,
+`.github/workflows/configure-livekit.yml`
+
+Both are `workflow_dispatch` workflows that read repository secrets
+(`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `E2E_STAGING_ACCESS_TOKEN`,
+LiveKit credentials) and neither declares an `environment:`, so no protection
+rule or reviewer stands between a dispatch and the secret. SEC-A08 already
+recorded that the `prod` environment has no protection rules; this extends the
+same gap to the manual workflows. It is the enabling condition for SEC-A17.
+
+- [ ] Declare a protected `environment:` on every job that reads a secret, with
+  required reviewers and a restricted branch list.
+
+### Positive findings
+
+These held up under the sweep and are worth not regressing:
+
+- **No secret material in the repository.** `git ls-files` matching
+  `.env|pem|key|p12|credentials|dev.vars|secret` returns only
+  `.env.local.example`. `.gitignore` covers `.env*`, `.dev.vars*`, `*.pem`,
+  `.data/`, `.wrangler/`. Every `sk_test_`/`whsec_` string in the tree is a test
+  fixture.
+- **`npm audit --audit-level=low` reports 0 vulnerabilities**, closing SEC-A06
+  from the previous audit.
+- **Supply chain.** Every GitHub Action is pinned to a full commit SHA with the
+  version in a trailing comment; all four workflows declare
+  `permissions: contents: read`; CI installs with `npm ci --ignore-scripts`;
+  `package.json` declares no `preinstall`/`postinstall`/`prepare` hook.
+- **Webhook signature verification is done correctly.** HMAC comparison goes
+  through `crypto.subtle.verify` rather than a hand-rolled string compare
+  (`stripeSignature.ts:52`), the signed message is `${t}.${body}` over the raw
+  body, multiple `v1` values and multiple secrets are supported for rotation,
+  and the 300 s tolerance is enforced on both sides.
+- **Test-mode events cannot mutate entitlements.** `applyEvent` short-circuits
+  a non-`livemode` event to `ignored: livemode_mismatch` before `processEvent`
+  runs (`apply.ts:490-492`), and the Worker forwards such events with no fetched
+  objects at all.
+- **Plan enforcement fails closed.** `admitWithinOwnerPlan` returns `forbidden()`
+  on a missing owner, a non-OK plan response, a non-integer cap, or any thrown
+  error — there is no path where an unresolvable plan admits a user.
+- **All billing SQL is parameterised.** Every statement in `apply.ts`,
+  `operations.ts` and the entitlement writer uses `?` placeholders; no string
+  concatenation into SQL anywhere in the billing surface.
+- **Session cookies.** `__Host-` prefix with `Secure; HttpOnly; Path=/;
+  SameSite=Lax`, backed by exact-`Origin` CSRF checks rather than relying on
+  `SameSite` alone.
+- **No credentials in browser storage.** `localStorage` holds display names,
+  cursor colours, a device preference and a call-panel flag — no token, grant,
+  or session material.
+- **No CORS headers are emitted anywhere**, so no route is cross-origin
+  readable by construction.
+- **One `dangerouslySetInnerHTML` in the tree** (`src/app/layout.tsx:37`) and it
+  interpolates a build-time constant through `JSON.stringify`, under a nonce'd
+  `script-src`.
+- **No LLM or AI dependency**, so the prompt-injection and model-output-execution
+  classes do not apply to this codebase.
+
+### Recommendations not tied to a single finding
+
+- **Give the billing surface its own adversarial suite**, the way `/signaling`
+  has `signalingAdversarial.workers.test.ts`. The webhook is now the only
+  unauthenticated POST on the teacher host; it deserves the same treatment:
+  forged signature, replayed signature, expired timestamp, truncated body,
+  chunked oversized body, unknown event type, unknown `plan_id`, and an apply
+  body submitted without a verification marker once SEC-A19 lands.
+- **Add a secret-shape assertion to the deploy path.** SEC-A17 and SEC-A28 are
+  both instances of the same missing control: nothing anywhere asserts which
+  *mode* a credential is in. One helper that classifies a Stripe key as test or
+  live, called at config read and in CI, closes the class rather than the
+  instances.
+- **Treat "verified at the edge, trusted at the writer" as a pattern to hunt.**
+  SEC-A19 and SEC-A20 are the same shape: a Durable Object route whose safety
+  rests on every current caller behaving. Walk the remaining `IdentityDO` and
+  `RoomDO` routes and record, per route, what it asserts versus what it assumes
+  — that inventory is also what the open Phase 6 gate "every HTTP route reviewed
+  against the authorization matrix" is asking for.
+- **Fold the response-header work into one change.** SEC-A22 and SEC-A23 both
+  touch `withSecurityHeaders`; HSTS, `form-action`, COOP and CORP are one commit
+  and one test file, and splitting them across releases means four separate
+  verification passes against a real Excalidraw session.
+- **Re-run this sweep when the checkout and portal routes land.** SEC-A27 is
+  recorded against code that has no caller; the finding's whole value is that it
+  is cheap to close now and expensive to notice later.
