@@ -179,6 +179,9 @@ const COMPANY_MEMBER_REVOKE_API = '/api/company/members/revoke';
 const COMPANY_OWNER_API = '/api/company/owner';
 const OPERATOR_INVOICE_APPROVAL_API = '/api/company/operator/invoice-approval';
 const OPERATOR_DISPUTE_REVIEW_API = '/api/company/operator/disputes/review';
+const OPERATOR_ACCOUNTS_API_PREFIX = '/api/operator/accounts/';
+/** Account actions an operator may take, each an IdentityDO route of the same name. */
+const OPERATOR_ACCOUNT_ACTIONS = new Set(['disable', 'enable', 'revoke-all']);
 const AUTH_GUEST = '/auth/guest';
 const IDENTITY_ACCOUNT_ROOMS = 'https://identity/accounts/rooms';
 const IDENTITY_GUESTS_PURGE = 'https://identity/guests/purge';
@@ -1505,6 +1508,65 @@ async function operatorDisputeReviewRoute(
   return withSecurityHeaders(new Response(result.body, {
     status: result.status,
     headers: result.headers,
+  }));
+}
+
+function isOperatorAccountApiBody(value: unknown): value is { accountId: string; reason: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 2
+    && typeof body.accountId === 'string'
+    && body.accountId.length >= 1
+    && body.accountId.length <= 128
+    && typeof body.reason === 'string'
+    && body.reason.trim().length > 0
+    && body.reason.length <= 1024
+  );
+}
+
+/**
+ * The emergency account controls (SECURITY_OPERATIONS.md §4.2): disable an
+ * account, enable it again, or revoke every session it holds.
+ *
+ * IdentityDO has always implemented these -- each one advances the account's
+ * authorization epoch, revokes its sessions, and writes an audit row in the
+ * same transaction, and open sockets close at the next alarm -- but no route
+ * reached them, so stopping an abusive account needed a code deploy. The
+ * operator surface's own rules apply: Access-verified email on OPERATOR_EMAILS,
+ * teacher host, exact Origin. The actor recorded is always the operator; a
+ * caller cannot name one.
+ */
+async function operatorAccountRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+  action: string,
+): Promise<Response> {
+  if (!OPERATOR_ACCOUNT_ACTIONS.has(action)) {
+    return withSecurityHeaders(Response.json({ error: 'Not found' }, { status: 404 }));
+  }
+  if (request.method !== 'POST') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    ));
+  }
+  const guard = operatorSurfaceGuard(env, principal);
+  if (guard instanceof Response) return guard;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+  if (!isOperatorAccountApiBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  const result = await identityOperatorFetch(env, `/accounts/${action}`, {
+    accountId: read.body.accountId,
+    actor: `operator:${guard.email}`,
+    reason: read.body.reason,
+  });
+  return withSecurityHeaders(new Response(result.body, {
+    status: result.status,
+    headers: { 'content-type': 'application/json', 'Cache-Control': 'no-store' },
   }));
 }
 
@@ -3163,6 +3225,14 @@ const worker = {
       }
       if (url.pathname === OPERATOR_DISPUTE_REVIEW_API) {
         return operatorDisputeReviewRoute(env, request, principal);
+      }
+      if (url.pathname.startsWith(OPERATOR_ACCOUNTS_API_PREFIX)) {
+        return operatorAccountRoute(
+          env,
+          request,
+          principal,
+          url.pathname.slice(OPERATOR_ACCOUNTS_API_PREFIX.length),
+        );
       }
       if (url.pathname === BILLING_CHECKOUT_PATH) {
         return billingCheckout(env, request, principal);

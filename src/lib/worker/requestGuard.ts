@@ -112,6 +112,9 @@ export function isRouteAllowedOnHost(
     pathname.startsWith('/auth/account/') ||
     pathname === '/api/company' ||
     pathname.startsWith('/api/company/') ||
+    // The operator surface: staff actions such as the emergency account disable.
+    pathname === '/api/operator' ||
+    pathname.startsWith('/api/operator/') ||
     pathname === REFERRAL_ME_PATH ||
     pathname === '/api/whiteboard/rooms';
 

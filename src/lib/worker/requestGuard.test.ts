@@ -1081,6 +1081,14 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'PUT', 'teacher')).toBe(false);
     });
 
+    it('keeps the operator surface on the teacher host only', () => {
+      for (const path of ['/api/operator/accounts/disable', '/api/operator']) {
+        expect(isRouteAllowedOnHost(path, 'POST', 'teacher'), path).toBe(true);
+        expect(isRouteAllowedOnHost(path, 'POST', 'guest'), path).toBe(false);
+        expect(isRouteAllowedOnHost(path, 'POST', 'marketing'), path).toBe(false);
+      }
+    });
+
     it('keeps suffix and prefix variants out of the webhook allowance', () => {
       for (const pathname of [
         '/api/billing/webhook/',

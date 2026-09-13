@@ -8,6 +8,7 @@ import {
   localAccessToken,
 } from './test/workerAuth';
 import { createCompany } from './lib/company/membership';
+import { readAuthorizationAudit } from './lib/identity/identityStore';
 import {
   ensureBillingSubscription,
   upsertDisputeHold,
@@ -939,5 +940,104 @@ describe('Worker /api/company validation and operator error mapping', () => {
       operationId: body.operationId,
       processorSubscriptionId: null,
     });
+  });
+});
+
+/*
+ * The emergency disable (SECURITY_OPERATIONS.md §4.2). IdentityDO has always
+ * been able to disable an account, revoke every session, and enable it again,
+ * but nothing reached those routes, so stopping an abusive account needed a
+ * code deploy. They are the operator surface's now: Access-verified email on
+ * the operator allowlist, teacher host only, audited with the operator as actor.
+ */
+describe('operator account revocation', () => {
+  const ACCOUNTS = '/api/operator/accounts';
+
+  function post(base: string, path: string, token: string, body: unknown): Promise<Response> {
+    return SELF.fetch(`${base}${path}`, {
+      method: 'POST',
+      headers: {
+        Origin: base,
+        'Cf-Access-Jwt-Assertion': token,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function auditFor(accountId: string) {
+    return runInDurableObject(identityStub(), (instance: IdentityDO) =>
+      readAuthorizationAudit(instance.db, accountId).map((row) => ({
+        action: row.action,
+        actor: row.actor,
+        reason: row.reason,
+      })));
+  }
+
+  it('lets an allowlisted operator disable, re-enable and revoke an account, and nobody else', async () => {
+    const target = await bootstrapLocalSession('operator-revoke-target');
+    const operator = await localAccessToken('operator-revoke-ops', 'valid', undefined, 'ops@example.test');
+    const outsider = await localAccessToken('operator-revoke-outsider', 'valid', undefined, 'outsider@example.test');
+    const current = () => authenticatedFetch('/auth/session/current', target);
+    expect((await current()).status).toBe(200);
+
+    const denied = await post(TEACHER_BASE, `${ACCOUNTS}/disable`, outsider, {
+      accountId: target.accountId,
+      reason: 'abuse report',
+    });
+    expect(denied.status).toBe(403);
+    expect((await current()).status).toBe(200);
+
+    const disabled = await post(TEACHER_BASE, `${ACCOUNTS}/disable`, operator, {
+      accountId: target.accountId,
+      reason: 'abuse report 2026-09-13',
+    });
+    expect(disabled.status).toBe(200);
+    expect((await current()).status).not.toBe(200);
+
+    const enabled = await post(TEACHER_BASE, `${ACCOUNTS}/enable`, operator, {
+      accountId: target.accountId,
+      reason: 'report reviewed',
+    });
+    expect(enabled.status).toBe(200);
+
+    const revoked = await post(TEACHER_BASE, `${ACCOUNTS}/revoke-all`, operator, {
+      accountId: target.accountId,
+      reason: 'lost device',
+    });
+    expect(revoked.status).toBe(200);
+
+    const audit = await auditFor(target.accountId);
+    expect(audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ actor: 'operator:ops@example.test', reason: 'abuse report 2026-09-13' }),
+      expect.objectContaining({ actor: 'operator:ops@example.test', reason: 'report reviewed' }),
+      expect.objectContaining({ actor: 'operator:ops@example.test', reason: 'lost device' }),
+    ]));
+    expect(audit.some((row) => row.reason === 'abuse report')).toBe(false);
+  });
+
+  it('refuses a malformed request, an unknown account, the wrong method, and every other host', async () => {
+    const operator = await localAccessToken('operator-revoke-shape', 'valid', undefined, 'ops@example.test');
+
+    expect((await post(TEACHER_BASE, `${ACCOUNTS}/disable`, operator, { accountId: 'x' })).status).toBe(400);
+    expect((await post(TEACHER_BASE, `${ACCOUNTS}/disable`, operator, {
+      accountId: 'x', reason: 'r', actor: 'someone-else',
+    })).status).toBe(400);
+    expect((await post(TEACHER_BASE, `${ACCOUNTS}/disable`, operator, {
+      accountId: 'no-such-account', reason: 'r',
+    })).status).toBe(404);
+    expect((await post(TEACHER_BASE, `${ACCOUNTS}/delete-everything`, operator, {
+      accountId: 'x', reason: 'r',
+    })).status).toBe(404);
+
+    const get = await SELF.fetch(`${TEACHER_BASE}${ACCOUNTS}/disable`, {
+      headers: { 'Cf-Access-Jwt-Assertion': operator },
+    });
+    expect(get.status).toBe(405);
+
+    for (const base of [GUEST_BASE, MARKETING_BASE]) {
+      const response = await post(base, `${ACCOUNTS}/disable`, operator, { accountId: 'x', reason: 'r' });
+      expect(response.status, base).toBe(404);
+    }
   });
 });
