@@ -707,6 +707,8 @@ export class RoomDO extends DurableObject {
    *   POST   /requests/:id             owner
    *   POST   /av token                 granted (viewer/editor/owner)
    *   POST   /av mute                  owner
+   *   POST   /av allow|revoke-screen-share  owner; target a granted non-viewer, non-owner
+   *   POST   /av end-screen-share      granted non-viewer; acts on the caller only
    *
    *   Guest account denials (guest=1):
    *   POST   /room (create)           403 (non-existent room)
@@ -717,6 +719,7 @@ export class RoomDO extends DurableObject {
    *   POST   /requests/:id            403 (approve)
    *   POST   /presence kick|suspend   403
    *   POST   /av mute                 403
+   *   POST   /av allow|revoke-screen-share  403
    *
    *   Guest permissions (guest=1):
    *   POST   /room (scene)            allowed once granted editor

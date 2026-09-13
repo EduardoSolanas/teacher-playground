@@ -484,6 +484,30 @@ describe('RoomDO method and lifecycle guards', () => {
     expect(outcome.evicted).toEqual([{ roomId, identity: 'account-without-a-grant' }]);
   });
 
+  it('refuses a signaling upgrade that carries no session, before accepting a socket', async () => {
+    /*
+     * The Worker stamps the verified session hash onto every upgrade it
+     * forwards; the room refuses one without it rather than trusting whoever
+     * holds the binding to have done so. No socket is accepted.
+     */
+    const owner = await bootstrapLocalSession(`guard-nosession-owner-${crypto.randomUUID()}`);
+    const roomId = `guard-nosession-room-${crypto.randomUUID()}`;
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const upgrade = (query: string) => stub(roomId).fetch(
+      `https://room/signaling?${query}`,
+      { headers: { Upgrade: 'websocket' } },
+    );
+    const base = `room=${encodeURIComponent(roomId)}&roomId=${encodeURIComponent(roomId)}&accountId=${encodeURIComponent(owner.accountId)}&accountEpoch=0`;
+    for (const query of [base, `${base}&sessionId=`]) {
+      const response = await upgrade(query);
+      expect(response.status, query).toBe(401);
+      expect(response.webSocket).toBeNull();
+    }
+    const open = await runInDurableObject(stub(roomId), (_instance: RoomDO, state) => state.getWebSockets().length);
+    expect(open).toBe(0);
+  });
+
   it('keeps the active guide while another owner tab remains open', async () => {
     const owner = await bootstrapLocalSession(`guard-tabs-owner-${crypto.randomUUID()}`);
     const roomId = `guard-tabs-room-${crypto.randomUUID()}`;
