@@ -25,7 +25,7 @@ import {
 } from './cursorAwareness';
 import { isYjsProviderConnected } from './providerStatus';
 import { randomHexId } from '@/lib/crypto/randomId';
-import type { CanvasElement, WhiteboardUser, RemoteCursor } from '@/types/whiteboard';
+import type { CanvasElement, CursorTool, WhiteboardUser, RemoteCursor } from '@/types/whiteboard';
 
 type ChangeCallback = (type: string, data: any) => void;
 
@@ -69,6 +69,7 @@ export function createCollaboration(
   let lastCursorY = 0;
   // Re-announcing on a rename must not report the pointer as lifted mid-stroke.
   let lastCursorButton: 'up' | 'down' = 'up';
+  let lastCursorTool: CursorTool = 'pointer';
   const changeCallbacks: ChangeCallback[] = [];
   const reconnectInterval = setInterval(() => {
     if (provider.shouldConnect !== false && !isProviderConnected(provider)) {
@@ -77,10 +78,16 @@ export function createCollaboration(
     }
   }, 5_000);
 
-  function setLocalCursor(x: number, y: number, button: 'up' | 'down' = 'up') {
+  function setLocalCursor(
+    x: number,
+    y: number,
+    button: 'up' | 'down' = 'up',
+    tool: CursorTool = 'pointer',
+  ) {
     lastCursorX = x;
     lastCursorY = y;
     lastCursorButton = button;
+    lastCursorTool = tool;
     publishCursor(awareness, {
       x,
       y,
@@ -88,17 +95,18 @@ export function createCollaboration(
       color: localUserColor,
       peerId: localPeerId,
       button,
+      tool,
     });
   }
 
   function setLocalUserName(name: string) {
     localUserName = name;
-    if (readLocalCursor(awareness)) setLocalCursor(lastCursorX, lastCursorY, lastCursorButton);
+    if (readLocalCursor(awareness)) setLocalCursor(lastCursorX, lastCursorY, lastCursorButton, lastCursorTool);
   }
 
   function setLocalUserColor(color: string) {
     localUserColor = color;
-    if (readLocalCursor(awareness)) setLocalCursor(lastCursorX, lastCursorY, lastCursorButton);
+    if (readLocalCursor(awareness)) setLocalCursor(lastCursorX, lastCursorY, lastCursorButton, lastCursorTool);
   }
 
   function adoptLocalPeerId(nextPeerId: string) {
@@ -106,7 +114,7 @@ export function createCollaboration(
     localPeerId = nextPeerId;
     // One announcement per peer, keyed by the connection rather than by the
     // peer id, so renaming needs no delete of the old key.
-    setLocalCursor(lastCursorX, lastCursorY, lastCursorButton);
+    setLocalCursor(lastCursorX, lastCursorY, lastCursorButton, lastCursorTool);
   }
 
   function getUsers(): WhiteboardUser[] {

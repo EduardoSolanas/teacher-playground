@@ -1,5 +1,5 @@
 import type { Awareness } from 'y-protocols/awareness';
-import type { RemoteCursor, WhiteboardUser } from '@/types/whiteboard';
+import type { CursorTool, RemoteCursor, WhiteboardUser } from '@/types/whiteboard';
 
 /**
  * Cursors travel as awareness, not as document content.
@@ -24,6 +24,13 @@ export interface CursorState {
   readonly y: number;
   /** Whether the peer is mid-stroke, so the overlay can show it drawing. */
   readonly button: 'up' | 'down';
+  /**
+   * The laser or an ordinary pointer. The laser draws nothing on the board, so
+   * the cursor is the only thing that can take it to the rest of the room.
+   * Absent means a pointer: a client from before the laser travelled announces
+   * none, and every reader fills it in.
+   */
+  readonly tool?: CursorTool;
 }
 
 /** The awareness field cursors live under. */
@@ -55,6 +62,7 @@ function asCursorState(value: unknown): CursorState | null {
     x: typeof entry.x === 'number' ? entry.x : 0,
     y: typeof entry.y === 'number' ? entry.y : 0,
     button: entry.button === 'down' ? 'down' : 'up',
+    tool: entry.tool === 'laser' ? 'laser' : 'pointer',
   };
 }
 

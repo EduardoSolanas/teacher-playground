@@ -29,8 +29,8 @@ function connectedPair() {
   return { a, b };
 }
 
-const ADA = { peerId: 'peer-ada', userName: 'Ada', color: '#3498db', x: 10, y: 20, button: 'up' as const };
-const GRACE = { peerId: 'peer-grace', userName: 'Grace', color: '#e74c3c', x: 30, y: 40, button: 'down' as const };
+const ADA = { peerId: 'peer-ada', userName: 'Ada', color: '#3498db', x: 10, y: 20, button: 'up' as const, tool: 'pointer' as const };
+const GRACE = { peerId: 'peer-grace', userName: 'Grace', color: '#e74c3c', x: 30, y: 40, button: 'down' as const, tool: 'pointer' as const };
 
 describe('cursorAwareness', () => {
   it('carries a cursor to the other peer', () => {
@@ -91,6 +91,7 @@ describe('cursorAwareness', () => {
       x: 0,
       y: 0,
       button: 'up',
+      tool: 'pointer',
     });
 
     // A cursor without a usable peer id is not a cursor.
@@ -98,6 +99,24 @@ describe('cursorAwareness', () => {
     expect(readLocalCursor(awareness)).toBeNull();
     awareness.setLocalStateField('cursor', { userName: 'No peer id' });
     expect(readLocalCursor(awareness)).toBeNull();
+  });
+
+  it('carries the laser to the other peer, so the room sees where the teacher points', () => {
+    const { a, b } = connectedPair();
+    publishCursor(a, { ...GRACE, tool: 'laser' });
+    expect(readRemoteCursors(b)).toEqual([{ ...GRACE, tool: 'laser' }]);
+
+    // Back to a plain pointer once the laser is put down.
+    publishCursor(a, GRACE);
+    expect(readRemoteCursors(b)).toEqual([GRACE]);
+  });
+
+  it('reads anything but the laser as a plain pointer', () => {
+    const awareness = new Awareness(new Y.Doc());
+    for (const tool of ['LASER', 'eraser', 1, null, undefined]) {
+      awareness.setLocalStateField('cursor', { ...ADA, tool });
+      expect(readLocalCursor(awareness)?.tool).toBe('pointer');
+    }
   });
 
   it('ignores announcements that are not cursors', () => {

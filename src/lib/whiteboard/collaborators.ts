@@ -32,7 +32,8 @@ export function collaboratorsFromPresence(
             pointer: {
               x: cursor.x,
               y: cursor.y,
-              tool: 'pointer' as const,
+              // The editor draws a collaborator's laser trail only for this.
+              tool: cursor.tool === 'laser' ? ('laser' as const) : ('pointer' as const),
             },
             button: cursor.button === 'down' ? ('down' as const) : ('up' as const),
           }

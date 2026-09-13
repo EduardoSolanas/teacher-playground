@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { resolveUserColor } from '@/lib/whiteboard/userColor';
 import type {
+  CursorTool,
   WhiteboardUser,
   CanvasElement,
   Viewport,
@@ -501,13 +502,13 @@ export function useCollaboration(
 
   // Broadcast local cursor
   const cursorSentAtRef = useRef<number | null>(null);
-  const cursorPendingRef = useRef<{ x: number; y: number; button: 'up' | 'down' } | null>(null);
+  const cursorPendingRef = useRef<{ x: number; y: number; button: 'up' | 'down'; tool: CursorTool } | null>(null);
   const cursorTimerRef = useRef<number | null>(null);
 
-  const publishCursor = useCallback((x: number, y: number, button: 'up' | 'down' = 'up') => {
+  const publishCursor = useCallback((x: number, y: number, button: 'up' | 'down' = 'up', tool: CursorTool = 'pointer') => {
     const collaboration = collaborationRef.current;
     if (!collaboration) return;
-    collaboration.setLocalCursor(x, y, button);
+    collaboration.setLocalCursor(x, y, button, tool);
     cursorSentAtRef.current = Date.now();
     if (isWhiteboardLatencyProbeEnabled()) {
       recordWhiteboardLatencyEvent({
@@ -527,24 +528,26 @@ export function useCollaboration(
    * ends up where the pointer stopped.
    */
   const setCursor = useCallback(
-    (x: number, y: number, button: 'up' | 'down' = 'up') => {
+    (x: number, y: number, button: 'up' | 'down' = 'up', tool: CursorTool = 'pointer') => {
       if (!hasJoinedRef.current) return;
 
       const delay = cursorPublishDelay(cursorSentAtRef.current, Date.now());
       if (delay === 0) {
         cursorPendingRef.current = null;
-        publishCursor(x, y, button);
+        publishCursor(x, y, button, tool);
         return;
       }
 
-      cursorPendingRef.current = { x, y, button };
+      // The tool rides with the newest position: a laser sweep coalesced into
+      // one publish is still a laser when the window opens.
+      cursorPendingRef.current = { x, y, button, tool };
       if (cursorTimerRef.current !== null) return;
       cursorTimerRef.current = window.setTimeout(() => {
         cursorTimerRef.current = null;
         const pending = cursorPendingRef.current;
         cursorPendingRef.current = null;
         if (!pending || !hasJoinedRef.current) return;
-        publishCursor(pending.x, pending.y, pending.button);
+        publishCursor(pending.x, pending.y, pending.button, pending.tool);
       }, delay);
     },
     [publishCursor]

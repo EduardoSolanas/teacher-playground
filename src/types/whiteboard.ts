@@ -97,6 +97,9 @@ export type StickyNoteElement = {
   rotation?: number;
 };
 
+/** What a peer is pointing with. The laser draws a trail for the whole room. */
+export type CursorTool = 'pointer' | 'laser';
+
 export type RemoteCursor = {
   peerId: string;
   userName: string;
@@ -104,6 +107,8 @@ export type RemoteCursor = {
   x: number;
   y: number;
   button: 'up' | 'down';
+  /** Absent means an ordinary pointer. */
+  tool?: CursorTool;
 };
 
 export type ToolType =

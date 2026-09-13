@@ -39,9 +39,9 @@ import { createCollaboration } from './collaboration';
 /** The cursor exactly as it sits in awareness, before readers normalize it. */
 function localCursorWire(
   collab: ReturnType<typeof createCollaboration>,
-): { button?: string } | undefined {
+): { button?: string; tool?: string } | undefined {
   const awareness = (collab.provider as unknown as { awareness: Awareness }).awareness;
-  const state = awareness.getLocalState() as { cursor?: { button?: string } } | null;
+  const state = awareness.getLocalState() as { cursor?: { button?: string; tool?: string } } | null;
   return state?.cursor;
 }
 
@@ -279,6 +279,7 @@ describe('createCollaboration cursor payload', () => {
     });
     // The wire value, before any reader normalizes it.
     expect(localCursorWire(collab)?.button).toBe('up');
+    expect(localCursorWire(collab)?.tool).toBe('pointer');
 
     collab.destroy();
   });
@@ -289,6 +290,35 @@ describe('createCollaboration cursor payload', () => {
     collab.setLocalCursor(1, 2);
 
     expect(localCursorWire(collab)?.button).toBe('up');
+
+    collab.destroy();
+  });
+});
+
+describe('createCollaboration laser', () => {
+  it('announces the laser, and a plain pointer when none is named', () => {
+    const collab = createCollaboration('cursor-laser-room', 'peer-local');
+
+    collab.setLocalCursor(12, 34, 'down', 'laser');
+    expect(localCursorWire(collab)?.tool).toBe('laser');
+
+    collab.setLocalCursor(12, 34);
+    expect(localCursorWire(collab)?.tool).toBe('pointer');
+
+    collab.destroy();
+  });
+
+  it('keeps the laser through every re-announcement mid-sweep', () => {
+    const collab = createCollaboration('cursor-laser-reannounce', 'peer-local');
+
+    collab.setLocalCursor(12, 34, 'down', 'laser');
+    collab.setLocalUserName('Ms Rivera');
+    expect(localCursorWire(collab)?.tool).toBe('laser');
+    collab.setLocalUserColor('#123456');
+    expect(localCursorWire(collab)?.tool).toBe('laser');
+    // Re-announcing under the issued id must not drop the laser either.
+    collab.adoptLocalPeerId('peer-issued');
+    expect(collab.getLocalCursor()).toMatchObject({ peerId: 'peer-issued', button: 'down', tool: 'laser' });
 
     collab.destroy();
   });
@@ -459,8 +489,10 @@ describe('createCollaboration awareness cursors', () => {
     applyAwarenessUpdate(awareness, encodeAwarenessUpdate(remote, [remote.clientID]), 'remote');
 
     expect(cursorEvents.length).toBeGreaterThan(0);
+    // Announced with no tool, as a client from before the laser travelled
+    // would: it is drawn as an ordinary pointer.
     expect(cursorEvents.at(-1)).toEqual([
-      { peerId: 'peer-remote', userName: 'Remote', color: '#e74c3c', x: 7, y: 8, button: 'down' },
+      { peerId: 'peer-remote', userName: 'Remote', color: '#e74c3c', x: 7, y: 8, button: 'down', tool: 'pointer' },
     ]);
 
     collab.destroy();

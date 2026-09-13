@@ -145,7 +145,8 @@ type ExcalidrawWrapperProps = {
   /** The room's stored view, applied once when the board opens. */
   initialViewport: { x: number; y: number; zoom: number } | null;
   /** Local pointer, in scene coordinates. */
-  onCursorMove: (sceneX: number, sceneY: number, button?: 'up' | 'down') => void;
+  /** `tool` is named only for the laser; absent, the cursor is an ordinary pointer. */
+  onCursorMove: (sceneX: number, sceneY: number, button?: 'up' | 'down', tool?: 'pointer' | 'laser') => void;
   onElementsChange: (elements: CanvasElement[]) => void;
   hostPeerId: string | null;
   guideMessage: FollowMessage | null;
@@ -1069,7 +1070,14 @@ export default function ExcalidrawWrapper({
     const x = typeof pointer.x === 'number' ? pointer.x : null;
     const y = typeof pointer.y === 'number' ? pointer.y : null;
     if (x === null || y === null) return;
-    onCursorMove(x, y, payload?.button === 'down' ? 'down' : 'up');
+    const button = payload?.button === 'down' ? 'down' : 'up';
+    /*
+     * The laser leaves nothing on the board, so the cursor is the only way it
+     * reaches the room. Dropping the tool here showed the class an arrow
+     * wherever the teacher was pointing with the laser.
+     */
+    if (pointer.tool === 'laser') onCursorMove(x, y, button, 'laser');
+    else onCursorMove(x, y, button);
   }, [onCursorMove]);
 
   const handlePointerDown = useCallback(() => {

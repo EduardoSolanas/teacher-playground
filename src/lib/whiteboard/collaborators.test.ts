@@ -80,4 +80,16 @@ describe('collaboratorsFromPresence', () => {
     });
     expect(collaborators.has('cursor-only' as SocketId)).toBe(false);
   });
+
+  it('hands the editor a laser as a laser, so it draws the trail', () => {
+    const pointing: RemoteCursor[] = [
+      { peerId: 'host', userName: 'Name', color: '#abcdef', x: 5, y: 6, button: 'down', tool: 'laser' },
+      { peerId: 'student', userName: 'Student', color: '#445566', x: 7, y: 8, button: 'down', tool: 'pointer' },
+    ];
+
+    const collaborators = collaboratorsFromPresence(users, pointing, 'local');
+
+    expect(collaborators.get('host' as SocketId)?.pointer).toEqual({ x: 5, y: 6, tool: 'laser' });
+    expect(collaborators.get('student' as SocketId)?.pointer).toEqual({ x: 7, y: 8, tool: 'pointer' });
+  });
 });

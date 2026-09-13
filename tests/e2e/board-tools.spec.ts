@@ -582,4 +582,64 @@ test.describe('what each tool draws reaches a peer', () => {
       await board.close();
     }
   });
+
+  test('the rest of the room sees the laser the teacher is pointing with', async ({ browser }) => {
+    /*
+     * A laser leaves nothing on the board, so the shared document cannot show
+     * it: it travels with the cursor. The editor draws a collaborator's trail
+     * only for a pointer announced as the laser, and a room that announced
+     * every pointer as a plain cursor showed the class an arrow where the
+     * teacher was pointing.
+     */
+    test.setTimeout(90_000);
+    const board = await openBoard(browser, DESKTOP, 'laser-host');
+    const peerContext = await newAuthenticatedContext(browser);
+    const peer = await peerContext.newPage();
+    try {
+      await joinRoomApproved(peer, board.page, roomIdFromPageUrl(board.page), 'LaserPeer');
+      await peer.waitForFunction(() => !!(window as any).__debugExcalidrawApi, null, { timeout: 15000 });
+
+      // The trail fades within a second of the last point, so the peer records
+      // what it saw as it happens rather than being asked once afterwards.
+      await peer.evaluate(() => {
+        const seen = { laserPointer: false, trail: false };
+        (window as any).__laserSeen = seen;
+        const check = () => {
+          const collaborators = (window as any).__debugExcalidrawApi?.getAppState?.().collaborators;
+          collaborators?.forEach((collaborator: any) => {
+            if (collaborator.pointer?.tool === 'laser' && collaborator.button === 'down') seen.laserPointer = true;
+          });
+          document.querySelectorAll('.SVGLayer path').forEach((path) => {
+            if ((path.getAttribute('d') ?? '').length > 0) seen.trail = true;
+          });
+          requestAnimationFrame(check);
+        };
+        requestAnimationFrame(check);
+      });
+
+      await chooseExtraTool(board, 'Laser pointer');
+      await expect.poll(async () => (await appState(board.page)).tool).toBe('laser');
+      const { page } = board;
+      const from = spot(DESKTOP, 0.2, 0.5);
+      const to = spot(DESKTOP, 0.8, 0.5);
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      // Slow enough for the throttled cursor to carry a path, not one jump.
+      for (let i = 1; i <= 40; i += 1) {
+        await page.mouse.move(from.x + ((to.x - from.x) * i) / 40, from.y + Math.sin(i / 4) * 40);
+        await page.waitForTimeout(25);
+      }
+
+      await expect.poll(() => peer.evaluate(() => (window as any).__laserSeen), { timeout: 10000 })
+        .toEqual({ laserPointer: true, trail: true });
+      await page.mouse.up();
+
+      // Pointing is not drawing: nothing reaches the board for either of them.
+      expect(await scene(page)).toEqual([]);
+      expect(await scene(peer)).toEqual([]);
+    } finally {
+      await peerContext.close();
+      await board.close();
+    }
+  });
 });
