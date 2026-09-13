@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: () => {}, push: () => {} }),
@@ -8,7 +8,7 @@ vi.mock('next/navigation', () => ({
 import type { WhiteboardUser } from '@/types/whiteboard';
 import type { AjaxFetch } from '@/lib/whiteboard/teacherRooms';
 
-import {
+import WhiteboardRoomPage, {
   ROOM_CANVAS_CLASS,
   EXCALIDRAW_LOADING_CLASS,
   RoomContent,
@@ -448,6 +448,484 @@ describe('shouldShowSyncDegradedNotice', () => {
 
   it('returns false when sync is healthy', () => {
     expect(shouldShowSyncDegradedNotice({ syncDegraded: false, connectionLost: false })).toBe(false);
+  });
+});
+
+type NetworkHandler = (url: string, init?: RequestInit) => Response | undefined;
+
+function respond(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+function stubNetwork(handler: NetworkHandler): void {
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = handler(String(input), init);
+    return response ?? new Response(null, { status: 404 });
+  });
+}
+
+function collaborationNetwork(options: {
+  access?: unknown;
+  presence?: unknown;
+  presenceStatus?: number;
+  room?: unknown;
+} = {}): NetworkHandler {
+  return (url) => {
+    if (url === '/auth/session/current') return respond(200, {});
+    if (url.endsWith('/access')) {
+      return respond(200, options.access ?? { status: 'granted', role: 'creator' });
+    }
+    if (url.endsWith('/presence') || url.endsWith('/waiting')) {
+      if (options.presenceStatus !== undefined && options.presenceStatus >= 400) {
+        return new Response(null, { status: options.presenceStatus });
+      }
+      return respond(200, options.presence ?? { users: [], waitingPeers: [], isWaiting: false });
+    }
+    if (/\/api\/whiteboard\/room\/[^/]+$/.test(url)) {
+      return respond(200, options.room ?? {
+        elements: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+        name: 'Algebra',
+        maxUsers: 2,
+        hostPeerId: 'peer-host',
+        updated_at: 1,
+      });
+    }
+    return undefined;
+  };
+}
+
+function storeUserName(name = 'Alice'): void {
+  window.localStorage.setItem('whiteboard_username', name);
+}
+
+async function renderRoom(handler: NetworkHandler = collaborationNetwork()): Promise<void> {
+  stubNetwork(handler);
+  render(<RoomContent roomId="room-alpha" />);
+  await screen.findByTestId('whiteboard-canvas-area');
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+  window.localStorage.clear();
+});
+
+describe('RoomContent main room', () => {
+  it('draws the owner board shell with the room title and footer controls', async () => {
+    storeUserName();
+    await renderRoom();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('room-name').textContent).toBe('Algebra');
+    });
+    expect(screen.getByTestId('room-title-trigger')).toBeTruthy();
+    expect(screen.getByTestId('av-start-call').getAttribute('aria-label')).toBe('Start call');
+    expect(screen.getByTestId('whiteboard-people-button')).toBeTruthy();
+    expect(screen.getByTestId('whiteboard-canvas-area').className)
+      .toContain(roomCanvasTopClass(false));
+  });
+
+  it('gives an editor the board without the owner controls', async () => {
+    storeUserName();
+    stubNetwork(collaborationNetwork({ access: { status: 'granted', role: 'editor' } }));
+    render(<RoomContent roomId="room-alpha" />);
+    await screen.findByTestId('whiteboard-canvas-area');
+
+    expect(screen.getByTestId('room-name')).toBeTruthy();
+    expect(screen.queryByTestId('room-title-trigger')).toBeNull();
+    expect(screen.queryByTestId('av-start-call')).toBeNull();
+  });
+
+  it('starts the presence roster collapsed on a phone viewport', async () => {
+    storeUserName();
+    const wide = window.innerWidth;
+    window.innerWidth = 400;
+    try {
+      await renderRoom();
+      expect(screen.queryByTestId('whiteboard-presence-panel')).toBeNull();
+    } finally {
+      window.innerWidth = wide;
+    }
+  });
+
+  it('opens the roster for the host when a student starts waiting', async () => {
+    storeUserName();
+    await renderRoom((url, init) => {
+      if (url.endsWith('/presence')) {
+        return respond(200, {
+          users: [],
+          waitingPeers: [{ peerId: 'peer-wait', accountId: null, userName: 'Bob', color: '#123456' }],
+          isWaiting: false,
+        });
+      }
+      return collaborationNetwork()(url, init);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-presence-panel')).toBeTruthy();
+    });
+    expect(screen.getByTestId('whiteboard-waiting-section')).toBeTruthy();
+  });
+
+  it('shows the degraded sync notice when the presence heartbeat fails', async () => {
+    storeUserName();
+    await renderRoom(collaborationNetwork({ presenceStatus: 500 }));
+
+    expect(await screen.findByTestId('whiteboard-sync-degraded')).toBeTruthy();
+  });
+
+  it('stops trusting the fallbacks and says the connection is lost', async () => {
+    storeUserName();
+    let heartbeats = 0;
+    stubNetwork((url, init) => {
+      if (url.endsWith('/presence') && init?.method === 'POST') heartbeats += 1;
+      return collaborationNetwork({ presenceStatus: 500 })(url, init);
+    });
+    render(<RoomContent roomId="room-alpha" />);
+
+    expect(await screen.findByTestId('whiteboard-sync-degraded')).toBeTruthy();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-connection-lost')).toBeTruthy();
+    }, { timeout: 15_000 });
+    expect(heartbeats).toBeGreaterThanOrEqual(3);
+  }, 20_000);
+
+  it('keeps the debug handles off the window in a production build', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('NEXT_PUBLIC_WHITEBOARD_DEBUG', '');
+    vi.stubEnv('NEXT_PUBLIC_E2E', '');
+    storeUserName();
+    await renderRoom();
+
+    expect((window as { __whiteboardCollab?: unknown }).__whiteboardCollab).toBeUndefined();
+  });
+
+  it('opens the call panel once the host asks for a call', async () => {
+    storeUserName();
+    await renderRoom((url, init) => {
+      if (url.startsWith('/api/av/token')) return new Response(null, { status: 500 });
+      return collaborationNetwork()(url, init);
+    });
+
+    fireEvent.click(await screen.findByTestId('av-start-call'));
+
+    expect(await screen.findByTestId('av-session-panel')).toBeTruthy();
+    expect(screen.queryByTestId('av-start-call')).toBeNull();
+  });
+
+  it('surfaces a refused kick as a moderation error', async () => {
+    const kicked: string[] = [];
+    storeUserName();
+    await renderRoom((url, init) => {
+      if (url.endsWith('/presence') && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        if (body.action === 'kick') {
+          kicked.push(body.peerId ?? body.accountId);
+          return new Response(null, { status: 403 });
+        }
+        return respond(200, {
+          users: [
+            { peerId: 'peer-self', accountId: null, userName: 'Alice', color: '#111111', isHost: true },
+            { peerId: 'peer-student', accountId: null, userName: 'Bob', color: '#222222', isHost: false },
+          ],
+          waitingPeers: [],
+          isWaiting: false,
+        });
+      }
+      return collaborationNetwork()(url, init);
+    });
+
+    fireEvent.click(await screen.findByTestId('whiteboard-people-button'));
+    fireEvent.click(await screen.findByTestId('whiteboard-roster-open-peer-student'));
+    fireEvent.click(screen.getByTestId('whiteboard-context-kick'));
+
+    expect(await screen.findByTestId('whiteboard-moderation-error')).toBeTruthy();
+    expect(kicked).toEqual(['peer-student']);
+  });
+});
+
+describe('RoomContent room title', () => {
+  it('renames the room from the title menu and posts the new name', async () => {
+    const posts: { url: string; body: unknown }[] = [];
+    storeUserName();
+    await renderRoom((url, init) => {
+      if (url === '/api/whiteboard/room/room-alpha/settings' && init?.method === 'POST') {
+        posts.push({ url, body: JSON.parse(String(init.body)) });
+        return respond(200, {});
+      }
+      return collaborationNetwork()(url, init);
+    });
+
+    fireEvent.click(await screen.findByTestId('room-title-trigger'));
+    fireEvent.click(screen.getByTestId('room-menu-rename'));
+    const input = screen.getByTestId('room-name-input');
+    fireEvent.change(input, { target: { value: 'Geometry' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(posts).toHaveLength(1);
+    });
+    expect(posts[0].body).toEqual({ name: 'Geometry' });
+    expect(screen.getByTestId('room-name').textContent).toBe('Geometry');
+  });
+
+  it('leaves Save as and the library to the editor when no board actions exist', async () => {
+    storeUserName();
+    await renderRoom();
+
+    const trigger = await screen.findByTestId('room-title-trigger');
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByTestId('room-menu-save'));
+    expect(screen.queryByTestId('room-title-menu')).toBeNull();
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByTestId('room-menu-library'));
+    expect(screen.queryByTestId('room-title-menu')).toBeNull();
+  });
+
+  it('leaves for the rooms list and clears the host call state', async () => {
+    const requests: { url: string; method: string | undefined }[] = [];
+    storeUserName();
+    await renderRoom((url, init) => {
+      if (init?.method === 'DELETE') requests.push({ url, method: init.method });
+      return collaborationNetwork()(url, init);
+    });
+
+    fireEvent.click(await screen.findByTestId('whiteboard-back-to-rooms'));
+
+    await waitFor(() => {
+      expect(requests.some((entry) => (
+        entry.url.startsWith('/api/whiteboard/room/room-alpha/presence')
+        && entry.method === 'DELETE'
+      ))).toBe(true);
+    });
+    expect(window.localStorage.getItem('whiteboard_username')).toBeNull();
+  });
+});
+
+describe('RoomContent admission states', () => {
+  it('waits in the queue with the position the room reports', async () => {
+    storeUserName();
+    const requests: string[] = [];
+    stubNetwork((url, init) => {
+      if (init?.method === 'DELETE') requests.push(url);
+      if (url.endsWith('/presence')) {
+        return respond(200, {
+          users: [],
+          waitingPeers: [{ peerId: 'peer-other', accountId: null, userName: 'Bob', color: '#123456' }],
+          isWaiting: true,
+        });
+      }
+      return collaborationNetwork()(url, init);
+    });
+    render(<RoomContent roomId="room-alpha" />);
+
+    expect(await screen.findByText(/You are number 2 in line/)).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('whiteboard-back-to-rooms'));
+
+    await waitFor(() => {
+      expect(requests.some((url) => url.startsWith('/api/whiteboard/room/room-alpha/waiting')))
+        .toBe(true);
+    });
+  });
+
+  it('shows a full waiting list without inventing a position', async () => {
+    storeUserName();
+    stubNetwork(collaborationNetwork({ presenceStatus: 409 }));
+    render(<RoomContent roomId="room-alpha" />);
+
+    expect(await screen.findByText('Waiting List is Full')).toBeTruthy();
+    expect(screen.queryByText(/in line/)).toBeNull();
+  });
+
+  it('returns a refused student to the prompt with the reason', async () => {
+    storeUserName();
+    stubNetwork(collaborationNetwork({ presenceStatus: 403 }));
+    render(<RoomContent roomId="room-alpha" />);
+
+    const notice = await screen.findByTestId('whiteboard-eviction-notice');
+    expect(notice.textContent).toBe("Your teacher didn't let you in.");
+    expect(screen.getByTestId('whiteboard-username-input')).toBeTruthy();
+  });
+
+  it('joins a guest host through the guest prompt without reading the session', async () => {
+    vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', 'localhost');
+    const requested: string[] = [];
+    stubNetwork(collaborationNetwork());
+    render(
+      <RoomContent
+        roomId="room-alpha"
+        request={async (input) => {
+          requested.push(String(input));
+          return respond(200, {});
+        }}
+      />,
+    );
+
+    expect(await screen.findByTestId('guest-join-prompt')).toBeTruthy();
+    expect(requested).toEqual([]);
+  });
+});
+
+describe('RoomContent session parsing', () => {
+  it('shows no plan for a session whose plan cannot be trusted', async () => {
+    const sessions: unknown[] = [
+      null,
+      'alice',
+      {},
+      { plan: 'pro' },
+      { plan: { planId: 42, status: 'active' } },
+      { plan: { planId: 'bogus', status: 'active' } },
+      { plan: { planId: 'free', status: 7 } },
+      { plan: { planId: 'free', status: 'bogus' } },
+    ];
+
+    for (const session of sessions) {
+      stubNetwork(collaborationNetwork());
+      const view = render(
+        <RoomContent roomId="room-alpha" request={async () => respond(200, session)} />,
+      );
+      fireEvent.click(await screen.findByTestId('whiteboard-profile-btn'));
+      expect(screen.queryByTestId('whiteboard-profile-plan')).toBeNull();
+      view.unmount();
+    }
+  });
+
+  it('shows no company for a company record that cannot be trusted', async () => {
+    const sessions: unknown[] = [
+      { company: 42 },
+      { company: { name: 'Acme', role: 'owner' } },
+      { company: { id: 'acme', role: 'owner' } },
+      { company: { id: 'acme', name: 'Acme', role: 'guest' } },
+    ];
+
+    for (const session of sessions) {
+      stubNetwork(collaborationNetwork());
+      const view = render(
+        <RoomContent roomId="room-alpha" request={async () => respond(200, session)} />,
+      );
+      fireEvent.click(await screen.findByTestId('whiteboard-profile-btn'));
+      expect(screen.queryByTestId('whiteboard-profile-company')).toBeNull();
+      view.unmount();
+    }
+  });
+
+  it('shows the company role the session names', async () => {
+    for (const role of ['owner', 'admin', 'member'] as const) {
+      stubNetwork(collaborationNetwork());
+      const view = render(
+        <RoomContent
+          roomId="room-alpha"
+          request={async () => respond(200, {
+            plan: { planId: 'free', status: 'active' },
+            company: { id: 'acme', name: 'Acme Tutoring', role },
+          })}
+        />,
+      );
+      fireEvent.click(await screen.findByTestId('whiteboard-profile-btn'));
+      expect(screen.getByTestId('whiteboard-profile-company').textContent)
+        .toContain(`Acme Tutoring · ${role}`);
+      view.unmount();
+    }
+  });
+
+  it('shows a past-due grace date and a billing hold', async () => {
+    stubNetwork(collaborationNetwork());
+    render(
+      <RoomContent
+        roomId="room-alpha"
+        request={async () => respond(200, {
+          plan: {
+            planId: 'tutor_pro_monthly',
+            status: 'past_due',
+            graceUntil: 1_735_689_600_000,
+            collectionPaused: true,
+          },
+        })}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId('whiteboard-profile-btn'));
+
+    expect(screen.getByTestId('whiteboard-profile-plan-grace').textContent)
+      .toContain('payment overdue');
+    expect(screen.getByTestId('whiteboard-profile-plan-hold').textContent)
+      .toBe('billing on hold');
+  });
+
+  it('takes the display name from the session when nothing is stored', async () => {
+    stubNetwork(collaborationNetwork());
+    render(
+      <RoomContent
+        roomId="room-alpha"
+        request={async () => respond(200, { displayName: 'Ms Ada' })}
+      />,
+    );
+
+    expect(await screen.findByTestId('whiteboard-canvas-area')).toBeTruthy();
+    expect(window.localStorage.getItem('whiteboard_username')).toBe('Ms Ada');
+  });
+
+  it('ignores a session response that lands after the prompt unmounts', async () => {
+    let finish: ((response: Response) => void) | undefined;
+    stubNetwork(collaborationNetwork());
+    const view = render(
+      <RoomContent
+        roomId="room-alpha"
+        request={async () => new Promise<Response>((resolve) => { finish = resolve; })}
+      />,
+    );
+    await screen.findByTestId('whiteboard-profile-btn');
+    view.unmount();
+
+    finish?.(respond(200, { displayName: 'Alice' }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(window.localStorage.getItem('whiteboard_username')).toBeNull();
+  });
+
+  it('ignores a refused session response that lands after the prompt unmounts', async () => {
+    let finish: ((response: Response) => void) | undefined;
+    stubNetwork(collaborationNetwork());
+    const view = render(
+      <RoomContent
+        roomId="room-alpha"
+        request={async () => new Promise<Response>((resolve) => { finish = resolve; })}
+      />,
+    );
+    await screen.findByTestId('whiteboard-profile-btn');
+    view.unmount();
+
+    finish?.(new Response(null, { status: 500 }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(window.localStorage.getItem('whiteboard_username')).toBeNull();
+  });
+});
+
+describe('WhiteboardRoomPage', () => {
+  it('shows the loading screen while the path names no room', () => {
+    window.history.pushState({}, '', '/');
+    render(<WhiteboardRoomPage />);
+
+    expect(screen.getByText('Connecting to room…')).toBeTruthy();
+  });
+
+  it('reads the room id from the address bar', async () => {
+    window.history.pushState({}, '', '/whiteboard/room-alpha');
+    storeUserName();
+    stubNetwork(collaborationNetwork());
+    render(<WhiteboardRoomPage />);
+
+    expect(await screen.findByTestId('whiteboard-canvas-area')).toBeTruthy();
   });
 });
 

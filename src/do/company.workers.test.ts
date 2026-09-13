@@ -1927,4 +1927,355 @@ describe('IdentityDO company routes (spec §6.2)', () => {
     expect(stored.ordering).toEqual({ desiredCollection: 'paused' });
     expect(stored.openHolds).toEqual({ count: 1 });
   });
+
+  it('refuses cross-company and malformed company route requests', async () => {
+    const owner = await accessSession('company-neg-owner');
+    const member = await accessSession('company-neg-member');
+    const outsider = await accessSession('company-neg-outsider');
+    const companyId = await createCompanyFor(owner, 'Negative Co');
+    await seedCompanySubscription(companyId, 3);
+    await admitMember(owner, member, companyId);
+
+    const notAMemberPatch = await companyFetch('/companies', outsider.cookie, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: 'Hijacked' }),
+    });
+    expect(notAMemberPatch.status).toBe(404);
+
+    const badPatch = await companyFetch('/companies', owner.cookie, {
+      method: 'PATCH',
+      body: JSON.stringify({}),
+    });
+    expect(badPatch.status).toBe(400);
+
+    const memberDelete = await companyFetch('/companies', member.cookie, {
+      method: 'DELETE',
+    });
+    expect(memberDelete.status).toBe(403);
+
+    const badCreate = await companyFetch('/companies', outsider.cookie, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    expect(badCreate.status).toBe(400);
+
+    const badCustomer = await companyFetch('/companies/customer', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    expect(badCustomer.status).toBe(400);
+
+    const unknownCustomerOperation = await companyFetch('/companies/customer', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({
+        companyId,
+        operationId: 'op_negative_missing',
+        processorCustomerId: 'cus_negative',
+      }),
+    });
+    expect(unknownCustomerOperation.status).toBe(409);
+    expect(await unknownCustomerOperation.json()).toEqual({ error: 'Conflict' });
+
+    const outsiderInvites = await companyFetch('/companies/invites', outsider.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ role: 'member' }),
+    });
+    expect(outsiderInvites.status).toBe(404);
+
+    const badInvite = await companyFetch('/companies/invites', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    expect(badInvite.status).toBe(400);
+
+    const badRevoke = await companyFetch('/companies/invites', owner.cookie, {
+      method: 'DELETE',
+      body: JSON.stringify({}),
+    });
+    expect(badRevoke.status).toBe(400);
+
+    const unknownRevoke = await companyFetch('/companies/invites', owner.cookie, {
+      method: 'DELETE',
+      body: JSON.stringify({ inviteHash: 'b'.repeat(64) }),
+    });
+    expect(unknownRevoke.status).toBe(404);
+
+    const badRedeem = await companyFetch('/companies/invites/redeem', outsider.cookie, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    expect(badRedeem.status).toBe(400);
+
+    const outsiderSeats = await companyFetch('/companies/seats', outsider.cookie, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    expect(outsiderSeats.status).toBe(404);
+
+    const badSeats = await companyFetch('/companies/seats', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    expect(badSeats.status).toBe(400);
+
+    const outsiderSettle = await companyFetch('/companies/seats/settle', outsider.cookie, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    expect(outsiderSettle.status).toBe(404);
+
+    const settleUnknown = await companyFetch('/companies/seats/settle', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ operationId: 'op_negative_unknown', outcome: 'success' }),
+    });
+    expect(settleUnknown.status).toBe(409);
+
+    const releaseUnknown = await companyFetch('/companies/seats/settle', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ operationId: 'op_negative_unknown', outcome: 'failure' }),
+    });
+    expect(releaseUnknown.status).toBe(409);
+
+    const outsiderRevoke = await companyFetch('/companies/members/revoke', outsider.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ accountId: member.accountId }),
+    });
+    expect(outsiderRevoke.status).toBe(404);
+
+    const badMemberRevoke = await companyFetch('/companies/members/revoke', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    expect(badMemberRevoke.status).toBe(400);
+
+    const outsiderTransfer = await companyFetch('/companies/owner', outsider.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ accountId: member.accountId }),
+    });
+    expect(outsiderTransfer.status).toBe(404);
+
+    const badTransfer = await companyFetch('/companies/owner', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    expect(badTransfer.status).toBe(400);
+  });
+
+  it('system settle refuses an unknown company-create and a stale seat release', async () => {
+    const missing = await systemSettle({
+      kind: 'company-create',
+      companyId: 'company-that-does-not-exist',
+      operationId: 'op_settle_missing',
+      processorCustomerId: 'cus_missing',
+    });
+    expect(missing.status).toBe(409);
+
+    const owner = await accessSession('company-neg-settle-owner');
+    const companyId = await createCompanyFor(owner, 'Settle Negative Co');
+
+    const created = await systemSettle({
+      kind: 'company-create',
+      companyId,
+      operationId: 'op_Settle_Negative_Co',
+      processorCustomerId: 'cus_negative',
+    });
+    expect(created.status).toBe(200);
+
+    const mismatch = await systemSettle({
+      kind: 'company-create',
+      companyId,
+      operationId: 'op_Settle_Negative_Co',
+      processorCustomerId: 'cus_other',
+    });
+    expect(mismatch.status).toBe(409);
+
+    const released = await systemSettle({
+      kind: 'seat-change',
+      companyId,
+      operationId: 'op_settle_no_seat',
+      outcome: 'failure',
+    });
+    expect(released.status).toBe(409);
+  });
+
+  it('rejects non-object and unparseable bodies with a real session', async () => {
+    const owner = await accessSession('company-neg-shapes-owner');
+    await createCompanyFor(owner, 'Shapes Co');
+
+    const shapeRoutes: Array<[string, string]> = [
+      ['/companies', 'PATCH'],
+      ['/companies/customer', 'POST'],
+      ['/companies/invites', 'POST'],
+      ['/companies/invites', 'DELETE'],
+      ['/companies/invites/redeem', 'POST'],
+      ['/companies/seats', 'POST'],
+      ['/companies/seats/settle', 'POST'],
+      ['/companies/members/revoke', 'POST'],
+      ['/companies/owner', 'POST'],
+    ];
+    for (const [path, method] of shapeRoutes) {
+      const response = await companyFetch(path, owner.cookie, {
+        method,
+        body: JSON.stringify([1, 2]),
+      });
+      expect(response.status, `${method} ${path}`).toBe(400);
+    }
+
+    const unparseable: Array<[string, string]> = [
+      ['/companies', 'not-json'],
+      ['/companies/seats', 'not-json'],
+      ['/companies/seats/settle', 'not-json'],
+    ];
+    for (const [path, body] of unparseable) {
+      const response = await companyFetch(path, owner.cookie, { method: 'POST', body });
+      expect(response.status, `${path} ${body}`).toBe(400);
+    }
+  });
+
+  it('operator invoice settle reports failure and pending on an approved operation', async () => {
+    const owner = await accessSession('company-neg-invoice-owner');
+    const companyId = await createCompanyFor(owner, 'Invoice Negative Co');
+    await setCompanyCustomer(companyId, 'cus_negative_invoice');
+
+    const approved = await operatorFetch('/operator/invoice-approval', {
+      operatorEmail: OPERATOR_EMAIL,
+      companyId,
+      quantity: 10,
+      operationId: 'op_negative_invoice',
+    });
+    expect(approved.status).toBe(200);
+
+    const foreign = await operatorFetch('/operator/invoice-approval/settle', {
+      operatorEmail: 'intruder@example.test',
+      companyId,
+      operationId: 'op_negative_invoice',
+      quantity: 10,
+      outcome: 'failure',
+    });
+    expect(foreign.status).toBe(403);
+
+    const pending = await operatorFetch('/operator/invoice-approval/settle', {
+      operatorEmail: OPERATOR_EMAIL,
+      companyId,
+      operationId: 'op_negative_invoice',
+      quantity: 10,
+      outcome: 'unknown',
+    });
+    expect(pending.status).toBe(202);
+    expect(await pending.json()).toEqual({ status: 'pending' });
+
+    const failed = await operatorFetch('/operator/invoice-approval/settle', {
+      operatorEmail: OPERATOR_EMAIL,
+      companyId,
+      operationId: 'op_negative_invoice',
+      quantity: 10,
+      outcome: 'failure',
+    });
+    expect(failed.status).toBe(200);
+    expect(await failed.json()).toEqual({ status: 'failed' });
+  });
+
+  it('system settle compares the processor customer on a pending company-create', async () => {
+    const owner = await accessSession('company-neg-pending-owner');
+    const companyId = await createCompanyFor(owner, 'Pending Customer Co');
+    await setCompanyCustomer(companyId, 'cus_pending_seeded');
+
+    const mismatch = await systemSettle({
+      kind: 'company-create',
+      companyId,
+      operationId: 'op_Pending_Customer_Co',
+      processorCustomerId: 'cus_pending_other',
+    });
+    expect(mismatch.status).toBe(409);
+
+    const match = await systemSettle({
+      kind: 'company-create',
+      companyId,
+      operationId: 'op_Pending_Customer_Co',
+      processorCustomerId: 'cus_pending_seeded',
+    });
+    expect(match.status).toBe(200);
+  });
+
+  it('refuses a member invite while already a member and transfers ownership', async () => {
+    const owner = await accessSession('company-neg-transfer-owner');
+    const member = await accessSession('company-neg-transfer-member');
+    const companyId = await createCompanyFor(owner, 'Transfer Negative Co');
+    await seedCompanySubscription(companyId, 4);
+    await admitMember(owner, member, companyId);
+
+    const mine = await companyFetch('/companies/invites', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ role: 'member' }),
+    });
+    expect(mine.status).toBe(201);
+    const token = ((await mine.json()) as { token: string }).token;
+    const again = await companyFetch('/companies/invites/redeem', member.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    });
+    expect(again.status).toBe(409);
+
+    const transfer = await companyFetch('/companies/owner', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ accountId: member.accountId }),
+    });
+    expect(transfer.status).toBe(200);
+    expect(await transfer.json()).toEqual({ outcome: 'transferred', accountId: member.accountId });
+
+    const forbidden = await companyFetch('/companies/owner', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ accountId: member.accountId }),
+    });
+    expect(forbidden.status).toBe(403);
+  });
+
+  it('rate-limits member revocation per company', async () => {
+    const owner = await accessSession('company-neg-rate-owner');
+    await createCompanyFor(owner, 'Rate Negative Co');
+    const statuses: number[] = [];
+    for (let attempt = 0; attempt < 21; attempt += 1) {
+      const response = await companyFetch('/companies/members/revoke', owner.cookie, {
+        method: 'POST',
+        body: JSON.stringify({ accountId: 'not-a-member' }),
+      });
+      statuses.push(response.status);
+    }
+    expect(statuses.slice(0, 20)).toEqual(Array.from({ length: 20 }, () => 404));
+    expect(statuses.at(-1)).toBe(429);
+    const limited = await companyFetch('/companies/members/revoke', owner.cookie, {
+      method: 'POST',
+      body: JSON.stringify({ accountId: 'not-a-member' }),
+    });
+    expect(await limited.json()).toMatchObject({ error: 'Too many requests' });
+  });
+
+  it('operator dispute review refuses a hold that is not under review', async () => {
+    const owner = await accessSession('company-neg-dispute-owner');
+    const companyId = await createCompanyFor(owner, 'Dispute Negative Co');
+    await seedCompanySubscription(companyId, 3);
+    await runInDurableObject(identityStub(), (instance) => {
+      ensureBillingSubscription(instance.db, {
+        processorSubscriptionId: `sub_${companyId}`,
+        subjectKind: 'company',
+        subjectId: companyId,
+        now: 1,
+      });
+      upsertDisputeHold(instance.db, {
+        disputeId: 'dp_negative_won',
+        processorSubscriptionId: `sub_${companyId}`,
+        state: 'won',
+        now: 2,
+      });
+    });
+
+    const response = await operatorFetch('/operator/disputes/review', {
+      operatorEmail: OPERATOR_EMAIL,
+      disputeId: 'dp_negative_won',
+      outcome: 'won',
+      operationId: 'op_negative_dispute',
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'Conflict', reason: 'not_review' });
+  });
 });

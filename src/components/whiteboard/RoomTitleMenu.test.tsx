@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import RoomTitleMenu from './RoomTitleMenu';
@@ -229,6 +229,72 @@ describe('RoomTitleMenu', () => {
       });
       expect(reads).toBe(2);
     });
+
+    it('returns from the share panel to the menu items', () => {
+      render(<RoomTitleMenu {...make()} />);
+
+      openShare();
+      expect(screen.getByTestId('room-share-url')).toBeTruthy();
+
+      fireEvent.click(screen.getByTestId('room-share-back'));
+      expect(screen.getByTestId('room-menu-save')).toBeTruthy();
+      expect(screen.queryByTestId('room-share-url')).toBeNull();
+    });
+
+    it('says an expired class PIN is expired rather than off', async () => {
+      const request = async () => settingsResponse({
+        guestAccess: true,
+        guestPin: '004321',
+        guestPinExpiresAt: Date.now() - 1_000,
+        lockoutUntil: null,
+      });
+      render(<RoomTitleMenu {...make({ request })} />);
+
+      openShare();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('room-share-pin-off').textContent).toBe('Expired');
+      });
+    });
+
+    it('leaves the share panel to its own tab order instead of walking items', () => {
+      render(<RoomTitleMenu {...make()} />);
+
+      openShare();
+      fireEvent.keyDown(screen.getByTestId('room-title-share'), { key: 'ArrowDown' });
+
+      expect(screen.getByTestId('room-share-url')).toBeTruthy();
+      expect(screen.queryByTestId('room-menu-save')).toBeNull();
+    });
+
+    it('resets the copied affordance after two seconds', async () => {
+      vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', 'join.example.com');
+      const copied: string[] = [];
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: (text: string) => { copied.push(text); return Promise.resolve(); } },
+      });
+      render(<RoomTitleMenu {...make({ request: async () => settingsResponse(liveSettings) })} />);
+
+      openShare();
+      vi.useFakeTimers();
+      try {
+        const copy = screen.getByTestId('room-share-copy');
+        fireEvent.click(copy);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        expect(copy.getAttribute('aria-label')).toBe('Join link copied');
+        expect(copied).toEqual(['https://join.example.com/whiteboard/room-alpha']);
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2_000);
+        });
+        expect(copy.getAttribute('aria-label')).toBe('Copy join link');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('leaves the focus ring to the global indigo style (UX-B12)', () => {
@@ -269,6 +335,46 @@ describe('RoomTitleMenu', () => {
 
     fireEvent.pointerDown(document.body);
     expect(screen.queryByTestId('room-menu-save')).toBeNull();
+  });
+
+  it('stays open when the pointer goes down inside the menu', () => {
+    render(<RoomTitleMenu {...make()} />);
+    fireEvent.click(screen.getByTestId('room-title-trigger'));
+
+    fireEvent.pointerDown(screen.getByTestId('room-title-menu'));
+
+    expect(screen.getByTestId('room-menu-save')).toBeTruthy();
+  });
+
+  it('closes when the open title is pressed again', () => {
+    render(<RoomTitleMenu {...make()} />);
+    const trigger = screen.getByTestId('room-title-trigger');
+
+    fireEvent.click(trigger);
+    expect(screen.getByTestId('room-title-menu')).toBeTruthy();
+
+    fireEvent.click(trigger);
+    expect(screen.queryByTestId('room-title-menu')).toBeNull();
+  });
+
+  it('closes on Tab instead of walking the menu items', async () => {
+    const user = userEvent.setup();
+    render(<RoomTitleMenu {...make()} />);
+
+    await user.click(screen.getByTestId('room-title-trigger'));
+    await user.keyboard('{Tab}');
+
+    expect(screen.queryByTestId('room-title-menu')).toBeNull();
+  });
+
+  it('stays open on keys that are not menu commands', async () => {
+    const user = userEvent.setup();
+    render(<RoomTitleMenu {...make()} />);
+
+    await user.click(screen.getByTestId('room-title-trigger'));
+    await user.keyboard('a');
+
+    expect(screen.getByTestId('room-menu-save')).toBeTruthy();
   });
 
   it('moves focus into the menu and walks it with the arrow keys (UX-A5)', async () => {

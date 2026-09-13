@@ -10,7 +10,11 @@ import {
 } from '../lib/referrals/ledger';
 import { PAST_DUE_GRACE_MS } from '../lib/plan/catalog';
 import type { PlanId } from '../lib/plan/catalog';
-import { RECONCILE_IN_FLIGHT_TIMEOUT_MS, corporateSeatBandMismatch } from '../lib/billing/reconcile';
+import {
+  RECONCILE_IN_FLIGHT_TIMEOUT_MS,
+  corporateSeatBandMismatch,
+  reconcileBilling,
+} from '../lib/billing/reconcile';
 
 declare global {
   namespace Cloudflare {
@@ -1655,6 +1659,45 @@ describe('identity /billing/operations: subscription-collection executor', () =>
       expect(row?.in_flight_state).toBe('active');
     });
   });
+
+  it('fails a settle when the subject has no subscription row', async () => {
+    const response = await postSettle(
+      JSON.stringify({
+        subjectKind: 'account',
+        subjectId: 'acct_settle_missing',
+        operationId: 'op_settle_missing',
+        success: true,
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: 'failed', reason: 'no_subscription' });
+  });
+
+  it('settles a canceled desire without repair (P-9 absorb)', async () => {
+    const accountId = await newAccount('billing-coll-canceled-absorb');
+    const subId = 'sub_coll_canceled_absorb';
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(
+          `INSERT INTO billing_subscriptions (
+             processor_subscription_id, subject_kind, subject_id,
+             desired_collection, desired_version, applied_version, updated_at
+           ) VALUES (?, 'account', ?, 'canceled', 2, 0, 1)`,
+        )
+        .run(subId, accountId);
+    });
+
+    const response = await postSettle(
+      JSON.stringify({
+        subjectKind: 'account',
+        subjectId: accountId,
+        operationId: 'op_coll_canceled_absorb',
+        success: true,
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: 'succeeded', reason: 'canceled' });
+  });
 });
 
 describe('identity /billing/events/apply: collection handoff (D-6)', () => {
@@ -2374,6 +2417,1187 @@ describe('identity /billing/reconcile: R-1 collection sweep', () => {
     expect(body.subscriptions).toContainEqual({
       processorSubscriptionId: subId,
       subjectKind: 'account',
+    });
+  });
+
+  it('ignores an observation whose subscription is unknown', async () => {
+    const response = await reconcileObserve({
+      runId: 'run-unknown-observation',
+      observations: [
+        { processorSubscriptionId: 'sub_reconcile_unknown', actualCollection: 'paused' },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { appliedSubscriptions: number };
+    expect(body.appliedSubscriptions).toBe(0);
+  });
+
+  it('defaults missing observation and dispute arrays to empty sweeps', async () => {
+    const result = await runInDurableObject(identityStub(), (instance) =>
+      reconcileBilling(instance.db, { now: Date.now(), runId: 'run-direct-defaults' }),
+    );
+    expect(result.appliedSubscriptions).toBe(0);
+    expect(result.disputesApplied).toBe(0);
+    expect(Array.isArray(result.collections)).toBe(true);
+    expect(Array.isArray(result.subscriptions)).toBe(true);
+    expect(Array.isArray(result.outboundOperations)).toBe(true);
+    expect(Number.isFinite(result.disputesSweptAt)).toBe(true);
+  });
+
+  it('does not apply a fetched subscription for a canceled ordering row', async () => {
+    const accountId = await newAccount('billing-reconcile-canceled-row');
+    const subId = 'sub_reconcile_canceled_row';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        processorCustomerId: `cus_${subId}`,
+        processorSubscriptionId: subId,
+      });
+    });
+    await postApply(
+      applyBody(
+        { id: `evt_canceled_row_${subId}`, type: 'customer.subscription.deleted', created: 100 },
+        {
+          subscription: subscriptionBody(subId, 'canceled', {
+            customer: `cus_${subId}`,
+            canceledAt: 100,
+          }),
+        },
+      ),
+    );
+
+    const response = await reconcileObserve({
+      runId: 'run-canceled-row',
+      observations: [
+        {
+          processorSubscriptionId: subId,
+          subscription: {
+            status: 'canceled',
+            customer: `cus_${subId}`,
+            currentPeriodEnd: null,
+            canceledAt: 100,
+            pauseCollection: false,
+          },
+        },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { appliedSubscriptions: number };
+    expect(body.appliedSubscriptions).toBe(0);
+  });
+
+  it('skips an unrepresentable fetched personal status', async () => {
+    const accountId = await newAccount('billing-reconcile-unpaid');
+    const subId = 'sub_reconcile_unpaid';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        processorCustomerId: `cus_${subId}`,
+        processorSubscriptionId: subId,
+      });
+      ensureBillingSubscription(instance.db, {
+        processorSubscriptionId: subId,
+        subjectKind: 'account',
+        subjectId: accountId,
+        now: 1,
+      });
+    });
+
+    const response = await reconcileObserve({
+      runId: 'run-unpaid',
+      observations: [
+        {
+          processorSubscriptionId: subId,
+          subscription: {
+            status: 'unpaid',
+            customer: `cus_${subId}`,
+            currentPeriodEnd: null,
+            canceledAt: null,
+            pauseCollection: false,
+          },
+        },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { appliedSubscriptions: number };
+    expect(body.appliedSubscriptions).toBe(0);
+  });
+
+  it('skips a fetched subscription without a personal entitlement', async () => {
+    const accountId = await newAccount('billing-reconcile-no-entitlement');
+    const subId = 'sub_reconcile_no_entitlement';
+    await runInDurableObject(identityStub(), (instance) => {
+      ensureBillingSubscription(instance.db, {
+        processorSubscriptionId: subId,
+        subjectKind: 'account',
+        subjectId: accountId,
+        now: 1,
+      });
+    });
+
+    const response = await reconcileObserve({
+      runId: 'run-no-entitlement',
+      observations: [
+        {
+          processorSubscriptionId: subId,
+          subscription: {
+            status: 'active',
+            customer: `cus_${subId}`,
+            currentPeriodEnd: null,
+            canceledAt: null,
+            pauseCollection: false,
+          },
+        },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { appliedSubscriptions: number };
+    expect(body.appliedSubscriptions).toBe(0);
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(readEntitlement(instance, accountId)).toBeUndefined();
+    });
+  });
+
+  it('cancels the collection when the fetched personal subscription is canceled', async () => {
+    const accountId = await newAccount('billing-reconcile-cancel-fetched');
+    const subId = 'sub_reconcile_cancel_fetched';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        processorCustomerId: `cus_${subId}`,
+        processorSubscriptionId: subId,
+      });
+      ensureBillingSubscription(instance.db, {
+        processorSubscriptionId: subId,
+        subjectKind: 'account',
+        subjectId: accountId,
+        now: 1,
+      });
+    });
+
+    const response = await reconcileObserve({
+      runId: 'run-cancel-fetched',
+      observations: [
+        {
+          processorSubscriptionId: subId,
+          subscription: {
+            status: 'canceled',
+            customer: `cus_${subId}`,
+            currentPeriodEnd: null,
+            canceledAt: 200,
+            pauseCollection: false,
+          },
+        },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { appliedSubscriptions: number };
+    expect(body.appliedSubscriptions).toBe(1);
+    await runInDurableObject(identityStub(), (instance) => {
+      const row = readSubOrdering(instance, subId);
+      expect(row?.desired_collection).toBe('canceled');
+      expect(row?.in_flight_version).toBeNull();
+      expect(readEntitlement(instance, accountId)?.status).toBe('canceled');
+    });
+  });
+
+  it('repairs drift and alerts when no dispute hold is open', async () => {
+    const accountId = await newAccount('billing-reconcile-drift-alert');
+    const subId = 'sub_reconcile_drift_alert';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        processorCustomerId: `cus_${subId}`,
+        processorSubscriptionId: subId,
+      });
+    });
+    await postApply(
+      applyBody(
+        { id: `evt_drift_alert_${subId}`, type: 'customer.subscription.updated', created: 100 },
+        { subscription: subscriptionBody(subId, 'active', { customer: `cus_${subId}` }) },
+      ),
+    );
+
+    const response = await reconcileObserve({
+      runId: 'run-drift-alert',
+      observations: [
+        { processorSubscriptionId: subId, actualCollection: 'paused' },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      collections: Array<{ processorSubscriptionId: string; version: number; state: string }>;
+    };
+    expect(body.collections).toContainEqual({
+      subjectKind: 'account',
+      subjectId: accountId,
+      processorSubscriptionId: subId,
+      version: 1,
+      state: 'active',
+    });
+    await runInDurableObject(identityStub(), (instance) => {
+      const row = readSubOrdering(instance, subId);
+      expect(row?.desired_version).toBe(1);
+      expect(row?.in_flight_version).toBe(1);
+      expect(row?.in_flight_state).toBe('active');
+    });
+  });
+
+  it('leaves a canceled stale in-flight marker unrepaired', async () => {
+    const accountId = await newAccount('billing-reconcile-stale-canceled');
+    const subId = 'sub_reconcile_stale_canceled';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        processorCustomerId: `cus_${subId}`,
+        processorSubscriptionId: subId,
+      });
+      ensureBillingSubscription(instance.db, {
+        processorSubscriptionId: subId,
+        subjectKind: 'account',
+        subjectId: accountId,
+        now: 1,
+      });
+      instance.db
+        .prepare(
+          `UPDATE billing_subscriptions
+           SET desired_collection = 'canceled', desired_version = 2, applied_version = 2,
+               in_flight_version = 2, in_flight_state = 'canceled', in_flight_since = ?
+           WHERE processor_subscription_id = ?`,
+        )
+        .run(Date.now() - RECONCILE_IN_FLIGHT_TIMEOUT_MS - 1, subId);
+    });
+
+    const response = await reconcileRequest();
+    expect(response.status).toBe(200);
+    await runInDurableObject(identityStub(), (instance) => {
+      const row = readSubOrdering(instance, subId);
+      expect(row?.in_flight_version).toBeNull();
+      expect(row?.desired_version).toBe(2);
+      expect(row?.applied_version).toBe(2);
+    });
+  });
+
+  it('offers a seat decrease outbound operation without proration', async () => {
+    const companyId = 'co_reconcile_decrease';
+    const subId = 'sub_co_reconcile_decrease';
+    const operationId = 'op_reconcile_decrease';
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(
+          `INSERT INTO companies (company_id, name, created_at, updated_at)
+           VALUES (?, 'Decrease Co', 1, 1)`,
+        )
+        .run(companyId);
+      instance.db
+        .prepare(
+          `INSERT INTO company_subscriptions (
+             company_id, processor_subscription_id, quantity, pending_quantity,
+             pending_operation_id, status, collection_method, updated_at
+           ) VALUES (?, ?, 4, 2, ?, 'active', 'charge_automatically', 1)`,
+        )
+        .run(companyId, subId, operationId);
+      instance.db
+        .prepare(
+          `INSERT INTO billing_operations (
+             subject_kind, subject_id, operation_id, kind, request_hash, status,
+             created_at, updated_at
+           ) VALUES ('company', ?, ?, 'seat-change', 'hash', 'pending', 1, 1)`,
+        )
+        .run(companyId, operationId);
+    });
+
+    const response = await reconcileObserve({ runId: 'run-seat-decrease' });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      outboundOperations: Array<Record<string, unknown>>;
+    };
+    expect(body.outboundOperations).toContainEqual({
+      kind: 'seat-change',
+      companyId,
+      operationId,
+      processorSubscriptionId: subId,
+      previousQuantity: 4,
+      targetQuantity: 2,
+      prorationBehavior: 'none',
+      attemptedAt: 1,
+    });
+  });
+
+  it('omits a pending company-create operation with no active owner', async () => {
+    const companyId = 'co_reconcile_no_owner';
+    const operationId = 'op_reconcile_no_owner';
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(
+          `INSERT INTO companies (company_id, name, created_at, updated_at)
+           VALUES (?, 'Ownerless Co', 1, 1)`,
+        )
+        .run(companyId);
+      instance.db
+        .prepare(
+          `INSERT INTO billing_operations (
+             subject_kind, subject_id, operation_id, kind, request_hash, status,
+             created_at, updated_at
+           ) VALUES ('company', ?, ?, 'company-create', 'hash', 'pending', 1, 1)`,
+        )
+        .run(companyId, operationId);
+    });
+
+    const response = await reconcileObserve({ runId: 'run-no-owner' });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      outboundOperations: Array<{ kind: string; companyId: string; operationId: string }>;
+    };
+    expect(
+      body.outboundOperations.some(
+        (operation) =>
+          operation.kind === 'company-create' && operation.companyId === companyId,
+      ),
+    ).toBe(false);
+  });
+
+  it('audits an expired grace window with no processor subscription id', async () => {
+    const accountId = await newAccount('billing-reconcile-grace-null');
+    const graceUntil = Date.now() - 60_000;
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'past_due',
+        graceUntil,
+        processorCustomerId: null,
+        processorSubscriptionId: null,
+      });
+    });
+
+    const response = await reconcileRequest();
+    expect(response.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const audits = instance.db
+        .prepare(
+          `SELECT cause_id FROM entitlement_audit
+           WHERE subject_id = ? AND cause_kind = 'grace_expiry'`,
+        )
+        .all(accountId);
+      expect(audits).toEqual([{ cause_id: `${accountId}:${graceUntil}` }]);
+    });
+  });
+
+  it('records a warning dispute as created and a won dispute as closed', async () => {
+    const accountId = await newAccount('billing-reconcile-dispute-types');
+    const subId = 'sub_reconcile_dispute_types';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedEntitlement(instance, accountId, {
+        planId: 'tutor_pro_monthly',
+        status: 'active',
+        processorCustomerId: `cus_${subId}`,
+        processorSubscriptionId: subId,
+      });
+    });
+
+    const response = await reconcileObserve({
+      runId: 'run-dispute-types',
+      disputes: [
+        {
+          id: 'dp_reconcile_warning',
+          status: 'warning_needs_response',
+          created: 5000,
+          customer: `cus_${subId}`,
+        },
+        {
+          id: 'dp_reconcile_won',
+          status: 'won',
+          created: 6000,
+          customer: `cus_${subId}`,
+        },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { disputesApplied: number };
+    expect(body.disputesApplied).toBe(2);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      const types = instance.db
+        .prepare(
+          `SELECT event_id, type FROM billing_events
+           WHERE event_id IN (
+             'reconcile:dispute:dp_reconcile_warning:warning_needs_response',
+             'reconcile:dispute:dp_reconcile_won:won'
+           )
+           ORDER BY event_id`,
+        )
+        .all();
+      expect(types).toEqual([
+        {
+          event_id: 'reconcile:dispute:dp_reconcile_warning:warning_needs_response',
+          type: 'charge.dispute.created',
+        },
+        {
+          event_id: 'reconcile:dispute:dp_reconcile_won:won',
+          type: 'charge.dispute.closed',
+        },
+      ]);
+      const holds = instance.db
+        .prepare(
+          `SELECT dispute_id, state FROM billing_dispute_holds
+           WHERE dispute_id IN ('dp_reconcile_warning', 'dp_reconcile_won')
+           ORDER BY dispute_id`,
+        )
+        .all();
+      expect(holds).toEqual([
+        { dispute_id: 'dp_reconcile_warning', state: 'open' },
+        { dispute_id: 'dp_reconcile_won', state: 'won' },
+      ]);
+    });
+  });
+
+  it('applies a fetched company subscription observation to the seat row', async () => {
+    const ownerId = await newAccount('billing-reconcile-company-owner');
+    const companyId = 'co_reconcile_obs';
+    const subId = 'sub_reconcile_company_obs';
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(
+          `INSERT INTO companies (company_id, name, created_at, updated_at)
+           VALUES (?, 'Reconcile Co', 1, 1)`,
+        )
+        .run(companyId);
+      instance.db
+        .prepare(
+          `INSERT INTO company_members (company_id, account_id, role, state, created_at)
+           VALUES (?, ?, 'owner', 'active', 1)`,
+        )
+        .run(companyId, ownerId);
+      instance.db
+        .prepare(
+          `INSERT INTO company_subscriptions (
+             company_id, processor_subscription_id, quantity, status,
+             collection_method, updated_at, first_paid_at
+           ) VALUES (?, ?, 3, 'trialing', 'charge_automatically', 1, 1)`,
+        )
+        .run(companyId, subId);
+      ensureBillingSubscription(instance.db, {
+        processorSubscriptionId: subId,
+        subjectKind: 'company',
+        subjectId: companyId,
+        now: 1,
+      });
+    });
+
+    const response = await reconcileObserve({
+      runId: 'run-company-obs',
+      observations: [
+        {
+          processorSubscriptionId: subId,
+          subscription: {
+            status: 'active',
+            customer: `cus_${subId}`,
+            currentPeriodEnd: 1234,
+            canceledAt: null,
+            pauseCollection: false,
+          },
+        },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { appliedSubscriptions: number };
+    expect(body.appliedSubscriptions).toBe(1);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(
+        instance.db
+          .prepare(
+            `SELECT status, current_period_end AS currentPeriodEnd,
+                    collection_paused AS collectionPaused
+             FROM company_subscriptions WHERE processor_subscription_id = ?`,
+          )
+          .get(subId),
+      ).toEqual({ status: 'active', currentPeriodEnd: 1234, collectionPaused: 0 });
+      expect(
+        instance.db
+          .prepare(
+            `SELECT source, status FROM entitlements
+             WHERE account_id = ? AND source = 'company'`,
+          )
+          .get(ownerId),
+      ).toEqual({ source: 'company', status: 'active' });
+    });
+  });
+
+  it('skips an unrepresentable fetched company status', async () => {
+    const companyId = 'co_reconcile_weird';
+    const subId = 'sub_reconcile_company_weird';
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(
+          `INSERT INTO companies (company_id, name, created_at, updated_at)
+           VALUES (?, 'Weird Co', 1, 1)`,
+        )
+        .run(companyId);
+      instance.db
+        .prepare(
+          `INSERT INTO company_subscriptions (
+             company_id, processor_subscription_id, quantity, status,
+             collection_method, updated_at
+           ) VALUES (?, ?, 3, 'active', 'charge_automatically', 1)`,
+        )
+        .run(companyId, subId);
+      ensureBillingSubscription(instance.db, {
+        processorSubscriptionId: subId,
+        subjectKind: 'company',
+        subjectId: companyId,
+        now: 1,
+      });
+    });
+
+    const response = await reconcileObserve({
+      runId: 'run-company-weird',
+      observations: [
+        {
+          processorSubscriptionId: subId,
+          subscription: {
+            status: 'weird',
+            customer: null,
+            currentPeriodEnd: null,
+            canceledAt: null,
+            pauseCollection: false,
+          },
+        },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { appliedSubscriptions: number };
+    expect(body.appliedSubscriptions).toBe(0);
+  });
+
+  it('cancels a company collection when the fetched subscription is canceled', async () => {
+    const companyId = 'co_reconcile_cancel';
+    const subId = 'sub_reconcile_company_cancel';
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(
+          `INSERT INTO companies (company_id, name, created_at, updated_at)
+           VALUES (?, 'Cancel Co', 1, 1)`,
+        )
+        .run(companyId);
+      instance.db
+        .prepare(
+          `INSERT INTO company_subscriptions (
+             company_id, processor_subscription_id, quantity, status,
+             collection_method, updated_at
+           ) VALUES (?, ?, 3, 'active', 'charge_automatically', 1)`,
+        )
+        .run(companyId, subId);
+      ensureBillingSubscription(instance.db, {
+        processorSubscriptionId: subId,
+        subjectKind: 'company',
+        subjectId: companyId,
+        now: 1,
+      });
+    });
+
+    const response = await reconcileObserve({
+      runId: 'run-company-cancel',
+      observations: [
+        {
+          processorSubscriptionId: subId,
+          subscription: {
+            status: 'canceled',
+            customer: `cus_${subId}`,
+            currentPeriodEnd: null,
+            canceledAt: 300,
+            pauseCollection: true,
+          },
+        },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { appliedSubscriptions: number };
+    expect(body.appliedSubscriptions).toBe(1);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(
+        instance.db
+          .prepare(
+            `SELECT status, collection_paused AS collectionPaused
+             FROM company_subscriptions WHERE processor_subscription_id = ?`,
+          )
+          .get(subId),
+      ).toEqual({ status: 'canceled', collectionPaused: 1 });
+      expect(readSubOrdering(instance, subId)?.desired_collection).toBe('canceled');
+    });
+  });
+
+  it('skips a company observation when the seat row is missing', async () => {
+    const companyId = 'co_reconcile_missing_seat';
+    const subId = 'sub_reconcile_missing_seat';
+    await runInDurableObject(identityStub(), (instance) => {
+      ensureBillingSubscription(instance.db, {
+        processorSubscriptionId: subId,
+        subjectKind: 'company',
+        subjectId: companyId,
+        now: 1,
+      });
+    });
+
+    const response = await reconcileObserve({
+      runId: 'run-company-missing-seat',
+      observations: [
+        {
+          processorSubscriptionId: subId,
+          subscription: {
+            status: 'active',
+            customer: null,
+            currentPeriodEnd: null,
+            canceledAt: null,
+            pauseCollection: false,
+          },
+        },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { appliedSubscriptions: number };
+    expect(body.appliedSubscriptions).toBe(0);
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(
+        instance.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM company_subscriptions WHERE processor_subscription_id = ?`,
+          )
+          .get(subId),
+      ).toEqual({ count: 0 });
+    });
+  });
+});
+
+describe('identity /billing/events/apply: payload normalization and company class-1', () => {
+  function seedPersonalSubscription(
+    instance: IdentityDO,
+    accountId: string,
+    subId: string,
+    status: 'trialing' | 'active' | 'past_due' = 'active',
+  ): void {
+    seedEntitlement(instance, accountId, {
+      planId: 'tutor_pro_monthly',
+      status,
+      processorCustomerId: `cus_${subId}`,
+      processorSubscriptionId: subId,
+    });
+    ensureBillingSubscription(instance.db, {
+      processorSubscriptionId: subId,
+      subjectKind: 'account',
+      subjectId: accountId,
+      now: 1,
+    });
+  }
+
+  function seedCompanySeat(
+    instance: IdentityDO,
+    companyId: string,
+    subId: string,
+    ownerAccountId?: string,
+  ): void {
+    instance.db
+      .prepare(
+        `INSERT INTO companies (company_id, name, created_at, updated_at)
+         VALUES (?, ?, 1, 1)`,
+      )
+      .run(companyId, `Co ${companyId}`);
+    if (ownerAccountId !== undefined) {
+      instance.db
+        .prepare(
+          `INSERT INTO company_members (company_id, account_id, role, state, created_at)
+           VALUES (?, ?, 'owner', 'active', 1)`,
+        )
+        .run(companyId, ownerAccountId);
+    }
+    instance.db
+      .prepare(
+        `INSERT INTO company_subscriptions (
+           company_id, processor_subscription_id, quantity, status,
+           collection_method, updated_at, first_paid_at
+         ) VALUES (?, ?, 3, 'trialing', 'charge_automatically', 1, 1)`,
+      )
+      .run(companyId, subId);
+  }
+
+  it('ignores a subscription payload without an id', async () => {
+    const response = await postApply(
+      applyBody(
+        { id: 'evt_shape_sub_noid', type: 'customer.subscription.updated', created: 100 },
+        { subscription: { status: 'active' } },
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ outcome: 'applied' });
+  });
+
+  it('rolls back a class-1 event whose subscription status is not a string', async () => {
+    const accountId = await newAccount('billing-shape-status');
+    const subId = 'sub_shape_status';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedPersonalSubscription(instance, accountId, subId);
+    });
+
+    const response = await postApply(
+      applyBody(
+        { id: 'evt_shape_sub_status', type: 'customer.subscription.updated', created: 100 },
+        { subscription: { ...subscriptionBody(subId, 'active'), status: 42 } },
+      ),
+    );
+    expect(response.status).toBe(500);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(readEvent(instance, 'evt_shape_sub_status')).toBeUndefined();
+      expect(readEntitlement(instance, accountId)?.status).toBe('active');
+    });
+  });
+
+  it('applies both object and array pause_collection shapes', async () => {
+    const accountId = await newAccount('billing-shape-pause');
+    const subId = 'sub_shape_pause';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedPersonalSubscription(instance, accountId, subId);
+    });
+
+    const paused = await postApply(
+      applyBody(
+        { id: 'evt_shape_pause_obj', type: 'customer.subscription.updated', created: 100 },
+        {
+          subscription: subscriptionBody(subId, 'active', {
+            customer: `cus_${subId}`,
+            pauseCollection: { behavior: 'void' },
+          }),
+        },
+      ),
+    );
+    expect(paused.status).toBe(200);
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(readEntitlement(instance, accountId)?.collection_paused).toBe(1);
+    });
+
+    const resumed = await postApply(
+      applyBody(
+        { id: 'evt_shape_pause_array', type: 'customer.subscription.updated', created: 200 },
+        {
+          subscription: { ...subscriptionBody(subId, 'active'), pauseCollection: [] },
+        },
+      ),
+    );
+    expect(resumed.status).toBe(200);
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(readEntitlement(instance, accountId)?.collection_paused).toBe(0);
+    });
+  });
+
+  it('normalizes malformed invoice and checkout payloads', async () => {
+    const accountId = await newAccount('billing-shape-normalize');
+    const subId = 'sub_shape_normalize';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedPersonalSubscription(instance, accountId, subId);
+    });
+
+    const noInvoiceId = await postApply(
+      applyBody(
+        { id: 'evt_shape_invoice_noid', type: 'invoice.paid', created: 100 },
+        { invoice: { customer: `cus_${subId}`, amountPaid: 100 } },
+      ),
+    );
+    expect(noInvoiceId.status).toBe(200);
+
+    const malformedInvoice = await postApply(
+      applyBody(
+        { id: 'evt_shape_invoice_odd', type: 'invoice.paid', created: 200 },
+        {
+          invoice: {
+            id: 'in_shape_invoice_odd',
+            customer: 42,
+            status: 7,
+            amountPaid: 'x',
+            currency: 5,
+            paymentIntent: 9,
+            payments: 'nope',
+          },
+        },
+      ),
+    );
+    expect(malformedInvoice.status).toBe(200);
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(
+        instance.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM billing_payments WHERE invoice_id = ?`,
+          )
+          .get('in_shape_invoice_odd'),
+      ).toEqual({ count: 0 });
+    });
+
+    const noCheckoutId = await postApply(
+      applyBody(
+        { id: 'evt_shape_checkout_noid', type: 'checkout.session.completed', created: 300 },
+        { checkout: { clientReferenceId: accountId, customer: `cus_${subId}` } },
+      ),
+    );
+    expect(noCheckoutId.status).toBe(200);
+
+    const oddCheckout = await postApply(
+      applyBody(
+        { id: 'evt_shape_checkout_odd', type: 'checkout.session.completed', created: 400 },
+        { checkout: { id: 'cs_shape_checkout_odd', clientReferenceId: 42, customer: 7 } },
+      ),
+    );
+    expect(oddCheckout.status).toBe(200);
+  });
+
+  it('dispatches class-2 events whose objects are missing', async () => {
+    const failedNoObjects = await postApply(
+      applyBody({ id: 'evt_shape_failed_empty', type: 'invoice.payment_failed', created: 100 }, {}),
+    );
+    expect(failedNoObjects.status).toBe(200);
+    expect(await failedNoObjects.json()).toEqual({ outcome: 'applied' });
+
+    const disputeNoObject = await postApply(
+      applyBody(
+        { id: 'evt_shape_dispute_empty', type: 'charge.dispute.funds_withdrawn', created: 200 },
+        {},
+      ),
+    );
+    expect(disputeNoObject.status).toBe(200);
+    expect(await disputeNoObject.json()).toEqual({
+      outcome: 'ignored',
+      outcomeDetail: 'unmapped_dispute',
+    });
+
+    const checkoutNoObject = await postApply(
+      applyBody(
+        { id: 'evt_shape_checkout_empty', type: 'checkout.session.completed', created: 300 },
+        {},
+      ),
+    );
+    expect(checkoutNoObject.status).toBe(200);
+    expect(await checkoutNoObject.json()).toEqual({ outcome: 'applied' });
+  });
+
+  it('ignores dispute payloads without an id, charge, or charge customer', async () => {
+    const noId = await postApply(
+      applyBody(
+        { id: 'evt_shape_dispute_noid', type: 'charge.dispute.created', created: 100 },
+        { dispute: { status: 'needs_response', charge: { customer: 'cus_shape_dispute' } } },
+      ),
+    );
+    expect(noId.status).toBe(200);
+    expect(await noId.json()).toEqual({ outcome: 'ignored', outcomeDetail: 'unmapped_dispute' });
+
+    const noCharge = await postApply(
+      applyBody(
+        { id: 'evt_shape_dispute_nocharge', type: 'charge.dispute.created', created: 200 },
+        { dispute: { id: 'dp_shape_nocharge', status: 'needs_response' } },
+      ),
+    );
+    expect(noCharge.status).toBe(200);
+    expect(await noCharge.json()).toEqual({ outcome: 'ignored', outcomeDetail: 'unmapped_dispute' });
+
+    const oddCharge = await postApply(
+      applyBody(
+        { id: 'evt_shape_dispute_odd', type: 'charge.dispute.created', created: 300 },
+        { dispute: { id: 'dp_shape_odd', status: 42, charge: { customer: 42 } } },
+      ),
+    );
+    expect(oddCharge.status).toBe(200);
+    expect(await oddCharge.json()).toEqual({ outcome: 'ignored', outcomeDetail: 'unmapped_dispute' });
+  });
+
+  it('maps a dispute without a status to a review hold', async () => {
+    const accountId = await newAccount('billing-shape-dispute-review');
+    const subId = 'sub_shape_dispute_review';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedPersonalSubscription(instance, accountId, subId);
+    });
+
+    const response = await postApply(
+      applyBody(
+        { id: 'evt_shape_dispute_review', type: 'charge.dispute.created', created: 100 },
+        {
+          dispute: {
+            id: 'dp_shape_review',
+            charge: { id: 'ch_shape_review', customer: `cus_${subId}` },
+          },
+        },
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      outcome: 'applied',
+      collection: { subjectKind: 'account', subjectId: accountId },
+    });
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(
+        instance.db
+          .prepare(`SELECT state FROM billing_dispute_holds WHERE dispute_id = ?`)
+          .get('dp_shape_review'),
+      ).toEqual({ state: 'review' });
+      expect(readSubOrdering(instance, subId)?.desired_collection).toBe('paused');
+    });
+  });
+
+  it('applies a refund payload without a charge id without recording an effect', async () => {
+    const response = await postApply(
+      applyBody(
+        { id: 'evt_shape_refund_noid', type: 'charge.refunded', created: 100 },
+        { charge: { customer: 'cus_shape_refund' } },
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ outcome: 'applied' });
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(
+        instance.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM billing_effects
+             WHERE effect_kind = 'refund' AND processor_event_id = ?`,
+          )
+          .get('evt_shape_refund_noid'),
+      ).toEqual({ count: 0 });
+    });
+
+    const oddCustomer = await postApply(
+      applyBody(
+        { id: 'evt_shape_refund_odd', type: 'charge.refunded', created: 200 },
+        { charge: { id: 'ch_shape_refund_odd', customer: 42 } },
+      ),
+    );
+    expect(oddCustomer.status).toBe(200);
+    expect(await oddCustomer.json()).toEqual({ outcome: 'applied' });
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(
+        instance.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM billing_effects
+             WHERE effect_kind = 'refund' AND object_id = ?`,
+          )
+          .get('ch_shape_refund_odd'),
+      ).toEqual({ count: 1 });
+      expect(
+        instance.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM referral_events
+             WHERE kind = 'reversal' AND object_id = ?`,
+          )
+          .get('ch_shape_refund_odd'),
+      ).toEqual({ count: 0 });
+    });
+  });
+
+  it('records a payment with a null payment intent when the invoice omits it', async () => {
+    const accountId = await newAccount('billing-shape-payment-intent');
+    const subId = 'sub_shape_payment_intent';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedPersonalSubscription(instance, accountId, subId);
+    });
+
+    const response = await postApply(
+      applyBody(
+        { id: 'evt_shape_payment_intent', type: 'invoice.paid', created: 100 },
+        {
+          invoice: {
+            id: 'in_shape_payment_intent',
+            customer: `cus_${subId}`,
+            amountPaid: 250,
+          },
+        },
+      ),
+    );
+    expect(response.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(
+        instance.db
+          .prepare(
+            `SELECT payment_intent_id AS paymentIntentId, amount_cents AS amountCents
+             FROM billing_payments WHERE invoice_id = ?`,
+          )
+          .get('in_shape_payment_intent'),
+      ).toEqual({ paymentIntentId: null, amountCents: 250 });
+    });
+  });
+
+  it('applies a paid invoice without a customer without confirming a referral', async () => {
+    const response = await postApply(
+      applyBody(
+        { id: 'evt_shape_invoice_no_customer', type: 'invoice.paid', created: 100 },
+        { invoice: { id: 'in_shape_invoice_no_customer', amountPaid: 100 } },
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ outcome: 'applied' });
+  });
+
+  it('applies a company class-1 subscription state to the seat row', async () => {
+    const ownerId = await newAccount('billing-company-class1-owner');
+    const companyId = 'co_class1_apply';
+    const subId = 'sub_co_class1_apply';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedCompanySeat(instance, companyId, subId, ownerId);
+    });
+
+    const response = await postApply(
+      applyBody(
+        { id: 'evt_co_class1_active', type: 'customer.subscription.updated', created: 300 },
+        {
+          subscription: subscriptionBody(subId, 'active', {
+            customer: `cus_${subId}`,
+            currentPeriodEnd: 1000,
+          }),
+        },
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ outcome: 'applied' });
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(
+        instance.db
+          .prepare(
+            `SELECT status, current_period_end AS currentPeriodEnd
+             FROM company_subscriptions WHERE processor_subscription_id = ?`,
+          )
+          .get(subId),
+      ).toEqual({ status: 'active', currentPeriodEnd: 1000 });
+      expect(readSubOrdering(instance, subId)?.subject_kind).toBe('company');
+      expect(
+        instance.db
+          .prepare(
+            `SELECT source, status FROM entitlements
+             WHERE account_id = ? AND source = 'company'`,
+          )
+          .get(ownerId),
+      ).toEqual({ source: 'company', status: 'active' });
+    });
+  });
+
+  it('rolls back a company class-1 event with an unmapped status', async () => {
+    const ownerId = await newAccount('billing-company-class1-weird-owner');
+    const companyId = 'co_class1_weird';
+    const subId = 'sub_co_class1_weird';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedCompanySeat(instance, companyId, subId, ownerId);
+    });
+
+    const response = await postApply(
+      applyBody(
+        { id: 'evt_co_class1_weird', type: 'customer.subscription.updated', created: 300 },
+        { subscription: subscriptionBody(subId, 'weird', { customer: `cus_${subId}` }) },
+      ),
+    );
+    expect(response.status).toBe(500);
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(readEvent(instance, 'evt_co_class1_weird')).toBeUndefined();
+      expect(
+        instance.db
+          .prepare(
+            `SELECT status FROM company_subscriptions WHERE processor_subscription_id = ?`,
+          )
+          .get(subId),
+      ).toEqual({ status: 'trialing' });
+    });
+  });
+
+  it('cancels a company collection when a class-1 event reports canceled', async () => {
+    const ownerId = await newAccount('billing-company-class1-cancel-owner');
+    const companyId = 'co_class1_cancel';
+    const subId = 'sub_co_class1_cancel';
+    await runInDurableObject(identityStub(), (instance) => {
+      seedCompanySeat(instance, companyId, subId, ownerId);
+    });
+
+    const response = await postApply(
+      applyBody(
+        { id: 'evt_co_class1_cancel', type: 'customer.subscription.deleted', created: 400 },
+        {
+          subscription: subscriptionBody(subId, 'canceled', {
+            customer: `cus_${subId}`,
+            canceledAt: 400,
+          }),
+        },
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ outcome: 'applied' });
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(
+        instance.db
+          .prepare(
+            `SELECT status, collection_paused AS collectionPaused
+             FROM company_subscriptions WHERE processor_subscription_id = ?`,
+          )
+          .get(subId),
+      ).toEqual({ status: 'canceled', collectionPaused: 1 });
+      expect(readSubOrdering(instance, subId)?.desired_collection).toBe('canceled');
+    });
+  });
+
+  it('skips a company class-1 event when the seat row is missing', async () => {
+    const companyId = 'co_class1_missing_seat';
+    const subId = 'sub_co_class1_missing_seat';
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(
+          `INSERT INTO companies (company_id, name, created_at, updated_at)
+           VALUES (?, 'Missing Seat Co', 1, 1)`,
+        )
+        .run(companyId);
+      ensureBillingSubscription(instance.db, {
+        processorSubscriptionId: subId,
+        subjectKind: 'company',
+        subjectId: companyId,
+        now: 1,
+      });
+    });
+
+    const response = await postApply(
+      applyBody(
+        { id: 'evt_co_class1_missing_seat', type: 'customer.subscription.updated', created: 100 },
+        { subscription: subscriptionBody(subId, 'active', { customer: `cus_${subId}` }) },
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ outcome: 'applied' });
+  });
+
+  it('skips a class-1 event for an account with no personal entitlement', async () => {
+    const accountId = await newAccount('billing-class1-no-entitlement');
+    const subId = 'sub_class1_no_entitlement';
+    await runInDurableObject(identityStub(), (instance) => {
+      ensureBillingSubscription(instance.db, {
+        processorSubscriptionId: subId,
+        subjectKind: 'account',
+        subjectId: accountId,
+        now: 1,
+      });
+    });
+
+    const response = await postApply(
+      applyBody(
+        { id: 'evt_class1_no_entitlement', type: 'customer.subscription.updated', created: 100 },
+        { subscription: subscriptionBody(subId, 'active', { customer: `cus_${subId}` }) },
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ outcome: 'applied' });
+
+    await runInDurableObject(identityStub(), (instance) => {
+      expect(readEntitlement(instance, accountId)).toBeUndefined();
     });
   });
 });

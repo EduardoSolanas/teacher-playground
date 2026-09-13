@@ -670,3 +670,274 @@ describe('Worker /api/company routes', () => {
     ).toEqual({ actor: 'operator:ops@example.test' });
   });
 });
+
+describe('Worker /api/company validation and operator error mapping', () => {
+  const OPERATOR_EMAIL = 'ops@example.test';
+  const INVOICE_APPROVAL = '/api/company/operator/invoice-approval';
+  const DISPUTE_REVIEW = '/api/company/operator/disputes/review';
+
+  function operatorPost(
+    path: string,
+    token: string,
+    body: unknown,
+    contentType = 'application/json',
+  ): Promise<Response> {
+    return SELF.fetch(`${TEACHER_BASE}${path}`, {
+      method: 'POST',
+      headers: {
+        Origin: TEACHER_BASE,
+        'Cf-Access-Jwt-Assertion': token,
+        'content-type': contentType,
+      },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    });
+  }
+
+  async function createCompanyForApi(
+    session: Awaited<ReturnType<typeof bootstrapLocalSession>>,
+    name: string,
+    operationId: string,
+  ): Promise<string> {
+    const response = await authenticatedFetch(COMPANY_API, session, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, operationId }),
+    });
+    expect(response.status).toBe(201);
+    return ((await response.json()) as { company: { id: string } }).company.id;
+  }
+
+  it('answers 405 for company routes reached with the wrong method', async () => {
+    const token = await localAccessToken('company-method-boundary');
+    const cases: Array<[string, string]> = [
+      [COMPANY_INVITE_REDEEM_API, 'POST'],
+      [COMPANY_SEATS_API, 'POST'],
+      [COMPANY_MEMBER_REVOKE_API, 'POST'],
+      [COMPANY_OWNER_API, 'POST'],
+      [INVOICE_APPROVAL, 'POST'],
+      [DISPUTE_REVIEW, 'POST'],
+    ];
+    for (const [path, allow] of cases) {
+      const response = await SELF.fetch(`${TEACHER_BASE}${path}`, {
+        method: 'GET',
+        headers: { Origin: TEACHER_BASE, 'Cf-Access-Jwt-Assertion': token },
+      });
+      expect(response.status, path).toBe(405);
+      expect(response.headers.get('allow'), path).toBe(allow);
+    }
+  });
+
+  it('answers 401 on company mutations without a local session', async () => {
+    const token = await localAccessToken('company-session-boundary');
+    const cases: Array<[string, unknown]> = [
+      [COMPANY_INVITES_API, { role: 'member' }],
+      [COMPANY_INVITE_REDEEM_API, { token: 'A'.repeat(43) }],
+      [COMPANY_SEATS_API, { quantity: 2, operationId: 'op_no_session_seat' }],
+      [COMPANY_MEMBER_REVOKE_API, { accountId: 'acct_no_session' }],
+      [COMPANY_OWNER_API, { accountId: 'acct_no_session' }],
+    ];
+    for (const [path, body] of cases) {
+      const response = await SELF.fetch(`${TEACHER_BASE}${path}`, {
+        method: 'POST',
+        headers: {
+          Origin: TEACHER_BASE,
+          'Cf-Access-Jwt-Assertion': token,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      expect(response.status, path).toBe(401);
+      expect(await response.json(), path).toEqual({ error: 'Unauthorized' });
+    }
+  });
+
+  it('rejects non-JSON company bodies before any identity call', async () => {
+    const session = await bootstrapLocalSession('company-non-json-bodies');
+    const operatorToken = await localAccessToken(
+      'company-non-json-operator',
+      'valid',
+      undefined,
+      OPERATOR_EMAIL,
+    );
+    const cases: Array<[string, string]> = [
+      [COMPANY_API, 'POST'],
+      [COMPANY_API, 'PATCH'],
+      [COMPANY_INVITES_API, 'POST'],
+      [COMPANY_INVITES_API, 'DELETE'],
+      [COMPANY_INVITE_REDEEM_API, 'POST'],
+      [COMPANY_SEATS_API, 'POST'],
+      [COMPANY_MEMBER_REVOKE_API, 'POST'],
+      [COMPANY_OWNER_API, 'POST'],
+    ];
+    for (const [path, method] of cases) {
+      const response = await authenticatedFetch(path, session, {
+        method,
+        headers: { 'content-type': 'text/plain' },
+        body: 'not-json',
+      });
+      expect(response.status, `${method} ${path}`).toBe(415);
+    }
+    for (const path of [INVOICE_APPROVAL, DISPUTE_REVIEW]) {
+      const response = await operatorPost(path, operatorToken, 'not-json', 'text/plain');
+      expect(response.status, path).toBe(415);
+    }
+  });
+
+  it('rejects malformed JSON and out-of-shape company bodies', async () => {
+    const session = await bootstrapLocalSession('company-invalid-bodies');
+    const operatorToken = await localAccessToken(
+      'company-invalid-operator',
+      'valid',
+      undefined,
+      OPERATOR_EMAIL,
+    );
+    const cases: Array<[string, string, unknown]> = [
+      [COMPANY_API, 'POST', []],
+      [COMPANY_API, 'POST', {}],
+      [COMPANY_API, 'POST', { name: '', operationId: 'op_invalid' }],
+      [COMPANY_API, 'POST', { name: 'x', operationId: 'bad id' }],
+      [COMPANY_API, 'PATCH', []],
+      [COMPANY_API, 'PATCH', { name: 42 }],
+      [COMPANY_API, 'PATCH', { name: '  ' }],
+      [COMPANY_INVITES_API, 'POST', []],
+      [COMPANY_INVITES_API, 'POST', { role: 'owner' }],
+      [COMPANY_INVITES_API, 'POST', { role: 'member', extra: 1 }],
+      [COMPANY_INVITES_API, 'DELETE', []],
+      [COMPANY_INVITES_API, 'DELETE', { inviteHash: 'zz' }],
+      [COMPANY_INVITE_REDEEM_API, 'POST', []],
+      [COMPANY_INVITE_REDEEM_API, 'POST', { token: '' }],
+      [COMPANY_SEATS_API, 'POST', []],
+      [COMPANY_SEATS_API, 'POST', { quantity: 0, operationId: 'op_invalid_seat' }],
+      [COMPANY_SEATS_API, 'POST', { quantity: 1.5, operationId: 'op_invalid_seat' }],
+      [COMPANY_MEMBER_REVOKE_API, 'POST', []],
+      [COMPANY_MEMBER_REVOKE_API, 'POST', { accountId: '' }],
+      [COMPANY_OWNER_API, 'POST', []],
+      [COMPANY_OWNER_API, 'POST', { accountId: '' }],
+    ];
+    for (const [path, method, body] of cases) {
+      const response = await authenticatedFetch(path, session, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(response.status, `${method} ${path} ${JSON.stringify(body)}`).toBe(400);
+    }
+
+    const invalidJson = await authenticatedFetch(COMPANY_API, session, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{not-json',
+    });
+    expect(invalidJson.status).toBe(400);
+
+    const operatorCases: Array<[string, unknown]> = [
+      [INVOICE_APPROVAL, []],
+      [INVOICE_APPROVAL, { companyId: 'co_body' }],
+      [INVOICE_APPROVAL, { companyId: 'co_body', quantity: 0, operationId: 'op_body' }],
+      [DISPUTE_REVIEW, []],
+      [DISPUTE_REVIEW, { disputeId: 'd', outcome: 'draw', operationId: 'op_body' }],
+      [DISPUTE_REVIEW, { disputeId: 'd', outcome: 'lost', operationId: 'bad id' }],
+    ];
+    for (const [path, body] of operatorCases) {
+      const response = await operatorPost(path, operatorToken, body);
+      expect(response.status, `${path} ${JSON.stringify(body)}`).toBe(400);
+    }
+  });
+
+  it('maps an unknown company and a changed replay through the operator surface', async () => {
+    const operatorToken = await localAccessToken(
+      'company-operator-errors',
+      'valid',
+      undefined,
+      OPERATOR_EMAIL,
+    );
+
+    const missing = await operatorPost(INVOICE_APPROVAL, operatorToken, {
+      companyId: 'co_missing_operator',
+      quantity: 12,
+      operationId: 'op_operator_missing',
+    });
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: 'Not found' });
+
+    const owner = await bootstrapLocalSession('company-operator-conflict-owner');
+    const companyId = await createCompanyForApi(
+      owner,
+      'Operator Conflict Co',
+      'op_operator_conflict_create',
+    );
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(`UPDATE companies SET processor_customer_id = ? WHERE company_id = ?`)
+        .run('cus_operator_conflict', companyId);
+    });
+
+    const approved = await operatorPost(INVOICE_APPROVAL, operatorToken, {
+      companyId,
+      quantity: 12,
+      operationId: 'op_operator_conflict',
+    });
+    expect(approved.status).toBe(202);
+
+    const conflict = await operatorPost(INVOICE_APPROVAL, operatorToken, {
+      companyId,
+      quantity: 13,
+      operationId: 'op_operator_conflict',
+    });
+    expect(conflict.status).toBe(409);
+  });
+
+  it('returns the recorded outcome when a settled approval is replayed', async () => {
+    const operatorToken = await localAccessToken(
+      'company-operator-settled-replay',
+      'valid',
+      undefined,
+      OPERATOR_EMAIL,
+    );
+    const owner = await bootstrapLocalSession('company-operator-settled-owner');
+    const companyId = await createCompanyForApi(
+      owner,
+      'Operator Settled Co',
+      'op_operator_settled_create',
+    );
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare(`UPDATE companies SET processor_customer_id = ? WHERE company_id = ?`)
+        .run('cus_operator_settled', companyId);
+    });
+
+    const body = { companyId, quantity: 12, operationId: 'op_operator_settled' };
+    expect((await operatorPost(INVOICE_APPROVAL, operatorToken, body)).status).toBe(202);
+
+    const settled = await identityStub().fetch('https://identity/operator/invoice-approval/settle', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        operatorEmail: OPERATOR_EMAIL,
+        companyId,
+        operationId: body.operationId,
+        quantity: body.quantity,
+        outcome: 'success',
+        status: 'active',
+        processorSubscriptionId: 'sub_operator_settled',
+        currentPeriodEnd: 1_700_000_000_000,
+      }),
+    });
+    expect(settled.status).toBe(200);
+    expect(await settled.json()).toEqual({ status: 'settled' });
+
+    await runInDurableObject(identityStub(), (instance) => {
+      instance.db
+        .prepare('DELETE FROM company_subscriptions WHERE company_id = ?')
+        .run(companyId);
+    });
+
+    const replay = await operatorPost(INVOICE_APPROVAL, operatorToken, body);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual({
+      status: 'created',
+      operationId: body.operationId,
+      processorSubscriptionId: null,
+    });
+  });
+});

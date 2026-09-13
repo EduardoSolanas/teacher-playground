@@ -361,3 +361,118 @@ describe('Task 8c — guest API forwarding', () => {
     expect(settings.status).toBe(200);
   });
 });
+
+describe('Task 8d — guest auth and signaling boundaries', () => {
+  afterEach(() => {
+    resetAuthEventWriterForTests();
+  });
+
+  it('reuses an existing guest session instead of minting a second account', async () => {
+    const { roomId } = await createTeacherRoom('guest-auth-reuse');
+    const pin = await pinForRoom(roomId);
+    const first = await SELF.fetch(`${GUEST}/auth/guest`, guestAuthInit({
+      roomId,
+      pin,
+      displayName: 'Ada',
+    }));
+    expect(first.status).toBe(200);
+    const cookie = first.headers.get('set-cookie')!.split(';', 1)[0];
+
+    const second = await SELF.fetch(`${GUEST}/auth/guest`, guestAuthInit(
+      { roomId, pin, displayName: 'Ada' },
+      { Cookie: cookie },
+    ));
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual({ ok: true });
+    expect(second.headers.get('set-cookie')).toBeNull();
+
+    const access = await SELF.fetch(`${GUEST}/api/whiteboard/room/${roomId}/access`, {
+      headers: { Cookie: cookie },
+    });
+    expect(access.status).toBe(200);
+  });
+
+  it('rejects a JSON body that is not a guest join request', async () => {
+    const bodies: unknown[] = [
+      null,
+      [],
+      'text',
+      42,
+      { roomId: HEX_ROOM, pin: '123456' },
+      { roomId: 'bad room', pin: '123456', displayName: 'Ada' },
+      { roomId: HEX_ROOM, pin: 123456, displayName: 'Ada' },
+      { roomId: HEX_ROOM, pin: '123456', displayName: '   ' },
+      { roomId: HEX_ROOM, pin: '123456', displayName: 'x'.repeat(101) },
+      { roomId: HEX_ROOM, pin: '123456', displayName: 'Ada', extra: 1 },
+    ];
+    for (const body of bodies) {
+      const response = await SELF.fetch(`${GUEST}/auth/guest`, guestAuthInit(body));
+      expect(response.status, JSON.stringify(body)).toBe(400);
+      expect(await response.json(), JSON.stringify(body)).toEqual({ error: 'Invalid body' });
+    }
+  });
+
+  it('rejects an oversized streamed body without Content-Length', async () => {
+    const padded = JSON.stringify({
+      roomId: HEX_ROOM,
+      pin: '123456',
+      displayName: 'x'.repeat(MAX_BODY_BYTES),
+    });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(padded));
+        controller.close();
+      },
+    });
+    const response = await SELF.fetch(`${GUEST}/auth/guest`, {
+      method: 'POST',
+      headers: { Origin: GUEST, 'content-type': 'application/json' },
+      body: stream,
+      duplex: 'half',
+    } as RequestInit);
+    expect(response.status).toBe(413);
+  });
+
+  it('rate-limits an unidentified client under the shared unknown key', async () => {
+    const { roomId } = await createTeacherRoom('guest-auth-unknown-ip');
+    await pinForRoom(roomId);
+    const attempt = () => SELF.fetch(`${GUEST}/auth/guest`, guestAuthInit(
+      { roomId, pin: '000000', displayName: 'Ada' },
+      { 'x-test-strict-rate-limit': '1' },
+    ));
+
+    for (let index = 0; index < 5; index += 1) {
+      const response = await attempt();
+      expect(response.status, `attempt ${index}`).toBe(403);
+    }
+    const limited = await attempt();
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('retry-after')).not.toBeNull();
+  });
+
+  it('refuses guest signaling and A/V calls that do not name a valid room', async () => {
+    const signaling = await SELF.fetch(`${GUEST}/signaling`, { headers: { Origin: GUEST } });
+    expect(signaling.status).toBe(400);
+    expect(await signaling.text()).toBe('Missing or invalid room');
+
+    const invalidSignaling = await SELF.fetch(`${GUEST}/signaling?room=bad%20room`, {
+      headers: { Origin: GUEST },
+    });
+    expect(invalidSignaling.status).toBe(400);
+    expect(await invalidSignaling.text()).toBe('Missing or invalid room');
+
+    const invalidAv = await SELF.fetch(`${GUEST}/api/av/token?roomId=bad%20room`, {
+      method: 'POST',
+      headers: { Origin: GUEST },
+    });
+    expect(invalidAv.status).toBe(400);
+    expect(await invalidAv.text()).toBe('Invalid room id');
+
+    const av = await SELF.fetch(`${GUEST}/api/av/token`, {
+      method: 'POST',
+      headers: { Origin: GUEST },
+    });
+    expect(av.status).toBe(400);
+    expect(await av.text()).toBe('Invalid room id');
+  });
+});

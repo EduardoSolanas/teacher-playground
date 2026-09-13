@@ -511,3 +511,669 @@ describe('TeacherRoomList states', () => {
     expect(icon?.classList.contains('w-3.5')).toBe(true);
   });
 });
+
+describe('TeacherRoomList freshness labels', () => {
+  it('names a fresh, an hour-old and a week-old room', () => {
+    const now = Date.now();
+    render(
+      <TeacherRoomList
+        rooms={[
+          { roomId: 'room-now', updatedAt: now },
+          { roomId: 'room-mins', updatedAt: now - 10 * 60_000 },
+          { roomId: 'room-days', updatedAt: now - 5 * 24 * 60 * 60_000 },
+        ]}
+        onOpen={() => {}}
+        request={closedSettingsRequest}
+      />,
+    );
+
+    expect(screen.getByTestId('whiteboard-room-date-room-now').textContent).toContain('Just now');
+    expect(screen.getByTestId('whiteboard-room-date-room-mins').textContent).toContain('10m ago');
+    expect(screen.getByTestId('whiteboard-room-date-room-days').textContent).toContain('5d ago');
+  });
+});
+
+describe('readGuestSettings payload shapes', () => {
+  it('treats a payload that is not an object as closed settings', async () => {
+    const loaded = await readGuestSettings(
+      async () => jsonResponse(200, null),
+      'room-alpha',
+    );
+
+    expect(loaded).toEqual({
+      guestAccess: false,
+      guestPin: null,
+      guestPinExpiresAt: null,
+      lockoutUntil: null,
+    });
+  });
+
+  it('reads a numeric lockout window and leaves the rest behind', async () => {
+    const loaded = await readGuestSettings(
+      async () => jsonResponse(200, {
+        guestAccess: true,
+        guestPin: '004321',
+        lockoutUntil: 1_700_000_000_000,
+      }),
+      'room-alpha',
+    );
+
+    expect(loaded).toEqual({
+      guestAccess: true,
+      guestPin: '004321',
+      guestPinExpiresAt: null,
+      lockoutUntil: 1_700_000_000_000,
+    });
+  });
+});
+
+describe('TeacherRoomList row menu details', () => {
+  it('closes the menu when its kebab is pressed again', () => {
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={() => {}}
+        request={closedSettingsRequest}
+      />,
+    );
+    const kebab = screen.getByTestId('whiteboard-room-menu-room-alpha');
+
+    fireEvent.click(kebab);
+    expect(screen.getByRole('menu')).toBeTruthy();
+
+    fireEvent.click(kebab);
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('cancels a rename on Escape and drops the editor', () => {
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={() => {}}
+        onRename={() => {}}
+        request={closedSettingsRequest}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-rename-room-alpha'));
+    const input = screen.getByTestId('whiteboard-room-name-input-room-alpha');
+    fireEvent.change(input, { target: { value: 'Geometry' } });
+
+    fireEvent.keyDown(input, { key: 'Escape' });
+
+    expect(screen.queryByTestId('whiteboard-room-name-input-room-alpha')).toBeNull();
+    expect(screen.getByTestId('whiteboard-room-list-item-room-alpha').textContent)
+      .toContain('Algebra');
+  });
+
+  it('opens the rename editor empty for a room that was never named', () => {
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-beta' }]}
+        onOpen={() => {}}
+        onRename={() => {}}
+        request={closedSettingsRequest}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-beta'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-rename-room-beta'));
+
+    expect(screen.getByTestId('whiteboard-room-name-input-room-beta'))
+      .toHaveProperty('value', '');
+  });
+
+  it('walks focus back to the menu ends when nothing inside it has focus', () => {
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={() => {}}
+        onDelete={() => {}}
+        request={closedSettingsRequest}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+    const menu = screen.getByRole('menu');
+    const rename = screen.getByTestId('whiteboard-room-rename-room-alpha');
+    const remove = screen.getByTestId('whiteboard-room-delete-room-alpha');
+
+    (document.activeElement as HTMLElement).blur();
+    fireEvent.keyDown(menu, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(rename);
+
+    (document.activeElement as HTMLElement).blur();
+    fireEvent.keyDown(menu, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(remove);
+  });
+
+  it('closes the menu on Tab rather than walking its items', () => {
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={() => {}}
+        onRename={() => {}}
+        request={closedSettingsRequest}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Tab' });
+
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('cancels a rename from its Cancel button', () => {
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={() => {}}
+        onRename={() => {}}
+        request={closedSettingsRequest}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-rename-room-alpha'));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(screen.queryByTestId('whiteboard-room-name-input-room-alpha')).toBeNull();
+    expect(screen.getByTestId('whiteboard-room-list-item-room-alpha').textContent)
+      .toContain('Algebra');
+  });
+
+  it('backs out of the delete confirmation without deleting', () => {
+    const deleted: string[] = [];
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={() => {}}
+        onDelete={(roomId) => { deleted.push(roomId); }}
+        request={closedSettingsRequest}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-delete-room-alpha'));
+    expect(screen.getByTestId('whiteboard-room-delete-confirm-room-alpha')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(deleted).toEqual([]);
+    expect(screen.queryByTestId('whiteboard-room-delete-confirm-room-alpha')).toBeNull();
+    expect(screen.getByTestId('whiteboard-room-list-item-room-alpha')).toBeTruthy();
+  });
+});
+
+describe('TeacherRoomList copy recovery', () => {
+  it('clears the manual-copy fallback once a later copy lands', async () => {
+    let refusing = true;
+    const copied: string[] = [];
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: (text: string) => {
+          copied.push(text);
+          return refusing
+            ? Promise.reject(new Error('clipboard denied'))
+            : Promise.resolve();
+        },
+      },
+    });
+    const request: AjaxFetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith('/settings')) {
+        return jsonResponse(200, {
+          guestAccess: true,
+          guestPin: '004321',
+          guestPinExpiresAt: Date.now() + 60_000,
+          lockoutUntil: null,
+        });
+      }
+      return new Response(null, { status: 404 });
+    };
+
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={() => {}}
+        request={request}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-room-pin-room-alpha')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByTestId('whiteboard-room-share-room-alpha'));
+    await screen.findByTestId('whiteboard-room-copy-fallback-room-alpha');
+
+    refusing = false;
+    fireEvent.click(screen.getByTestId('whiteboard-room-share-room-alpha'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('whiteboard-room-copy-fallback-room-alpha')).toBeNull();
+    });
+    expect(copied).toHaveLength(2);
+    expect(screen.getByTestId('whiteboard-room-copy-status').textContent)
+      .toBe('Link copied for Algebra');
+  });
+});
+
+describe('TeacherRoomList class PIN rotation', () => {
+  const liveSettings = (pin: string) => ({
+    guestAccess: true,
+    guestPin: pin,
+    guestPinExpiresAt: Date.now() + 60_000,
+    lockoutUntil: null,
+  });
+
+  it('strikes through the replaced PIN and says the old one is locked out', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const request: AjaxFetch = async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/settings') && init?.method === 'POST') {
+        bodies.push(JSON.parse(String(init.body)));
+        return jsonResponse(200, liveSettings('222222'));
+      }
+      if (url.endsWith('/settings')) return jsonResponse(200, liveSettings('111111'));
+      return new Response(null, { status: 404 });
+    };
+
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={() => {}}
+        request={request}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-room-pin-room-alpha').textContent).toContain('111 111');
+    });
+    fireEvent.click(screen.getByTestId('whiteboard-room-pin-new-room-alpha'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-room-pin-room-alpha').textContent).toContain('222 222');
+    });
+    expect(bodies).toEqual([{ guestAccess: true, rotateGuestPin: true }]);
+    expect(screen.getByTestId('whiteboard-room-pin-old-room-alpha').textContent).toBe('111 111');
+    expect(screen.getByText(/Anyone holding the old PIN is locked out/)).toBeTruthy();
+  });
+
+  it('strikes through a PIN that ran out of time on its own', async () => {
+    const request: AjaxFetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith('/settings')) {
+        return jsonResponse(200, {
+          guestAccess: true,
+          guestPin: '654321',
+          guestPinExpiresAt: Date.now() - 1_000,
+          lockoutUntil: null,
+        });
+      }
+      return new Response(null, { status: 404 });
+    };
+
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={() => {}}
+        request={request}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-room-pin-old-room-alpha').textContent).toBe('654 321');
+    });
+    expect(screen.getByText('Expired')).toBeTruthy();
+  });
+
+  it('warns when wrong PIN attempts have locked the room out', async () => {
+    const request: AjaxFetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith('/settings')) {
+        return jsonResponse(200, {
+          guestAccess: true,
+          guestPin: '111111',
+          guestPinExpiresAt: Date.now() + 60_000,
+          lockoutUntil: Date.now() + 60_000,
+        });
+      }
+      return new Response(null, { status: 404 });
+    };
+
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={() => {}}
+        request={request}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-room-lockout-room-alpha').textContent)
+        .toContain('join is locked');
+    });
+  });
+
+  it('keeps another room busy state intact when one PIN write finishes', async () => {
+    const pending: Record<string, (response: Response) => void> = {};
+    const request: AjaxFetch = async (input, init) => {
+      const url = String(input);
+      const match = url.match(/^\/api\/whiteboard\/room\/(room-\w+)\/settings$/);
+      if (match && init?.method === 'POST') {
+        return new Promise<Response>((resolve) => {
+          pending[match[1]] = resolve;
+        });
+      }
+      if (match) return jsonResponse(200, closedSettings);
+      return new Response(null, { status: 404 });
+    };
+
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha' }, { roomId: 'room-beta' }]}
+        onOpen={() => {}}
+        request={request}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-room-pin-new-room-alpha').textContent).toBe('Create PIN');
+      expect(screen.getByTestId('whiteboard-room-pin-new-room-beta').textContent).toBe('Create PIN');
+    });
+    fireEvent.click(screen.getByTestId('whiteboard-room-pin-new-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-pin-new-room-beta'));
+
+    expect(screen.getByTestId('whiteboard-room-pin-new-room-beta').textContent).toBe('Working…');
+
+    pending['room-alpha']?.(jsonResponse(200, liveSettings('111111')));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-room-pin-new-room-alpha').textContent).toBe('New PIN');
+    });
+    expect(screen.getByTestId('whiteboard-room-pin-new-room-beta').textContent).toBe('Working…');
+
+    pending['room-beta']?.(jsonResponse(200, liveSettings('222222')));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-room-pin-new-room-beta').textContent).toBe('New PIN');
+    });
+  });
+});
+
+describe('TeacherRoomList downloads', () => {
+  function installObjectUrls(): string[] {
+    const urls: string[] = [];
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: (blob: Blob) => {
+        const url = `blob:room-${urls.length + 1}-${blob.size}`;
+        urls.push(url);
+        return url;
+      },
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: () => {},
+    });
+    return urls;
+  }
+
+  it('says so when a board download fails', async () => {
+    const request: AjaxFetch = async (input) => {
+      const url = String(input);
+      if (url === '/api/whiteboard/room/room-alpha') {
+        return new Response('nope', { status: 500 });
+      }
+      if (url.endsWith('/settings')) return jsonResponse(200, closedSettings);
+      return new Response(null, { status: 404 });
+    };
+
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={() => {}}
+        request={request}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-download-room-alpha'));
+
+    expect(await screen.findByText(/Could not build that download/)).toBeTruthy();
+  });
+
+  it('downloads a board without complaint when the scene comes back', async () => {
+    const urls = installObjectUrls();
+    const request: AjaxFetch = async (input) => {
+      const url = String(input);
+      if (url === '/api/whiteboard/room/room-alpha') {
+        return jsonResponse(200, { elements: [] });
+      }
+      if (url.endsWith('/settings')) return jsonResponse(200, closedSettings);
+      return new Response(null, { status: 404 });
+    };
+
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={() => {}}
+        request={request}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-download-room-alpha'));
+
+    await waitFor(() => {
+      expect(urls).toHaveLength(1);
+    });
+    expect(screen.queryByText(/Could not build that download/)).toBeNull();
+  });
+
+  it('refuses to draw an image from an empty board', async () => {
+    installObjectUrls();
+    const request: AjaxFetch = async (input) => {
+      const url = String(input);
+      if (url === '/api/whiteboard/room/room-alpha') {
+        return jsonResponse(200, { elements: [] });
+      }
+      if (url.endsWith('/settings')) return jsonResponse(200, closedSettings);
+      return new Response(null, { status: 404 });
+    };
+
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={() => {}}
+        request={request}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-image-room-alpha'));
+
+    expect(await screen.findByText(/Could not build that download/)).toBeTruthy();
+  });
+
+  it('keeps another room image export from resolving the wrong busy marker', async () => {
+    const pending: Record<string, (response: Response) => void> = {};
+    const request: AjaxFetch = async (input) => {
+      const url = String(input);
+      const match = url.match(/^\/api\/whiteboard\/room\/(room-\w+)$/);
+      if (match) {
+        return new Promise<Response>((resolve) => {
+          pending[match[1]] = resolve;
+        });
+      }
+      if (url.endsWith('/settings')) return jsonResponse(200, closedSettings);
+      return new Response(null, { status: 404 });
+    };
+
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha' }, { roomId: 'room-beta' }]}
+        onOpen={() => {}}
+        request={request}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-image-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-beta'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-image-room-beta'));
+
+    pending['room-alpha']?.(jsonResponse(200, { elements: [] }));
+
+    expect(await screen.findByText(/Could not build that download/)).toBeTruthy();
+
+    pending['room-beta']?.(jsonResponse(200, { elements: [] }));
+    await waitFor(() => {
+      expect(screen.getAllByText(/Could not build that download/)).toHaveLength(1);
+    });
+    expect(pending['room-beta']).toBeTypeOf('function');
+  });
+
+  it('says so when the room data file cannot be built', async () => {
+    const request: AjaxFetch = async (input) => {
+      const url = String(input);
+      if (url === '/api/whiteboard/room/room-alpha/stats') {
+        return new Response('nope', { status: 500 });
+      }
+      if (url.endsWith('/settings')) return jsonResponse(200, closedSettings);
+      return new Response(null, { status: 404 });
+    };
+
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={() => {}}
+        request={request}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-stats-room-alpha'));
+
+    expect(await screen.findByText(/Could not build the room data file/)).toBeTruthy();
+  });
+
+  it('downloads the room data without complaint', async () => {
+    const urls = installObjectUrls();
+    const request: AjaxFetch = async (input) => {
+      const url = String(input);
+      if (url === '/api/whiteboard/room/room-alpha/stats') {
+        return jsonResponse(200, { roomId: 'room-alpha', elements: 0 });
+      }
+      if (url.endsWith('/settings')) return jsonResponse(200, closedSettings);
+      return new Response(null, { status: 404 });
+    };
+
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha', name: 'Algebra' }]}
+        onOpen={() => {}}
+        request={request}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-stats-room-alpha'));
+
+    await waitFor(() => {
+      expect(urls).toHaveLength(1);
+    });
+    expect(screen.queryByText(/Could not build the room data file/)).toBeNull();
+  });
+
+  it('keeps another room export busy state intact when one download finishes', async () => {
+    const urls = installObjectUrls();
+    const pending: Record<string, (response: Response) => void> = {};
+    const request: AjaxFetch = async (input) => {
+      const url = String(input);
+      const match = url.match(/^\/api\/whiteboard\/room\/(room-\w+)$/);
+      if (match) {
+        return new Promise<Response>((resolve) => {
+          pending[match[1]] = resolve;
+        });
+      }
+      if (url.endsWith('/settings')) return jsonResponse(200, closedSettings);
+      return new Response(null, { status: 404 });
+    };
+
+    render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha' }, { roomId: 'room-beta' }]}
+        onOpen={() => {}}
+        request={request}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-download-room-alpha'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-menu-room-beta'));
+    fireEvent.click(screen.getByTestId('whiteboard-room-download-room-beta'));
+
+    pending['room-alpha']?.(jsonResponse(200, { elements: [] }));
+
+    await waitFor(() => {
+      expect(urls).toHaveLength(1);
+    });
+
+    pending['room-beta']?.(jsonResponse(200, { elements: [] }));
+
+    await waitFor(() => {
+      expect(urls).toHaveLength(2);
+    });
+  });
+});
+
+describe('TeacherRoomList settings reads', () => {
+  it('coalesces a second read for the same rooms', async () => {
+    const requests: { roomId: string; resolve: (response: Response) => void }[] = [];
+    const request: AjaxFetch = async (input) => {
+      const match = String(input).match(/^\/api\/whiteboard\/room\/(room-\w+)\/settings$/);
+      if (match) {
+        return new Promise<Response>((resolve) => {
+          requests.push({ roomId: match[1], resolve });
+        });
+      }
+      return new Response(null, { status: 404 });
+    };
+
+    const view = render(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha' }, { roomId: 'room-beta' }]}
+        onOpen={() => {}}
+        request={request}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(requests).toHaveLength(2);
+    });
+    view.rerender(
+      <TeacherRoomList
+        rooms={[{ roomId: 'room-alpha' }, { roomId: 'room-beta' }]}
+        onOpen={() => {}}
+        request={request}
+      />,
+    );
+    await waitFor(() => {
+      expect(requests).toHaveLength(4);
+    });
+
+    for (const entry of requests) {
+      entry.resolve(entry.roomId === 'room-alpha'
+        ? new Response('nope', { status: 500 })
+        : jsonResponse(200, closedSettings));
+    }
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-room-settings-error-room-alpha')).toBeTruthy();
+    });
+    expect(screen.getAllByText('Not switched on')).toHaveLength(1);
+  });
+});

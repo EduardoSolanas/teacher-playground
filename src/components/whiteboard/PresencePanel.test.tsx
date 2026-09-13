@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import PresencePanel from './PresencePanel';
 import type { WhiteboardUser } from '@/types/whiteboard';
 import type { ParticipantState } from '@/lib/av/avSession';
+import { CALL_RAIL_WIDTH } from '@/lib/av/callRail';
 
 function makeUser(overrides: Partial<WhiteboardUser> = {}): WhiteboardUser {
   return {
@@ -29,6 +30,13 @@ function renderPanel(
     waitingPeers?: WhiteboardUser[];
     speakingPeerIds?: ReadonlySet<string>;
     onMutePeer?: (peerId: string, kind: 'audio' | 'video') => void;
+    onApprove?: (peerId: string, accountId?: string | null) => void;
+    onReject?: (peerId: string, accountId?: string | null) => void;
+    onKick?: (peerId: string, accountId?: string | null) => void;
+    onSuspend?: (peerId: string, accountId?: string | null) => void;
+    collapsed?: boolean;
+    callRailOpen?: boolean;
+    maxUsers?: number;
   } = {},
 ) {
   return render(
@@ -37,12 +45,14 @@ function renderPanel(
       waitingPeers={options.waitingPeers ?? []}
       localPeerId={options.localPeerId ?? 'peer-local'}
       isLocalHost={options.isLocalHost ?? false}
-      collapsed={false}
+      collapsed={options.collapsed ?? false}
+      callRailOpen={options.callRailOpen}
+      maxUsers={options.maxUsers}
       onToggle={noop}
-      onApprove={noop}
-      onReject={noop}
-      onKick={noop}
-      onSuspend={noop}
+      onApprove={options.onApprove ?? noop}
+      onReject={options.onReject ?? noop}
+      onKick={options.onKick ?? noop}
+      onSuspend={options.onSuspend ?? noop}
       avPeerStates={options.avPeerStates}
       onMutePeer={options.onMutePeer}
       speakingPeerIds={options.speakingPeerIds}
@@ -1286,5 +1296,216 @@ describe('PresencePanel camera icons', () => {
 
     expect(screen.getByRole('img', { name: 'Alice camera is off' })).toBeTruthy();
     expect(screen.queryByRole('img', { name: 'Alice camera is on' })).toBeNull();
+  });
+});
+
+describe('PresencePanel account id discs', () => {
+  it('omits the disc when a duplicate name has no usable account id', () => {
+    renderPanel(
+      [
+        makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true, accountId: null }),
+        makeUser({ peerId: 'peer-short', userName: 'Teacher', accountId: 'a1' }),
+        makeUser({ peerId: 'peer-long', userName: 'Teacher', accountId: 'aaaa1111bbbb2222' }),
+      ],
+      { isLocalHost: true },
+    );
+
+    expect(screen.queryByTestId('whiteboard-user-disc-peer-owner')).toBeNull();
+    expect(screen.queryByTestId('whiteboard-user-disc-peer-short')).toBeNull();
+    expect(screen.getByTestId('whiteboard-user-disc-peer-long').textContent).toBe('2222');
+  });
+});
+
+describe('PresencePanel collapse and call-rail branches', () => {
+  it('offsets the collapsed handle by the call rail and draws the empty-people icon', () => {
+    renderPanel([], { collapsed: true, callRailOpen: true, maxUsers: 5 });
+
+    const toggle = screen.getByTestId('whiteboard-presence-toggle');
+    expect(toggle.style.getPropertyValue('--call-rail-w')).toBe(CALL_RAIL_WIDTH);
+    expect(toggle.querySelector('[data-testid^="whiteboard-user-avatar-"]')).toBeNull();
+    expect(screen.getByTestId('whiteboard-presence-count').textContent).toBe('0/5');
+  });
+
+  it('shows the raised hand marker on the collapsed handle', () => {
+    renderPanel([makeUser({ peerId: 'peer-1', userName: 'Alice', handRaised: true })], {
+      collapsed: true,
+    });
+
+    expect(
+      screen.getByTestId('whiteboard-presence-toggle').querySelector('svg[viewBox="0 0 64 64"]'),
+    ).toBeTruthy();
+  });
+
+  it('offsets the expanded panel by the call rail', () => {
+    renderPanel([makeUser({ peerId: 'peer-1', userName: 'Alice' })], { callRailOpen: true });
+
+    expect(
+      screen.getByTestId('whiteboard-presence-panel').style.getPropertyValue('--call-rail-w'),
+    ).toBe(CALL_RAIL_WIDTH);
+  });
+});
+
+describe('PresencePanel moderation pointer paths', () => {
+  const hostPeer = makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true });
+  const studentPeer = makeUser({
+    peerId: 'peer-student',
+    userName: 'Peer',
+    accountId: 'acct-peer',
+  });
+  const waitingPeer = makeUser({
+    peerId: 'peer-waiting',
+    userName: 'Charlie',
+    isWaiting: true,
+    accountId: 'acct-wait',
+  });
+
+  function renderHost(options: {
+    onApprove?: (peerId: string, accountId?: string | null) => void;
+    onReject?: (peerId: string, accountId?: string | null) => void;
+    onSuspend?: (peerId: string, accountId?: string | null) => void;
+    waiting?: boolean;
+  } = {}) {
+    return renderPanel([hostPeer, studentPeer], {
+      localPeerId: 'peer-owner',
+      isLocalHost: true,
+      waitingPeers: options.waiting ? [waitingPeer] : [],
+      onApprove: options.onApprove,
+      onReject: options.onReject,
+      onSuspend: options.onSuspend,
+    });
+  }
+
+  it('leaves the menu open on keys other than Escape', () => {
+    renderHost();
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-options-peer-student'));
+    fireEvent.keyDown(screen.getByTestId('whiteboard-context-suspend'), { key: 'ArrowDown' });
+
+    expect(screen.getByTestId('whiteboard-context-kick')).toBeTruthy();
+  });
+
+  it('opens from a row click and hands focus back to the kebab on Escape', () => {
+    renderHost();
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-peer-student'));
+
+    expect(document.activeElement).toBe(screen.getByTestId('whiteboard-context-suspend'));
+
+    fireEvent.keyDown(screen.getByTestId('whiteboard-context-suspend'), { key: 'Escape' });
+
+    expect(screen.queryByTestId('whiteboard-context-kick')).toBeNull();
+    expect(document.activeElement).toBe(
+      screen.getByTestId('whiteboard-user-options-peer-student'),
+    );
+  });
+
+  it('opens from a row right-click', () => {
+    renderHost();
+
+    fireEvent.contextMenu(screen.getByTestId('whiteboard-user-peer-student'));
+
+    expect(screen.getByTestId('whiteboard-context-kick')).toBeTruthy();
+  });
+
+  it('closes on a pointerdown outside the menu', () => {
+    renderHost();
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-options-peer-student'));
+    fireEvent.pointerDown(document.body);
+
+    expect(screen.queryByTestId('whiteboard-context-kick')).toBeNull();
+  });
+
+  it('stays open on a pointerdown inside the menu', () => {
+    renderHost();
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-options-peer-student'));
+    fireEvent.pointerDown(screen.getByTestId('whiteboard-context-kick').closest('[role="menu"]')!);
+
+    expect(screen.getByTestId('whiteboard-context-kick')).toBeTruthy();
+  });
+
+  it('invokes onSuspend from a native pointerdown on Send to Waiting Room', () => {
+    const onSuspend = vi.fn();
+    renderHost({ onSuspend });
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-options-peer-student'));
+    fireEvent.pointerDown(screen.getByTestId('whiteboard-context-suspend'));
+
+    expect(onSuspend).toHaveBeenCalledWith('peer-student', 'acct-peer');
+  });
+
+  it('invokes onApprove from a native pointerdown on Let in', () => {
+    const onApprove = vi.fn();
+    renderHost({ onApprove, waiting: true });
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-options-peer-waiting'));
+    fireEvent.pointerDown(screen.getByTestId('whiteboard-context-let-in'));
+
+    expect(onApprove).toHaveBeenCalledWith('peer-waiting', 'acct-wait');
+    expect(screen.queryByTestId('whiteboard-context-let-in')).toBeNull();
+  });
+
+  it('invokes onReject from a native pointerdown on Reject', () => {
+    const onReject = vi.fn();
+    renderHost({ onReject, waiting: true });
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-options-peer-waiting'));
+    fireEvent.pointerDown(screen.getByTestId('whiteboard-context-reject'));
+
+    expect(onReject).toHaveBeenCalledWith('peer-waiting', 'acct-wait');
+  });
+
+  it('invokes onApprove from the Let in button on a waiting row', () => {
+    const onApprove = vi.fn();
+    renderHost({ onApprove, waiting: true });
+
+    fireEvent.click(screen.getByTestId('whiteboard-approve-peer-waiting'));
+
+    expect(onApprove).toHaveBeenCalledWith('peer-waiting', 'acct-wait');
+  });
+
+  it('invokes onApprove from a click on the context Let in', () => {
+    const onApprove = vi.fn();
+    renderHost({ onApprove, waiting: true });
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-options-peer-waiting'));
+    fireEvent.click(screen.getByTestId('whiteboard-context-let-in'));
+
+    expect(onApprove).toHaveBeenCalledWith('peer-waiting', 'acct-wait');
+  });
+
+  it('invokes onReject from a click on the context Reject', () => {
+    const onReject = vi.fn();
+    renderHost({ onReject, waiting: true });
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-options-peer-waiting'));
+    fireEvent.click(screen.getByTestId('whiteboard-context-reject'));
+
+    expect(onReject).toHaveBeenCalledWith('peer-waiting', 'acct-wait');
+  });
+
+  it('opens the waiting menu from its name button', () => {
+    renderHost({ waiting: true });
+
+    fireEvent.click(screen.getByTestId('whiteboard-roster-open-peer-waiting'));
+
+    expect(screen.getByTestId('whiteboard-context-let-in')).toBeTruthy();
+  });
+
+  it('opens the waiting menu from a row click', () => {
+    renderHost({ waiting: true });
+
+    fireEvent.click(screen.getByTestId('whiteboard-user-peer-waiting'));
+
+    expect(screen.getByTestId('whiteboard-context-let-in')).toBeTruthy();
+  });
+
+  it('opens the waiting menu from a row right-click', () => {
+    renderHost({ waiting: true });
+
+    fireEvent.contextMenu(screen.getByTestId('whiteboard-user-peer-waiting'));
+
+    expect(screen.getByTestId('whiteboard-context-let-in')).toBeTruthy();
   });
 });

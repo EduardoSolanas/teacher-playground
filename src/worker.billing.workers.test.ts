@@ -8,6 +8,10 @@ import {
 } from 'cloudflare:test';
 import worker, { parseFetchedSubscriptionPricing, runBillingReconcile } from './worker';
 import {
+  actualCollectionOf,
+  parseCollectionObservation,
+  parseOutboundOperation,
+  parseReconcileDispute,
   parseReconcileResult,
   RECONCILE_IN_FLIGHT_TIMEOUT_MS,
   type OutboundSeatChangeOperation,
@@ -23,12 +27,18 @@ import { ensureReferralCode } from './lib/referrals/codes';
 import { readBillingEnv, type BillingEnv } from './lib/billing/stripeConfig';
 import {
   claimCollectionExecution,
+  classifyStripeExecution,
   companyCustomerRequest,
   completeCollectionClaim,
+  parseCollectionClaim,
   parseCollectionSubject,
+  retryCompanyCreate,
   retrySeatChange,
   runCollectionExecutor,
   seatItemUpdateRequest,
+  sendCollectionState,
+  stripeSubscriptionItemId,
+  stripeSubscriptionItemQuantity,
 } from './lib/billing/executor';
 
 declare global {
@@ -1452,6 +1462,68 @@ describe('seat-change 24-hour-window recovery (spec §3.2 step 4)', () => {
       operation: { status: 'failed' },
     });
   });
+
+  it('keeps a pending seat change when Stripe reports no quantity', async () => {
+    const { companyId, operationId } = await seedPendingSeatChange('window-no-quantity');
+
+    const outcome = await retrySeatChange(
+      depsForFetched({ id: 'sub_window', items: {} }),
+      operationFor(companyId, operationId, Date.now() - WINDOW_MS),
+    );
+
+    expect(outcome).toBe('pending');
+    expect(await readSeatState(companyId, operationId)).toEqual({
+      subscription: { quantity: 2, pendingQuantity: 4, pendingOperationId: operationId },
+      operation: { status: 'pending' },
+    });
+
+    const cleaned = await identityStub().fetch('https://identity/billing/settle', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'seat-change',
+        companyId,
+        operationId,
+        outcome: 'failure',
+      }),
+    });
+    expect(cleaned.status).toBe(200);
+  });
+
+  it('releases a retry when the fetched subscription has no item id', async () => {
+    const { companyId, operationId } = await seedPendingSeatChange('window-no-item');
+
+    const outcome = await retrySeatChange(
+      depsForFetched({ id: 'sub_window', items: { data: [{ quantity: 2 }] } }),
+      operationFor(companyId, operationId, Date.now() - 1),
+    );
+
+    expect(outcome).toBe('released');
+    expect(await readSeatState(companyId, operationId)).toEqual({
+      subscription: { quantity: 2, pendingQuantity: null, pendingOperationId: null },
+      operation: { status: 'failed' },
+    });
+  });
+
+  it('returns pending when a settled seat change has already been settled upstream', async () => {
+    const { companyId, operationId } = await seedPendingSeatChange('window-resettle');
+
+    const first = await retrySeatChange(
+      depsForFetched(fetchedSeat(4)),
+      operationFor(companyId, operationId, null),
+    );
+    expect(first).toBe('settled');
+
+    const second = await retrySeatChange(
+      depsForFetched(fetchedSeat(4)),
+      operationFor(companyId, operationId, null),
+    );
+    expect(second).toBe('pending');
+    expect(await readSeatState(companyId, operationId)).toEqual({
+      subscription: { quantity: 4, pendingQuantity: null, pendingOperationId: null },
+      operation: { status: 'succeeded' },
+    });
+  });
 });
 
 describe('Worker scheduled billing reconcile', () => {
@@ -1804,5 +1876,435 @@ describe('Worker scheduled billing reconcile', () => {
         .get(company.company.id),
     );
     expect(stored).toEqual({ processorCustomerId: null });
+  });
+});
+
+describe('billing reconcile payload validation (R-1 inputs)', () => {
+  it('derives the actual collection from a fetched subscription', () => {
+    expect(
+      actualCollectionOf({
+        status: 'canceled',
+        customer: null,
+        currentPeriodEnd: null,
+        canceledAt: 1,
+        pauseCollection: false,
+      }),
+    ).toBe('canceled');
+    expect(
+      actualCollectionOf({
+        status: 'active',
+        customer: 'cus_state',
+        currentPeriodEnd: null,
+        canceledAt: null,
+        pauseCollection: true,
+      }),
+    ).toBe('paused');
+    expect(
+      actualCollectionOf({
+        status: 'past_due',
+        customer: null,
+        currentPeriodEnd: null,
+        canceledAt: null,
+        pauseCollection: false,
+      }),
+    ).toBe('active');
+  });
+
+  it('accepts a bare collection state and rejects a conflicting observation', () => {
+    expect(
+      parseCollectionObservation({
+        processorSubscriptionId: 'sub_bare',
+        actualCollection: 'canceled',
+      }),
+    ).toEqual({ processorSubscriptionId: 'sub_bare', actualCollection: 'canceled' });
+    expect(
+      parseCollectionObservation({
+        processorSubscriptionId: 'sub_bare',
+        actualCollection: 'paused',
+      }),
+    ).toEqual({ processorSubscriptionId: 'sub_bare', actualCollection: 'paused' });
+
+    const subscription = {
+      status: 'active',
+      customer: 'cus_obs',
+      currentPeriodEnd: 500,
+      canceledAt: null,
+      pauseCollection: true,
+    };
+    expect(
+      parseCollectionObservation({ processorSubscriptionId: 'sub_obs', subscription }),
+    ).toEqual({ processorSubscriptionId: 'sub_obs', actualCollection: 'paused', subscription });
+    expect(
+      parseCollectionObservation({
+        processorSubscriptionId: 'sub_obs',
+        actualCollection: 'paused',
+        subscription,
+      }),
+    ).toEqual({ processorSubscriptionId: 'sub_obs', actualCollection: 'paused', subscription });
+    expect(
+      parseCollectionObservation({
+        processorSubscriptionId: 'sub_obs',
+        actualCollection: 'active',
+        subscription,
+      }),
+    ).toBeNull();
+  });
+
+  it('rejects malformed observations and fetched subscriptions', () => {
+    expect(parseCollectionObservation(null)).toBeNull();
+    expect(parseCollectionObservation({})).toBeNull();
+    expect(parseCollectionObservation({ processorSubscriptionId: '' })).toBeNull();
+    expect(parseCollectionObservation({ processorSubscriptionId: 7 })).toBeNull();
+    expect(
+      parseCollectionObservation({
+        processorSubscriptionId: 'sub_bad',
+        actualCollection: 'weird',
+      }),
+    ).toBeNull();
+
+    for (const subscription of [
+      null,
+      'nope',
+      {},
+      { status: '' },
+      { status: 7 },
+      { status: 'x'.repeat(65) },
+      { status: 'active', customer: 7 },
+      { status: 'active', currentPeriodEnd: 'x' },
+      { status: 'active', canceledAt: 'x' },
+      { status: 'active', pauseCollection: 'yes' },
+    ]) {
+      expect(
+        parseCollectionObservation({ processorSubscriptionId: 'sub_bad', subscription }),
+        JSON.stringify(subscription),
+      ).toBeNull();
+    }
+
+    expect(
+      parseCollectionObservation({
+        processorSubscriptionId: 'sub_defaults',
+        subscription: { status: 'active' },
+      }),
+    ).toEqual({
+      processorSubscriptionId: 'sub_defaults',
+      actualCollection: 'active',
+      subscription: {
+        status: 'active',
+        customer: null,
+        currentPeriodEnd: null,
+        canceledAt: null,
+        pauseCollection: false,
+      },
+    });
+    expect(
+      parseCollectionObservation({
+        processorSubscriptionId: 'sub_numbers',
+        subscription: {
+          status: 'past_due',
+          customer: 'cus_numbers',
+          currentPeriodEnd: 7,
+          canceledAt: 5,
+          pauseCollection: false,
+        },
+      }),
+    ).not.toBeNull();
+  });
+
+  it('validates fetched disputes', () => {
+    expect(
+      parseReconcileDispute({ id: 'dp_ok', status: 'needs_response', created: 900 }),
+    ).toEqual({ id: 'dp_ok', status: 'needs_response', created: 900, customer: null });
+
+    for (const dispute of [
+      null,
+      {},
+      { id: '', status: 'open', created: 1 },
+      { id: 'x'.repeat(161), status: 'open', created: 1 },
+      { id: 'dp', status: '', created: 1 },
+      { id: 'dp', status: 7, created: 1 },
+      { id: 'x'.repeat(41), created: 1 },
+      { id: 'dp', status: 'open', created: 'x' },
+      { id: 'dp', status: 'open', created: Number.NaN },
+      { id: 'dp', status: 'open', created: -1 },
+      { id: 'dp', status: 'open', created: 1, customer: 7 },
+    ]) {
+      expect(parseReconcileDispute(dispute), JSON.stringify(dispute)).toBeNull();
+    }
+  });
+
+  it('validates outbound operations', () => {
+    const base = {
+      kind: 'seat-change',
+      companyId: 'co_out',
+      operationId: 'op_out',
+      processorSubscriptionId: 'sub_out',
+      previousQuantity: 2,
+      targetQuantity: 4,
+      prorationBehavior: 'none',
+    };
+    expect(parseOutboundOperation({ ...base, attemptedAt: 123 })).toEqual({
+      ...base,
+      attemptedAt: 123,
+    });
+    expect(
+      parseOutboundOperation({
+        kind: 'company-create',
+        companyId: 'co_out',
+        operationId: 'op_create',
+        name: 'Outbound Co',
+        ownerAccountId: 'acct_out',
+      }),
+    ).toEqual({
+      kind: 'company-create',
+      companyId: 'co_out',
+      operationId: 'op_create',
+      name: 'Outbound Co',
+      ownerAccountId: 'acct_out',
+    });
+
+    for (const operation of [
+      null,
+      {},
+      { kind: 'seat-change', companyId: '', operationId: 'op' },
+      { kind: 'seat-change', companyId: 'c'.repeat(129), operationId: 'op' },
+      { kind: 'seat-change', companyId: 'co', operationId: '' },
+      { kind: 'seat-change', companyId: 'co', operationId: 'o'.repeat(129) },
+      { kind: 'seat-change', companyId: 'co', operationId: 'op' },
+      { ...base, processorSubscriptionId: '' },
+      { ...base, previousQuantity: 0 },
+      { ...base, previousQuantity: 1.5 },
+      { ...base, targetQuantity: 0 },
+      { ...base, targetQuantity: 'x' },
+      { ...base, prorationBehavior: 'bogus' },
+      { ...base, attemptedAt: 'x' },
+      { kind: 'mystery', companyId: 'co', operationId: 'op' },
+      { kind: 'company-create', companyId: 'co', operationId: 'op', name: '', ownerAccountId: 'acct' },
+      { kind: 'company-create', companyId: 'co', operationId: 'op', name: 'x'.repeat(101), ownerAccountId: 'acct' },
+      { kind: 'company-create', companyId: 'co', operationId: 'op', name: 'Co', ownerAccountId: '' },
+    ]) {
+      expect(parseOutboundOperation(operation), JSON.stringify(operation)).toBeNull();
+    }
+  });
+
+  it('validates the reconcile result envelope', () => {
+    const emptyEnvelope = {
+      collections: [],
+      subscriptions: [],
+      disputesSweptAt: 0,
+      appliedSubscriptions: 0,
+      disputesApplied: 0,
+      outboundOperations: [],
+    };
+    expect(parseReconcileResult(null)).toBeNull();
+    expect(parseReconcileResult({})).toBeNull();
+    expect(parseReconcileResult({ collections: [] })).toBeNull();
+    expect(parseReconcileResult({ collections: [], subscriptions: [{}] })).toBeNull();
+    expect(
+      parseReconcileResult({
+        collections: [],
+        subscriptions: [{ processorSubscriptionId: '', subjectKind: 'account' }],
+      }),
+    ).toBeNull();
+    expect(
+      parseReconcileResult({
+        collections: [],
+        subscriptions: [{ processorSubscriptionId: 'sub_r', subjectKind: 'operator' }],
+      }),
+    ).toBeNull();
+    expect(
+      parseReconcileResult({
+        collections: [],
+        subscriptions: [{ processorSubscriptionId: 'sub_r', subjectKind: 'company' }],
+      }),
+    ).toEqual({
+      ...emptyEnvelope,
+      subscriptions: [{ processorSubscriptionId: 'sub_r', subjectKind: 'company' }],
+    });
+    expect(
+      parseReconcileResult({ collections: [], subscriptions: [], outboundOperations: {} }),
+    ).toBeNull();
+    expect(
+      parseReconcileResult({ collections: [], subscriptions: [], outboundOperations: [null] }),
+    ).toBeNull();
+
+    const collection = {
+      subjectKind: 'company',
+      subjectId: 'co_r',
+      processorSubscriptionId: 'sub_r',
+      version: 2,
+      state: 'paused',
+    };
+    expect(
+      parseReconcileResult({ collections: [collection], subscriptions: [] }),
+    ).toEqual({ ...emptyEnvelope, collections: [collection] });
+
+    for (const entry of [
+      null,
+      { subjectKind: 'account', subjectId: '', processorSubscriptionId: 'sub', version: 1, state: 'active' },
+      { subjectKind: 'operator', subjectId: 'a', processorSubscriptionId: 'sub', version: 1, state: 'active' },
+      { subjectKind: 'account', processorSubscriptionId: 'sub', version: 1, state: 'active' },
+      { subjectKind: 'account', subjectId: 'a', processorSubscriptionId: '', version: 1, state: 'active' },
+      { subjectKind: 'account', subjectId: 'a', processorSubscriptionId: 'sub', version: 0, state: 'active' },
+      { subjectKind: 'account', subjectId: 'a', processorSubscriptionId: 'sub', version: 1.5, state: 'active' },
+      { subjectKind: 'account', subjectId: 'a', processorSubscriptionId: 'sub', version: 1, state: 'weird' },
+    ]) {
+      expect(
+        parseReconcileResult({ collections: [entry], subscriptions: [] }),
+        JSON.stringify(entry),
+      ).toBeNull();
+    }
+  });
+});
+
+describe('billing executor classification and claim parsing', () => {
+  function billingDeps(overrides: Partial<BillingEnv> = {}): {
+    identityFetch: (request: Request) => Promise<Response>;
+    billing: BillingEnv;
+  } {
+    return {
+      identityFetch: (request: Request) => identityStub().fetch(request),
+      billing: {
+        apiBaseUrl: 'https://api.stripe.com',
+        secretKey: 'sk_test_executor',
+        webhookSecret: null,
+        apiBaseAllowed: true,
+        ...overrides,
+      },
+    };
+  }
+
+  it('reads the first item id and integer quantity from either item shape', () => {
+    expect(stripeSubscriptionItemId({ items: [{ id: 'si_array', quantity: 3 }] })).toBe('si_array');
+    expect(stripeSubscriptionItemQuantity({ items: [{ id: 'si_array', quantity: 3 }] })).toBe(3);
+    expect(stripeSubscriptionItemId({ items: { data: [{ id: 'si_list' }] } })).toBe('si_list');
+    expect(stripeSubscriptionItemId({ items: {} })).toBeNull();
+    expect(stripeSubscriptionItemId({})).toBeNull();
+    expect(stripeSubscriptionItemId({ items: [] })).toBeNull();
+    expect(stripeSubscriptionItemId({ items: [{ id: 7 }] })).toBeNull();
+    expect(stripeSubscriptionItemQuantity({ items: [{ quantity: 2.5 }] })).toBeNull();
+    expect(stripeSubscriptionItemQuantity({ items: [{ quantity: '2' }] })).toBeNull();
+    expect(stripeSubscriptionItemQuantity({ items: [{}] })).toBeNull();
+  });
+
+  it('accepts only a granted claim with a real subscription, version, and state', () => {
+    expect(parseCollectionClaim(null)).toBeNull();
+    expect(parseCollectionClaim({})).toBeNull();
+    expect(parseCollectionClaim({ claim: { claimed: false } })).toBeNull();
+    expect(
+      parseCollectionClaim({
+        claim: {
+          claimed: true,
+          processorSubscriptionId: '',
+          inFlightVersion: 1,
+          inFlightState: 'active',
+        },
+      }),
+    ).toBeNull();
+    expect(
+      parseCollectionClaim({
+        claim: {
+          claimed: true,
+          processorSubscriptionId: 'sub_c',
+          inFlightVersion: 0,
+          inFlightState: 'active',
+        },
+      }),
+    ).toBeNull();
+    expect(
+      parseCollectionClaim({
+        claim: {
+          claimed: true,
+          processorSubscriptionId: 'sub_c',
+          inFlightVersion: 1.5,
+          inFlightState: 'active',
+        },
+      }),
+    ).toBeNull();
+    expect(
+      parseCollectionClaim({
+        claim: {
+          claimed: true,
+          processorSubscriptionId: 'sub_c',
+          inFlightVersion: 1,
+          inFlightState: 'bogus',
+        },
+      }),
+    ).toBeNull();
+    expect(
+      parseCollectionClaim({
+        claim: {
+          claimed: true,
+          processorSubscriptionId: 'sub_c',
+          inFlightVersion: 3,
+          inFlightState: 'canceled',
+        },
+      }),
+    ).toEqual({ processorSubscriptionId: 'sub_c', version: 3, state: 'canceled' });
+  });
+
+  it('classifies a missing Stripe answer as failure and 5xx as unknown', () => {
+    expect(classifyStripeExecution(null)).toEqual({ kind: 'failure', status: 0 });
+    expect(classifyStripeExecution({ ok: true, json: {} })).toEqual({ kind: 'success' });
+    expect(classifyStripeExecution({ ok: false, status: 404 })).toEqual({
+      kind: 'failure',
+      status: 404,
+    });
+    expect(classifyStripeExecution({ ok: false, status: 503 })).toEqual({
+      kind: 'unknown',
+      status: 503,
+    });
+  });
+
+  it('fails the send when no secret key is configured', async () => {
+    const outcome = await sendCollectionState(billingDeps({ secretKey: null }), {
+      processorSubscriptionId: 'sub_c',
+      version: 1,
+      state: 'paused',
+    });
+    expect(outcome).toEqual({ kind: 'failure', status: 0 });
+  });
+
+  it('does not claim from a rejecting identity route', async () => {
+    const claim = await claimCollectionExecution(
+      billingDeps(),
+      { subjectKind: 'account', subjectId: '' },
+      'op_bad_subject',
+    );
+    expect(claim).toBeNull();
+  });
+
+  it('keeps the settle status when the identity settle route rejects the body', async () => {
+    const outcome = await completeCollectionClaim(
+      billingDeps(),
+      { subjectKind: 'account', subjectId: '' },
+      'op_bad_settle',
+      { processorSubscriptionId: 'sub_c', version: 1, state: 'active' },
+      { kind: 'success' },
+    );
+    expect(outcome).toEqual({ action: 'settled', status: 'succeeded' });
+  });
+
+  it('reports unavailable outbound retries without billing config', async () => {
+    expect(
+      await retryCompanyCreate(billingDeps({ secretKey: null }), {
+        kind: 'company-create',
+        companyId: 'co_unavailable',
+        operationId: 'op_unavailable',
+        name: 'Unavailable Co',
+        ownerAccountId: 'acct_unavailable',
+      }),
+    ).toBe('unavailable');
+    expect(
+      await retrySeatChange(billingDeps({ secretKey: null }), {
+        kind: 'seat-change',
+        companyId: 'co_unavailable',
+        operationId: 'op_unavailable',
+        processorSubscriptionId: 'sub_unavailable',
+        previousQuantity: 1,
+        targetQuantity: 2,
+        prorationBehavior: 'create_prorations',
+        attemptedAt: null,
+      }),
+    ).toBe('unavailable');
   });
 });

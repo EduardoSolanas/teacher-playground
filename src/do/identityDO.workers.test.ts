@@ -1971,3 +1971,635 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     }
   });
 });
+
+describe('IdentityDO negative routing contract', () => {
+  function identityFetch(
+    path: string,
+    init: RequestInit = {},
+  ): Promise<Response> {
+    return identityStub().fetch(`https://identity${path}`, init);
+  }
+
+  function jsonInit(method: string, body?: string, cookie?: string): RequestInit {
+    return {
+      method,
+      headers: {
+        'content-type': 'application/json',
+        ...(cookie ? { cookie } : {}),
+      },
+      ...(body === undefined ? {} : { body }),
+    };
+  }
+
+  it('rejects non-object JSON bodies on every guarded route', async () => {
+    const issued = await issueSession('do-negative-body-shapes');
+    const cookie = cookiePair(issued);
+    const routes: Array<[string, string]> = [
+      ['/subjects/resolve', 'POST'],
+      ['/sessions/issue', 'POST'],
+      ['/sessions/authorize', 'POST'],
+      ['/sessions/confirm', 'POST'],
+      ['/sessions/authorize-guest', 'POST'],
+      ['/accounts/authorizations', 'POST'],
+      ['/accounts/revoke-all', 'POST'],
+      ['/accounts/disable', 'POST'],
+      ['/accounts/enable', 'POST'],
+      ['/accounts/profile', 'PATCH'],
+      ['/accounts/rooms', 'POST'],
+      ['/accounts/rooms', 'DELETE'],
+      ['/accounts/rooms/touch', 'POST'],
+      ['/accounts/clear-erasure', 'POST'],
+      ['/guests/issue', 'POST'],
+      ['/guests/purge', 'POST'],
+      ['/billing/events/apply', 'POST'],
+      ['/billing/operations', 'POST'],
+      ['/billing/operations/settle', 'POST'],
+      ['/billing/settle', 'POST'],
+      ['/billing/reconcile', 'POST'],
+      ['/referrals/validate', 'POST'],
+      ['/companies', 'POST'],
+      ['/operator/invoice-approval', 'POST'],
+      ['/operator/invoice-approval/settle', 'POST'],
+      ['/operator/disputes/review', 'POST'],
+    ];
+    const shapes: unknown[] = [null, [1, 2], 'plain-text'];
+    for (const [path, method] of routes) {
+      for (const shape of shapes) {
+        const response = await identityFetch(
+          path,
+          jsonInit(method, JSON.stringify(shape), cookie),
+        );
+        expect(response.status, `${method} ${path} ${JSON.stringify(shape)}`).toBe(400);
+      }
+    }
+  });
+
+  it('requires a session on every anonymous owner-scoped route', async () => {
+    const routes: Array<{ path: string; method: string; body?: string }> = [
+      { path: '/accounts/pending-erasures', method: 'GET' },
+      { path: '/accounts/clear-erasure', method: 'POST', body: '{}' },
+      { path: '/billing/rate-limit', method: 'POST' },
+      { path: '/billing/customer', method: 'GET' },
+      { path: '/referrals/me?baseUrl=https%3A%2F%2Fexample.com', method: 'GET' },
+      { path: '/referrals/validate', method: 'POST', body: '{}' },
+      { path: '/companies', method: 'GET' },
+      { path: '/companies', method: 'PATCH', body: '{}' },
+      { path: '/companies', method: 'DELETE' },
+      { path: '/companies', method: 'POST', body: '{}' },
+      { path: '/companies/customer', method: 'POST', body: '{}' },
+      { path: '/companies/invites', method: 'POST', body: '{}' },
+      { path: '/companies/invites', method: 'DELETE', body: '{}' },
+      { path: '/companies/invites/redeem', method: 'POST', body: '{}' },
+      { path: '/companies/seats', method: 'POST', body: '{}' },
+      { path: '/companies/seats/settle', method: 'POST', body: '{}' },
+      { path: '/companies/members/revoke', method: 'POST', body: '{}' },
+      { path: '/companies/owner', method: 'POST', body: '{}' },
+      {
+        path: '/sessions/authorize-guest',
+        method: 'POST',
+        body: JSON.stringify({ roomId: 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz' }),
+      },
+      {
+        path: '/sessions/confirm',
+        method: 'POST',
+        body: JSON.stringify({
+          issuer: 'https://access.example.com',
+          subject: 'anonymous-confirm',
+        }),
+      },
+      { path: '/sessions/rotate', method: 'POST' },
+    ];
+    for (const route of routes) {
+      const response = await identityFetch(
+        route.path,
+        jsonInit(route.method, route.body),
+      );
+      expect(response.status, `${route.method} ${route.path}`).toBe(401);
+    }
+  });
+
+  it('answers 405 for the wrong method on every routed path', async () => {
+    const routes: Array<[string, string]> = [
+      ['/subjects/resolve', 'GET'],
+      ['/sessions/issue', 'GET'],
+      ['/sessions/current', 'POST'],
+      ['/sessions/authorize', 'GET'],
+      ['/sessions/authorize-guest', 'GET'],
+      ['/sessions/confirm', 'GET'],
+      ['/sessions/rotate', 'GET'],
+      ['/sessions/logout', 'GET'],
+      ['/accounts/authorizations', 'GET'],
+      ['/accounts/pending-erasures', 'POST'],
+      ['/accounts/clear-erasure', 'GET'],
+      ['/accounts/profile', 'GET'],
+      ['/accounts/rooms/touch', 'GET'],
+      ['/accounts/rooms/archive-state', 'POST'],
+      ['/accounts/revoke-all', 'GET'],
+      ['/accounts/disable', 'GET'],
+      ['/accounts/enable', 'GET'],
+      ['/billing/events/apply', 'GET'],
+      ['/billing/events/status', 'POST'],
+      ['/billing/operations', 'GET'],
+      ['/billing/operations/settle', 'GET'],
+      ['/billing/settle', 'GET'],
+      ['/billing/reconcile', 'PUT'],
+      ['/billing/rate-limit', 'GET'],
+      ['/billing/customer', 'POST'],
+      ['/referrals/me', 'POST'],
+      ['/referrals/validate', 'GET'],
+      ['/companies/membership', 'POST'],
+      ['/companies', 'PUT'],
+      ['/companies/customer', 'GET'],
+      ['/companies/invites', 'GET'],
+      ['/companies/invites/redeem', 'GET'],
+      ['/companies/seats', 'GET'],
+      ['/companies/seats/settle', 'GET'],
+      ['/companies/members/revoke', 'GET'],
+      ['/companies/owner', 'GET'],
+      ['/operator/invoice-approval', 'GET'],
+      ['/operator/invoice-approval/settle', 'GET'],
+      ['/operator/disputes/review', 'GET'],
+    ];
+    for (const [path, method] of routes) {
+      const response = await identityFetch(path, jsonInit(method));
+      expect(response.status, `${method} ${path}`).toBe(405);
+    }
+  });
+
+  it('refuses malformed session rotation, logout, and confirmation requests', async () => {
+    const mine = await issueSession('do-negative-confirm-mine');
+    const mineCookie = cookiePair(mine);
+    const response = await identityFetch('/sessions/confirm', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: mineCookie },
+      body: JSON.stringify({
+        issuer: 'https://access.example.com',
+        subject: 'do-negative-confirm-someone-else',
+      }),
+    });
+    expect(response.status).toBe(401);
+
+    const rotateWithBody = await identityFetch('/sessions/rotate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: mineCookie },
+      body: '{}',
+    });
+    expect(rotateWithBody.status).toBe(400);
+
+    const logoutWithBody = await identityFetch('/sessions/logout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: mineCookie },
+      body: '{}',
+    });
+    expect(logoutWithBody.status).toBe(400);
+  });
+
+  it('rejects invalid profile, room, and account-operation bodies', async () => {
+    const issued = await issueSession('do-negative-body-fields');
+    const cookie = cookiePair(issued);
+
+    const controlName = await identityFetch('/accounts/profile', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ displayName: '\u0001' }),
+    });
+    expect(controlName.status).toBe(400);
+
+    const longName = await identityFetch('/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'negative-room-name', name: 'n'.repeat(101) }),
+    });
+    expect(longName.status).toBe(400);
+
+    const typedName = await identityFetch('/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'negative-room-type', name: 5 }),
+    });
+    expect(typedName.status).toBe(400);
+
+    const missingRoom = await identityFetch('/accounts/rooms', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json', cookie },
+      body: '{}',
+    });
+    expect(missingRoom.status).toBe(400);
+
+    const badTouch = await identityFetch('/accounts/rooms/touch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId: 'missing-account', roomId: '../etc' }),
+    });
+    expect(badTouch.status).toBe(400);
+
+    const unknownTouch = await identityFetch('/accounts/rooms/touch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId: 'missing-account', roomId: 'touch-missing' }),
+    });
+    expect(unknownTouch.status).toBe(200);
+    expect(await unknownTouch.json()).toEqual({ ok: true, touched: false });
+
+    const badClear = await identityFetch('/accounts/clear-erasure', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: '{}',
+    });
+    expect(badClear.status).toBe(400);
+
+    const missingAccount = await identityFetch('/accounts/disable', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId: 'account-that-does-not-exist', actor: 'ops', reason: 'test' }),
+    });
+    expect(missingAccount.status).toBe(404);
+
+    const blankSubject = await identityFetch('/subjects/resolve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ issuer: '   ', subject: 'negative-blank' }),
+    });
+    expect(blankSubject.status).toBe(400);
+
+    const blankIssue = await identityFetch('/sessions/issue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ issuer: '   ', subject: 'negative-blank' }),
+    });
+    expect(blankIssue.status).toBe(401);
+  });
+
+  it('validates the session batch of an authorization read', async () => {
+    const hash = 'a'.repeat(64);
+    const rejected: unknown[] = [
+      { accountIds: [], sessions: 'not-an-array' },
+      {
+        accountIds: [],
+        sessions: Array.from({ length: 501 }, (_, index) => ({
+          accountId: `account-${index}`,
+          sessionHash: hash,
+        })),
+      },
+      { accountIds: [], sessions: [null] },
+      { accountIds: [], sessions: [{ accountId: 'account-a', sessionHash: hash, extra: true }] },
+    ];
+    for (const body of rejected) {
+      const response = await identityFetch('/accounts/authorizations', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+    }
+
+    const accepted = await identityFetch('/accounts/authorizations', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountIds: [], sessions: [] }),
+    });
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toEqual({ accounts: {}, activeSessionHashes: [] });
+  });
+
+  it('breaks owned-room archive ties by room id', async () => {
+    const issued = await issueSession('do-archive-tie-break');
+    const { accountId } = await issued.json() as { accountId: string };
+    await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+      for (let index = 0; index < 12; index += 1) {
+        instance.db
+          .prepare(
+            `INSERT INTO account_rooms (
+               account_id, room_id, role, name, created_at, updated_at
+             ) VALUES (?, ?, 'owner', NULL, 1, 1)`,
+          )
+          .run(accountId, `archive-tie-${String(index).padStart(2, '0')}`);
+      }
+    });
+
+    const response = await identityFetch(
+      `/accounts/rooms/archive-state?accountId=${encodeURIComponent(accountId)}&roomId=archive-tie-05`,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ archived: true });
+  });
+
+  it('refuses malformed billing documents', async () => {
+    const issued = await issueSession('do-negative-billing');
+    const cookie = cookiePair(issued);
+    const rejected: Array<[string, string]> = [
+      ['/billing/events/apply', ''],
+      ['/billing/events/apply', 'not-json'],
+      [
+        '/billing/events/apply',
+        JSON.stringify({ signatureVerified: true, payloadHash: 'a'.repeat(64), event: 5 }),
+      ],
+      ['/billing/operations', ''],
+      ['/billing/operations', 'not-json'],
+      [
+        '/billing/operations',
+        JSON.stringify({ subjectKind: 'other', subjectId: 's', operationId: 'o', kind: 'checkout' }),
+      ],
+      [
+        '/billing/operations',
+        JSON.stringify({ subjectKind: 'account', subjectId: '', operationId: 'o', kind: 'checkout' }),
+      ],
+      [
+        '/billing/operations',
+        JSON.stringify({ subjectKind: 'account', subjectId: 's', operationId: 'o', kind: 'bogus' }),
+      ],
+      [
+        '/billing/operations',
+        JSON.stringify({
+          subjectKind: 'account',
+          subjectId: 's',
+          operationId: 'o',
+          kind: 'checkout',
+          stripeObjectId: 5,
+        }),
+      ],
+      ['/billing/operations/settle', ''],
+      ['/billing/operations/settle', 'not-json'],
+      ['/billing/operations/settle', 'null'],
+      [
+        '/billing/operations/settle',
+        JSON.stringify({ subjectKind: 'other', subjectId: 's', operationId: 'o' }),
+      ],
+      [
+        '/billing/operations/settle',
+        JSON.stringify({ subjectKind: 'account', subjectId: '', operationId: 'o' }),
+      ],
+      [
+        '/billing/operations/settle',
+        JSON.stringify({ subjectKind: 'account', subjectId: 's', operationId: '' }),
+      ],
+      [
+        '/billing/operations/settle',
+        JSON.stringify({ subjectKind: 'account', subjectId: 's', operationId: 'o', success: 'yes' }),
+      ],
+      [
+        '/billing/operations/settle',
+        JSON.stringify({
+          subjectKind: 'account',
+          subjectId: 's',
+          operationId: 'o',
+          actualCollectionState: 'bogus',
+        }),
+      ],
+      [
+        '/billing/operations/settle',
+        JSON.stringify({
+          subjectKind: 'account',
+          subjectId: 's',
+          operationId: 'o',
+          expectedVersion: '1',
+        }),
+      ],
+      ['/billing/settle', ''],
+      ['/billing/settle', 'not-json'],
+      ['/billing/settle', '[]'],
+      [
+        '/billing/settle',
+        JSON.stringify({ kind: 'seat-change', companyId: 'c', operationId: 'o', outcome: 'bogus' }),
+      ],
+      [
+        '/billing/settle',
+        JSON.stringify({
+          kind: 'company-create',
+          companyId: 'c',
+          operationId: 'o',
+          processorCustomerId: 'bad',
+        }),
+      ],
+      [
+        '/billing/settle',
+        JSON.stringify({ kind: 'seat-change', companyId: '', operationId: 'o', outcome: 'success' }),
+      ],
+      [
+        '/billing/settle',
+        JSON.stringify({
+          kind: 'seat-change',
+          companyId: 'c',
+          operationId: 'o',
+          outcome: 'success',
+          extra: 1,
+        }),
+      ],
+      ['/billing/reconcile', ''],
+      ['/billing/reconcile', 'not-json'],
+      ['/billing/reconcile', JSON.stringify('x')],
+      ['/billing/reconcile', JSON.stringify({ runId: 'bad id!' })],
+      ['/billing/reconcile', JSON.stringify({ observations: 'x' })],
+      ['/billing/reconcile', JSON.stringify({ observations: [{}] })],
+      ['/billing/reconcile', JSON.stringify({ disputes: 'x' })],
+      ['/billing/reconcile', JSON.stringify({ disputes: [{}] })],
+      ['/billing/reconcile', JSON.stringify({ extra: true })],
+    ];
+    for (const [path, body] of rejected) {
+      const response = await identityFetch(path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      });
+      expect(response.status, `${path} ${body}`).toBe(400);
+    }
+
+    const missingId = await identityFetch('/billing/events/status');
+    expect(missingId.status).toBe(400);
+
+    const rateLimitWithBody = await identityFetch('/billing/rate-limit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: '{}',
+    });
+    expect(rateLimitWithBody.status).toBe(400);
+  });
+
+  it('answers a subscription-collection operation without a subscription row', async () => {
+    const response = await identityFetch('/billing/operations', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        subjectKind: 'account',
+        subjectId: 'account-without-a-subscription',
+        operationId: 'op_without_a_subscription',
+        kind: 'subscription-collection',
+      }),
+    });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({
+      claim: {
+        claimed: false,
+        inFlightVersion: null,
+        inFlightState: null,
+        processorSubscriptionId: null,
+      },
+    });
+  });
+
+  it('validates operator invoice, settlement, and dispute bodies', async () => {
+    const operator = 'ops@example.test';
+    const rejected: Array<[string, unknown]> = [
+      ['/operator/invoice-approval', {}],
+      [
+        '/operator/invoice-approval',
+        { operatorEmail: operator, companyId: 'company', quantity: 0, operationId: 'op_a' },
+      ],
+      [
+        '/operator/invoice-approval',
+        { operatorEmail: 'ab', companyId: 'company', quantity: 10, operationId: 'op_a' },
+      ],
+      [
+        '/operator/invoice-approval',
+        { operatorEmail: operator, companyId: 'company', quantity: 10, operationId: 'op_a', extra: 1 },
+      ],
+      ['/operator/invoice-approval/settle', {}],
+      [
+        '/operator/invoice-approval/settle',
+        {
+          operatorEmail: operator,
+          companyId: 'company',
+          operationId: 'op_a',
+          quantity: 10,
+          outcome: 'failure',
+          extra: 1,
+        },
+      ],
+      [
+        '/operator/invoice-approval/settle',
+        { operatorEmail: operator, companyId: 'company', operationId: 'op_a', quantity: 5, outcome: 'failure' },
+      ],
+      [
+        '/operator/invoice-approval/settle',
+        { operatorEmail: operator, companyId: 'company', operationId: 'op_a', quantity: 10, outcome: 'bogus' },
+      ],
+      [
+        '/operator/invoice-approval/settle',
+        { operatorEmail: operator, companyId: 'company', operationId: 'op_a', quantity: 10, outcome: 'success' },
+      ],
+      [
+        '/operator/invoice-approval/settle',
+        {
+          operatorEmail: operator,
+          companyId: 'company',
+          operationId: 'op_a',
+          quantity: 10,
+          outcome: 'success',
+          processorSubscriptionId: 'sub_ok',
+          status: 'bogus',
+        },
+      ],
+      [
+        '/operator/invoice-approval/settle',
+        {
+          operatorEmail: operator,
+          companyId: 'company',
+          operationId: 'op_a',
+          quantity: 10,
+          outcome: 'failure',
+          currentPeriodEnd: 'later',
+        },
+      ],
+      [
+        '/operator/invoice-approval/settle',
+        {
+          operatorEmail: operator,
+          companyId: 'company',
+          operationId: 'op_a',
+          quantity: 10,
+          outcome: 'failure',
+          hostedInvoiceUrl: 'h'.repeat(2_049),
+        },
+      ],
+      ['/operator/disputes/review', {}],
+      [
+        '/operator/disputes/review',
+        { operatorEmail: operator, disputeId: 'dispute', outcome: 'maybe', operationId: 'op_a' },
+      ],
+    ];
+    for (const [path, body] of rejected) {
+      const response = await identityFetch(path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(response.status, `${path} ${JSON.stringify(body)}`).toBe(400);
+    }
+
+    const unknownInvoice = await identityFetch('/operator/invoice-approval', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        operatorEmail: operator,
+        companyId: 'company-that-does-not-exist',
+        quantity: 10,
+        operationId: 'op_unknown_company',
+      }),
+    });
+    expect(unknownInvoice.status).toBe(404);
+
+    const unknownDispute = await identityFetch('/operator/disputes/review', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        operatorEmail: operator,
+        disputeId: 'dispute-that-does-not-exist',
+        outcome: 'won',
+        operationId: 'op_unknown_dispute',
+      }),
+    });
+    expect(unknownDispute.status).toBe(404);
+
+    const foreignOperator = await identityFetch('/operator/invoice-approval', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        operatorEmail: 'intruder@example.test',
+        companyId: 'company',
+        quantity: 10,
+        operationId: 'op_foreign',
+      }),
+    });
+    expect(foreignOperator.status).toBe(403);
+  });
+
+  it('answers the empty erasure and unknown-route edges', async () => {
+    const issued = await issueSession('do-negative-erasure-edges');
+    const cookie = cookiePair(issued);
+
+    const pending = await identityFetch('/accounts/pending-erasures', {
+      headers: { cookie },
+    });
+    expect(pending.status).toBe(200);
+    expect(await pending.json()).toEqual({ roomIds: [] });
+
+    const cleared = await identityFetch('/accounts/clear-erasure', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'clear-erasure-missing' }),
+    });
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toEqual({ ok: true });
+
+    const invalidTarget = await identityFetch('/accounts/clear-erasure', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: '../etc' }),
+    });
+    expect(invalidTarget.status).toBe(400);
+
+    const wrongRoomMethod = await identityFetch('/accounts/rooms', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie },
+    });
+    expect(wrongRoomMethod.status).toBe(405);
+
+    const anonymousLogout = await identityFetch('/sessions/logout', {
+      method: 'POST',
+    });
+    expect(anonymousLogout.status).toBe(204);
+
+    const unknownRoute = await identityFetch('/not-a-real-route');
+    expect(unknownRoute.status).toBe(404);
+  });
+});

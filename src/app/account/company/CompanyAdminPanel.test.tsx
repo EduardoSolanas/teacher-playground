@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import CompanyAdminPanel from './CompanyAdminPanel';
 import type { AjaxFetch } from '@/lib/whiteboard/teacherRooms';
@@ -562,5 +562,399 @@ describe('CompanyAdminPanel summary', () => {
       expect(screen.getByTestId('company-summary')).toBeTruthy();
     });
     expect(screen.queryByTestId('company-awaiting-payment')).toBeNull();
+  });
+
+  it('shows unknown for a member without a usable join timestamp', async () => {
+    const noJoinDateBody = {
+      ...summaryBody,
+      members: [{ ...summaryBody.members[1], createdAt: 'yesterday' }],
+    };
+    const request: AjaxFetch = async () => jsonResponse(200, noJoinDateBody);
+
+    render(<CompanyAdminPanel request={request} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-member-acc_tutor')).toBeTruthy();
+    });
+    expect(screen.getByTestId('company-member-acc_tutor').textContent).toContain('unknown');
+  });
+
+  it('shows the load error when the summary payload is unreadable', async () => {
+    const request: AjaxFetch = async () => jsonResponse(200, { company: null });
+
+    render(<CompanyAdminPanel request={request} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-load-error').textContent).toMatch(/could not load/i);
+    });
+    expect(screen.queryByTestId('company-summary')).toBeNull();
+  });
+
+  it('stops updating after unmount while the first summary is in flight', async () => {
+    let resolveSummary: (response: Response) => void = () => undefined;
+    const request: AjaxFetch = () =>
+      new Promise<Response>((resolve) => {
+        resolveSummary = resolve;
+      });
+
+    const view = render(<CompanyAdminPanel request={request} />);
+    expect(screen.getByTestId('company-loading')).toBeTruthy();
+
+    view.unmount();
+    await act(async () => {
+      resolveSummary(jsonResponse(200, summaryBody));
+      await Promise.resolve();
+    });
+
+    expect(view.container.innerHTML).toBe('');
+  });
+});
+
+describe('CompanyAdminPanel invite failures', () => {
+  it('reports a mint failure', async () => {
+    const request: AjaxFetch = async (input) => {
+      if (String(input) === '/api/company/invites') return jsonResponse(500, { error: 'boom' });
+      return jsonResponse(200, summaryBody);
+    };
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-summary')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('company-invite-mint'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-invite-error').textContent).toMatch(
+        /could not create an invite link/i,
+      );
+    });
+  });
+
+  it('reports an unreadable minted invite payload', async () => {
+    const request: AjaxFetch = async (input) => {
+      if (String(input) === '/api/company/invites') {
+        return jsonResponse(201, { token: 'bad token!' });
+      }
+      return jsonResponse(200, summaryBody);
+    };
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-summary')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('company-invite-mint'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-invite-error').textContent).toMatch(
+        /could not create an invite link/i,
+      );
+    });
+    expect(screen.queryByTestId('company-invite-link')).toBeNull();
+  });
+
+  it('sends the member role when the seat role is switched back to member', async () => {
+    const calls: { path: string; init?: RequestInit }[] = [];
+    const request: AjaxFetch = async (input, init) => {
+      const path = String(input);
+      calls.push({ path, init });
+      if (path === '/api/company/invites') {
+        return jsonResponse(201, {
+          token: 'minted_token',
+          inviteHash: await sha256Hex('minted_token'),
+        });
+      }
+      return jsonResponse(200, summaryBody);
+    };
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-summary')).toBeTruthy();
+    });
+
+    const roleSelect = screen.getByLabelText(/seat role/i);
+    fireEvent.change(roleSelect, { target: { value: 'admin' } });
+    fireEvent.change(roleSelect, { target: { value: 'member' } });
+    fireEvent.click(screen.getByTestId('company-invite-mint'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-invite-link')).toBeTruthy();
+    });
+    const mintCall = calls.find((call) => call.path === '/api/company/invites');
+    expect(JSON.parse(String(mintCall?.init?.body))).toEqual({ role: 'member' });
+  });
+
+  it('revokes by the hash computed from the token when the minted hash is unusable', async () => {
+    const calls: { path: string; init?: RequestInit }[] = [];
+    const request: AjaxFetch = async (input, init) => {
+      const path = String(input);
+      calls.push({ path, init });
+      if (path === '/api/company/invites' && init?.method === 'POST') {
+        return jsonResponse(201, { token: 'minted_token', inviteHash: 'not-a-hash' });
+      }
+      if (path === '/api/company/invites' && init?.method === 'DELETE') {
+        return new Response(null, { status: 204 });
+      }
+      return jsonResponse(200, summaryBody);
+    };
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-summary')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('company-invite-mint'));
+    await waitFor(() => {
+      expect(screen.getByTestId('company-invite-link')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('company-invite-revoke'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('company-invite-link')).toBeNull();
+    });
+
+    const revokeCall = calls.find((call) => call.init?.method === 'DELETE');
+    expect(JSON.parse(String(revokeCall?.init?.body))).toEqual({
+      inviteHash: await sha256Hex('minted_token'),
+    });
+  });
+
+  it('keeps the link visible when a revoke fails', async () => {
+    window.history.replaceState({}, '', '/account/company#invite=frag_token');
+    const calls: { path: string; init?: RequestInit }[] = [];
+    const request: AjaxFetch = async (input, init) => {
+      const path = String(input);
+      calls.push({ path, init });
+      if (path === '/api/company') return jsonResponse(200, summaryBody);
+      return jsonResponse(500, { error: 'boom' });
+    };
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-invite-link')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('company-invite-revoke'));
+
+    await waitFor(() => {
+      expect(calls.some((call) => call.init?.method === 'DELETE')).toBe(true);
+    });
+    await waitFor(() => {
+      expect((screen.getByTestId('company-invite-revoke') as HTMLButtonElement).disabled).toBe(
+        false,
+      );
+    });
+    expect(screen.getByTestId('company-invite-link')).toBeTruthy();
+    expect(screen.getByTestId('company-invite-status').textContent).not.toMatch(/revoked/i);
+  });
+
+  it('reports an expired invite link', async () => {
+    window.history.replaceState({}, '', '/account/company#invite=join_token');
+    const request: AjaxFetch = async (input) =>
+      String(input) === '/api/company/invites/redeem'
+        ? jsonResponse(404, { error: 'not_found' })
+        : jsonResponse(403, { error: 'forbidden' });
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-invite-accept')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('company-invite-accept'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-invite-error').textContent).toMatch(
+        /invalid or has expired/i,
+      );
+    });
+  });
+
+  it('reports a refused redemption', async () => {
+    window.history.replaceState({}, '', '/account/company#invite=join_token');
+    const request: AjaxFetch = async (input) =>
+      String(input) === '/api/company/invites/redeem'
+        ? jsonResponse(500, { error: 'boom' })
+        : jsonResponse(403, { error: 'forbidden' });
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-invite-accept')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('company-invite-accept'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-invite-error').textContent).toMatch(
+        /could not accept the invite/i,
+      );
+    });
+  });
+});
+
+describe('CompanyAdminPanel seat settle failures', () => {
+  const pendingBody = {
+    ...summaryBody,
+    subscription: {
+      ...summaryBody.subscription,
+      pendingQuantity: 8,
+      pendingOperationId: 'op_seat_1',
+    },
+  };
+
+  it('reports a failed settle request and keeps the change pending', async () => {
+    const request: AjaxFetch = async (input) => {
+      if (String(input) === '/api/company/seats') return jsonResponse(500, { error: 'boom' });
+      return jsonResponse(200, pendingBody);
+    };
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-pending-seats')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('company-seat-change-settle'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-seat-error').textContent).toMatch(
+        /could not settle the seat change/i,
+      );
+    });
+    expect(screen.getByTestId('company-pending-seats')).toBeTruthy();
+  });
+
+  it('reports a failed refresh after a settled seat change', async () => {
+    let summaryCalls = 0;
+    const request: AjaxFetch = async (input) => {
+      const path = String(input);
+      if (path === '/api/company/seats') return jsonResponse(200, { status: 'settled' });
+      summaryCalls += 1;
+      return summaryCalls === 1
+        ? jsonResponse(200, pendingBody)
+        : jsonResponse(500, { error: 'boom' });
+    };
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-pending-seats')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('company-seat-change-settle'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-seat-error').textContent).toMatch(
+        /could not refresh the seat change/i,
+      );
+    });
+  });
+
+  it('reports a failed refresh when the refreshed summary is unreadable', async () => {
+    let summaryCalls = 0;
+    const request: AjaxFetch = async (input) => {
+      const path = String(input);
+      if (path === '/api/company/seats') return jsonResponse(200, { status: 'settled' });
+      summaryCalls += 1;
+      return summaryCalls === 1
+        ? jsonResponse(200, pendingBody)
+        : jsonResponse(200, { company: null });
+    };
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-pending-seats')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('company-seat-change-settle'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-seat-error').textContent).toMatch(
+        /could not refresh the seat change/i,
+      );
+    });
+  });
+});
+
+describe('CompanyAdminPanel destructive action failures', () => {
+  it('shows the server message when a transfer is refused', async () => {
+    const request: AjaxFetch = async (input) => {
+      if (String(input) === '/api/company/owner') {
+        return jsonResponse(403, { error: 'Only an owner may transfer ownership.' });
+      }
+      return jsonResponse(200, summaryBody);
+    };
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-summary')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('company-transfer'));
+    fireEvent.click(screen.getByTestId('company-transfer-confirm'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-transfer-error').textContent).toContain(
+        'Only an owner may transfer ownership.',
+      );
+    });
+    expect(screen.getByRole('dialog', { name: /transfer ownership/i })).toBeTruthy();
+  });
+
+  it('uses the fallback message when a refusal carries no usable error text', async () => {
+    const request: AjaxFetch = async (input) => {
+      if (String(input) === '/api/company/owner') return jsonResponse(403, { error: '   ' });
+      return jsonResponse(200, summaryBody);
+    };
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-summary')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('company-transfer'));
+    fireEvent.click(screen.getByTestId('company-transfer-confirm'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-transfer-error').textContent).toMatch(
+        /could not transfer ownership/i,
+      );
+    });
+  });
+
+  it('uses the fallback message when a rename is refused without a body', async () => {
+    const request: AjaxFetch = async (input, init) => {
+      if (init?.method === 'PATCH') return new Response('not json', { status: 502 });
+      return jsonResponse(200, summaryBody);
+    };
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-summary')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('company-rename'));
+    fireEvent.click(screen.getByTestId('company-rename-confirm'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('company-rename-error').textContent).toMatch(
+        /could not rename the company/i,
+      );
+    });
+  });
+
+  it('offers no transfer target when every member is the owner', async () => {
+    const soloBody = { ...summaryBody, members: [summaryBody.members[0]] };
+    const request: AjaxFetch = async () => jsonResponse(200, soloBody);
+
+    render(<CompanyAdminPanel request={request} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('company-summary')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('company-transfer'));
+
+    expect(screen.getByText(/add an admin or a member before transferring ownership/i)).toBeTruthy();
+    expect((screen.getByTestId('company-transfer-confirm') as HTMLButtonElement).disabled).toBe(
+      true,
+    );
   });
 });

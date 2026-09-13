@@ -2267,6 +2267,268 @@ describe('real local Access boundary through workerd', () => {
   });
 });
 
+describe('worker request-boundary branches', () => {
+  it('answers 405 on session and account routes reached with the wrong method', async () => {
+    const token = await localAccessToken('worker-method-boundary');
+    const cases: Array<[string, string, string]> = [
+      ['/auth/session', 'GET', 'POST'],
+      ['/auth/session/current', 'POST', 'GET'],
+      ['/auth/session/confirm', 'GET', 'POST'],
+      ['/auth/session/logout', 'GET', 'POST'],
+      ['/auth/account/profile', 'GET', 'PATCH'],
+      ['/auth/account/export', 'POST', 'GET'],
+      ['/api/whiteboard/rooms', 'POST', 'GET'],
+      ['/auth/access/logout', 'POST', 'GET, HEAD'],
+    ];
+    for (const [path, method, allow] of cases) {
+      const response = await SELF.fetch(`${BASE}${path}`, {
+        method,
+        headers: { Origin: BASE, 'Cf-Access-Jwt-Assertion': token },
+      });
+      expect(response.status, `${method} ${path}`).toBe(405);
+      expect(response.headers.get('allow'), `${method} ${path}`).toBe(allow);
+    }
+  });
+
+  it('answers 401 on the account profile without a local session', async () => {
+    const response = await SELF.fetch(`${BASE}/auth/account/profile`, {
+      method: 'PATCH',
+      headers: {
+        Origin: BASE,
+        'Cf-Access-Jwt-Assertion': await localAccessToken('profile-missing-session'),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ displayName: 'Ada' }),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it('rejects file ids and room ids outside the grammar before room authorization', async () => {
+    const owner = await bootstrapLocalSession('file-id-boundary-owner');
+    const roomId = `file-id-boundary-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    for (const path of [
+      '/api/whiteboard/room/bad%20room/files/file-1',
+      `/api/whiteboard/room/${roomId}/files/bad%20id`,
+    ]) {
+      const response = await authenticatedFetch(path, owner);
+      expect(response.status, path).toBe(400);
+    }
+  });
+
+  it('rejects a file upload without Content-Length and above the file cap', async () => {
+    const owner = await bootstrapLocalSession('file-size-boundary-owner');
+    const roomId = `file-size-boundary-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.close();
+      },
+    });
+    const missingLength = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/files/no-length-file`,
+      owner,
+      {
+        method: 'PUT',
+        headers: { Origin: BASE, 'content-type': 'image/png' },
+        body: stream,
+        duplex: 'half',
+      } as RequestInit,
+    );
+    expect(missingLength.status).toBe(411);
+
+    const overCap = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/files/over-cap-file`,
+      owner,
+      {
+        method: 'PUT',
+        headers: {
+          Origin: BASE,
+          'content-type': 'image/png',
+          'content-length': String(MAX_BOARD_FILE_BYTES + 1),
+        },
+        body: new Uint8Array([1]),
+      },
+    );
+    expect(overCap.status).toBe(413);
+  });
+
+  it('refuses a file write for an account with no grant in the room', async () => {
+    const owner = await bootstrapLocalSession('file-write-owner');
+    const outsider = await bootstrapLocalSession('file-write-outsider');
+    const roomId = `file-write-boundary-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const response = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/files/outsider-write`,
+      outsider,
+      {
+        method: 'PUT',
+        headers: {
+          Origin: BASE,
+          'content-type': 'image/png',
+          'content-length': String(bytes.length),
+        },
+        body: bytes,
+      },
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it('returns 404 for a missing object and metadata for a HEAD download', async () => {
+    const owner = await bootstrapLocalSession('file-download-boundary-owner');
+    const roomId = `file-download-boundary-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const missing = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/files/never-uploaded`,
+      owner,
+    );
+    expect(missing.status).toBe(404);
+
+    const bytes = new Uint8Array([9, 8, 7]);
+    expect((await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/files/head-download`,
+      owner,
+      {
+        method: 'PUT',
+        headers: {
+          Origin: BASE,
+          'content-type': 'image/png',
+          'content-length': String(bytes.length),
+        },
+        body: bytes,
+      },
+    )).status).toBe(201);
+
+    const head = await authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/files/head-download`,
+      owner,
+      { method: 'HEAD' },
+    );
+    expect(head.status).toBe(200);
+    expect(head.headers.get('content-type')).toBe('image/png');
+    expect((await head.arrayBuffer()).byteLength).toBe(0);
+  });
+
+  it('rejects a declared-oversized and a non-JSON room mutation before the room', async () => {
+    const owner = await bootstrapLocalSession('room-body-boundary-owner');
+    const roomId = `room-body-boundary-${crypto.randomUUID()}`;
+
+    const oversized = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: {
+        Origin: BASE,
+        'content-type': 'application/json',
+        'content-length': String(MAX_BODY_BYTES + 1),
+      },
+      body: JSON.stringify({ elements: [] }),
+    });
+    expect(oversized.status).toBe(413);
+
+    const wrongType = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'text/plain' },
+      body: 'not-json',
+    });
+    expect(wrongType.status).toBe(415);
+  });
+
+  it('answers 405 and 400 on the A/V mute route', async () => {
+    const owner = await bootstrapLocalSession('av-mute-boundary-owner');
+    const roomId = `av-mute-boundary-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const wrongMethod = await authenticatedFetch(`/api/av/mute?roomId=${roomId}`, owner, {
+      method: 'GET',
+    });
+    expect(wrongMethod.status).toBe(405);
+    expect(wrongMethod.headers.get('allow')).toBe('POST');
+
+    const missingRoom = await authenticatedFetch('/api/av/mute', owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'mute', target: 'peer-1', kind: 'audio' }),
+    });
+    expect(missingRoom.status).toBe(400);
+
+    const muted = await authenticatedFetch(`/api/av/mute?roomId=${roomId}`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'mute', target: 'peer-1', kind: 'audio' }),
+    });
+    expect(muted.status).toBe(502);
+  });
+
+  it('falls back to the scene limiter when the access probe is refused', async () => {
+    const owner = await bootstrapLocalSession('probe-fallback-owner');
+    const roomId = `probe-fallback-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'DELETE',
+    })).status).toBe(200);
+
+    const recreated = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: {
+        Origin: BASE,
+        'content-type': 'application/json',
+        'x-test-strict-rate-limit': '1',
+      },
+      body: JSON.stringify({ elements: [] }),
+    });
+    expect(recreated.status).toBe(410);
+  });
+
+  it('survives an owned-room index that names a room outside the grammar', async () => {
+    const session = await bootstrapLocalSession('erase-invalid-room-index');
+    await runInDurableObject(
+      getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>),
+      (instance: IdentityDO) => {
+        instance.db
+          .prepare(
+            `INSERT INTO account_rooms (account_id, room_id, role, name, created_at, updated_at)
+             VALUES (?, ?, 'owner', NULL, ?, ?)`,
+          )
+          .run(session.accountId, 'bad room!', Date.now(), Date.now());
+      },
+    );
+
+    const erased = await authenticatedFetch('/auth/account', session, { method: 'DELETE' });
+    expect(erased.status).toBe(200);
+    expect(await erased.json()).toEqual({ ok: true });
+    expect((await authenticatedFetch('/auth/session/current', session)).status).toBe(401);
+  });
+});
+
 function teacherRoomIds(body: unknown): string[] {
   if (typeof body !== 'object' || body === null) return [];
   const rooms = (body as { rooms?: unknown }).rooms;

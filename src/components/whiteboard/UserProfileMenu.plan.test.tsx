@@ -262,4 +262,42 @@ describe('UserProfileMenu plan section', () => {
     });
     expect(navigated).toEqual([]);
   });
+
+  it('reports a billing response that carries no URL', async () => {
+    const request: AjaxFetch = async () => jsonResponse(200, {});
+    const navigated: string[] = [];
+
+    await openMenu({
+      plan: { planId: 'free', status: 'free' },
+      request,
+      navigate: (url) => {
+        navigated.push(url);
+      },
+    });
+    fireEvent.click(screen.getByTestId('whiteboard-profile-plan-upgrade'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-profile-plan-error')).toBeTruthy();
+    });
+    expect(navigated).toEqual([]);
+  });
+
+  it('reports a billing response that is not an object', async () => {
+    const request: AjaxFetch = async () => jsonResponse(200, null);
+    const navigated: string[] = [];
+
+    await openMenu({
+      plan: { planId: 'free', status: 'free' },
+      request,
+      navigate: (url) => {
+        navigated.push(url);
+      },
+    });
+    fireEvent.click(screen.getByTestId('whiteboard-profile-plan-upgrade'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-profile-plan-error')).toBeTruthy();
+    });
+    expect(navigated).toEqual([]);
+  });
 });
