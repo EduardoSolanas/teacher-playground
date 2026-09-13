@@ -79,11 +79,26 @@ describe('production deployment policy', () => {
     const wranglerConfig = readRepositoryFile('wrangler.toml');
     const topLevelConfig = wranglerConfig.split(/^\s*\[/m, 1)[0];
 
-    // workers_dev is temporarily true until a custom domain is configured;
-    // preview_urls must always stay false.
-    expect(topLevelConfig).toMatch(/^workers_dev\s*=\s*(?:true|false)\s*/m);
+    // Production serves only its custom domains (env.prod routes), so the
+    // generated workers.dev and preview hostnames stay off: each one would be
+    // an alternate origin with no Access application in front of it.
+    expect(topLevelConfig).toMatch(/^workers_dev\s*=\s*false\s*$/m);
+    expect(wranglerConfig).not.toMatch(/^\s*workers_dev\s*=\s*true\s*$/m);
     expect(topLevelConfig).toMatch(/^preview_urls\s*=\s*false\s*$/m);
     expect(wranglerConfig).not.toMatch(/^\s*preview_urls\s*=\s*true\s*$/m);
+  });
+
+  it('schedules the daily billing reconcile on the production Worker', () => {
+    // The Worker's scheduled() handler runs the Stripe reconcile that notices a
+    // missed webhook (SEC-015). Triggers are not inherited from the top level,
+    // so a production block without its own is a handler that never runs.
+    const wranglerConfig = readRepositoryFile('wrangler.toml');
+    const triggers = /^\[env\.prod\.triggers\]\s*\r?\ncrons\s*=\s*\[([^\]]*)\]/m.exec(wranglerConfig);
+    expect(triggers, '[env.prod.triggers] with crons').not.toBeNull();
+    const crons = [...(triggers?.[1] ?? '').matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+    expect(crons).toHaveLength(1);
+    // Once a day, at a fixed minute and hour.
+    expect(crons[0]).toMatch(/^\d{1,2} \d{1,2} \* \* \*$/);
   });
 
   it('keeps local context omission confined to the dedicated local config', () => {

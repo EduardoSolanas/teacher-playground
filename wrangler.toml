@@ -125,6 +125,14 @@ class_name = "IdentityDO"
 bucket_name = "teacher-playground-board-files"
 binding = "BOARD_FILES"
 
+# The daily billing reconcile: the Worker's scheduled() handler re-reads Stripe
+# for every stored subscription and alerts on drift, which is how a missed
+# webhook gets noticed (SEC-015). Triggers are not inherited from the top level,
+# so without this block production never runs the handler at all. 04:23 UTC,
+# outside UK lesson hours. With no subscriptions stored it reads nothing.
+[env.prod.triggers]
+crons = ["23 4 * * *"]
+
 [env.prod.vars]
 ACCESS_ISSUER = "https://ha-smart-home.cloudflareaccess.com"
 ACCESS_AUDIENCE = "2dabab17621803a68a8a67a0db2dfe0133d29e73a448618c1743945743847621"
