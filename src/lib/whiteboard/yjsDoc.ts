@@ -1,6 +1,7 @@
 import * as Y from 'yjs';
 import { cloneForYjs, valuesEqual } from './yjsValue';
 import { encodePoints, decodePoints } from './pointCodec';
+import { needsPointRepair, repairedPointsFor } from './renderableElements';
 import type { CanvasElement } from '@/types/whiteboard';
 
 export function createWhiteboardDoc(roomId: string) {
@@ -178,9 +179,6 @@ export function replaceSharedElements(
   }, origin);
 }
 
-/** Element types whose geometry lives in `points` rather than width/height. */
-const POINT_BEARING_TYPES = new Set(['line', 'arrow', 'freedraw']);
-
 export function getElementsFromArray(
   elementsArray: Y.Array<Y.Map<any>>
 ): CanvasElement[] {
@@ -193,20 +191,19 @@ export function getElementsFromArray(
     const decoded = decodePoints(element.points);
     if (decoded !== null) {
       element.points = decoded;
-    } else if (POINT_BEARING_TYPES.has(element.type as string)) {
+    }
+    if (needsPointRepair(element)) {
       /*
        * Excalidraw reads `points.length` on these types without checking the
-       * field is there, and it does so inside restore(), which runs over the
-       * whole scene. One element that arrives without readable points -- a map
-       * that never held them, or bytes this codec cannot read -- therefore
-       * throws out of the observer and blanks the board for every peer, not
-       * just for the element that is broken.
-       *
-       * Empty is the honest answer when the geometry cannot be recovered, and
-       * it degrades the way it should: Excalidraw treats a linear element with
-       * fewer than two points as invisibly small and drops that one element.
+       * field is there, and its bounds then destructure `points[0]`, so a
+       * linear element needs a point rather than an empty list. One element
+       * that arrives without readable points -- a map that never held them,
+       * empty points, or bytes this codec cannot read -- therefore throws out
+       * of the observer and blanks the board for every peer, not just for the
+       * element that is broken. The placeholder degrades the way it should:
+       * the element draws as invisibly small until the geometry comes back.
        */
-      element.points = [];
+      element.points = repairedPointsFor(String(element.type));
     }
     return element as CanvasElement;
   });
