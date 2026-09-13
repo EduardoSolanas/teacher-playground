@@ -47,10 +47,15 @@ interface PresencePanelProps {
   /** A/V participant state keyed by whiteboard peer id. */
   avPeerStates?: ReadonlyMap<
     string,
-    { micMuted: boolean; micPresent: boolean; camOn: boolean; quality?: 'excellent' | 'good' | 'poor' | 'lost' | 'unknown' }
+    { micMuted: boolean; micPresent: boolean; camOn: boolean; quality?: 'excellent' | 'good' | 'poor' | 'lost' | 'unknown'; canScreenShare?: boolean | null }
   >;
   /** Owner-only row controls for muting remote published tracks. */
   onMutePeer?: (peerId: string, kind: 'audio' | 'video') => void;
+  /**
+   * Owner only: allow or withdraw one participant's screen share on this call
+   * (Phase 10). The room refuses it from anyone else; this only offers it.
+   */
+  onScreenSharePeer?: (peerId: string, allowed: boolean) => void;
   /** Room capacity from settings; used for the "N of M" count. */
   maxUsers?: number;
 }
@@ -261,6 +266,7 @@ export default function PresencePanel({
   speakingPeerIds,
   avPeerStates,
   onMutePeer,
+  onScreenSharePeer,
   maxUsers = DEFAULT_MAX_USERS,
 }: PresencePanelProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -665,6 +671,7 @@ export default function PresencePanel({
               const isSpeaking = Boolean(speakingPeerIds?.has(user.peerId));
               const avState = avPeerStates?.get(user.peerId);
               const canMuteAv = Boolean(avState && canModerate && onMutePeer);
+              const shareAllowed = avState?.canScreenShare === true;
               const showQualityIssue = showConnectionIssue(avState?.quality);
               const nameLine = (
                 <div className="flex items-center gap-1.5 overflow-hidden">
@@ -827,6 +834,27 @@ export default function PresencePanel({
                       >
                         Mute cam
                       </button>
+                      {onScreenSharePeer && (
+                        <button
+                          type="button"
+                          data-testid={`whiteboard-user-share-${user.peerId}`}
+                          aria-label={shareAllowed
+                            ? `Stop ${user.userName} sharing their screen`
+                            : `Allow ${user.userName} to share their screen`}
+                          aria-pressed={shareAllowed}
+                          className={`pointer-coarse:min-h-11 rounded-md border px-2 py-1 text-[0.6875rem] font-semibold transition-colors duration-150 ${
+                            shareAllowed
+                              ? 'border-[var(--blue)] bg-[var(--blue)] text-white hover:bg-[var(--blue-d)]'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                          }`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onScreenSharePeer(user.peerId, !shareAllowed);
+                          }}
+                        >
+                          {shareAllowed ? 'Stop share' : 'Allow share'}
+                        </button>
+                      )}
                     </div>
                   )}
                   {canModerate && (

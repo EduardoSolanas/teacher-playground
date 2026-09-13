@@ -200,6 +200,8 @@ describe('LiveKitProvider speaking state', () => {
       camOn: true,
       isSpeaking: true,
       quality: 'excellent',
+      // No permissions on this participant yet: unknown, not refused.
+      canScreenShare: null,
     });
 
     livekit.remoteParticipant.isSpeaking = false;
@@ -212,6 +214,8 @@ describe('LiveKitProvider speaking state', () => {
       camOn: true,
       isSpeaking: false,
       quality: 'excellent',
+      // No permissions on this participant yet: unknown, not refused.
+      canScreenShare: null,
     });
   });
 
@@ -261,6 +265,8 @@ describe('LiveKitProvider speaking state', () => {
       camOn: true,
       isSpeaking: false,
       quality: 'poor',
+      // No permissions on this participant yet: unknown, not refused.
+      canScreenShare: null,
     });
   });
 

@@ -220,6 +220,22 @@ describe('mapAvPeerStateByPeerId', () => {
     ]));
   });
 
+  it('carries whether each participant may share their screen (Phase 10)', () => {
+    const states = mapAvPeerStateByPeerId(
+      [
+        { identity: 'acct-allowed', micMuted: false, micPresent: true, camOn: true, isSpeaking: false, canScreenShare: true },
+        { identity: 'acct-refused', micMuted: false, micPresent: true, camOn: true, isSpeaking: false, canScreenShare: false },
+      ],
+      [
+        makeUser({ peerId: 'peer-allowed', accountId: 'acct-allowed' }),
+        makeUser({ peerId: 'peer-refused', accountId: 'acct-refused' }),
+      ],
+      'peer-owner',
+    );
+    expect(states.get('peer-allowed')?.canScreenShare).toBe(true);
+    expect(states.get('peer-refused')?.canScreenShare).toBe(false);
+  });
+
   it('maps poor account-linked av quality onto the roster peer id', () => {
     expect(
       mapAvPeerStateByPeerId(

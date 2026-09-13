@@ -27,6 +27,12 @@ export default function CallControls({ av }: { readonly av: UseAvSessionResult }
    */
   const readOnly = av.canPublish === false;
   const inert = readOnly || (av.status !== 'joined' && av.status !== 'reconnecting');
+  /*
+   * Screen share is the owner's (Phase 10). Anyone else may share only while
+   * the owner allows it on this call; a share already running stays stoppable.
+   * Unknown (null, before permissions arrive) is not a refusal.
+   */
+  const shareRefused = av.local.canScreenShare === false && !av.local.isScreenSharing;
 
   return (
     <div data-testid="av-call-controls" className="flex flex-col gap-2 w-full">
@@ -104,7 +110,7 @@ export default function CallControls({ av }: { readonly av: UseAvSessionResult }
           type="button"
           data-testid="av-toggle-screen"
           aria-label="Screen share"
-          title={av.local.isScreenSharing ? 'Stop sharing' : 'Share screen'}
+          title={shareRefused ? 'Your teacher can let you share your screen' : av.local.isScreenSharing ? 'Stop sharing' : 'Share screen'}
           aria-pressed={av.local.isScreenSharing}
           className={`inline-flex min-h-9 items-center justify-center gap-1 sm:gap-1.5 rounded-lg px-1 sm:px-2 text-[0.6875rem] font-semibold whitespace-nowrap transition-colors duration-150 shadow-sm pointer-coarse:min-h-11 disabled:cursor-not-allowed disabled:opacity-40 ${
             av.local.isScreenSharing
@@ -112,7 +118,7 @@ export default function CallControls({ av }: { readonly av: UseAvSessionResult }
               : 'border border-slate-700/80 bg-slate-800/90 text-slate-200 hover:border-slate-600 hover:bg-slate-700/90 hover:text-white'
           }`}
           onClick={() => void av.toggleScreenShare()}
-          disabled={inert}
+          disabled={inert || shareRefused}
         >
           <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
             <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />

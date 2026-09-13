@@ -23,9 +23,10 @@ function renderPanel(
   options: {
     avPeerStates?: ReadonlyMap<
       string,
-      { micMuted: boolean; micPresent: boolean; camOn: boolean; quality?: ParticipantState['quality'] }
+      { micMuted: boolean; micPresent: boolean; camOn: boolean; quality?: ParticipantState['quality']; canScreenShare?: boolean | null }
     >;
     localPeerId?: string;
+    onScreenSharePeer?: (peerId: string, allowed: boolean) => void;
     isLocalHost?: boolean;
     waitingPeers?: WhiteboardUser[];
     speakingPeerIds?: ReadonlySet<string>;
@@ -55,6 +56,7 @@ function renderPanel(
       onSuspend={options.onSuspend ?? noop}
       avPeerStates={options.avPeerStates}
       onMutePeer={options.onMutePeer}
+      onScreenSharePeer={options.onScreenSharePeer}
       speakingPeerIds={options.speakingPeerIds}
     />,
   );
@@ -531,6 +533,51 @@ describe('PresencePanel A/V roster state', () => {
     expect(onMutePeer).toHaveBeenCalledWith('peer-student', 'video');
   });
 
+  it('lets the owner allow a participant to share their screen, and stop it again (Phase 10)', () => {
+    const decisions: string[] = [];
+    const onScreenSharePeer = (peerId: string, allowed: boolean) => { decisions.push(`${peerId}:${allowed}`); };
+    const users = [
+      makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true }),
+      makeUser({ peerId: 'peer-student', userName: 'Student', accountId: 'acct-student' }),
+    ];
+    const { rerender } = renderPanel(users, {
+      localPeerId: 'peer-owner',
+      isLocalHost: true,
+      avPeerStates: new Map([['peer-student', { micMuted: false, micPresent: true, camOn: true, canScreenShare: false }]]),
+      onMutePeer: () => {},
+      onScreenSharePeer,
+    });
+
+    const allow = screen.getByTestId('whiteboard-user-share-peer-student');
+    expect(allow.textContent).toBe('Allow share');
+    expect(allow.getAttribute('aria-label')).toBe('Allow Student to share their screen');
+    fireEvent.click(allow);
+
+    rerender(
+      <PresencePanel
+        users={users}
+        waitingPeers={[]}
+        localPeerId="peer-owner"
+        isLocalHost
+        collapsed={false}
+        onToggle={() => {}}
+        onApprove={() => {}}
+        onReject={() => {}}
+        onKick={() => {}}
+        onSuspend={() => {}}
+        avPeerStates={new Map([['peer-student', { micMuted: false, micPresent: true, camOn: true, canScreenShare: true }]])}
+        onMutePeer={() => {}}
+        onScreenSharePeer={onScreenSharePeer}
+      />,
+    );
+    const stop = screen.getByTestId('whiteboard-user-share-peer-student');
+    expect(stop.textContent).toBe('Stop share');
+    expect(stop.getAttribute('aria-label')).toBe('Stop Student sharing their screen');
+    fireEvent.click(stop);
+
+    expect(decisions).toEqual(['peer-student:true', 'peer-student:false']);
+  });
+
   it('does not show owner mute controls to non-owners', () => {
     renderPanel(
       [
@@ -548,6 +595,7 @@ describe('PresencePanel A/V roster state', () => {
 
     expect(screen.queryByTestId('whiteboard-user-mute-audio-peer-owner')).toBeNull();
     expect(screen.queryByTestId('whiteboard-user-mute-video-peer-owner')).toBeNull();
+    expect(screen.queryByTestId('whiteboard-user-share-peer-owner')).toBeNull();
   });
 });
 

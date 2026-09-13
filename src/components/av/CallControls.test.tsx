@@ -30,6 +30,7 @@ function makeAv(overrides: AvOverrides = {}): UseAvSessionResult {
     toggleScreenShare: vi.fn().mockResolvedValue(undefined),
     selectDevice: vi.fn(),
     requestMute: vi.fn(),
+    setScreenShareAllowed: async () => {},
     retry: vi.fn(),
     leave: vi.fn(),
     ...rest,
@@ -109,6 +110,25 @@ describe('CallControls', () => {
 
     fireEvent.click(screen.getByTestId('av-toggle-screen'));
     expect(av.toggleScreenShare).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the share button off until the teacher allows a share (Phase 10)', () => {
+    const shareButton = () => screen.getByTestId('av-toggle-screen') as HTMLButtonElement;
+
+    const refused = makeAv({ local: { micMuted: false, camOn: true, isScreenSharing: false, canScreenShare: false } });
+    const { rerender } = render(<CallControls av={refused} />);
+    expect(shareButton().disabled).toBe(true);
+    expect(shareButton().title).toBe('Your teacher can let you share your screen');
+
+    const allowed = makeAv({ local: { micMuted: false, camOn: true, isScreenSharing: false, canScreenShare: true } });
+    rerender(<CallControls av={allowed} />);
+    expect(shareButton().disabled).toBe(false);
+    expect(shareButton().title).toBe('Share screen');
+
+    // Not yet known (the owner, before permissions arrive) is not a refusal.
+    const unknown = makeAv({ local: { micMuted: false, camOn: true, isScreenSharing: false, canScreenShare: null } });
+    rerender(<CallControls av={unknown} />);
+    expect(shareButton().disabled).toBe(false);
   });
 
   it('says where the call has got to', () => {

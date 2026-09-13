@@ -29,6 +29,7 @@ import type {
 } from './avSession';
 import { mapProviderError } from './avSession';
 import { readDevicePreference } from './devicePreferences';
+import { mayShareScreen } from './screenSharePermission';
 
 function mapConnectionQuality(
   quality: ConnectionQuality | undefined,
@@ -55,6 +56,7 @@ function participantState(participant: Participant): ParticipantState {
     camOn: participant.isCameraEnabled,
     isSpeaking: participant.isSpeaking,
     quality: mapConnectionQuality(participant.connectionQuality),
+    canScreenShare: mayShareScreen(participant.permissions),
   };
 }
 
@@ -200,6 +202,19 @@ export class LiveKitProvider implements AvProvider {
     this.wired = true;
 
     this.room
+      /*
+       * The owner allowing or withdrawing a share arrives as a permission
+       * change. Withdrawing one in progress also unpublishes the screen on the
+       * server, so the local sharing state is re-read from the SDK rather than
+       * assumed to still be what the button last set.
+       */
+      .on(RoomEvent.ParticipantPermissionsChanged, (_previous, participant: Participant) => {
+        if (participant === this.room.localParticipant) this.emitLocal();
+        else this.events.onParticipant?.(participantState(participant));
+      })
+      .on(RoomEvent.LocalTrackUnpublished, () => {
+        this.emitLocal();
+      })
       .on(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
         this.wireSpeakingParticipant(participant);
         this.events.onParticipant?.(participantState(participant));
@@ -264,6 +279,8 @@ export class LiveKitProvider implements AvProvider {
     this.events.onLocalMic?.(!local.isMicrophoneEnabled);
     this.events.onLocalCamera?.(local.isCameraEnabled);
     this.events.onLocalSpeaking?.(local.isSpeaking);
+    this.events.onLocalScreenShare?.(local.isScreenShareEnabled);
+    this.events.onLocalScreenSharePermission?.(mayShareScreen(local.permissions));
   }
 
   private wireSpeakingParticipant(participant: Participant): void {

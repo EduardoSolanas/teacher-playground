@@ -181,7 +181,7 @@ export function mapAvPeerStateByPeerId(
   participants: readonly ParticipantState[],
   users: readonly WhiteboardUser[],
   localPeerId: string,
-): ReadonlyMap<string, { micMuted: boolean; micPresent: boolean; camOn: boolean; quality?: ParticipantState['quality'] }> {
+): ReadonlyMap<string, { micMuted: boolean; micPresent: boolean; camOn: boolean; quality?: ParticipantState['quality']; canScreenShare?: boolean | null }> {
   return new Map(
     participants.flatMap((participant) => {
       const peerId = participant.identity === '__local__'
@@ -193,6 +193,7 @@ export function mapAvPeerStateByPeerId(
           micPresent: participant.micPresent,
           camOn: participant.camOn,
           quality: participant.quality,
+          canScreenShare: participant.canScreenShare,
         }] as const]
         : [];
     }),
@@ -1058,6 +1059,11 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
           const targetIdentity = resolveAvTargetAccountId(users, localPeerId, peerId);
           if (!targetIdentity) return;
           void av.requestMute(targetIdentity, kind);
+        }}
+        onScreenSharePeer={(peerId, allowed) => {
+          const targetIdentity = resolveAvTargetAccountId(users, localPeerId, peerId);
+          if (!targetIdentity) return;
+          void av.setScreenShareAllowed(targetIdentity, allowed);
         }}
         speakingPeerIds={mapAvPeerIds(av.participants, users, localPeerId, (participant) => participant.isSpeaking)}
       />

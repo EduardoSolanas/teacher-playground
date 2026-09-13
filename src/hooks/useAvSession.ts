@@ -28,7 +28,7 @@ export interface UseAvSessionOptions {
 export interface UseAvSessionResult {
   readonly status: AvSessionStatus;
   readonly error: AvError | null;
-  readonly local: { micMuted: boolean; camOn: boolean; isScreenSharing?: boolean };
+  readonly local: { micMuted: boolean; camOn: boolean; isScreenSharing?: boolean; canScreenShare?: boolean | null };
   readonly participants: readonly ParticipantState[];
   readonly devices: Readonly<Record<DeviceKind, readonly AvDevice[]>>;
   readonly activeDevices: Readonly<Record<DeviceKind, string | undefined>>;
@@ -46,6 +46,8 @@ export interface UseAvSessionResult {
   readonly toggleScreenShare: () => Promise<void>;
   readonly selectDevice: (kind: DeviceKind, deviceId: string) => Promise<void>;
   readonly requestMute: (identity: string, kind?: 'audio' | 'video') => Promise<void>;
+  /** Owner only: allow or withdraw one participant's screen share on this call. */
+  readonly setScreenShareAllowed: (identity: string, allowed: boolean) => Promise<void>;
   /** Retry a failed join, or rejoin after the token or socket dropped it. */
   readonly retry: () => void;
   readonly leave: () => void;
@@ -257,8 +259,23 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
   }, []);
 
   const toggleScreenShare = useCallback(async () => {
+    const wasSharing = sessionRef.current?.local.isScreenSharing === true;
     await sessionRef.current?.toggleScreenShare();
-  }, []);
+    /*
+     * An allowed share lasts one share (Phase 10): stopping it hands the
+     * permission back, so the next one needs the owner again. The server acts
+     * only on the caller and does nothing for the owner, whose share is theirs
+     * by right. Best effort -- a lost request leaves the permission until the
+     * participant rejoins, which mints a narrow token anyway.
+     */
+    if (wasSharing) {
+      void ajaxFetch(`/api/whiteboard/room/${encodeURIComponent(roomId)}/av`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'end-screen-share' }),
+      }).catch(() => undefined);
+    }
+  }, [roomId]);
 
   const selectDevice = useCallback(async (kind: DeviceKind, deviceId: string) => {
     await sessionRef.current?.selectDevice(kind, deviceId);
@@ -270,6 +287,20 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(kind === 'audio' ? { target } : { target, kind }),
+      });
+    },
+    [roomId],
+  );
+
+  const setScreenShareAllowed = useCallback(
+    async (target: string, allowed: boolean) => {
+      await ajaxFetch(`/api/whiteboard/room/${encodeURIComponent(roomId)}/av`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: allowed ? 'allow-screen-share' : 'revoke-screen-share',
+          target,
+        }),
       });
     },
     [roomId],
@@ -295,6 +326,7 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
       toggleScreenShare,
       selectDevice,
       requestMute,
+      setScreenShareAllowed,
       retry,
       leave,
     }),
@@ -313,6 +345,7 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
       toggleScreenShare,
       selectDevice,
       requestMute,
+      setScreenShareAllowed,
       retry,
       leave,
     ],

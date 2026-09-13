@@ -39,12 +39,16 @@ export interface ParticipantState {
   readonly camOn: boolean;
   readonly isSpeaking: boolean;
   readonly quality?: 'excellent' | 'good' | 'poor' | 'lost' | 'unknown';
+  /** May share their screen now; null until the permissions arrive (Phase 10). */
+  readonly canScreenShare?: boolean | null;
 }
 
 export interface LocalState {
   micMuted: boolean;
   camOn: boolean;
   isScreenSharing: boolean;
+  /** May share now: the owner always; anyone else only while the owner allows it. */
+  canScreenShare?: boolean | null;
 }
 
 export type DeviceKind = 'microphone' | 'camera' | 'speaker';
@@ -67,6 +71,8 @@ export interface AvProviderEvents {
   onLocalMic?: (muted: boolean) => void;
   onLocalCamera?: (on: boolean) => void;
   onLocalScreenShare?: (on: boolean) => void;
+  /** The caller's own screen-share permission changed, or first arrived. */
+  onLocalScreenSharePermission?: (allowed: boolean | null) => void;
   onLocalSpeaking?: (speaking: boolean) => void;
   /** The caller's own uplink quality, as the SDK reports it. */
   onLocalQuality?: (quality: ParticipantState['quality']) => void;
@@ -273,6 +279,10 @@ export function createAvSession(provider: AvProvider): AvSession {
     },
     onLocalScreenShare(on) {
       local.isScreenSharing = on;
+      emitChange();
+    },
+    onLocalScreenSharePermission(allowed) {
+      local.canScreenShare = allowed;
       emitChange();
     },
     onLocalSpeaking(speaking) {
