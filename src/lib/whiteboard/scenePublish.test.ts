@@ -95,6 +95,37 @@ describe('shouldPublish force', () => {
     expect(result).toHaveLength(1);
     expect((result[0] as El).id).toBe('el-0');
   });
+
+  it('with force=true and a moved element, still sends only that element', () => {
+    const { elements, baseline } = board(3);
+    const moved = [...elements];
+    moved[1] = el('el-1', 2, 40);
+    const diff = diffScene(baseline, moved);
+
+    const { elements: result, wholeScene } = elementsToPublish(moved, diff, true);
+
+    expect(wholeScene).toBe(false);
+    expect(result).toHaveLength(1);
+    expect((result[0] as El).id).toBe('el-1');
+  });
+
+  it('with force=false and no changes, publishes nothing', () => {
+    const { elements, baseline } = board(3);
+    const diff = diffScene(baseline, elements);
+
+    expect(elementsToPublish(elements, diff).elements).toEqual([]);
+  });
+
+  it('with force=true and no changes, drops entries without a usable id', () => {
+    const { elements, baseline } = board(1);
+    const withJunk = [...elements, { id: '' }, null];
+    const diff = diffScene(baseline, withJunk);
+    expect(diff.changedIds.size).toBe(0);
+
+    const { elements: result } = elementsToPublish(withJunk, diff, true);
+
+    expect(result).toEqual([elements[0]]);
+  });
 });
 
 describe('publishing cost does not scale with the board', () => {

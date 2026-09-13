@@ -7,6 +7,7 @@ import {
   withNonceHtmlSecurityHeaders,
   connectSrcForPageOrigin,
   MAX_BODY_BYTES,
+  MAX_WS_FRAME_BYTES,
   BILLING_WEBHOOK_MAX_BODY_BYTES,
   BILLING_WEBHOOK_PATH,
   applyCspNonceToHtml,
@@ -60,6 +61,25 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
 
     it('rejects prefix+suffix matching (join.example.com.evil.com should not match join.example.com)', () => {
       expect(routeHostKind('join.example.com.evil.com', 'app.example.com', 'join.example.com')).toBe('unknown');
+    });
+
+    it('returns marketing for a configured marketing host, case-insensitively', () => {
+      expect(
+        routeHostKind('marketing.example.com', 'app.example.com', 'join.example.com', 'marketing.example.com'),
+      ).toBe('marketing');
+      expect(
+        routeHostKind('MARKETING.EXAMPLE.COM', 'app.example.com', 'join.example.com', 'marketing.example.com'),
+      ).toBe('marketing');
+    });
+
+    it('never returns marketing for an unconfigured or non-matching host', () => {
+      expect(routeHostKind('marketing.example.com', 'app.example.com', 'join.example.com')).toBe('unknown');
+      expect(
+        routeHostKind('other.example.com', 'app.example.com', 'join.example.com', 'marketing.example.com'),
+      ).toBe('unknown');
+      expect(
+        routeHostKind('evil-marketing.example.com', 'app.example.com', 'join.example.com', 'marketing.example.com'),
+      ).toBe('unknown');
     });
   });
 
@@ -415,6 +435,24 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
 
     it('still treats a declared Content-Length over the cap as too large via bodyTooLarge', () => {
       expect(bodyTooLarge(String(MAX_BODY_BYTES + 1))).toBe(true);
+    });
+
+    it('rejects a declared Content-Length over the cap before reading the body', async () => {
+      const request = new Request('https://example.com/api', {
+        method: 'POST',
+        body: '{"ok":true}',
+        headers: {
+          'content-type': 'application/json',
+          'content-length': String(MAX_BODY_BYTES + 1),
+        },
+      });
+      const result = await readBoundedJsonBody(request);
+      expect(result).toEqual({ ok: false, tooLarge: true });
+    });
+
+    it('accepts a body of exactly the cap', async () => {
+      const result = await readBoundedJsonBody(postWithoutContentLength('x'.repeat(MAX_BODY_BYTES)));
+      expect(result.ok).toBe(true);
     });
   });
 
@@ -1061,6 +1099,129 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
     it('leaves the caller-scoped referral read unguarded by Origin like every other GET', () => {
       expect(isOriginGuardedPath('/api/referrals/me', 'GET')).toBe(false);
       expect(isOriginGuardedPath('/api/referrals/me', 'HEAD')).toBe(false);
+    });
+  });
+
+  describe('marketing host surface', () => {
+    const publicMarketingPaths = [
+      '/',
+      '/pricing',
+      '/terms',
+      '/privacy',
+      '/favicon.ico',
+      '/logo.svg',
+      '/brand.css',
+      '/_next/static/chunk.js',
+      '/fonts/Xiaolai-Regular.woff2',
+      '/data/image-GAAHSSAO.js',
+    ];
+
+    it('serves exactly the public marketing paths on the marketing host', () => {
+      for (const pathname of publicMarketingPaths) {
+        expect(isRouteAllowedOnHost(pathname, 'GET', 'marketing'), pathname).toBe(true);
+        expect(isRouteAllowedOnHost(pathname, 'HEAD', 'marketing'), pathname).toBe(true);
+      }
+      expect(isRouteAllowedOnHost('/account', 'GET', 'marketing')).toBe(false);
+      expect(isRouteAllowedOnHost('/api/company', 'GET', 'marketing')).toBe(false);
+      expect(isRouteAllowedOnHost('/whiteboard/room-alpha', 'GET', 'marketing')).toBe(false);
+    });
+
+    it('refuses non-read methods on every public marketing path', () => {
+      for (const pathname of publicMarketingPaths) {
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'marketing'), pathname).toBe(false);
+      }
+    });
+  });
+
+  describe('owner-only surfaces stay under the room API', () => {
+    it('does not let settings, stats, or library names open other path families', () => {
+      expect(isRouteAllowedOnHost('/auth/settings', 'GET', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/x/stats', 'GET', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/x/library', 'GET', 'teacher')).toBe(false);
+    });
+
+    it('does not accept a whiteboard room path embedded in a longer path', () => {
+      expect(isRouteAllowedOnHost('/x/whiteboard/room-alpha', 'GET', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/x/whiteboard/room-alpha', 'GET', 'guest')).toBe(false);
+    });
+  });
+
+  describe('connect-src protocol selection', () => {
+    it('uses ws: for a plain http page origin', () => {
+      expect(connectSrcForPageOrigin('http://app.example')).toBe(
+        "connect-src 'self' http://app.example ws://app.example"
+        + ' https://libraries.excalidraw.com',
+      );
+    });
+  });
+
+  describe('applyCspNonceToHtml leaves already-nonced elements alone', () => {
+    it('does not double-nonce a script tag with spaced nonce attributes', () => {
+      for (const html of [
+        '<script nonce="old" src="/a.js"></script>',
+        '<script nonce = "old" src="/a.js"></script>',
+        '<script nonce  = "old" src="/a.js"></script>',
+      ]) {
+        expect(applyCspNonceToHtml(html, 'abc'), html).toBe(html);
+      }
+    });
+
+    it('does not double-nonce a link with spaced nonce attributes', () => {
+      const html = '<link rel="preload" as="script" nonce = "old" href="/x.js"/>';
+      expect(applyCspNonceToHtml(html, 'abc')).toBe(html);
+    });
+
+    it('nonces link attributes written with spaces around the equals signs', () => {
+      expect(applyCspNonceToHtml('<link rel = "modulepreload" href="/x.js"/>', 'abc'))
+        .toContain('nonce="abc"');
+      expect(applyCspNonceToHtml('<link rel= modulepreload href="/x.js"/>', 'abc'))
+        .toContain('nonce="abc"');
+      expect(applyCspNonceToHtml('<link rel=modulepreload href="/x.js"/>', 'abc'))
+        .toContain('nonce="abc"');
+    });
+
+    it('nonces script preloads written with spaces or without quotes', () => {
+      expect(applyCspNonceToHtml('<link rel = "preload" as="script" href="/x.js"/>', 'abc'))
+        .toContain('nonce="abc"');
+      expect(applyCspNonceToHtml('<link rel=preload as="script" href="/x.js"/>', 'abc'))
+        .toContain('nonce="abc"');
+      expect(applyCspNonceToHtml('<link rel="preload" as =script href="/x.js"/>', 'abc'))
+        .toContain('nonce="abc"');
+      expect(applyCspNonceToHtml('<link rel="preload" as= script href="/x.js"/>', 'abc'))
+        .toContain('nonce="abc"');
+      expect(applyCspNonceToHtml('<link rel="preload" as=script href="/x.js"/>', 'abc'))
+        .toContain('nonce="abc"');
+    });
+  });
+
+  describe('withNonceHtmlSecurityHeaders non-HTML pass-through', () => {
+    it('leaves a non-HTML body untouched and adds no CSP', async () => {
+      const json = '{"note":"<script src=\\"x\\"></script>"}';
+      const wrapped = await withNonceHtmlSecurityHeaders(
+        new Response(json, { headers: { 'content-type': 'application/json' } }),
+      );
+      expect(wrapped.headers.get('Content-Security-Policy')).toBeNull();
+      expect(wrapped.headers.get('X-Robots-Tag')).toBeNull();
+      expect(await wrapped.text()).toBe(json);
+    });
+
+    it('leaves a response with no content type without HTML headers', async () => {
+      const wrapped = await withNonceHtmlSecurityHeaders(new Response(null));
+      expect(wrapped.headers.get('content-type')).toBeNull();
+      expect(wrapped.headers.get('Content-Security-Policy')).toBeNull();
+      expect(wrapped.headers.get('X-Robots-Tag')).toBeNull();
+      expect(wrapped.headers.get('Cache-Control')).toBe('no-store');
+    });
+  });
+
+  describe('pinned boundary constants', () => {
+    it('pins the billing webhook path', () => {
+      expect(BILLING_WEBHOOK_PATH).toBe('/api/billing/webhook');
+    });
+
+    it('pins the websocket frame ceiling above the JSON body cap', () => {
+      expect(MAX_WS_FRAME_BYTES).toBe(32 * 1024 * 1024);
+      expect(MAX_WS_FRAME_BYTES).toBeGreaterThan(MAX_BODY_BYTES);
     });
   });
 });

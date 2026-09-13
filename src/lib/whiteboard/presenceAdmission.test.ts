@@ -20,6 +20,12 @@ describe('admissionFromPresenceStatus', () => {
     expect(admissionFromPresenceStatus(200)).toBe('ok');
   });
 
+  it('ignores statuses below 200 and at or above 300', () => {
+    for (const status of [0, 100, 199, 300, 301, 399]) {
+      expect(admissionFromPresenceStatus(status)).toBe('ignore');
+    }
+  });
+
   it('treats 5xx server errors as error', () => {
     expect(admissionFromPresenceStatus(500)).toBe('error');
     expect(admissionFromPresenceStatus(502)).toBe('error');

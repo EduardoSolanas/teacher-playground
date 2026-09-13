@@ -6,7 +6,10 @@ import {
   replaceSharedElements,
   pruneTombstonedElements,
   addElementToArray,
+  removeElementFromArray,
+  updateElementInArray,
 } from './yjsDoc';
+import { encodePoints } from './pointCodec';
 
 function idsOf(doc: Y.Doc): string[] {
   const arr = doc.getArray<Y.Map<unknown>>('elements');
@@ -240,6 +243,11 @@ describe('getElementsFromArray point recovery', () => {
    */
   it('gives a linear element empty points when the map holds none', () => {
     const [element] = getElementsFromArray(seed({ id: 'line-1', type: 'line' }));
+    expect((element as { points?: unknown }).points).toEqual([]);
+  });
+
+  it('gives an arrow empty points when the map holds none', () => {
+    const [element] = getElementsFromArray(seed({ id: 'arrow-1', type: 'arrow' }));
     expect((element as { points?: unknown }).points).toEqual([]);
   });
 
@@ -489,5 +497,291 @@ describe('addElementToArray', () => {
     const elements = getElementsFromArray(elementsArray);
     expect(elements).toHaveLength(1);
     expect((elements[0] as any).underline).toBe(true);
+  });
+
+  it('writes every field of a fully specified element to the shared map', () => {
+    const { elementsArray } = createWhiteboardDoc('full-element');
+    const points = [[0, 0], [10, 5]];
+    const element = {
+      id: 'pen-1',
+      type: 'pen',
+      points,
+      color: '#ff0000',
+      strokeWidth: 3,
+      x: 1,
+      y: 2,
+      width: 3,
+      height: 4,
+      text: 'hi',
+      fontSize: 20,
+      fontFamily: 'serif',
+      bold: true,
+      italic: true,
+      underline: true,
+      fill: '#eeeeee',
+      stroke: '#111111',
+      content: 'note',
+      backgroundColor: '#aabbcc',
+      borderColor: '#ddeeff',
+      borderRadius: 9,
+      rotation: 45,
+    } as any;
+
+    addElementToArray(elementsArray, element);
+
+    const map = elementsArray.get(0);
+    expect(map.get('id')).toBe('pen-1');
+    expect(map.get('type')).toBe('pen');
+    expect(Array.from(map.get('points') as Uint8Array)).toEqual(Array.from(encodePoints(points)!));
+    expect(map.get('color')).toBe('#ff0000');
+    expect(map.get('strokeWidth')).toBe(3);
+    expect(map.get('x')).toBe(1);
+    expect(map.get('y')).toBe(2);
+    expect(map.get('width')).toBe(3);
+    expect(map.get('height')).toBe(4);
+    expect(map.get('text')).toBe('hi');
+    expect(map.get('fontSize')).toBe(20);
+    expect(map.get('fontFamily')).toBe('serif');
+    expect(map.get('bold')).toBe(true);
+    expect(map.get('italic')).toBe(true);
+    expect(map.get('underline')).toBe(true);
+    expect(map.get('fill')).toBe('#eeeeee');
+    expect(map.get('stroke')).toBe('#111111');
+    expect(map.get('content')).toBe('note');
+    expect(map.get('backgroundColor')).toBe('#aabbcc');
+    expect(map.get('borderColor')).toBe('#ddeeff');
+    expect(map.get('borderRadius')).toBe(9);
+    expect(map.get('rotation')).toBe(45);
+  });
+
+  it('writes the documented default for every field an element omits', () => {
+    const { elementsArray } = createWhiteboardDoc('minimal-element');
+
+    addElementToArray(elementsArray, { id: 'min-1', type: 'rectangle' } as any);
+
+    const map = elementsArray.get(0);
+    expect(Array.from(map.get('points') as Uint8Array)).toEqual(Array.from(encodePoints([])!));
+    expect(map.get('color')).toBe('');
+    expect(map.get('strokeWidth')).toBe(2);
+    expect(map.get('x')).toBe(0);
+    expect(map.get('y')).toBe(0);
+    expect(map.get('width')).toBe(0);
+    expect(map.get('height')).toBe(0);
+    expect(map.get('text')).toBe('');
+    expect(map.get('fontSize')).toBe(16);
+    expect(map.get('fontFamily')).toBe('sans-serif');
+    expect(map.get('bold')).toBe(false);
+    expect(map.get('italic')).toBe(false);
+    expect(map.get('underline')).toBe(false);
+    expect(map.get('fill')).toBe('transparent');
+    expect(map.get('stroke')).toBe('#000000');
+    expect(map.get('content')).toBe('');
+    expect(map.get('backgroundColor')).toBe('#fff9c4');
+    expect(map.get('borderColor')).toBe('#000000');
+    expect(map.get('borderRadius')).toBe(4);
+    expect(map.has('rotation')).toBe(false);
+  });
+
+  it('keeps rotation 0 rather than dropping it as falsy', () => {
+    const { elementsArray } = createWhiteboardDoc('rotation-zero');
+
+    addElementToArray(elementsArray, { id: 'rot-0', type: 'rectangle', rotation: 0 } as any);
+
+    expect(elementsArray.get(0).get('rotation')).toBe(0);
+  });
+
+  it('falls back to JSON for points the codec cannot represent', () => {
+    const { elementsArray } = createWhiteboardDoc('unencodable-points');
+    const points = [[0, 0], [Number.POSITIVE_INFINITY, 5]];
+
+    addElementToArray(elementsArray, { id: 'bad-points', type: 'pen', points } as any);
+
+    expect(elementsArray.get(0).get('points')).toBe(JSON.stringify(points));
+  });
+});
+
+describe('removeElementFromArray', () => {
+  it('removes the matching element and ignores an unknown id', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('remove-element');
+    replaceSharedElements(doc, elementsArray, [
+      { id: 'a', type: 'rectangle' },
+      { id: 'b', type: 'ellipse' },
+    ]);
+
+    removeElementFromArray(elementsArray, 'a');
+    expect(idsOf(doc)).toEqual(['b']);
+
+    removeElementFromArray(elementsArray, 'missing');
+    expect(idsOf(doc)).toEqual(['b']);
+  });
+});
+
+describe('updateElementInArray', () => {
+  it('updates the matching element and encodes replacement points', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('update-element');
+    replaceSharedElements(doc, elementsArray, [
+      { id: 'a', type: 'freedraw', points: [[0, 0]], width: 1 },
+    ]);
+
+    updateElementInArray(elementsArray, 'a', { width: 20, points: [[2, 2], [3, 3]] } as never);
+
+    const [element] = getElementsFromArray(elementsArray) as any[];
+    expect(element.width).toBe(20);
+    expect(element.points).toEqual([[2, 2], [3, 3]]);
+
+    updateElementInArray(elementsArray, 'missing', { width: 99 } as never);
+    expect((getElementsFromArray(elementsArray)[0] as any).width).toBe(20);
+  });
+
+  it('writes encoded empty points when an update clears the geometry', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('update-empty-points');
+    replaceSharedElements(doc, elementsArray, [{ id: 'a', type: 'freedraw', points: [[1, 1]] }]);
+
+    updateElementInArray(elementsArray, 'a', { points: undefined } as never);
+
+    expect(elementsArray.get(0).get('points')).toBeInstanceOf(Uint8Array);
+  });
+
+  it('falls back to JSON when an updated points value cannot be encoded', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('update-fallback');
+    const points = [[0, 0], [Number.NaN, 1]];
+    replaceSharedElements(doc, elementsArray, [{ id: 'a', type: 'freedraw', points: [[0, 0]] }]);
+
+    updateElementInArray(elementsArray, 'a', { points } as never);
+
+    expect(elementsArray.get(0).get('points')).toBe(JSON.stringify(points));
+  });
+});
+
+describe('createWhiteboardDoc', () => {
+  it('names the shared elements array, viewport, and cursors maps', () => {
+    const { doc, elementsArray, viewportMap, cursorsMap } = createWhiteboardDoc('names-room');
+
+    expect(doc.getArray('elements')).toBe(elementsArray);
+    expect(doc.getMap('viewport')).toBe(viewportMap);
+    expect(doc.getMap('cursors')).toBe(cursorsMap);
+  });
+});
+
+describe('replaceSharedElements field transport', () => {
+  it('ignores entries without a usable string id', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('bad-ids');
+
+    replaceSharedElements(doc, elementsArray, [
+      { id: 42, type: 'rectangle' },
+      { id: '', type: 'rectangle' },
+      {},
+      { id: 'ok', type: 'rectangle' },
+    ] as any);
+
+    expect(idsOf(doc)).toEqual(['ok']);
+  });
+
+  it('updates in place when one call repeats an id', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('dup-ids');
+
+    replaceSharedElements(doc, elementsArray, [
+      { id: 'a', type: 'rectangle', width: 1 },
+      { id: 'a', type: 'rectangle', width: 2 },
+    ]);
+
+    expect(elementsArray.length).toBe(1);
+    expect((getElementsFromArray(elementsArray)[0] as any).width).toBe(2);
+  });
+
+  it('stores stroke points in the binary codec form', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('binary-points');
+    const points = [[0, 0], [10, 5]];
+
+    replaceSharedElements(doc, elementsArray, [{ id: 'a', type: 'freedraw', points }]);
+
+    const stored = elementsArray.get(0).get('points');
+    expect(stored).toBeInstanceOf(Uint8Array);
+    expect(Array.from(stored as Uint8Array)).toEqual(Array.from(encodePoints(points)!));
+  });
+
+  it('falls back to plain points for values the codec cannot represent', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('fallback-points');
+    const points = [[0, 0], [Number.POSITIVE_INFINITY, 5]];
+
+    replaceSharedElements(doc, elementsArray, [{ id: 'a', type: 'freedraw', points }]);
+
+    expect(elementsArray.get(0).get('points')).toEqual(points);
+  });
+
+  it('does not overwrite a stored field with an explicitly undefined update', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('undefined-field');
+    replaceSharedElements(doc, elementsArray, [{ id: 'a', type: 'rectangle', width: 5 }]);
+
+    replaceSharedElements(doc, elementsArray, [
+      { id: 'a', type: 'rectangle', width: undefined },
+    ]);
+
+    expect((getElementsFromArray(elementsArray)[0] as any).width).toBe(5);
+  });
+
+  it('writes nothing when the incoming scene is unchanged', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('no-op');
+    const scene = [
+      { id: 'a', type: 'rectangle', width: 5 },
+      { id: 'b', type: 'freedraw', points: [[0, 0], [1, 1]], groupIds: [] },
+    ];
+    replaceSharedElements(doc, elementsArray, scene);
+
+    let updates = 0;
+    doc.on('update', () => {
+      updates += 1;
+    });
+    replaceSharedElements(doc, elementsArray, scene);
+
+    expect(updates).toBe(0);
+  });
+
+  it('drops keys the incoming element no longer carries', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('strip-keys');
+    replaceSharedElements(doc, elementsArray, [
+      { id: 'a', type: 'rectangle', width: 5, stroke: '#f00' },
+    ]);
+
+    replaceSharedElements(doc, elementsArray, [{ id: 'a', type: 'rectangle' }]);
+
+    const map = elementsArray.get(0);
+    expect(map.has('width')).toBe(false);
+    expect(map.has('stroke')).toBe(false);
+    expect(map.has('id')).toBe(true);
+  });
+
+  it('does not sweep entries whose stored id is not a string', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('weird-id');
+    const map = new Y.Map<unknown>();
+    map.set('width', 1);
+    elementsArray.push([map]);
+
+    replaceSharedElements(doc, elementsArray, []);
+
+    expect(elementsArray.length).toBe(1);
+  });
+
+  it('tags a local replace with the local origin', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('origin-room');
+    const origins: unknown[] = [];
+    doc.on('afterTransaction', (transaction: Y.Transaction) => origins.push(transaction.origin));
+
+    replaceSharedElements(doc, elementsArray, [{ id: 'a', type: 'rectangle' }]);
+
+    expect(origins).toEqual(['local']);
+  });
+
+  it('tags a prune with the prune origin', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('prune-origin');
+    replaceSharedElements(doc, elementsArray, [
+      { id: 'a', type: 'freedraw', points: [[0, 0]], isDeleted: true },
+    ]);
+    const origins: unknown[] = [];
+    doc.on('afterTransaction', (transaction: Y.Transaction) => origins.push(transaction.origin));
+
+    pruneTombstonedElements(doc);
+
+    expect(origins).toEqual(['prune']);
   });
 });

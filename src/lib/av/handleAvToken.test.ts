@@ -35,7 +35,11 @@ describe('issueAvTokenResponse', () => {
       accountId: 'acct-owner',
     });
     expect(res.status).toBe(503);
-    expect(await res.json()).toMatchObject({ reason: 'unconfigured' });
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(await res.json()).toMatchObject({
+      error: 'LiveKit is not configured',
+      reason: 'unconfigured',
+    });
   });
 
   it('returns 403 for a non-member', async () => {
@@ -47,7 +51,8 @@ describe('issueAvTokenResponse', () => {
       accountId: 'stranger',
     });
     expect(res.status).toBe(403);
-    expect(await res.json()).toMatchObject({ reason: 'not-a-member' });
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(await res.json()).toMatchObject({ error: 'Forbidden', reason: 'not-a-member' });
   });
 
   it('returns 403 for a waiting participant', async () => {
@@ -64,7 +69,11 @@ describe('issueAvTokenResponse', () => {
       accountId: 'acct-wait',
     });
     expect(res.status).toBe(403);
-    expect(await res.json()).toMatchObject({ reason: 'waiting' });
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(await res.json()).toMatchObject({
+      error: 'A/V available after admission',
+      reason: 'waiting',
+    });
   });
 
   it('returns 403 for a banned account', async () => {
@@ -169,6 +178,7 @@ describe('issueAvTokenResponse', () => {
       accountId: 'acct-member',
     });
     expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
     const body = (await res.json()) as { identity: string };
     expect(body.identity).toBe('acct-member');
   });

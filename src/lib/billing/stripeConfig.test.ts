@@ -69,6 +69,20 @@ describe('readBillingEnv STRIPE_API_BASE validation (SEC-A17)', () => {
     expect(env.apiBaseAllowed).toBe(false);
   });
 
+  it('refuses a URL that carries only a username or only a password', () => {
+    for (const base of ['https://user@api.stripe.com', 'https://:pass@api.stripe.com']) {
+      const env = readBillingEnv({ STRIPE_API_BASE: base, STRIPE_SECRET_KEY: 'sk_test_alpha' });
+      expect(env.apiBaseUrl, base).toBe('https://api.stripe.com');
+      expect(env.apiBaseAllowed, base).toBe(false);
+    }
+  });
+
+  it('refuses a custom base with no secret key configured, without throwing', () => {
+    const env = readBillingEnv({ STRIPE_API_BASE: 'https://stripe.example.test' });
+    expect(env.apiBaseUrl).toBe('https://api.stripe.com');
+    expect(env.apiBaseAllowed).toBe(false);
+  });
+
   it('accepts the production base with a live or test key', () => {
     expect(readBillingEnv({
       STRIPE_API_BASE: 'https://api.stripe.com',

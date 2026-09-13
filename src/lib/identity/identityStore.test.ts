@@ -290,6 +290,36 @@ describe('authoritative identity store', () => {
       IdentityInputError,
     );
   });
+
+  it('accepts a subject key at the maximum length and names the bound in the error', () => {
+    expect(() =>
+      resolveAccountForSubject(db, {
+        issuer: 'i'.repeat(2048),
+        subject: 'subject',
+      }),
+    ).not.toThrow();
+    expect(() =>
+      resolveAccountForSubject(db, {
+        issuer: 'i'.repeat(2049),
+        subject: 'subject',
+      }),
+    ).toThrow('issuer must be a non-empty string of at most 2048 characters');
+  });
+
+  it('rejects non-string subject keys', () => {
+    expect(() =>
+      resolveAccountForSubject(db, {
+        issuer: 5 as unknown as string,
+        subject: 'subject',
+      }),
+    ).toThrow(IdentityInputError);
+    expect(() =>
+      resolveAccountForSubject(db, {
+        issuer: 'issuer',
+        subject: {} as unknown as string,
+      }),
+    ).toThrow(IdentityInputError);
+  });
 });
 
 describe('account authorization lookup for live connections', () => {
@@ -1393,5 +1423,25 @@ describe('tutor account cap', () => {
     });
 
     expect(isTutorCapReached(outcome)).toBe(false);
+  });
+
+  it('ignores a fractional cap option instead of enforcing it', () => {
+    seedTutorAccounts(3);
+    const outcome = resolveAccountForSubject(db, subject('tutor-fractional-cap'), {
+      tutorAccountCap: 2.5,
+    });
+
+    expect(isTutorCapReached(outcome)).toBe(false);
+    expect(countActiveAccessAccounts()).toBe(4);
+  });
+
+  it('ignores a string cap option instead of enforcing it', () => {
+    seedTutorAccounts(5);
+    const outcome = resolveAccountForSubject(db, subject('tutor-string-cap'), {
+      tutorAccountCap: '5' as unknown as number,
+    });
+
+    expect(isTutorCapReached(outcome)).toBe(false);
+    expect(countActiveAccessAccounts()).toBe(6);
   });
 });

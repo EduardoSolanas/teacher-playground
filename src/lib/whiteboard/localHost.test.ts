@@ -14,6 +14,23 @@ describe('isLocalRoomHost', () => {
       isLocalRoomHost('peer', [{ peerId: 'user-server', isHost: true }], 'user-client'),
     ).toBe(false);
   });
+
+  it('finds the local host anywhere in the roster, not only in the first row', () => {
+    expect(
+      isLocalRoomHost(
+        'peer',
+        [
+          { peerId: 'other', isHost: true },
+          { peerId: 'self', isHost: true },
+        ],
+        'self',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not treat a non-host local row as host', () => {
+    expect(isLocalRoomHost('peer', [{ peerId: 'self' }], 'self')).toBe(false);
+  });
 });
 
 describe('isRoomOwner', () => {

@@ -60,6 +60,11 @@ describe('cursorAwareness', () => {
     expect(readCursorUsers(a)).toContainEqual({
       peerId: 'peer-ada', userName: 'Ada', color: '#3498db', isHost: false,
     });
+
+    // A state that is not a cursor must be skipped, not pushed as a hole.
+    b.setLocalStateField('cursor', { nonsense: true });
+    expect(readCursorStates(a)).toEqual([ADA]);
+    expect(readRemoteCursors(a)).toEqual([]);
   });
 
   it('drops a withdrawn cursor from the other peer', () => {
@@ -75,6 +80,24 @@ describe('cursorAwareness', () => {
     expect(readLocalCursor(awareness)).toBeNull();
     publishCursor(awareness, ADA);
     expect(readLocalCursor(awareness)).toEqual(ADA);
+
+    // A position published without the optional fields reads back with the
+    // defaults rather than undefined holes.
+    awareness.setLocalStateField('cursor', { peerId: 'peer-raw' });
+    expect(readLocalCursor(awareness)).toEqual({
+      peerId: 'peer-raw',
+      userName: 'Anonymous',
+      color: '#3498db',
+      x: 0,
+      y: 0,
+      button: 'up',
+    });
+
+    // A cursor without a usable peer id is not a cursor.
+    awareness.setLocalStateField('cursor', { peerId: '' });
+    expect(readLocalCursor(awareness)).toBeNull();
+    awareness.setLocalStateField('cursor', { userName: 'No peer id' });
+    expect(readLocalCursor(awareness)).toBeNull();
   });
 
   it('ignores announcements that are not cursors', () => {

@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { logAuthEvent, logSocketClose, type AuthEventInput } from './authEvents';
+import {
+  logAuthEvent,
+  logSocketClose,
+  serializeAuthEvent,
+  type AuthEventInput,
+} from './authEvents';
 
 const JWT =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
@@ -137,6 +142,215 @@ describe('logAuthEvent', () => {
       type: 'rate_limit',
       outcome: 'blocked',
     });
+  });
+});
+
+describe('serializeAuthEvent redaction hardening', () => {
+  it('hashes a whitespace-padded whole-field email with the deterministic marker', () => {
+    expect(
+      serializeAuthEvent({
+        type: 'revocation',
+        accountId: '  teacher@example.com  ',
+        outcome: 'revoked',
+      }),
+    ).toStrictEqual({
+      event: 'auth_event',
+      type: 'revocation',
+      accountId: '[REDACTED:d70f179f]',
+      outcome: 'revoked',
+    });
+  });
+
+  it('hashes a whole-field JWT with the deterministic marker', () => {
+    expect(
+      serializeAuthEvent({ type: 'revocation', accountId: JWT, outcome: 'revoked' }),
+    ).toStrictEqual({
+      event: 'auth_event',
+      type: 'revocation',
+      accountId: '[REDACTED:7149f33f]',
+      outcome: 'revoked',
+    });
+  });
+
+  it('omits absent optional fields instead of carrying undefined keys', () => {
+    const entry = serializeAuthEvent({ type: 'rate_limit', outcome: 'blocked' });
+
+    expect(entry).toStrictEqual({
+      event: 'auth_event',
+      type: 'rate_limit',
+      outcome: 'blocked',
+    });
+    expect(Object.hasOwn(entry, 'accountId')).toBe(false);
+    expect(Object.hasOwn(entry, 'roomId')).toBe(false);
+    expect(Object.hasOwn(entry, 'reason')).toBe(false);
+  });
+
+  it('hashes an exactly whole bearer credential and leaves padded variants inline-redacted', () => {
+    expect(
+      serializeAuthEvent({ type: 'auth_failure', accountId: 'Bearer sekret123', outcome: 'denied' }),
+    ).toStrictEqual({
+      event: 'auth_event',
+      type: 'auth_failure',
+      accountId: '[REDACTED:c1c6f1ab]',
+      outcome: 'denied',
+    });
+
+    expect(
+      serializeAuthEvent({ type: 'auth_failure', accountId: 'Bearer  sekret123', outcome: 'denied' }),
+    ).toStrictEqual({
+      event: 'auth_event',
+      type: 'auth_failure',
+      accountId: '[REDACTED:92ed0d69]',
+      outcome: 'denied',
+    });
+  });
+
+  it('does not hash a bearer credential with a prefix or suffix', () => {
+    expect(
+      serializeAuthEvent({ type: 'auth_failure', accountId: 'x Bearer sekret123', outcome: 'denied' })
+        .accountId,
+    ).toBe('x Bearer [REDACTED_TOKEN]');
+
+    expect(
+      serializeAuthEvent({
+        type: 'auth_failure',
+        accountId: 'Bearer sekret123 extra',
+        outcome: 'denied',
+      }).accountId,
+    ).toBe('Bearer [REDACTED_TOKEN] extra');
+  });
+
+  it('hashes exactly whole cookie values', () => {
+    expect(
+      serializeAuthEvent({ type: 'auth_failure', accountId: 'name=value', outcome: 'denied' })
+        .accountId,
+    ).toBe('[REDACTED:adf6559f]');
+
+    expect(
+      serializeAuthEvent({ type: 'auth_failure', accountId: 'Cookie: name=value', outcome: 'denied' })
+        .accountId,
+    ).toBe('[REDACTED:8f3f75c9]');
+
+    expect(
+      serializeAuthEvent({ type: 'auth_failure', accountId: 'Cookie:name=value', outcome: 'denied' })
+        .accountId,
+    ).toBe('[REDACTED:8f256455]');
+
+    expect(
+      serializeAuthEvent({
+        type: 'auth_failure',
+        accountId: 'Cookie:\nname=value',
+        outcome: 'denied',
+      }).accountId,
+    ).toBe('[REDACTED:c3981933]');
+
+    expect(
+      serializeAuthEvent({
+        type: 'auth_failure',
+        accountId: '__Host-teacher-session=abcdef',
+        outcome: 'denied',
+      }).accountId,
+    ).toBe('[REDACTED:aeb42e9a]');
+  });
+
+  it('inline-redacts cookie assignments that are not whole fields', () => {
+    expect(
+      serializeAuthEvent({
+        type: 'auth_failure',
+        accountId: 'x Cookie: name=value',
+        outcome: 'denied',
+      }).accountId,
+    ).toBe('x [REDACTED_COOKIE]');
+
+    expect(
+      serializeAuthEvent({
+        type: 'auth_failure',
+        accountId: 'name=value\nother',
+        outcome: 'denied',
+      }).accountId,
+    ).toBe('[REDACTED_COOKIE]\nother');
+
+    expect(
+      serializeAuthEvent({
+        type: 'auth_failure',
+        accountId: 'x Cookie:\nname=value',
+        outcome: 'denied',
+      }).accountId,
+    ).toBe('x [REDACTED_COOKIE]');
+  });
+
+  it('does not treat a non-cookie "ookie:" prefix as a credential', () => {
+    expect(
+      serializeAuthEvent({
+        type: 'auth_failure',
+        accountId: 'Xookie:name=value\nother',
+        outcome: 'denied',
+      }).accountId,
+    ).toBe('Xookie:name=value\nother');
+  });
+
+  it('does not hash a JWT with a prefix or suffix', () => {
+    expect(
+      serializeAuthEvent({ type: 'auth_failure', accountId: `-${JWT}`, outcome: 'denied' })
+        .accountId,
+    ).toBe('-[REDACTED_TOKEN]');
+
+    expect(
+      serializeAuthEvent({ type: 'auth_failure', accountId: `${JWT}!`, outcome: 'denied' })
+        .accountId,
+    ).toBe('[REDACTED_TOKEN]!');
+  });
+
+  it('marks every reachable inline redaction kind explicitly', () => {
+    const entry = serializeAuthEvent({
+      type: 'grant_change',
+      outcome: 'granted',
+      reason: `Authorization: Bearer sekret123 Cookie:name=value assertion ${JWT}`,
+    });
+
+    expect(entry.reason).toBe(
+      'Authorization: Bearer [REDACTED_TOKEN] [REDACTED_COOKIE] assertion [REDACTED_TOKEN]',
+    );
+  });
+
+  it('redacts a single-space bearer token with an exact replacement', () => {
+    expect(
+      serializeAuthEvent({
+        type: 'auth_failure',
+        outcome: 'denied',
+        reason: 'Authorization: Bearer sekret123',
+      }).reason,
+    ).toBe('Authorization: Bearer [REDACTED_TOKEN]');
+  });
+
+  it('redacts a double-space bearer token with an exact replacement', () => {
+    expect(
+      serializeAuthEvent({
+        type: 'auth_failure',
+        outcome: 'denied',
+        reason: 'Authorization: Bearer  sekret123',
+      }).reason,
+    ).toBe('Authorization: Bearer [REDACTED_TOKEN]');
+  });
+
+  it('redacts a bare JWT with an exact replacement', () => {
+    expect(
+      serializeAuthEvent({
+        type: 'auth_failure',
+        outcome: 'denied',
+        reason: `assertion ${JWT}`,
+      }).reason,
+    ).toBe('assertion [REDACTED_TOKEN]');
+  });
+
+  it('redacts an inline cookie assignment with an exact replacement', () => {
+    expect(
+      serializeAuthEvent({
+        type: 'auth_failure',
+        outcome: 'denied',
+        reason: 'x Cookie:name=value',
+      }).reason,
+    ).toBe('x [REDACTED_COOKIE]');
   });
 });
 

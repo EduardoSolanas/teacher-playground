@@ -94,4 +94,66 @@ describe('guestHostJoinUrl', () => {
     expect(new URL(url).origin).toBe('https://join.localhost');
     expect(new URL(url).pathname).toBe('/whiteboard/room-alpha');
   });
+
+  it('derives the join host from the window origin when none is passed', () => {
+    vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', '');
+
+    const url = guestHostJoinUrl(ROOM_ID);
+
+    expect(new URL(url).origin).toBe('http://join.localhost:3000');
+    expect(new URL(url).pathname).toBe('/whiteboard/room-alpha');
+  });
+
+  it('falls back when there is no browser window at all', () => {
+    vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', '');
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    // @ts-expect-error the server path has no window global
+    delete globalThis.window;
+    try {
+      expect(guestHostJoinUrl(ROOM_ID)).toBe('https://join.localhost/whiteboard/room-alpha');
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, 'window', descriptor);
+    }
+  });
+
+  it('trims whitespace around the configured guest hostname', () => {
+    vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', '  join.example.com  ');
+
+    const url = guestHostJoinUrl(ROOM_ID, 'https://app.example.com');
+
+    expect(url).toBe('https://join.example.com/whiteboard/room-alpha');
+  });
+
+  it('preserves an uppercase scheme in a configured guest origin', () => {
+    vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', 'HTTP://join.example.com');
+
+    const url = guestHostJoinUrl(ROOM_ID, 'https://app.example.com');
+
+    expect(new URL(url).origin).toBe('http://join.example.com');
+  });
+
+  it('treats a guest host with an embedded scheme as a bare hostname', () => {
+    vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', 'x wss://join.example.com');
+
+    const url = guestHostJoinUrl(ROOM_ID, 'https://app.example.com');
+
+    expect(url).toBe('https://x wss://join.example.com/whiteboard/room-alpha');
+  });
+
+  it('strips trailing slashes from a configured guest origin', () => {
+    vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', 'http://join.localhost:8787//');
+
+    const url = guestHostJoinUrl(ROOM_ID, 'https://app.example.com');
+
+    expect(url).toBe('http://join.localhost:8787/whiteboard/room-alpha');
+  });
+
+  it('tells an IPv4 literal apart from a numeric host that only starts like one', () => {
+    vi.stubEnv('NEXT_PUBLIC_GUEST_HOSTNAME', '');
+
+    expect(new URL(guestHostJoinUrl(ROOM_ID, 'http://127.0.0.1.example.com')).origin)
+      .toBe('http://join.0.0.1.example.com');
+    expect(new URL(guestHostJoinUrl(ROOM_ID, 'http://10.200.3.40')).origin)
+      .toBe('http://10.200.3.40');
+  });
 });

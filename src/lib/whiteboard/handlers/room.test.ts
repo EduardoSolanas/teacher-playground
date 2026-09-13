@@ -115,6 +115,13 @@ describe('room allowFirstUserHost setting', () => {
 
     await handleRoomSettings(db, roomId, postRequest('/settings', { allowFirstUserHost: false }));
     expect(getRoomAllowFirstUserHost(db, roomId)).toBe(false);
+
+    const off = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { allowFirstUserHost: false }),
+    );
+    expect(await off.json()).toMatchObject({ allowFirstUserHost: false });
   });
 
   it('leaves the setting untouched when a scene write omits it', async () => {
@@ -155,6 +162,9 @@ describe('room allowFirstUserHost setting', () => {
     );
 
     expect(response.status).toBe(400);
+    const body = await response.json() as { error?: string };
+    expect(typeof body.error).toBe('string');
+    expect(body.error!.length).toBeGreaterThan(0);
   });
 
   it('rejects settings fields on the scene route with 400', async () => {
@@ -168,13 +178,21 @@ describe('room allowFirstUserHost setting', () => {
       postRequest('', { elements: [], maxUsers: 9, name: 'Stolen' }),
     );
     expect(mixed.status).toBe(400);
+    expect(await mixed.json()).toEqual({
+      error: 'Settings fields are not allowed on the scene route',
+    });
 
     const read = await handleRoomGet(
       db,
       roomId,
       new Request(`http://localhost/api/whiteboard/room/${roomId}`),
     );
-    expect(await read.json()).toMatchObject({ name: null, maxUsers: 2, elements: [] });
+    expect(await read.json()).toMatchObject({
+      name: null,
+      maxUsers: 2,
+      elements: [],
+      allowFirstUserHost: false,
+    });
   });
 
   it('rejects scene fields on the settings route with 400', async () => {
@@ -188,6 +206,9 @@ describe('room allowFirstUserHost setting', () => {
       postRequest('/settings', { maxUsers: 5, elements: [{ id: 'stolen' }] }),
     );
     expect(mixed.status).toBe(400);
+    expect(await mixed.json()).toEqual({
+      error: 'Scene fields are not allowed on the settings route',
+    });
 
     const read = await handleRoomGet(
       db,
@@ -222,6 +243,7 @@ describe('room allowFirstUserHost setting', () => {
       postRequest('/settings', { name: 'Stolen', maxUsers: 9 }, editor),
     );
     expect(denied.status).toBe(403);
+    expect(await denied.json()).toEqual({ error: 'Forbidden' });
 
     const read = await handleRoomGet(
       db,
@@ -333,6 +355,7 @@ describe('create room with owner settings (UX-N2)', () => {
       postRequest('', { elements: [{ id: 'stolen' }], name: 'Stolen', maxUsers: 9 }, editor),
     );
     expect(denied.status).toBe(403);
+    expect(await denied.json()).toEqual({ error: 'Forbidden' });
 
     const read = await handleRoomGet(
       db,
@@ -375,6 +398,9 @@ describe('create room with owner settings (UX-N2)', () => {
     );
 
     expect(response.status).toBe(400);
+    const invalidBody = await response.json() as { error?: string };
+    expect(typeof invalidBody.error).toBe('string');
+    expect(invalidBody.error!.length).toBeGreaterThan(0);
     expect(countRows(db, 'rooms', roomId)).toBe(0);
     expect(countRows(db, 'room_members', roomId)).toBe(0);
   });
@@ -390,6 +416,7 @@ describe('create room with owner settings (UX-N2)', () => {
     );
 
     expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'Settings require a room owner' });
     expect(countRows(db, 'rooms', roomId)).toBe(0);
     expect(countRows(db, 'room_members', roomId)).toBe(0);
   });
@@ -452,6 +479,7 @@ describe('duplicate room creation', () => {
       postRequest('', { elements: [{ id: 'stolen' }] }, outsider),
     );
     expect(denied.status).toBe(409);
+    expect(await denied.json()).toEqual({ error: 'Room already exists' });
 
     expect(getGrantRole(db, roomId, owner)).toBe('owner');
     expect(getGrantRole(db, roomId, outsider)).toBeNull();
@@ -536,6 +564,7 @@ describe('duplicate room creation', () => {
       postRequest('', { elements: [{ id: 'stolen' }] }, outsider),
     );
     expect(denied.status).toBe(409);
+    expect(await denied.json()).toEqual({ error: 'Room already exists' });
     expect(getGrantRole(inner, roomId, owner)).toBe('owner');
     expect(getGrantRole(inner, roomId, outsider)).toBeNull();
   });
@@ -693,6 +722,7 @@ describe('owner guest access settings', () => {
     const deniedGet = await handleRoomSettingsGet(db, roomId, getSettingsRequest(roomId, editor));
     expect(deniedGet.status).toBe(403);
     const getBody = await deniedGet.json();
+    expect(getBody).toEqual({ error: 'Forbidden' });
     expect(JSON.stringify(getBody)).not.toContain(guestPin);
     expect(getBody).not.toHaveProperty('guestPin');
 
@@ -703,6 +733,7 @@ describe('owner guest access settings', () => {
     );
     expect(deniedPost.status).toBe(403);
     const postBody = await deniedPost.json();
+    expect(postBody).toEqual({ error: 'Forbidden' });
     expect(JSON.stringify(postBody)).not.toContain(guestPin);
     expect(guestRow(db, roomId)?.guest_pin).toBe(guestPin);
 
@@ -789,6 +820,29 @@ describe('GET room settings', () => {
       getSettingsRequest('missing-room'),
     );
     expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'Room not found' });
+  });
+
+  it('returns 404 when posting settings to a missing room', async () => {
+    const db = getRoomDb();
+    const response = await handleRoomSettings(
+      db,
+      'missing-room',
+      postRequest('/settings', { maxUsers: 2 }),
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'Room not found' });
+  });
+
+  it('returns 404 when reading a missing room', async () => {
+    const db = getRoomDb();
+    const response = await handleRoomGet(
+      db,
+      'missing-room',
+      new Request('http://localhost/api/whiteboard/room/missing-room'),
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'Room not found' });
   });
 });
 
@@ -915,6 +969,7 @@ describe('account erasure handler', () => {
 
     const response = await handleRoomAccountErasure(db, roomId, 'member-acc');
     expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
     expect(getGrantRole(db, roomId, 'member-acc')).toBeNull();
     expect(getGrantRole(db, roomId, `acc-${roomId}`)).toBe('owner');
     expect(scopedCounts(db, roomId).rooms).toBe(1);
@@ -1011,6 +1066,430 @@ describe('free plan occupancy', () => {
       new Request(`http://localhost/api/whiteboard/room/${roomId}`),
     );
     expect(await read.json()).toMatchObject({ maxUsers: 2 });
+  });
+});
+
+describe('room route branch coverage', () => {
+  it('falls back to the free cap when planMaxUsers is below the minimum or unreadable', async () => {
+    const db = getRoomDb();
+    const below = `room-plan-below-${crypto.randomUUID()}`;
+    const unreadable = `room-plan-nan-${crypto.randomUUID()}`;
+    const atMinimum = `room-plan-at-min-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    const low = await handleRoomPost(
+      db,
+      below,
+      postRequest('', { elements: [], maxUsers: 2 }, owner, 0),
+    );
+    expect(low.status).toBe(200);
+    expect(await low.json()).toMatchObject({ maxUsers: 2 });
+
+    const nan = await handleRoomPost(
+      db,
+      unreadable,
+      postRequest('', { elements: [], maxUsers: 2 }, owner, Number.NaN),
+    );
+    expect(nan.status).toBe(200);
+    expect(await nan.json()).toMatchObject({ maxUsers: 2 });
+
+    const atMin = await handleRoomPost(
+      db,
+      atMinimum,
+      postRequest('', { elements: [], maxUsers: 2 }, owner, 1),
+    );
+    expect(atMin.status).toBe(402);
+    expect(await atMin.json()).toEqual({ error: 'Plan limit reached' });
+  });
+
+  it('stores the default viewport when a create omits it', async () => {
+    const db = getRoomDb();
+    const roomId = `room-default-viewport-${crypto.randomUUID()}`;
+
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }));
+
+    const read = await handleRoomGet(
+      db,
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`),
+    );
+    expect(await read.json()).toMatchObject({ viewport: { x: 0, y: 0, zoom: 1 } });
+  });
+
+  it('keeps the stored elements when a scene write only moves the view', async () => {
+    const db = getRoomDb();
+    const roomId = `room-viewport-only-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    await handleRoomPost(db, roomId, postRequest('', { elements: [{ id: 'keep' }] }, owner));
+    const updated = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { viewport: { x: 1, y: 2, zoom: 3 } }, owner),
+    );
+    expect(updated.status).toBe(200);
+
+    const read = await handleRoomGet(
+      db,
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`),
+    );
+    expect(await read.json()).toMatchObject({
+      elements: [{ id: 'keep' }],
+      viewport: { x: 1, y: 2, zoom: 3 },
+    });
+  });
+
+  it('keeps the stored viewport when a scene write only carries elements', async () => {
+    const db = getRoomDb();
+    const roomId = `room-elements-only-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [], viewport: { x: 9, y: 8, zoom: 2 } }, owner),
+    );
+    const updated = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [{ id: 'drawn' }] }, owner),
+    );
+    expect(updated.status).toBe(200);
+
+    const read = await handleRoomGet(
+      db,
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`),
+    );
+    expect(await read.json()).toMatchObject({
+      elements: [{ id: 'drawn' }],
+      viewport: { x: 9, y: 8, zoom: 2 },
+    });
+  });
+
+  it('writes elements and viewport together in one update', async () => {
+    const db = getRoomDb();
+    const roomId = `room-both-fields-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }, owner));
+    const updated = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [{ id: 'both' }], viewport: { x: 4, y: 5, zoom: 1 } }, owner),
+    );
+    expect(updated.status).toBe(200);
+
+    const read = await handleRoomGet(
+      db,
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`),
+    );
+    expect(await read.json()).toMatchObject({
+      elements: [{ id: 'both' }],
+      viewport: { x: 4, y: 5, zoom: 1 },
+    });
+  });
+
+  it('accepts a scene write with neither scene field and stores nothing', async () => {
+    const db = getRoomDb();
+    const roomId = `room-empty-scene-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [{ id: 'stay' }], viewport: { x: 1, y: 1, zoom: 1 } }, owner),
+    );
+    const response = await handleRoomPost(db, roomId, postRequest('', {}, owner));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ success: true });
+
+    const read = await handleRoomGet(
+      db,
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`),
+    );
+    expect(await read.json()).toMatchObject({
+      elements: [{ id: 'stay' }],
+      viewport: { x: 1, y: 1, zoom: 1 },
+    });
+  });
+
+  it('preserves settings that an update omits', async () => {
+    const db = getRoomDb();
+    const roomId = `room-preserve-settings-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', {
+        elements: [],
+        name: 'Lesson',
+        maxUsers: 2,
+        hostPeerId: 'host-1',
+        allowFirstUserHost: true,
+      }, owner),
+    );
+
+    const updated = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { maxUsers: 2 }, owner),
+    );
+    expect(updated.status).toBe(200);
+    expect(await updated.json()).toMatchObject({
+      name: 'Lesson',
+      hostPeerId: 'host-1',
+      allowFirstUserHost: true,
+    });
+    expect(getRoomHostPeerId(db, roomId)).toBe('host-1');
+    expect(getRoomAllowFirstUserHost(db, roomId)).toBe(true);
+  });
+
+  it('raises occupancy toward the effective plan cap', async () => {
+    const db = getRoomDb();
+    const roomId = `room-raise-occupancy-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }, owner));
+    const raised = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { maxUsers: 5 }, owner, 10),
+    );
+    expect(raised.status).toBe(200);
+    expect(await raised.json()).toMatchObject({ maxUsers: 5 });
+  });
+
+  it('does not enable guest access from a rotate request alone', async () => {
+    const db = getRoomDb();
+    const roomId = `room-rotate-disabled-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }, owner));
+
+    const response = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { rotateGuestPin: true }, owner),
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json() as { guestAccess?: unknown; guestPin?: unknown };
+    expect(body.guestAccess).toBe(false);
+    expect(body.guestPin ?? null).toBeNull();
+  });
+
+  it('does not rotate the PIN when a settings update does not ask', async () => {
+    const db = getRoomDb();
+    const roomId = `room-no-rotate-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    await handleRoomPost(db, roomId, postRequest('', { elements: [] }, owner));
+    const enabled = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { guestAccess: true }, owner),
+    );
+    const { guestPin } = await enabled.json() as { guestPin: string };
+
+    const response = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { maxUsers: 2 }, owner),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ guestAccess: true, guestPin });
+  });
+
+  it('returns 403 for an erasure request from an account with no membership', async () => {
+    const db = getRoomDb();
+    const roomId = `erase-stranger-${crypto.randomUUID()}`;
+    seedEveryRoomScopedTable(db, roomId);
+
+    const response = await handleRoomAccountErasure(db, roomId, 'acc-stranger');
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'Forbidden' });
+    expect(scopedCounts(db, roomId).rooms).toBe(1);
+  });
+
+  it('rejects an invalid scene body on the create route', async () => {
+    const db = getRoomDb();
+    const roomId = `room-bad-scene-${crypto.randomUUID()}`;
+
+    const response = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: 'not-an-array' }),
+    );
+
+    expect(response.status).toBe(400);
+    const body = await response.json() as { error?: string };
+    expect(typeof body.error).toBe('string');
+    expect(body.error!.length).toBeGreaterThan(0);
+  });
+
+  it('stores an empty board when the create body omits elements', async () => {
+    const db = getRoomDb();
+    const roomId = `room-create-no-elements-${crypto.randomUUID()}`;
+
+    const response = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { viewport: { x: 0, y: 0, zoom: 1 } }),
+    );
+    expect(response.status).toBe(200);
+
+    const read = await handleRoomGet(
+      db,
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}`),
+    );
+    expect(await read.json()).toMatchObject({ elements: [] });
+  });
+
+  it('preserves occupancy and host fallback when an update omits them', async () => {
+    const db = getRoomDb();
+    const roomId = `room-preserve-occupancy-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [], maxUsers: 5, allowFirstUserHost: false }, owner, 10),
+    );
+    const updated = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { name: 'Renamed' }, owner, 10),
+    );
+
+    expect(updated.status).toBe(200);
+    expect(await updated.json()).toMatchObject({
+      maxUsers: 5,
+      allowFirstUserHost: false,
+      name: 'Renamed',
+    });
+    expect(getRoomAllowFirstUserHost(db, roomId)).toBe(false);
+  });
+
+  it('returns 500 when the room row cannot be read after create', async () => {
+    const inner = getRoomDb();
+    const roomId = `room-create-readback-${crypto.randomUUID()}`;
+    const db = {
+      prepare(sql: string) {
+        const stmt = inner.prepare(sql);
+        if (sql.includes('SELECT max_users, name, host_peer_id')) {
+          return { get: () => undefined };
+        }
+        return stmt;
+      },
+      exec: inner.exec.bind(inner),
+      transaction: inner.transaction.bind(inner),
+    };
+
+    const response = await handleRoomPost(db as never, roomId, postRequest('', { elements: [] }));
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: 'Failed to save' });
+  });
+
+  it('returns 500 when the room row cannot be read after a settings update', async () => {
+    const inner = getRoomDb();
+    const roomId = `room-settings-readback-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    await handleRoomPost(inner, roomId, postRequest('', { elements: [] }, owner));
+
+    let reads = 0;
+    const db = {
+      prepare(sql: string) {
+        const stmt = inner.prepare(sql);
+        if (sql.includes('SELECT max_users, name, host_peer_id')) {
+          return {
+            get: (...args: unknown[]) => {
+              reads += 1;
+              return reads === 1 ? stmt.get(...args) : undefined;
+            },
+          };
+        }
+        return stmt;
+      },
+      exec: inner.exec.bind(inner),
+      transaction: inner.transaction.bind(inner),
+    };
+
+    const response = await handleRoomSettings(
+      db as never,
+      roomId,
+      postRequest('/settings', { maxUsers: 2 }, owner),
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: 'Failed to save' });
+  });
+
+  function databaseThrowingOnRoomInsert(error: unknown) {
+    const inner = getRoomDb();
+    return {
+      db: {
+        prepare(sql: string) {
+          const stmt = inner.prepare(sql);
+          if (sql.includes('INSERT INTO rooms')) {
+            return {
+              run() {
+                throw error;
+              },
+            };
+          }
+          return stmt;
+        },
+        exec: inner.exec.bind(inner),
+        transaction: inner.transaction.bind(inner),
+      },
+      inner,
+    };
+  }
+
+  it('maps a code-only unique constraint to 409', async () => {
+    const { db } = databaseThrowingOnRoomInsert({ code: 'SQLITE_CONSTRAINT_UNIQUE' });
+    const roomId = `room-unique-code-${crypto.randomUUID()}`;
+
+    const response = await handleRoomPost(db as never, roomId, postRequest('', { elements: [] }));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'Room already exists' });
+  });
+
+  it('maps a message-only unique constraint to 409', async () => {
+    const { db } = databaseThrowingOnRoomInsert(
+      new Error('UNIQUE constraint failed: rooms.room_id'),
+    );
+    const roomId = `room-unique-message-${crypto.randomUUID()}`;
+
+    const response = await handleRoomPost(db as never, roomId, postRequest('', { elements: [] }));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'Room already exists' });
+  });
+
+  it('maps a string unique constraint to 409', async () => {
+    const { db } = databaseThrowingOnRoomInsert('UNIQUE constraint failed: rooms.room_id');
+    const roomId = `room-unique-string-${crypto.randomUUID()}`;
+
+    const response = await handleRoomPost(db as never, roomId, postRequest('', { elements: [] }));
+
+    expect(response.status).toBe(409);
+  });
+
+  it('maps a null throw to the generic 500 body', async () => {
+    const { db } = databaseThrowingOnRoomInsert(null);
+    const roomId = `room-null-error-${crypto.randomUUID()}`;
+
+    const response = await handleRoomPost(db as never, roomId, postRequest('', { elements: [] }));
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: 'Internal server error' });
   });
 });
 

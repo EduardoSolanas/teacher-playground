@@ -65,7 +65,56 @@ describe('valuesEqual', () => {
     const right: Record<string, unknown> = { a: 1 };
     right.self = right;
 
-    expect(() => valuesEqual(left, right)).not.toThrow();
+    expect(valuesEqual(left, right)).toBe(false);
+  });
+
+  it('reports null as unequal to an object in either position', () => {
+    expect(valuesEqual(null, { a: 1 })).toBe(false);
+    expect(valuesEqual({ a: 1 }, null)).toBe(false);
+  });
+
+  it('reports an empty object as unequal to a primitive', () => {
+    // Object.keys(1) is empty, so only the typeof guard separates these.
+    expect(valuesEqual({}, 1)).toBe(false);
+  });
+
+  it('reports an empty object as unequal to an empty array', () => {
+    expect(valuesEqual({}, [])).toBe(false);
+  });
+
+  it('rejects a plain object that mimics a typed array', () => {
+    const buffer = new ArrayBuffer(1);
+    new Uint8Array(buffer)[0] = 1;
+    const typed = new Uint8Array(buffer);
+    const mimic = { byteLength: 1, byteOffset: 0, buffer };
+
+    expect(valuesEqual(typed, mimic)).toBe(false);
+  });
+
+  it('treats an array hole and an undefined entry as equal, the way JSON did', () => {
+    const withHole = [, 1];
+    expect(valuesEqual(withHole, [undefined, 1])).toBe(true);
+  });
+
+  it('refuses to call structures nested past the depth limit equal', () => {
+    const nest = (depth: number, leaf: unknown): unknown => {
+      let value = leaf;
+      for (let i = 0; i < depth; i++) value = { child: value };
+      return value;
+    };
+
+    expect(valuesEqual(nest(70, 'leaf'), nest(70, 'leaf'))).toBe(false);
+
+    const nestArrays = (depth: number, leaf: unknown): unknown => {
+      let value = leaf;
+      for (let i = 0; i < depth; i++) value = [value];
+      return value;
+    };
+    expect(valuesEqual(nestArrays(70, 'leaf'), nestArrays(70, 'leaf'))).toBe(false);
+  });
+
+  it('distinguishes keys that exist as undefined from keys that are missing', () => {
+    expect(valuesEqual({ x: undefined, y: 1 }, { y: 1, z: undefined })).toBe(false);
   });
 
   it('compares typed arrays quickly by byte content', () => {
@@ -136,5 +185,28 @@ describe('cloneForYjs', () => {
     cyclic.self = cyclic;
 
     expect(cloneForYjs(cyclic)).toBeUndefined();
+  });
+
+  it('returns undefined for a symbol rather than storing it', () => {
+    expect(cloneForYjs(Symbol('s'))).toBeUndefined();
+  });
+
+  it('allows an object at the depth limit and refuses one past it', () => {
+    const nest = (depth: number, leaf: unknown): unknown => {
+      let value = leaf;
+      for (let i = 0; i < depth; i++) value = { child: value };
+      return value;
+    };
+
+    const atLimit = nest(64, {});
+    expect(cloneForYjs(atLimit)).toEqual(atLimit);
+    expect(cloneForYjs(nest(65, {}))).toBeUndefined();
+
+    const nestArrays = (depth: number, leaf: unknown): unknown => {
+      let value = leaf;
+      for (let i = 0; i < depth; i++) value = [value];
+      return value;
+    };
+    expect(cloneForYjs(nestArrays(65, {}))).toBeUndefined();
   });
 });

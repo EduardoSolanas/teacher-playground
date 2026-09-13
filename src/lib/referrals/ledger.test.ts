@@ -358,6 +358,8 @@ describe('referral ledger', () => {
       referredCustomerId: 'cus_reversal',
       objectId: 're_1',
       amountCents: 1_999,
+      currency: 'gbp',
+      processorEventId: 'evt_refund_1',
       rewardStatus: 'none',
     });
 
@@ -396,5 +398,128 @@ describe('referral ledger', () => {
       recordedAt: 6_000,
     });
     expect(orphan.outcome).toBe('no_redemption');
+  });
+
+  it('expires a code exactly at its expiry timestamp and records currency and amount', () => {
+    const { ownerId, code } = ownerWithCode(db, 'bounds-owner');
+    const referredId = accessAccount(db, 'bounds-referred');
+    db.prepare(
+      `UPDATE referral_codes SET expires_at = 1_000 WHERE owner_account_id = ?`,
+    ).run(ownerId);
+
+    const boundary = recordReferralRedemption(db, {
+      code,
+      referredAccountId: referredId,
+      objectId: 'cs_boundary',
+      occurredAt: 1_000,
+      recordedAt: 1_000,
+    });
+    expect(boundary.outcome).toBe('expired_code');
+
+    db.prepare(
+      `UPDATE referral_codes SET expires_at = 2_000 WHERE owner_account_id = ?`,
+    ).run(ownerId);
+    const beforeId = accessAccount(db, 'bounds-referred-before');
+    const before = recordReferralRedemption(db, {
+      code,
+      referredAccountId: beforeId,
+      objectId: 'cs_before_boundary',
+      occurredAt: 1_999,
+      recordedAt: 1_999,
+    });
+    expect(before.outcome).toBe('recorded');
+
+    db.prepare(
+      `UPDATE referral_codes SET expires_at = NULL WHERE owner_account_id = ?`,
+    ).run(ownerId);
+    const recorded = recordReferralRedemption(db, {
+      code,
+      referredAccountId: referredId,
+      referredCustomerId: 'cus_bounds',
+      objectId: 'cs_bounds',
+      occurredAt: 500,
+      recordedAt: 1_000,
+      processorEventId: 'evt_bounds',
+      amountCents: 1_999,
+      currency: 'gbp',
+    });
+    expect(recorded.outcome).toBe('recorded');
+    if (recorded.outcome !== 'recorded') {
+      throw new Error('expected a recorded redemption');
+    }
+    expect(recorded.redemption).toMatchObject({
+      processorEventId: 'evt_bounds',
+      amountCents: 1_999,
+      currency: 'gbp',
+      occurredAt: 500,
+      recordedAt: 1_000,
+    });
+  });
+
+  it('reverses a redemption identified only by processor customer', () => {
+    const { code } = ownerWithCode(db, 'reversal-customer-owner');
+    const referredId = accessAccount(db, 'reversal-customer-referred');
+    recordReferralRedemption(db, {
+      code,
+      referredAccountId: referredId,
+      referredCustomerId: 'cus_only',
+      objectId: 'cs_customer_only',
+      occurredAt: 1_000,
+      recordedAt: 1_000,
+    });
+
+    const reversed = recordReferralReversal(db, {
+      referredCustomerId: 'cus_only',
+      objectId: 're_customer_only',
+      occurredAt: 2_000,
+      recordedAt: 2_000,
+    });
+    expect(reversed.outcome).toBe('reversed');
+    if (reversed.outcome !== 'reversed') {
+      throw new Error('expected a recorded reversal');
+    }
+    expect(reversed.reversal).toMatchObject({
+      code,
+      referredAccountId: referredId,
+      referredCustomerId: 'cus_only',
+      kind: 'reversal',
+    });
+  });
+
+  it('prefers the account-bound redemption when a customer has several', () => {
+    const first = ownerWithCode(db, 'precedence-owner-a');
+    const second = ownerWithCode(db, 'precedence-owner-b');
+    const firstReferred = accessAccount(db, 'precedence-first');
+    const secondReferred = accessAccount(db, 'precedence-second');
+    recordReferralRedemption(db, {
+      code: second.code,
+      referredAccountId: secondReferred,
+      referredCustomerId: 'cus_precedence',
+      objectId: 'cs_precedence_second',
+      occurredAt: 1_000,
+      recordedAt: 1_000,
+    });
+    recordReferralRedemption(db, {
+      code: first.code,
+      referredAccountId: firstReferred,
+      referredCustomerId: 'cus_precedence',
+      objectId: 'cs_precedence_first',
+      occurredAt: 1_000,
+      recordedAt: 1_000,
+    });
+
+    const reversed = recordReferralReversal(db, {
+      referredAccountId: firstReferred,
+      referredCustomerId: 'cus_precedence',
+      objectId: 're_precedence',
+      occurredAt: 2_000,
+      recordedAt: 2_000,
+    });
+    expect(reversed.outcome).toBe('reversed');
+    if (reversed.outcome !== 'reversed') {
+      throw new Error('expected a recorded reversal');
+    }
+    expect(reversed.reversal.referredAccountId).toBe(firstReferred);
+    expect(reversed.reversal.code).toBe(first.code);
   });
 });

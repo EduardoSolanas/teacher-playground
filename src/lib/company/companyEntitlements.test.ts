@@ -237,4 +237,64 @@ describe('company member entitlements', () => {
       },
     ]);
   });
+
+  it('maps trialing status and clears grace for an active company', () => {
+    const trialing = companyWithSubscription({
+      ownerSubject: 'trialing-owner',
+      status: 'trialing',
+      firstPaidAt: 4_000,
+    });
+    expect(
+      materializeCompanyMemberEntitlements(db, {
+        companyId: trialing.companyId,
+        cause: cause('evt_trialing'),
+        now: 5_000,
+      }),
+    ).toEqual({ materialized: 1 });
+    expect(entitlementRows(trialing.companyId)).toEqual([
+      {
+        accountId: trialing.ownerId,
+        source: 'company',
+        planId: 'corporate_seat',
+        status: 'trialing',
+        graceUntil: null,
+        collectionPaused: 0,
+        companyId: trialing.companyId,
+        currentPeriodEnd: null,
+        processorCustomerId: 'cus_trialing-owner',
+        processorSubscriptionId: 'sub_trialing-owner',
+      },
+    ]);
+  });
+
+  it('treats a paused company as active but collection-paused', () => {
+    const paused = companyWithSubscription({
+      ownerSubject: 'paused-owner',
+      status: 'paused',
+      collectionPaused: 0,
+      firstPaidAt: 4_000,
+    });
+
+    expect(
+      materializeCompanyMemberEntitlements(db, {
+        companyId: paused.companyId,
+        cause: cause('evt_paused'),
+        now: 5_000,
+      }),
+    ).toEqual({ materialized: 1 });
+    expect(entitlementRows(paused.companyId)).toEqual([
+      {
+        accountId: paused.ownerId,
+        source: 'company',
+        planId: 'corporate_seat',
+        status: 'active',
+        graceUntil: null,
+        collectionPaused: 1,
+        companyId: paused.companyId,
+        currentPeriodEnd: null,
+        processorCustomerId: 'cus_paused-owner',
+        processorSubscriptionId: 'sub_paused-owner',
+      },
+    ]);
+  });
 });

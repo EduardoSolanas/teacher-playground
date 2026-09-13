@@ -86,4 +86,39 @@ describe('referral code store', () => {
     expect(findReferralCode(db, 'ZZZZZZZZ')).toBeNull();
     expect(readReferralCode(db, 'missing-account')).toBeNull();
   });
+
+  it('stores the optional promotion, expiry and redemption cap on the minted code', () => {
+    const ownerId = accessAccount(db, 'codes-options');
+    const minted = ensureReferralCode(db, {
+      accountId: ownerId,
+      now: 1_000,
+      promotionCodeId: 'promo-options',
+      expiresAt: 5_000,
+      maxRedemptions: 3,
+    });
+
+    expect(minted.promotionCodeId).toBe('promo-options');
+    expect(minted.expiresAt).toBe(5_000);
+    expect(minted.maxRedemptions).toBe(3);
+    expect(readReferralCode(db, ownerId)).toEqual(minted);
+  });
+
+  it('refuses to reuse another account promotion code and surfaces the constraint error', () => {
+    const firstId = accessAccount(db, 'codes-promo-first');
+    const secondId = accessAccount(db, 'codes-promo-second');
+    ensureReferralCode(db, {
+      accountId: firstId,
+      now: 1_000,
+      promotionCodeId: 'promo-shared',
+    });
+
+    expect(() =>
+      ensureReferralCode(db, {
+        accountId: secondId,
+        now: 2_000,
+        promotionCodeId: 'promo-shared',
+      }),
+    ).toThrow(/UNIQUE constraint/);
+    expect(readReferralCode(db, secondId)).toBeNull();
+  });
 });

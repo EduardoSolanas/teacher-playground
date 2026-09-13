@@ -22,6 +22,12 @@ const users: WhiteboardUser[] = [
     color: '#445566',
     isHost: false,
   },
+  {
+    peerId: 'quiet',
+    userName: 'Quiet',
+    color: '#778899',
+    isHost: false,
+  },
 ];
 
 const cursors: RemoteCursor[] = [
@@ -32,6 +38,14 @@ const cursors: RemoteCursor[] = [
     x: 12,
     y: 34,
     button: 'down',
+  },
+  {
+    peerId: 'quiet',
+    userName: 'Quiet',
+    color: '#0a0b0c',
+    x: 1,
+    y: 2,
+    button: 'up',
   },
   {
     peerId: 'cursor-only',
@@ -47,7 +61,7 @@ describe('collaboratorsFromPresence', () => {
   it('maps admitted users and their cursors into native collaborators', () => {
     const collaborators = collaboratorsFromPresence(users, cursors, 'local');
 
-    expect([...collaborators.keys()]).toEqual(['host', 'student']);
+    expect([...collaborators.keys()]).toEqual(['host', 'student', 'quiet']);
     expect(collaborators.get('host' as SocketId)).toMatchObject({
       username: 'Name (Host)',
       pointer: { x: 12, y: 34, tool: 'pointer' },
@@ -57,6 +71,12 @@ describe('collaboratorsFromPresence', () => {
     expect(collaborators.get('student' as SocketId)).toMatchObject({
       username: 'Student',
       color: { background: '#445566', stroke: '#445566' },
+    });
+    expect(collaborators.get('quiet' as SocketId)).toMatchObject({
+      username: 'Quiet',
+      pointer: { x: 1, y: 2, tool: 'pointer' },
+      button: 'up',
+      color: { background: '#0a0b0c', stroke: '#0a0b0c' },
     });
     expect(collaborators.has('cursor-only' as SocketId)).toBe(false);
   });

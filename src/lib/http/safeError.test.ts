@@ -35,7 +35,48 @@ describe('redactForLog', () => {
   });
 });
 
+describe('redactForLog secret assignment hardening', () => {
+  it('redacts unseparated, dashed, and underscored api keys and leaves lookalikes alone', () => {
+    expect(redactForLog('apikey=abc')).toBe('[REDACTED]');
+    expect(redactForLog('api-key=abc')).toBe('[REDACTED]');
+    expect(redactForLog('api_key=abc')).toBe('[REDACTED]');
+    expect(redactForLog('apiXkey=abc')).toBe('apiXkey=abc');
+  });
+
+  it('redacts assignments with spaces around the separator', () => {
+    expect(redactForLog('password : super-secret')).toBe('password : [REDACTED]');
+    expect(redactForLog('token= abc')).toBe('token= [REDACTED]');
+    expect(redactForLog('token=abc')).toBe('[REDACTED]');
+  });
+});
+
+describe('redactForLog token hardening', () => {
+  it('redacts a bare JWT with an exact replacement', () => {
+    expect(redactForLog(`assertion ${JWT}`)).toBe('assertion [REDACTED_TOKEN]');
+  });
+
+  it('redacts a bearer token with an exact replacement', () => {
+    expect(redactForLog('Bearer sekret123')).toBe('Bearer [REDACTED_TOKEN]');
+    expect(redactForLog('Bearer  sekret123')).toBe('Bearer [REDACTED_TOKEN]');
+  });
+
+  it('redacts board JSON with attribute spacing', () => {
+    expect(redactForLog('{"elements" : []}')).toBe('{"elements":"[REDACTED_BOARD]"}');
+    expect(redactForLog('{"elements": []}')).toBe('{"elements":"[REDACTED_BOARD]"}');
+    expect(redactForLog('{"elements": [ {"id":"el-1"} ]}')).toBe('{"elements":"[REDACTED_BOARD]"}');
+  });
+});
+
 describe('serializeInternalError', () => {
+  it('handles a non-Error rejection with the generic Error name', () => {
+    expect(serializeInternalError('disk on fire', 'handleRoomPut')).toEqual({
+      event: 'internal_error',
+      op: 'handleRoomPut',
+      name: 'Error',
+      message: 'disk on fire',
+    });
+  });
+
   it('emits a structured log object with a redacted message', () => {
     const entry = serializeInternalError(
       new Error(`SQLITE_ERROR for teacher@example.com Bearer ${JWT} ${BOARD_JSON}`),

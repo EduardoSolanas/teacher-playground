@@ -122,8 +122,15 @@ export function decodePoints(value: unknown): number[][] | null {
     let prevY = 0;
 
     for (let i = 0; i < count; i++) {
-      // Read deltas as signed varints
+      // Read deltas as signed varints. lib0 reads past the end as zero, which
+      // would fabricate points on a truncated frame instead of refusing it.
+      if (!decoding.hasContent(decoder)) {
+        return null;
+      }
       const dx = decoding.readVarInt(decoder);
+      if (!decoding.hasContent(decoder)) {
+        return null;
+      }
       const dy = decoding.readVarInt(decoder);
 
       // Reconstruct quantized coordinates

@@ -9,9 +9,15 @@ import {
   requestActionPostSchema,
   hasRoomSettingsIntent,
   hasRoomSceneIntent,
+  isAllowedElementLink,
+  parseBody,
   PEER_ID_RE,
+  ELEMENT_ID_RE,
+  ACCOUNT_ID_RE,
   COLOR_RE,
   MAX_ELEMENTS,
+  MAX_ELEMENT_KEYS,
+  MAX_ELEMENT_NEST_DEPTH,
   MAX_ELEMENT_STRING_LENGTH,
   MAX_MAX_USERS,
 } from './requestSchemas';
@@ -189,6 +195,256 @@ describe('requestSchemas hardening (SEC-005)', () => {
         elements: [{ id: 'el-1', nested }],
       });
       expect(result.success).toBe(false);
+    });
+
+    it('accepts nesting at the depth limit and rejects one level beyond with a message', () => {
+      // The element property is depth 1; each nested array adds one level.
+      let atLimit: unknown = 'leaf';
+      for (let i = 0; i < MAX_ELEMENT_NEST_DEPTH - 1; i += 1) atLimit = [atLimit];
+      expect(roomSceneSchema.safeParse({
+        elements: [{ id: 'el-1', nested: atLimit }],
+      }).success).toBe(true);
+
+      let beyond: unknown = 'leaf';
+      for (let i = 0; i < MAX_ELEMENT_NEST_DEPTH; i += 1) beyond = [beyond];
+      const outcome = parseBody(roomSceneSchema, {
+        elements: [{ id: 'el-1', nested: beyond }],
+      });
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error).toContain('element nesting exceeds maximum depth');
+    });
+
+    it('does not apply the object key cap to arrays', () => {
+      const tags = new Array(MAX_ELEMENT_KEYS + 5).fill('ok');
+      expect(roomSceneSchema.safeParse({
+        elements: [{ id: 'el-1', tags }],
+      }).success).toBe(true);
+    });
+
+    it('rejects non-finite numbers anywhere in the element with a message', () => {
+      const outcome = parseBody(roomSceneSchema, {
+        elements: [{ id: 'el-1', x: Number.NaN }],
+      });
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error).toContain('element number must be finite');
+    });
+
+    it('walks nested objects and reports unsupported values inside them', () => {
+      const outcome = parseBody(roomSceneSchema, {
+        elements: [{ id: 'el-1', nested: { deep: undefined } }],
+      });
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error).toContain('element contains unsupported value type');
+    });
+
+    it('rejects unsupported value types directly with a message', () => {
+      const outcome = parseBody(roomSceneSchema, {
+        elements: [{ id: 'el-1', nothing: undefined }],
+      });
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error).toContain('element contains unsupported value type');
+    });
+
+    it('accepts a string at the length limit and rejects one beyond it with a message', () => {
+      expect(roomSceneSchema.safeParse({
+        elements: [{ id: 'el-1', text: 'x'.repeat(MAX_ELEMENT_STRING_LENGTH) }],
+      }).success).toBe(true);
+
+      const outcome = parseBody(roomSceneSchema, {
+        elements: [{ id: 'el-1', text: 'x'.repeat(MAX_ELEMENT_STRING_LENGTH + 1) }],
+      });
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error).toContain('element string exceeds maximum length');
+    });
+
+    it('caps nested object key counts at the limit and reports the overflow', () => {
+      const atLimit = Object.fromEntries(
+        Array.from({ length: MAX_ELEMENT_KEYS }, (_, i) => [`k${i}`, 1]),
+      );
+      expect(roomSceneSchema.safeParse({
+        elements: [{ id: 'el-1', data: atLimit }],
+      }).success).toBe(true);
+
+      const beyond = Object.fromEntries(
+        Array.from({ length: MAX_ELEMENT_KEYS + 1 }, (_, i) => [`k${i}`, 1]),
+      );
+      const outcome = parseBody(roomSceneSchema, {
+        elements: [{ id: 'el-1', data: beyond }],
+      });
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error).toContain('element object exceeds maximum key count');
+    });
+
+    it('accepts a key at the length limit and rejects one beyond it with a message', () => {
+      expect(roomSceneSchema.safeParse({
+        elements: [{ id: 'el-1', data: { ['k'.repeat(MAX_ELEMENT_STRING_LENGTH)]: 1 } }],
+      }).success).toBe(true);
+
+      const longKey = 'k'.repeat(MAX_ELEMENT_STRING_LENGTH + 1);
+      const outcome = parseBody(roomSceneSchema, {
+        elements: [{ id: 'el-1', data: { [longKey]: 1 } }],
+      });
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error).toContain('element key exceeds maximum length');
+    });
+
+    it('caps the element key count at the schema boundary with a message', () => {
+      const element: Record<string, unknown> = { id: 'el-1' };
+      for (let i = 0; i <= MAX_ELEMENT_KEYS; i += 1) element[`k${i}`] = i;
+
+      const outcome = parseBody(roomSceneSchema, { elements: [element] });
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error).toContain('element object exceeds maximum key count');
+    });
+  });
+
+  describe('grammar anchors and messages', () => {
+    it('anchors the id grammars at both ends', () => {
+      expect(ELEMENT_ID_RE.test('a'.repeat(128))).toBe(true);
+      expect(ELEMENT_ID_RE.test('a'.repeat(129))).toBe(false);
+      expect(ELEMENT_ID_RE.test('!'.repeat(3) + 'abc')).toBe(false);
+      expect(ELEMENT_ID_RE.test('abc' + '!')).toBe(false);
+      expect(ACCOUNT_ID_RE.test('a'.repeat(129))).toBe(false);
+      expect(ACCOUNT_ID_RE.test('@abc')).toBe(false);
+      expect(ACCOUNT_ID_RE.test('abc@')).toBe(false);
+      expect(COLOR_RE.test('#123456')).toBe(true);
+      expect(COLOR_RE.test('zz#123456')).toBe(false);
+      expect(COLOR_RE.test('#123456zz')).toBe(false);
+    });
+
+    it('reports the element id grammar message', () => {
+      const outcome = parseBody(roomSceneSchema, { elements: [{ id: 'bad id!' }] });
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error).toContain('element id must match the allowed grammar');
+    });
+
+    it('reports the blocked element type message for padded and cased types', () => {
+      for (const type of [' iframe ', 'Image', 'MAGICFRAME']) {
+        const outcome = parseBody(roomSceneSchema, { elements: [{ id: 'el-1', type }] });
+        expect(outcome.ok).toBe(false);
+        if (!outcome.ok) expect(outcome.error).toContain('element type is not permitted');
+      }
+    });
+
+    it('reports the link message for a disallowed link', () => {
+      const outcome = parseBody(roomSceneSchema, {
+        elements: [{ id: 'el-1', type: 'rectangle', link: 'http://example.com' }],
+      });
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error).toContain('element link must be https or a relative URL');
+    });
+
+    it('rejects non-string links', () => {
+      const outcome = parseBody(roomSceneSchema, {
+        elements: [{ id: 'el-1', type: 'rectangle', link: 42 }],
+      });
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error).toContain('element link must be https or a relative URL');
+    });
+
+    it('accepts an element with exactly the key cap and rejects one more', () => {
+      const atLimit: Record<string, unknown> = { id: 'el-1' };
+      while (Object.keys(atLimit).length < MAX_ELEMENT_KEYS) {
+        atLimit[`k${Object.keys(atLimit).length}`] = 1;
+      }
+      expect(Object.keys(atLimit)).toHaveLength(MAX_ELEMENT_KEYS);
+      expect(roomSceneSchema.safeParse({ elements: [atLimit] }).success).toBe(true);
+
+      atLimit.extra = 1;
+      expect(roomSceneSchema.safeParse({ elements: [atLimit] }).success).toBe(false);
+    });
+
+    it('reports the presence target message', () => {
+      const kick = parseBody(presencePostSchema, { action: 'kick' });
+      expect(kick.ok).toBe(false);
+      if (!kick.ok) expect(kick.error).toContain('accountId or peerId is required');
+
+      const join = parseBody(presencePostSchema, { userName: 'Alice' });
+      expect(join.ok).toBe(false);
+      if (!join.ok) expect(join.error).toContain('peerId is required');
+    });
+
+    it('requires a target for waiting approvals and reports it', () => {
+      const outcome = parseBody(waitingPostSchema, { action: 'approve' });
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error).toContain('accountId or peerId is required');
+    });
+
+    it('joins multiple issue messages with a separator', () => {
+      const outcome = parseBody(roomSettingsSchema, { maxUsers: 0, name: '', hostPeerId: 'bad id!' });
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error.split('; ').length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('tags every scene issue with the custom code', () => {
+      const nested = (() => {
+        let value: unknown = 'leaf';
+        for (let i = 0; i < MAX_ELEMENT_NEST_DEPTH; i += 1) value = [value];
+        return value;
+      })();
+      const overflowingKeys = Object.fromEntries(
+        Array.from({ length: MAX_ELEMENT_KEYS + 1 }, (_, i) => [`k${i}`, 1]),
+      );
+      const wideElement: Record<string, unknown> = { id: 'el-1' };
+      for (let i = 0; i <= MAX_ELEMENT_KEYS; i += 1) wideElement[`k${i}`] = i;
+      const cases: unknown[] = [
+        { elements: [wideElement] },
+        { elements: [{ id: 'el-1', nested }] },
+        { elements: [{ id: 'el-1', x: Number.NaN }] },
+        { elements: [{ id: 'el-1', text: 'x'.repeat(MAX_ELEMENT_STRING_LENGTH + 1) }] },
+        { elements: [{ id: 'el-1', data: overflowingKeys }] },
+        { elements: [{ id: 'el-1', data: { ['k'.repeat(MAX_ELEMENT_STRING_LENGTH + 1)]: 1 } }] },
+        { elements: [{ id: 'el-1', nothing: undefined }] },
+        { elements: [{ id: 'el-1', type: 'iframe' }] },
+        { elements: [{ id: 'el-1', type: 'rectangle', link: 'http://example.com' }] },
+      ];
+
+      for (const body of cases) {
+        const result = roomSceneSchema.safeParse(body);
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          for (const issue of result.error.issues) expect(issue.code).toBe('custom');
+        }
+      }
+    });
+
+    it('tags presence and waiting issues with the custom code', () => {
+      const cases = [
+        [presencePostSchema, { action: 'kick' }],
+        [presencePostSchema, { userName: 'Alice' }],
+        [waitingPostSchema, { action: 'approve' }],
+      ] as const;
+
+      for (const [schema, body] of cases) {
+        const result = schema.safeParse(body);
+        expect(result.success).toBe(false);
+        if (!result.success) expect(result.error.issues[0].code).toBe('custom');
+      }
+    });
+  });
+
+  describe('isAllowedElementLink', () => {
+    it('accepts https and relative links', () => {
+      expect(isAllowedElementLink('https://example.com/doc')).toBe(true);
+      expect(isAllowedElementLink('/assets/handout.pdf')).toBe(true);
+      expect(isAllowedElementLink('./notes')).toBe(true);
+      expect(isAllowedElementLink('../notes')).toBe(true);
+      expect(isAllowedElementLink('#section')).toBe(true);
+      expect(isAllowedElementLink('?query')).toBe(true);
+    });
+
+    it('rejects other schemes and protocol-relative links', () => {
+      expect(isAllowedElementLink('http://example.com')).toBe(false);
+      expect(isAllowedElementLink('javascript:alert(1)')).toBe(false);
+      expect(isAllowedElementLink('mailto:someone@example.com')).toBe(false);
+      expect(isAllowedElementLink('//evil.example/x')).toBe(false);
+    });
+
+    it('rejects blank values and protocol-looking fragments', () => {
+      expect(isAllowedElementLink('')).toBe(false);
+      expect(isAllowedElementLink('   ')).toBe(false);
+      expect(isAllowedElementLink('https:')).toBe(false);
+      expect(isAllowedElementLink('1javascript:')).toBe(true);
     });
   });
 

@@ -52,6 +52,16 @@ describe('collectBoardFiles', () => {
     expect(files.map((file) => file.id)).toEqual(['good']);
   });
 
+  it('does not collect an image the room answered with an error for', async () => {
+    const files = await collectBoardFiles('room-1', ['photo-1'], async () =>
+      new Response(new Uint8Array([1]), {
+        status: 500,
+        headers: { 'content-type': 'image/webp' },
+      }),
+    );
+    expect(files).toEqual([]);
+  });
+
   it('survives a fetch that throws outright', async () => {
     const files = await collectBoardFiles('room-1', ['a', 'b'], async (url) => {
       if (url.endsWith('a')) throw new Error('offline');

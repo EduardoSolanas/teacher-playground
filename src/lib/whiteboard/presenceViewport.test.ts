@@ -13,5 +13,11 @@ describe('shouldCollapsePresenceForViewport', () => {
 
   it('does not collapse when width is not yet known', () => {
     expect(shouldCollapsePresenceForViewport(0)).toBe(false);
+    expect(shouldCollapsePresenceForViewport(-1)).toBe(false);
+  });
+
+  it('stays expanded at the phone-width boundary', () => {
+    expect(shouldCollapsePresenceForViewport(640)).toBe(false);
+    expect(shouldCollapsePresenceForViewport(639)).toBe(true);
   });
 });

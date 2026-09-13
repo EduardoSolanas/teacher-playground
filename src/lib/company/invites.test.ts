@@ -213,6 +213,148 @@ describe('company invites', () => {
     ).toEqual({ revokedAt: null });
   });
 
+  it('allows an admin to mint and revoke while forbidding revoked, member, and outside actors', async () => {
+    const { companyId } = await companyWithOwner('invite-actor-owner');
+    const adminId = accessAccount(db, 'invite-actor-admin');
+    const memberId = accessAccount(db, 'invite-actor-member');
+    const revokedAdminId = accessAccount(db, 'invite-actor-revoked-admin');
+    db.prepare(
+      `INSERT INTO company_members (company_id, account_id, role, state, created_at, revoked_at)
+       VALUES (?, ?, 'admin', 'active', 2_000, NULL),
+              (?, ?, 'member', 'active', 2_000, NULL),
+              (?, ?, 'admin', 'revoked', 2_000, 2_500)`,
+    ).run(companyId, adminId, companyId, memberId, companyId, revokedAdminId);
+
+    const minted = await mintInvite(db, {
+      companyId,
+      role: 'member',
+      createdBy: adminId,
+      now: 3_000,
+    });
+    expect(minted.outcome).toBe('minted');
+    if (minted.outcome !== 'minted') throw new Error('expected a minted invite');
+
+    expect(await mintInvite(db, {
+      companyId, role: 'member', createdBy: memberId, now: 3_000,
+    })).toEqual({ outcome: 'forbidden' });
+    expect(await mintInvite(db, {
+      companyId, role: 'member', createdBy: revokedAdminId, now: 3_000,
+    })).toEqual({ outcome: 'forbidden' });
+    expect(await mintInvite(db, {
+      companyId, role: 'member', createdBy: 'missing-actor', now: 3_000,
+    })).toEqual({ outcome: 'forbidden' });
+    expect(revokeInvite(db, {
+      companyId,
+      inviteHash: minted.invite.inviteHash,
+      actorAccountId: memberId,
+      now: 4_000,
+    })).toEqual({ outcome: 'forbidden' });
+    expect(revokeInvite(db, {
+      companyId,
+      inviteHash: minted.invite.inviteHash,
+      actorAccountId: revokedAdminId,
+      now: 4_000,
+    })).toEqual({ outcome: 'forbidden' });
+    expect(revokeInvite(db, {
+      companyId,
+      inviteHash: minted.invite.inviteHash,
+      actorAccountId: adminId,
+      now: 4_000,
+    })).toEqual({ outcome: 'revoked' });
+  });
+
+  it('will not revoke or redeem another company invite', async () => {
+    const first = await companyWithOwner('cross-company-first');
+    const second = await companyWithOwner('cross-company-second');
+    const minted = await mintInvite(db, {
+      companyId: first.companyId,
+      role: 'member',
+      createdBy: first.ownerId,
+      now: 3_000,
+    });
+    if (minted.outcome !== 'minted') throw new Error('expected a minted invite');
+
+    expect(revokeInvite(db, {
+      companyId: second.companyId,
+      inviteHash: minted.invite.inviteHash,
+      actorAccountId: second.ownerId,
+      now: 4_000,
+    })).toEqual({ outcome: 'not_found' });
+    expect(
+      db
+        .prepare(
+          `SELECT revoked_at AS revokedAt FROM company_invites WHERE invite_hash = ?`,
+        )
+        .get(minted.invite.inviteHash),
+    ).toEqual({ revokedAt: null });
+  });
+
+  it('refuses unknown and guest accounts even with a free seat, then redeems a live one', async () => {
+    const { companyId, ownerId } = await companyWithOwner('access-only-owner');
+    insertSubscription(db, { companyId, quantity: 3 });
+    const minted = await mintInvite(db, {
+      companyId,
+      role: 'member',
+      createdBy: ownerId,
+      now: 10_000,
+    });
+    if (minted.outcome !== 'minted') throw new Error('expected a minted invite');
+
+    expect(
+      await redeemInvite(db, {
+        token: minted.invite.token,
+        accountId: 'missing-account',
+        now: 11_000,
+      }),
+    ).toEqual({ outcome: 'not_found' });
+
+    const guestId = createGuestAccount(db, {
+      roomId: 'access-only-guest-room',
+      now: 11_500,
+    }).accountId;
+    expect(
+      await redeemInvite(db, {
+        token: minted.invite.token,
+        accountId: guestId,
+        now: 12_000,
+      }),
+    ).toEqual({ outcome: 'not_found' });
+    expect(readMember(db, companyId, guestId)).toBeNull();
+    expect(readInviteConsumed(db, minted.invite.inviteHash)).toBe(false);
+
+    const candidateId = accessAccount(db, 'access-only-candidate');
+    expect(
+      await redeemInvite(db, {
+        token: minted.invite.token,
+        accountId: candidateId,
+        now: 12_500,
+      }),
+    ).toEqual({ outcome: 'redeemed', companyId, role: 'member' });
+  });
+
+  it('refuses a disabled access account even with a free seat', async () => {
+    const { companyId, ownerId } = await companyWithOwner('disabled-account-owner');
+    insertSubscription(db, { companyId, quantity: 3 });
+    const disabledId = accessAccount(db, 'disabled-account-candidate');
+    db.prepare(`UPDATE accounts SET state = 'disabled' WHERE account_id = ?`).run(disabledId);
+    const minted = await mintInvite(db, {
+      companyId,
+      role: 'member',
+      createdBy: ownerId,
+      now: 10_000,
+    });
+    if (minted.outcome !== 'minted') throw new Error('expected a minted invite');
+
+    expect(
+      await redeemInvite(db, {
+        token: minted.invite.token,
+        accountId: disabledId,
+        now: 11_000,
+      }),
+    ).toEqual({ outcome: 'not_found' });
+    expect(readMember(db, companyId, disabledId)).toBeNull();
+  });
+
   it('answers unknown, revoked, and expired tokens with the same not-found result', async () => {
     const { companyId, ownerId } = await companyWithOwner('redeem-guards-owner');
     const candidateId = accessAccount(db, 'redeem-guards-candidate');

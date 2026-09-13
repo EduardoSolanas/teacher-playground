@@ -43,6 +43,19 @@ describe('signalingBudget', () => {
       expect(decideSignalingAction({ messagesInWindow: 361, messageType: 1 })).toBe('drop');
     });
 
+    it('relays a below-ceiling message even when the breach count is high', () => {
+      expect(decideSignalingAction({
+        messagesInWindow: 100,
+        messageType: 0,
+        consecutiveCeilingBreaches: 2,
+      })).toBe('relay');
+      expect(decideSignalingAction({
+        messagesInWindow: SIGNALING_ABUSE_CEILING - 1,
+        messageType: 1,
+        consecutiveCeilingBreaches: 5,
+      })).toBe('drop');
+    });
+
     it('closes on sustained abuse (consecutiveCeilingBreaches >= 2 and messagesInWindow >= ceiling)', () => {
       expect(decideSignalingAction({ messagesInWindow: 360, messageType: 0, consecutiveCeilingBreaches: 2 })).toBe('close');
       expect(decideSignalingAction({ messagesInWindow: 361, messageType: 1, consecutiveCeilingBreaches: 2 })).toBe('close');

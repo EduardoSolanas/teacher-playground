@@ -4,7 +4,9 @@ import { getStablePeerId, peerIdStorageKey } from '@/lib/whiteboard/peerId';
 import {
   USER_COLOR_STORAGE_KEY,
   USERNAME_STORAGE_KEY,
+  cancelDebouncedSave,
   cleanupStaleRooms,
+  clearBoardState,
   clearOnLeave,
   clearOnReject,
   clearOnSuspend,
@@ -295,5 +297,153 @@ describe('whiteboard persistence (SEC-011)', () => {
     await saveBoardState(ROOM, [ELEMENT], VIEWPORT);
 
     expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
+  });
+
+  it('ensures tests do not depend on the storage key strings staying in sync', () => {
+    expect(USERNAME_STORAGE_KEY).toBe('whiteboard_username');
+    expect(USER_COLOR_STORAGE_KEY).toBe('whiteboard_user_color');
+  });
+
+  it('records the save timestamp alongside the board state', async () => {
+    setOfflineBoardCacheEnabled(ROOM, true);
+
+    await saveBoardState(ROOM, [ELEMENT], VIEWPORT);
+
+    const raw = localStorage.getItem(`whiteboard:${ROOM}:timestamp`);
+    expect(raw).not.toBeNull();
+    expect(Number.isFinite(Number(raw))).toBe(true);
+  });
+
+  it('cancels a pending debounced save while the room is still opted in', async () => {
+    vi.useFakeTimers();
+    setOfflineBoardCacheEnabled(ROOM, true);
+    debouncedSaveBoardState(ROOM, [ELEMENT], VIEWPORT, 2000);
+
+    cancelDebouncedSave();
+    await vi.advanceTimersByTimeAsync(2500);
+
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
+  });
+
+  it('debouncedSaveBoardState writes the board after the delay', async () => {
+    vi.useFakeTimers();
+    setOfflineBoardCacheEnabled(ROOM, true);
+    debouncedSaveBoardState(ROOM, [ELEMENT], VIEWPORT, 100);
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(loadBoardState(ROOM)).toEqual({ elements: [ELEMENT], viewport: VIEWPORT });
+  });
+
+  it('a newer debounced save cancels the older one', async () => {
+    vi.useFakeTimers();
+    setOfflineBoardCacheEnabled(ROOM, true);
+    debouncedSaveBoardState(ROOM, [ELEMENT], VIEWPORT, 100);
+    debouncedSaveBoardState(ROOM, [], VIEWPORT, 300);
+
+    await vi.advanceTimersByTimeAsync(150);
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(loadBoardState(ROOM)).toEqual({ elements: [], viewport: VIEWPORT });
+  });
+
+  it('clearBoardState cancels a pending debounced save', async () => {
+    vi.useFakeTimers();
+    setOfflineBoardCacheEnabled(ROOM, true);
+    debouncedSaveBoardState(ROOM, [ELEMENT], VIEWPORT, 100);
+
+    clearBoardState(ROOM);
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
+  });
+
+  it('loads an empty board with a default viewport when the cached JSON omits both', () => {
+    setOfflineBoardCacheEnabled(ROOM, true);
+    localStorage.setItem(`whiteboard:${ROOM}:state`, JSON.stringify({}));
+
+    expect(loadBoardState(ROOM)).toEqual({ elements: [], viewport: { x: 0, y: 0, zoom: 1 } });
+  });
+
+  it('returns null for corrupt cached JSON', () => {
+    setOfflineBoardCacheEnabled(ROOM, true);
+    localStorage.setItem(`whiteboard:${ROOM}:state`, '{not json');
+
+    expect(loadBoardState(ROOM)).toBeNull();
+  });
+
+  it('cleanup removes a leftover timestamp key that never opted in', () => {
+    localStorage.setItem(`whiteboard:${ROOM}:timestamp`, String(Date.now()));
+
+    cleanupStaleRooms();
+
+    expect(localStorage.getItem(`whiteboard:${ROOM}:timestamp`)).toBeNull();
+  });
+
+  it('cleanup removes a leftover state key with no timestamp', () => {
+    localStorage.setItem(
+      `whiteboard:${ROOM}:state`,
+      JSON.stringify({ elements: [ELEMENT], viewport: VIEWPORT }),
+    );
+
+    cleanupStaleRooms();
+
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
+  });
+
+  it('cleanup leaves a fresh opted-in board alone', () => {
+    setOfflineBoardCacheEnabled(ROOM, true);
+    localStorage.setItem(
+      `whiteboard:${ROOM}:state`,
+      JSON.stringify({ elements: [ELEMENT], viewport: VIEWPORT }),
+    );
+    localStorage.setItem(`whiteboard:${ROOM}:timestamp`, String(Date.now()));
+
+    cleanupStaleRooms();
+
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).not.toBeNull();
+  });
+
+  it('cleanup keeps a board touched two seconds ago', () => {
+    setOfflineBoardCacheEnabled(ROOM, true);
+    localStorage.setItem(
+      `whiteboard:${ROOM}:state`,
+      JSON.stringify({ elements: [ELEMENT], viewport: VIEWPORT }),
+    );
+    localStorage.setItem(`whiteboard:${ROOM}:timestamp`, String(Date.now() - 2000));
+
+    cleanupStaleRooms();
+
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).not.toBeNull();
+  });
+
+  it('cleanup keeps a board touched a minute ago', () => {
+    setOfflineBoardCacheEnabled(ROOM, true);
+    localStorage.setItem(
+      `whiteboard:${ROOM}:state`,
+      JSON.stringify({ elements: [ELEMENT], viewport: VIEWPORT }),
+    );
+    localStorage.setItem(`whiteboard:${ROOM}:timestamp`, String(Date.now() - 60_000));
+
+    cleanupStaleRooms();
+
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).not.toBeNull();
+  });
+
+  it('cleanup treats a timestamp key with an empty value as expired', () => {
+    setOfflineBoardCacheEnabled(ROOM, true);
+    localStorage.setItem(
+      `whiteboard:${ROOM}:state`,
+      JSON.stringify({ elements: [ELEMENT], viewport: VIEWPORT }),
+    );
+    localStorage.setItem(`whiteboard:${ROOM}:timestamp`, '');
+
+    cleanupStaleRooms();
+
+    expect(localStorage.getItem(`whiteboard:${ROOM}:timestamp`)).toBeNull();
+    expect(localStorage.getItem(`whiteboard:${ROOM}:state`)).toBeNull();
+    expect(localStorage.getItem(`whiteboard:${ROOM}:offline_cache`)).toBeNull();
   });
 });

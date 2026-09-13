@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   MAX_BOARD_FILE_BYTES,
+  MAX_ROOM_FILE_BYTES_TOTAL,
   isValidFileId,
   isAllowedMimeType,
   buildR2ObjectKey,
@@ -59,6 +60,10 @@ describe('boardFileRoutes', () => {
     it('exports 25 MB as the limit', () => {
       expect(MAX_BOARD_FILE_BYTES).toBe(25 * 1024 * 1024);
     });
+
+    it('exports the room total as 250 MB', () => {
+      expect(MAX_ROOM_FILE_BYTES_TOTAL).toBe(250 * 1024 * 1024);
+    });
   });
 
   describe('validateFileUploadRequest', () => {
@@ -90,6 +95,7 @@ describe('boardFileRoutes', () => {
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.status).toBe(400);
+        expect(result.message).toBe('Invalid file ID format');
       }
     });
 
@@ -103,6 +109,7 @@ describe('boardFileRoutes', () => {
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.status).toBe(415);
+        expect(result.message).toBe('Unsupported media type');
       }
     });
 
@@ -116,6 +123,7 @@ describe('boardFileRoutes', () => {
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.status).toBe(415);
+        expect(result.message).toBe('Unsupported media type');
       }
     });
 
@@ -129,6 +137,7 @@ describe('boardFileRoutes', () => {
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.status).toBe(413);
+        expect(result.message).toBe('File too large');
       }
     });
 
@@ -150,6 +159,10 @@ describe('boardFileRoutes', () => {
         contentLength: 1024,
       });
       expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.status).toBe(400);
+        expect(result.message).toBe('Invalid method for file upload');
+      }
     });
   });
 });

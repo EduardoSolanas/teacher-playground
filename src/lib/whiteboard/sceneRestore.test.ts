@@ -19,6 +19,12 @@ describe('shouldRestoreScene', () => {
     expect(shouldRestoreScene([], [])).toBe(false);
   });
 
+  it('does not wipe an editor that holds a scene when the document is empty', () => {
+    const held = [{ id: 'a', type: 'image', fileId: 'f1', version: 3 }];
+
+    expect(shouldRestoreScene([], held)).toBe(false);
+  });
+
   /*
    * The reload failure this exists for.
    *

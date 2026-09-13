@@ -41,6 +41,28 @@ describe('withRenderableGeometry', () => {
     expect('points' in (out as object)).toBe(false);
   });
 
+  it('does not mutate or rebuild the array it was given when repairing', () => {
+    const input = [{ id: 'a', type: 'arrow' }];
+    const output = withRenderableGeometry(input);
+
+    expect(output).not.toBe(input);
+    expect((input[0] as { points?: unknown }).points).toBeUndefined();
+    expect((output[0] as unknown as { points: unknown }).points).toEqual([]);
+  });
+
+  it('leaves renderable elements after a broken one untouched', () => {
+    const rect = { id: 'r', type: 'rectangle', width: 10, height: 10 };
+    const output = withRenderableGeometry([{ id: 'a', type: 'arrow' }, rect]);
+
+    expect(output[1]).toBe(rect);
+    expect('points' in (output[1] as object)).toBe(false);
+  });
+
+  it('ignores null and primitive entries without throwing or rebuilding', () => {
+    const input = [null, undefined, 42, 'arrow'] as unknown[];
+    expect(withRenderableGeometry(input)).toBe(input);
+  });
+
   it('returns the same array when everything is already renderable', () => {
     // The hot path is a scene that is fine. Rebuilding it on every remote
     // update would copy the whole board for nothing.

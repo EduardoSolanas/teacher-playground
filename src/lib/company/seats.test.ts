@@ -252,6 +252,97 @@ describe('company seats', () => {
     expect(readPendingSeatChange(db, companyId)).toBeNull();
   });
 
+  it('forbids a revoked member or an admin from reserving a seat change', () => {
+    const { companyId } = createSeatedCompany(db, {
+      ownerSubject: 'reserve-actor-guard',
+      quantity: 3,
+    });
+    const adminId = accessAccount(db, 'reserve-actor-admin');
+    const revokedId = accessAccount(db, 'reserve-actor-revoked');
+    db.prepare(
+      `INSERT INTO company_members (company_id, account_id, role, state, created_at, revoked_at)
+       VALUES (?, ?, 'admin', 'active', 1_500, NULL),
+              (?, ?, 'member', 'revoked', 1_500, 1_600)`,
+    ).run(companyId, adminId, companyId, revokedId);
+
+    expect(reserveSeatChange(db, {
+      companyId,
+      actorAccountId: adminId,
+      targetQuantity: 4,
+      operationId: 'op-admin-actor',
+      requestHash: 'hash-admin-actor',
+      now: 2_000,
+    })).toEqual({ outcome: 'forbidden' });
+    expect(reserveSeatChange(db, {
+      companyId,
+      actorAccountId: revokedId,
+      targetQuantity: 4,
+      operationId: 'op-revoked-actor',
+      requestHash: 'hash-revoked-actor',
+      now: 2_000,
+    })).toEqual({ outcome: 'forbidden' });
+    expect(readPendingSeatChange(db, companyId)).toBeNull();
+    expect(readCompanySubscription(db, companyId)).toMatchObject({
+      quantity: 3,
+      pendingOperationId: null,
+    });
+  });
+
+  it('reports no_change without writing an operation when the quantity matches', () => {
+    const { companyId, ownerId } = createSeatedCompany(db, {
+      ownerSubject: 'reserve-no-change',
+      quantity: 3,
+    });
+
+    expect(reserveSeatChange(db, {
+      companyId,
+      actorAccountId: ownerId,
+      targetQuantity: 3,
+      operationId: 'op-no-change',
+      requestHash: 'hash-no-change',
+      now: 2_000,
+    })).toEqual({ outcome: 'no_change' });
+    expect(readPendingSeatChange(db, companyId)).toBeNull();
+    expect(
+      db.prepare(`SELECT COUNT(*) AS count FROM billing_operations`).get(),
+    ).toEqual({ count: 0 });
+    expect(readCompanySubscription(db, companyId)).toMatchObject({
+      quantity: 3,
+      pendingQuantity: null,
+      pendingOperationId: null,
+    });
+  });
+
+  it('allows an increase that is still below the active member count', () => {
+    const { companyId, ownerId } = createSeatedCompany(db, {
+      ownerSubject: 'reserve-over-capacity',
+      quantity: 2,
+    });
+    db.prepare(
+      `INSERT INTO company_members (company_id, account_id, role, state, created_at)
+       VALUES (?, ?, 'member', 'active', 1_500),
+              (?, ?, 'member', 'active', 1_500),
+              (?, ?, 'member', 'active', 1_500)`,
+    ).run(
+      companyId,
+      accessAccount(db, 'reserve-over-capacity-a'),
+      companyId,
+      accessAccount(db, 'reserve-over-capacity-b'),
+      companyId,
+      accessAccount(db, 'reserve-over-capacity-c'),
+    );
+    expect(activeMemberCount(db, companyId)).toBe(4);
+
+    expect(reserveSeatChange(db, {
+      companyId,
+      actorAccountId: ownerId,
+      targetQuantity: 3,
+      operationId: 'op-over-capacity',
+      requestHash: 'hash-over-capacity',
+      now: 2_000,
+    })).toMatchObject({ outcome: 'reserved', direction: 'increase' });
+  });
+
   it('releases a definitively failed change, keeps an unknown outcome pending, and settles on success', () => {
     const { companyId, ownerId } = createSeatedCompany(db, {
       ownerSubject: 'seat-outcome',

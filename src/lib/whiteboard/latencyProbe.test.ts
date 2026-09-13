@@ -115,5 +115,28 @@ describe('whiteboard latency probe', () => {
     clearWhiteboardLatencyEvents();
 
     expect(readWhiteboardLatencyEvents()).toEqual([]);
+
+    // A window that never recorded one starts from an empty store, not from a
+    // placeholder entry.
+    delete (globalThis.window as Window & { __whiteboardLatencyEvents?: unknown })
+      .__whiteboardLatencyEvents;
+    recordWhiteboardLatencyEvent({ kind: 'stroke-render' }, 2);
+    expect(readWhiteboardLatencyEvents()).toEqual([{ kind: 'stroke-render', at: 2 }]);
+  });
+
+  it('starts from an empty store and stops reading once the probe is disabled', () => {
+    testEnv.NODE_ENV = 'development';
+    delete testEnv.NEXT_PUBLIC_E2E;
+    delete (globalThis.window as Window & { __whiteboardLatencyEvents?: unknown })
+      .__whiteboardLatencyEvents;
+
+    expect(readWhiteboardLatencyEvents()).toEqual([]);
+
+    recordWhiteboardLatencyEvent({ kind: 'cursor-publish' }, 5);
+    expect(readWhiteboardLatencyEvents()).toHaveLength(1);
+
+    testEnv.NODE_ENV = 'production';
+    testEnv.NEXT_PUBLIC_E2E = '';
+    expect(readWhiteboardLatencyEvents()).toEqual([]);
   });
 });

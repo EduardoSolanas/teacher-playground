@@ -59,6 +59,34 @@ describe('shouldStartCollaboration', () => {
     ).toBe(true);
   });
 
+  it('treats every granted public role as a reason to start', () => {
+    for (const grantRole of ['creator', 'peer', 'viewer'] as const) {
+      expect(
+        shouldStartCollaboration({
+          roomGranted: false,
+          accessStatus: 'approved',
+          grantRole,
+          isWaiting: false,
+          wasKicked: false,
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it('does not start when access is not approved even if a granted role lingers', () => {
+    for (const accessStatus of ['pending', 'rejected', 'none', undefined, null] as const) {
+      expect(
+        shouldStartCollaboration({
+          roomGranted: false,
+          accessStatus,
+          grantRole: 'peer',
+          isWaiting: false,
+          wasKicked: false,
+        }),
+      ).toBe(false);
+    }
+  });
+
   it('does not start for rejected, none, or unapproved access', () => {
     expect(
       shouldStartCollaboration({

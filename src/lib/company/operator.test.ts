@@ -14,7 +14,9 @@ import {
 import { createCompany } from './membership';
 import { readCompanySubscription, seatCapacity } from './seats';
 import {
+  type AttachableSubscriptionStatus,
   approveCompanyInvoice,
+  isAttachableSubscriptionStatus,
   normalizeOperatorEmail,
   operatorEmailFor,
   parseOperatorEmails,
@@ -62,6 +64,23 @@ describe('company operator allowlist', () => {
     expect(normalizeOperatorEmail('ops@example.test,ada@example.test')).toBeNull();
     expect(normalizeOperatorEmail(`${'a'.repeat(250)}@example.test`)).toBeNull();
     expect(normalizeOperatorEmail('not-an-email')).toBeNull();
+  });
+
+  it('accepts the minimum and maximum email lengths', () => {
+    expect(normalizeOperatorEmail('a@b')).toBe('a@b');
+    const max = `${'a'.repeat(249)}@x.io`;
+    expect(max).toHaveLength(254);
+    expect(normalizeOperatorEmail(max)).toBe(max);
+    expect(normalizeOperatorEmail(`${'a'.repeat(250)}@x.io`)).toBeNull();
+  });
+
+  it('accepts only trialing, active, and incomplete subscription statuses', () => {
+    for (const status of ['trialing', 'active', 'incomplete']) {
+      expect(isAttachableSubscriptionStatus(status)).toBe(true);
+    }
+    for (const value of ['canceled', 'past_due', 'unpaid', 'paused', '', 5, null, undefined]) {
+      expect(isAttachableSubscriptionStatus(value)).toBe(false);
+    }
   });
 });
 
@@ -186,6 +205,68 @@ describe('company operator invoice approval (O-1)', () => {
       count: 0,
     });
     expect(auditRows()).toEqual([]);
+  });
+
+  it('refuses an unknown or disabled company', () => {
+    expect(approveCompanyInvoice(db, approveInput('missing-company'))).toEqual({
+      outcome: 'not_found',
+    });
+
+    const { companyId } = operatorCompany('approve-disabled-owner');
+    db.prepare(
+      `UPDATE companies SET state = 'disabled', updated_at = 2_000 WHERE company_id = ?`,
+    ).run(companyId);
+    expect(approveCompanyInvoice(db, approveInput(companyId))).toEqual({
+      outcome: 'not_found',
+    });
+  });
+
+  it('accepts exactly the minimum and maximum invoice seat quantities', () => {
+    const minimum = operatorCompany('approve-min-seats-owner', { customer: 'cus_approve_min' });
+    expect(approveCompanyInvoice(db, approveInput(minimum.companyId, {
+      quantity: 10,
+      operationId: 'op_min_seats',
+    }))).toMatchObject({ outcome: 'approved', quantity: 10 });
+
+    const maximum = operatorCompany('approve-max-seats-owner', { customer: 'cus_approve_max' });
+    expect(approveCompanyInvoice(db, approveInput(maximum.companyId, {
+      quantity: 10_000,
+      operationId: 'op_max_seats',
+    }))).toMatchObject({ outcome: 'approved', quantity: 10_000 });
+
+    const over = operatorCompany('approve-over-seats-owner', { customer: 'cus_approve_over' });
+    expect(approveCompanyInvoice(db, approveInput(over.companyId, {
+      quantity: 10_001,
+      operationId: 'op_over_seats',
+    }))).toEqual({ outcome: 'below_minimum' });
+    expect(
+      db
+        .prepare(`SELECT COUNT(*) AS count FROM billing_operations WHERE subject_id = ?`)
+        .get(over.companyId),
+    ).toEqual({ count: 0 });
+  });
+
+  it('reports the recorded operation status when an approval is replayed', () => {
+    const { companyId } = operatorCompany('approve-status-owner');
+    expect(approveCompanyInvoice(db, approveInput(companyId))).toMatchObject({
+      operationStatus: 'pending',
+    });
+
+    db.prepare(`UPDATE billing_operations SET status = 'failed' WHERE operation_id = ?`)
+      .run('op_approve_1');
+    expect(approveCompanyInvoice(db, approveInput(companyId))).toMatchObject({
+      outcome: 'approved',
+      replay: true,
+      operationStatus: 'failed',
+    });
+
+    db.prepare(`UPDATE billing_operations SET status = 'succeeded' WHERE operation_id = ?`)
+      .run('op_approve_1');
+    expect(approveCompanyInvoice(db, approveInput(companyId))).toMatchObject({
+      outcome: 'approved',
+      replay: true,
+      operationStatus: 'succeeded',
+    });
   });
 
   it('refuses a company that already has a subscription', () => {
@@ -349,6 +430,96 @@ describe('company operator invoice approval (O-1)', () => {
         .prepare(`SELECT status FROM billing_operations WHERE subject_id = ?`)
         .get(companyId),
     ).toEqual({ status: 'pending' });
+  });
+
+  it('conflicts when a settled creation is later reported as failed', () => {
+    const { companyId } = operatorCompany('settle-failure-conflict-owner');
+    approveCompanyInvoice(db, approveInput(companyId));
+    expect(settleCompanyInvoice(db, settleInput(companyId))).toEqual({
+      outcome: 'settled',
+      replay: false,
+    });
+
+    expect(
+      settleCompanyInvoice(db, settleInput(companyId, { outcome: 'failure' })),
+    ).toEqual({ outcome: 'operation_conflict' });
+    expect(
+      db
+        .prepare(`SELECT status FROM billing_operations WHERE subject_id = ?`)
+        .get(companyId),
+    ).toEqual({ status: 'succeeded' });
+  });
+
+  it('refuses to attach without a usable subscription id or status', () => {
+    const { companyId } = operatorCompany('settle-attach-guards-owner');
+    approveCompanyInvoice(db, approveInput(companyId));
+    const invalidInputs: Array<Partial<Parameters<typeof settleCompanyInvoice>[1]>> = [
+      { processorSubscriptionId: undefined },
+      { processorSubscriptionId: '' },
+      { status: undefined },
+      { status: 'canceled' as AttachableSubscriptionStatus },
+    ];
+    for (const overrides of invalidInputs) {
+      expect(settleCompanyInvoice(db, settleInput(companyId, overrides))).toEqual({
+        outcome: 'not_found',
+      });
+    }
+    expect(readCompanySubscription(db, companyId)).toBeNull();
+    expect(
+      db
+        .prepare(`SELECT status FROM billing_operations WHERE subject_id = ?`)
+        .get(companyId),
+    ).toEqual({ status: 'pending' });
+  });
+
+  it('scopes a settled replay to the recorded subscription id', () => {
+    const { companyId } = operatorCompany('settle-replay-scope-owner');
+    approveCompanyInvoice(db, approveInput(companyId));
+    expect(settleCompanyInvoice(db, settleInput(companyId))).toEqual({
+      outcome: 'settled',
+      replay: false,
+    });
+
+    expect(
+      settleCompanyInvoice(db, settleInput(companyId, {
+        processorSubscriptionId: 'sub_invoice_other',
+      })),
+    ).toEqual({ outcome: 'operation_conflict' });
+  });
+
+  it('conflicts a settled replay when the subscription row is missing', () => {
+    const { companyId } = operatorCompany('settle-replay-missing-owner');
+    approveCompanyInvoice(db, approveInput(companyId));
+    db.prepare(`UPDATE billing_operations SET status = 'succeeded' WHERE operation_id = ?`)
+      .run('op_approve_1');
+
+    expect(settleCompanyInvoice(db, settleInput(companyId))).toEqual({
+      outcome: 'operation_conflict',
+    });
+  });
+
+  it('conflicts when the company already carries a different subscription', () => {
+    const { companyId } = operatorCompany('settle-duplicate-attach-owner');
+    approveCompanyInvoice(db, approveInput(companyId));
+    expect(settleCompanyInvoice(db, settleInput(companyId))).toEqual({
+      outcome: 'settled',
+      replay: false,
+    });
+    db.prepare(
+      `UPDATE billing_operations SET status = 'pending', stripe_object_id = NULL
+       WHERE operation_id = ?`,
+    ).run('op_approve_1');
+
+    expect(
+      settleCompanyInvoice(db, settleInput(companyId, {
+        processorSubscriptionId: 'sub_invoice_second',
+      })),
+    ).toEqual({ outcome: 'operation_conflict' });
+    expect(
+      db
+        .prepare(`SELECT COUNT(*) AS count FROM company_subscriptions WHERE company_id = ?`)
+        .get(companyId),
+    ).toEqual({ count: 1 });
   });
 });
 
@@ -622,4 +793,5 @@ describe('company operator dispute review (O-2)', () => {
       }),
     ).toEqual({ outcome: 'not_found' });
   });
+
 });

@@ -337,6 +337,10 @@ describe('guestPin module', () => {
       expect(pin).toBeNull();
     });
 
+    it('returns null for a room that does not exist', () => {
+      expect(readGuestPin(db, 'missing-room')).toBeNull();
+    });
+
     it('returns null after revokeGuestAccess', () => {
       const now = Date.now();
       issueGuestPin(db, testRoomId, now);
@@ -387,6 +391,50 @@ describe('guestPin module', () => {
         const result = verifyGuestPin(db, testRoomId, pin, now);
 
         expect(result).toEqual({ ok: false, reason: 'invalid' });
+      });
+
+      it('guest_access = 0 with a stored PIN still fails and counts the attempt', () => {
+        const now = Date.now();
+        const pin = issueGuestPin(db, testRoomId, now);
+        // Disabling without nulling the PIN must not turn a matching PIN valid.
+        db.prepare(`UPDATE rooms SET guest_access = 0 WHERE room_id = ?`).run(testRoomId);
+
+        expect(verifyGuestPin(db, testRoomId, pin, now))
+          .toEqual({ ok: false, reason: 'invalid' });
+
+        const row = db.prepare(
+          `SELECT guest_failed_count FROM rooms WHERE room_id = ?`,
+        ).get(testRoomId) as { guest_failed_count: number };
+        expect(row.guest_failed_count).toBe(1);
+      });
+
+      it('a null PIN on an enabled room fails without throwing', () => {
+        const now = Date.now();
+        db.prepare(
+          `UPDATE rooms SET guest_access = 1, guest_pin = NULL, guest_pin_expires_at = ? WHERE room_id = ?`,
+        ).run(now + GUEST_PIN_VALIDITY_DURATION_MS, testRoomId);
+
+        expect(verifyGuestPin(db, testRoomId, '123456', now))
+          .toEqual({ ok: false, reason: 'invalid' });
+
+        const row = db.prepare(
+          `SELECT guest_failed_count FROM rooms WHERE room_id = ?`,
+        ).get(testRoomId) as { guest_failed_count: number };
+        expect(row.guest_failed_count).toBe(1);
+      });
+
+      it('a PIN expiring exactly now fails and counts the attempt', () => {
+        const now = Date.now();
+        const pin = issueGuestPin(db, testRoomId, now);
+        db.prepare(`UPDATE rooms SET guest_pin_expires_at = ? WHERE room_id = ?`).run(now, testRoomId);
+
+        expect(verifyGuestPin(db, testRoomId, pin, now))
+          .toEqual({ ok: false, reason: 'invalid' });
+
+        const row = db.prepare(
+          `SELECT guest_failed_count FROM rooms WHERE room_id = ?`,
+        ).get(testRoomId) as { guest_failed_count: number };
+        expect(row.guest_failed_count).toBe(1);
       });
 
       it('expired PIN returns generic failure', () => {
@@ -480,7 +528,8 @@ describe('guestPin module', () => {
         const now = Date.now();
         issueGuestPin(db, testRoomId, now);
 
-        verifyGuestPin(db, testRoomId, '', now);
+        const result = verifyGuestPin(db, testRoomId, '', now);
+        expect(result).toEqual({ ok: false, reason: 'invalid' });
 
         const row = db.prepare(`SELECT guest_failed_count FROM rooms WHERE room_id = ?`).get(testRoomId) as
           | { guest_failed_count: number }
@@ -628,6 +677,39 @@ describe('guestPin module', () => {
         const result = verifyGuestPin(db, testRoomId, pin, afterLockout);
 
         expect(result).toEqual({ ok: true });
+      });
+
+      it('clears an expired lockout exactly at its expiry instant', () => {
+        const now = Date.now();
+        const pin = issueGuestPin(db, testRoomId, now);
+        db.prepare(
+          `UPDATE rooms SET guest_failed_count = 50, guest_failed_window_at = ?, guest_lockout_until = ? WHERE room_id = ?`,
+        ).run(now - 1000, now, testRoomId);
+
+        expect(verifyGuestPin(db, testRoomId, pin, now)).toEqual({ ok: true });
+
+        const row = db.prepare(
+          `SELECT guest_failed_count, guest_lockout_until FROM rooms WHERE room_id = ?`,
+        ).get(testRoomId) as { guest_failed_count: number; guest_lockout_until: number | null };
+        expect(row.guest_failed_count).toBe(0);
+        expect(row.guest_lockout_until).toBeNull();
+      });
+
+      it('starts a fresh failure window exactly when the old one ends', () => {
+        const now = Date.now();
+        issueGuestPin(db, testRoomId, now);
+        for (let i = 0; i < 40; i++) {
+          verifyGuestPin(db, testRoomId, '000000', now);
+        }
+
+        const boundary = now + GUEST_PIN_FAILURE_WINDOW_MS;
+        verifyGuestPin(db, testRoomId, '000000', boundary);
+
+        const row = db.prepare(
+          `SELECT guest_failed_count, guest_lockout_until FROM rooms WHERE room_id = ?`,
+        ).get(testRoomId) as { guest_failed_count: number; guest_lockout_until: number | null };
+        expect(row.guest_failed_count).toBe(1);
+        expect(row.guest_lockout_until).toBeNull();
       });
 
       it('failures during an active lockout do not extend it', () => {

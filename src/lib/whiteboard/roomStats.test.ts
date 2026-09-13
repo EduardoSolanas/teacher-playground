@@ -49,6 +49,18 @@ describe('roomStats', () => {
     });
   });
 
+  it('ignores elements without a type instead of inventing a bucket', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('untyped-room');
+    const untyped = new Y.Map();
+    untyped.set('id', 'no-type');
+    untyped.set('x', 0);
+    elementsArray.push([untyped]);
+
+    const stats = computeRoomStats(doc);
+    expect(stats.elements.total).toBe(1);
+    expect(stats.elementsByType).toEqual({});
+  });
+
   it('counts deleted elements separately and tracks points', () => {
     const { doc, elementsArray } = createWhiteboardDoc('test-room');
     replaceSharedElements(doc, elementsArray, [

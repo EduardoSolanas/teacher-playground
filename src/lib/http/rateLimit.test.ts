@@ -66,6 +66,16 @@ describe('createRateLimiter (SEC-005)', () => {
     }
   });
 
+  it('reports the exact remaining window as retryAfterMs', () => {
+    const limiter = createRateLimiter({ windowMs: 5000, max: 1 });
+
+    expect(limiter.take('key')).toEqual({ ok: true, messagesInWindow: 1 });
+    expect(limiter.take('key')).toEqual({ ok: false, retryAfterMs: 5000, messagesInWindow: 1 });
+
+    vi.advanceTimersByTime(1200);
+    expect(limiter.take('key')).toEqual({ ok: false, retryAfterMs: 3800, messagesInWindow: 1 });
+  });
+
   it('shared IP does not lock pupils out differently with new sweep behavior', () => {
     /*
      * A school NATs many pupils behind one IP. The guest PIN cap is keyed
@@ -158,6 +168,65 @@ describe('createRateLimiter memory bounding', () => {
 
     // Verify bounded storage
     expect(limiter.size()).toBeLessThanOrEqual(maxTrackedKeys);
+  });
+
+  it('rate-limits sweeping to once per window instead of on every take', () => {
+    const limiter = createRateLimiter({ windowMs: 1000, max: 1, maxTrackedKeys: 2 });
+
+    limiter.take('a');
+    vi.advanceTimersByTime(950);
+    limiter.take('x');
+    vi.advanceTimersByTime(50);
+    limiter.take('b');
+    expect(limiter.size()).toBe(2);
+
+    vi.advanceTimersByTime(950);
+    limiter.take('c');
+    expect(limiter.size()).toBe(3);
+  });
+
+  it('does not sweep while the map is exactly at maxTrackedKeys', () => {
+    const limiter = createRateLimiter({ windowMs: 1000, max: 1, maxTrackedKeys: 2 });
+
+    limiter.take('a');
+    vi.advanceTimersByTime(1000);
+    limiter.take('b');
+    expect(limiter.size()).toBe(2);
+  });
+
+  it('sweeps exactly at the window boundary', () => {
+    const limiter = createRateLimiter({ windowMs: 1000, max: 1, maxTrackedKeys: 2 });
+
+    limiter.take('a');
+    limiter.take('b');
+    limiter.take('c');
+    expect(limiter.size()).toBe(3);
+
+    vi.advanceTimersByTime(1000);
+    limiter.take('d');
+    expect(limiter.size()).toBe(1);
+  });
+
+  it('never evicts a key that still has a live timestamp in a mixed bucket', () => {
+    const limiter = createRateLimiter({ windowMs: 1000, max: 2, maxTrackedKeys: 2 });
+
+    limiter.take('mixed');
+    vi.advanceTimersByTime(900);
+    limiter.take('mixed');
+    vi.advanceTimersByTime(100);
+    limiter.take('y');
+    vi.advanceTimersByTime(100);
+    limiter.take('z');
+    expect(limiter.size()).toBe(3);
+  });
+
+  it('treats a timestamp exactly one window old as expired', () => {
+    const limiter = createRateLimiter({ windowMs: 1000, max: 1, maxTrackedKeys: 1 });
+
+    limiter.take('a');
+    vi.advanceTimersByTime(1000);
+    limiter.take('b');
+    expect(limiter.size()).toBe(1);
   });
 
   it('never evicts a key with active timestamps, even when sweep occurs', () => {

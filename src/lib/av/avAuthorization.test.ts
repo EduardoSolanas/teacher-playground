@@ -28,9 +28,13 @@ describe('roleFromValue', () => {
     expect(roleFromValue('owner')).toBe('owner');
     expect(roleFromValue('member')).toBe('member');
     expect(roleFromValue('editor')).toBe('editor');
+    expect(roleFromValue('viewer')).toBe('viewer');
     expect(roleFromValue('pending')).toBe('pending');
     expect(roleFromValue('waiting')).toBe('waiting');
     expect(roleFromValue(undefined)).toBe('unknown');
+    expect(roleFromValue('banned')).toBe('unknown');
+    expect(roleFromValue('')).toBe('unknown');
+    expect(roleFromValue(7)).toBe('unknown');
   });
 });
 
@@ -46,6 +50,7 @@ describe('avEligible', () => {
     const result = avEligible('waiting');
     expect(result.eligible).toBe(false);
     expect(result.reason).toBe('waiting');
+    expect(avEligible('pending')).toEqual({ eligible: false, reason: 'waiting' });
   });
   it('is not eligible for non-members', () => {
     expect(avEligible('unknown').eligible).toBe(false);

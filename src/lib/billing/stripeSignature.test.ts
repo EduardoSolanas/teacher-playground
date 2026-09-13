@@ -130,6 +130,119 @@ describe('verifyStripeSignature', () => {
     expect(result).toEqual({ valid: false, reason: 'no_matching_secret' });
   });
 
+  it('returns missing_header for an empty or whitespace-only header', async () => {
+    await expect(verifyStripeSignature('{}', '', ['whsec_alpha'], NOW_MS)).resolves.toEqual({
+      valid: false,
+      reason: 'missing_header',
+    });
+    await expect(verifyStripeSignature('{}', '   ', ['whsec_alpha'], NOW_MS)).resolves.toEqual({
+      valid: false,
+      reason: 'missing_header',
+    });
+  });
+
+  it('parses uppercase field names and whitespace around the equals signs', async () => {
+    const body = '{"type":"invoice.paid"}';
+    const v1 = await hmacHex('whsec_alpha', `${NOW_SEC}.${body}`);
+    const result = await verifyStripeSignature(
+      body,
+      ` V1 = ${v1} , T = ${NOW_SEC} `,
+      ['whsec_alpha'],
+      NOW_MS,
+    );
+    expect(result).toEqual({ valid: true, payloadHash: await sha256Hex(body) });
+  });
+
+  it('keeps the first timestamp when the header repeats t', async () => {
+    const body = '{"type":"invoice.paid"}';
+    const oldSec = NOW_SEC - 400;
+    const v1 = await hmacHex('whsec_alpha', `${NOW_SEC}.${body}`);
+    const result = await verifyStripeSignature(
+      body,
+      `t=${oldSec},t=${NOW_SEC},v1=${v1}`,
+      ['whsec_alpha'],
+      NOW_MS,
+    );
+    expect(result).toEqual({ valid: false, reason: 'expired' });
+  });
+
+  it('ignores a value token that is not named v1', async () => {
+    const body = '{"type":"invoice.paid"}';
+    const v1 = await hmacHex('whsec_alpha', `${NOW_SEC}.${body}`);
+    const result = await verifyStripeSignature(
+      body,
+      `t=${NOW_SEC},foo=${v1}`,
+      ['whsec_alpha'],
+      NOW_MS,
+    );
+    expect(result).toEqual({ valid: false, reason: 'no_v1' });
+  });
+
+  it('returns mismatch for a non-numeric or absent timestamp', async () => {
+    await expect(
+      verifyStripeSignature('{}', `t=abc,v1=deadbeef`, ['whsec_alpha'], NOW_MS),
+    ).resolves.toEqual({ valid: false, reason: 'mismatch' });
+    await expect(
+      verifyStripeSignature('{}', `v1=deadbeef`, ['whsec_alpha'], NOW_MS),
+    ).resolves.toEqual({ valid: false, reason: 'mismatch' });
+  });
+
+  it('accepts the exact tolerance boundary and rejects one second past it', async () => {
+    const body = '{"type":"invoice.paid"}';
+    const edgeSec = NOW_SEC - 300;
+    const edgeV1 = await hmacHex('whsec_alpha', `${edgeSec}.${body}`);
+    await expect(
+      verifyStripeSignature(body, `t=${edgeSec},v1=${edgeV1}`, ['whsec_alpha'], NOW_MS),
+    ).resolves.toEqual({ valid: true, payloadHash: await sha256Hex(body) });
+
+    const pastSec = NOW_SEC - 301;
+    const pastV1 = await hmacHex('whsec_alpha', `${pastSec}.${body}`);
+    await expect(
+      verifyStripeSignature(body, `t=${pastSec},v1=${pastV1}`, ['whsec_alpha'], NOW_MS),
+    ).resolves.toEqual({ valid: false, reason: 'expired' });
+  });
+
+  it('honours a custom tolerance on both sides of its boundary', async () => {
+    const body = '{}';
+    const insideV1 = await hmacHex('whsec_alpha', `${NOW_SEC - 1}.${body}`);
+    await expect(
+      verifyStripeSignature(body, `t=${NOW_SEC - 1},v1=${insideV1}`, ['whsec_alpha'], NOW_MS, 1_000),
+    ).resolves.toEqual({ valid: true, payloadHash: await sha256Hex(body) });
+
+    const outsideV1 = await hmacHex('whsec_alpha', `${NOW_SEC - 2}.${body}`);
+    await expect(
+      verifyStripeSignature(body, `t=${NOW_SEC - 2},v1=${outsideV1}`, ['whsec_alpha'], NOW_MS, 1_000),
+    ).resolves.toEqual({ valid: false, reason: 'expired' });
+  });
+
+  it('rejects an odd-length v1 even when it starts with a valid signature', async () => {
+    const body = '{"type":"invoice.paid"}';
+    const v1 = await hmacHex('whsec_alpha', `${NOW_SEC}.${body}`);
+    await expect(
+      verifyStripeSignature(body, `t=${NOW_SEC},v1=${v1}a`, ['whsec_alpha'], NOW_MS),
+    ).resolves.toEqual({ valid: false, reason: 'mismatch' });
+  });
+
+  it('rejects a v1 with a non-hex prefix even when it ends with a valid signature', async () => {
+    const body = '{"type":"invoice.paid"}';
+    const v1 = await hmacHex('whsec_alpha', `${NOW_SEC}.${body}`);
+    await expect(
+      verifyStripeSignature(body, `t=${NOW_SEC},v1=g${v1}`, ['whsec_alpha'], NOW_MS),
+    ).resolves.toEqual({ valid: false, reason: 'mismatch' });
+  });
+
+  it('returns mismatch for a malformed v1 instead of throwing', async () => {
+    await expect(
+      verifyStripeSignature('{}', `t=${NOW_SEC},v1=zz`, ['whsec_alpha'], NOW_MS),
+    ).resolves.toEqual({ valid: false, reason: 'mismatch' });
+    await expect(
+      verifyStripeSignature('{}', `t=${NOW_SEC},v1=abc`, ['whsec_alpha'], NOW_MS),
+    ).resolves.toEqual({ valid: false, reason: 'mismatch' });
+    await expect(
+      verifyStripeSignature('{}', `t=${NOW_SEC},v1=`, ['whsec_alpha'], NOW_MS),
+    ).resolves.toEqual({ valid: false, reason: 'mismatch' });
+  });
+
   it('exposes the payloadHash as the lowercase hex SHA-256 of the raw body', async () => {
     const body = '{"type":"checkout.session.completed","id":"evt_2"}';
     const v1 = await hmacHex('whsec_alpha', `${NOW_SEC}.${body}`);

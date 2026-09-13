@@ -54,7 +54,19 @@ describe('Cloudflare Access request verification', () => {
   let server: Server;
   let jwksUrl: string;
   let jwksRequests = 0;
-  let jwksResponse: 'normal' | 'malformed' | 'duplicate' | 'oversize' | 'stalled' = 'normal';
+  let jwksResponse:
+    | 'normal'
+    | 'malformed'
+    | 'duplicate'
+    | 'oversize'
+    | 'stalled'
+    | 'chunked-oversize'
+    | 'server-error'
+    | 'empty'
+    | 'exact-max' = 'normal';
+  let jwksBody: string | null = null;
+  let jwksCacheControl: string | null = null;
+  let jwksRequiresAccept = false;
   let stalledResponse: ServerResponse | undefined;
   let stalledTimer: ReturnType<typeof setTimeout> | undefined;
   const now = 1_800_000_000_000;
@@ -62,6 +74,9 @@ describe('Cloudflare Access request verification', () => {
   beforeEach(async () => {
     jwksKid = 'key-1';
     jwksResponse = 'normal';
+    jwksBody = null;
+    jwksCacheControl = null;
+    jwksRequiresAccept = false;
     const pair = await crypto.subtle.generateKey(
       { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
       true,
@@ -69,20 +84,52 @@ describe('Cloudflare Access request verification', () => {
     ) as CryptoKeyPair;
     privateKey = pair.privateKey;
     publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
-    server = createServer((_request, response) => {
+    server = createServer((request, response) => {
       jwksRequests += 1;
+      if (jwksRequiresAccept && request.headers.accept !== 'application/json') {
+        response.statusCode = 400;
+        response.end();
+        return;
+      }
       response.setHeader('content-type', 'application/json');
+      const key = { ...publicJwk, kid: jwksKid, alg: 'RS256', use: 'sig' };
+      if (jwksResponse === 'server-error') {
+        response.statusCode = 500;
+        response.end(JSON.stringify({ keys: [key] }));
+        return;
+      }
+      if (jwksResponse === 'empty') {
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
       if (jwksResponse === 'malformed') {
         response.end('{malformed');
         return;
       }
-      const key = { ...publicJwk, kid: jwksKid, alg: 'RS256', use: 'sig' };
+      if (jwksBody !== null) {
+        response.end(jwksBody);
+        return;
+      }
+      if (jwksCacheControl !== null) {
+        response.setHeader('cache-control', jwksCacheControl);
+      }
       if (jwksResponse === 'duplicate') {
         response.end(JSON.stringify({ keys: [key, key] }));
         return;
       }
       if (jwksResponse === 'oversize') {
         response.end(JSON.stringify({ keys: [key], padding: 'x'.repeat(256 * 1_024) }));
+        return;
+      }
+      if (jwksResponse === 'chunked-oversize') {
+        response.write(JSON.stringify({ keys: [key], padding: 'x'.repeat(300 * 1_024) }));
+        response.end();
+        return;
+      }
+      if (jwksResponse === 'exact-max') {
+        const body = JSON.stringify({ keys: [key] });
+        response.end(body + ' '.repeat(256 * 1_024 - body.length));
         return;
       }
       if (jwksResponse === 'stalled') {
@@ -119,6 +166,45 @@ describe('Cloudflare Access request verification', () => {
       type: 'app',
       ...overrides,
     };
+  }
+
+  function localEnvironment(overrides: Record<string, string | undefined> = {}): {
+    ACCESS_ISSUER: string | undefined;
+    ACCESS_AUDIENCE: string | undefined;
+    ACCESS_JWKS_URL: string | undefined;
+    ENVIRONMENT: string | undefined;
+  } {
+    return {
+      ACCESS_ISSUER: ISSUER,
+      ACCESS_AUDIENCE: AUDIENCE,
+      ACCESS_JWKS_URL: jwksUrl,
+      ENVIRONMENT: 'local-test',
+      ...overrides,
+    };
+  }
+
+  function requestFor(token: string | undefined): Request {
+    return new Request('https://app.example.test/api/data', token === undefined
+      ? undefined
+      : { headers: { 'Cf-Access-Jwt-Assertion': token } });
+  }
+
+  async function verifyJwksCacheLifetime(cacheControl: string | null, lifetimeMs: number): Promise<void> {
+    clearAccessJwksCache();
+    jwksCacheControl = cacheControl;
+    const token = await signToken(privateKey, claims({ exp: Math.floor(now / 1_000) + 86_400 }));
+    const verifyAt = (time: number) => verifyAccessRequest(
+      requestFor(token),
+      context(),
+      localEnvironment(),
+      { now: time, fetch: globalThis.fetch },
+    );
+    await expect(verifyAt(now)).resolves.toEqual({ issuer: ISSUER, subject: 'human-1' });
+    const fetches = jwksRequests;
+    await expect(verifyAt(now + lifetimeMs - 1)).resolves.toEqual({ issuer: ISSUER, subject: 'human-1' });
+    expect(jwksRequests).toBe(fetches);
+    await expect(verifyAt(now + lifetimeMs)).resolves.toEqual({ issuer: ISSUER, subject: 'human-1' });
+    expect(jwksRequests).toBe(fetches + 1);
   }
 
   it('exposes the verified IdP full name and email without using email as the display name', async () => {
@@ -206,15 +292,15 @@ describe('Cloudflare Access request verification', () => {
   it('rejects a forged runtime identity and an audience mismatch', async () => {
     const token = await signToken(privateKey, claims());
     await expect(verifyAccessRequest(
-      new Request('https://app.example.test', { headers: { 'Cf-Access-Jwt-Assertion': token } }),
+      requestFor(token),
       context('different-subject'),
-      { ACCESS_ISSUER: ISSUER, ACCESS_AUDIENCE: AUDIENCE, ACCESS_JWKS_URL: jwksUrl },
+      localEnvironment(),
       { now, fetch: globalThis.fetch },
     )).rejects.toBeInstanceOf(AccessVerificationError);
     await expect(verifyAccessRequest(
-      new Request('https://app.example.test', { headers: { 'Cf-Access-Jwt-Assertion': token } }),
+      requestFor(token),
       context('human-1', 'wrong-runtime-audience'),
-      { ACCESS_ISSUER: ISSUER, ACCESS_AUDIENCE: AUDIENCE, ACCESS_JWKS_URL: jwksUrl },
+      localEnvironment(),
       { now, fetch: globalThis.fetch },
     )).rejects.toBeInstanceOf(AccessVerificationError);
   });
@@ -396,5 +482,435 @@ describe('Cloudflare Access request verification', () => {
       { now, fetch: globalThis.fetch },
     );
     expect(principal.subject).toBe('human-1');
+  });
+
+  it('fails with the generic AccessVerificationError name and message', async () => {
+    await expect(verifyAccessRequest(
+      requestFor(undefined),
+      context(),
+      localEnvironment(),
+      { now, fetch: globalThis.fetch },
+    )).rejects.toMatchObject({ name: 'AccessVerificationError', message: 'Unauthorized' });
+  });
+
+  it('rejects configuration that omits any Access binding', async () => {
+    const token = await signToken(privateKey, claims());
+    for (const environment of [
+      localEnvironment({ ACCESS_ISSUER: undefined }),
+      localEnvironment({ ACCESS_AUDIENCE: undefined }),
+      localEnvironment({ ACCESS_JWKS_URL: undefined }),
+    ]) {
+      await expect(verifyAccessRequest(requestFor(token), context(), environment, { now, fetch: globalThis.fetch }))
+        .rejects.toBeInstanceOf(AccessVerificationError);
+    }
+  });
+
+  it('rejects Access bindings that are not absolute URLs', async () => {
+    const token = await signToken(privateKey, claims());
+    for (const environment of [
+      localEnvironment({ ACCESS_ISSUER: 'not-a-url' }),
+      localEnvironment({ ACCESS_JWKS_URL: 'not-a-url' }),
+    ]) {
+      await expect(verifyAccessRequest(requestFor(token), context(), environment, { now, fetch: globalThis.fetch }))
+        .rejects.toBeInstanceOf(AccessVerificationError);
+    }
+  });
+
+  it('rejects plaintext loopback bindings outside local-test even with a matching issuer', async () => {
+    const port = new URL(jwksUrl).port;
+    const issuer = `http://127.0.0.1:${port}`;
+    const token = await signToken(privateKey, claims({ iss: issuer }));
+    await expect(verifyAccessRequest(
+      requestFor(token),
+      context(),
+      {
+        ACCESS_ISSUER: issuer,
+        ACCESS_AUDIENCE: AUDIENCE,
+        ACCESS_JWKS_URL: jwksUrl,
+        ENVIRONMENT: 'production',
+      },
+      { now, fetch: globalThis.fetch },
+    )).rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it('rejects a local-test issuer whose scheme is neither https nor loopback http even with a matching issuer', async () => {
+    const issuer = 'ftp://127.0.0.1:2121';
+    const token = await signToken(privateKey, claims({ iss: issuer }));
+    await expect(verifyAccessRequest(
+      requestFor(token),
+      context(),
+      localEnvironment({ ACCESS_ISSUER: issuer }),
+      { now, fetch: globalThis.fetch },
+    )).rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it('rejects a local-test JWKS URL whose scheme is neither https nor loopback http even with a matching issuer', async () => {
+    const issuer = `http://127.0.0.1:${new URL(jwksUrl).port}`;
+    const token = await signToken(privateKey, claims({ iss: issuer }));
+    await expect(verifyAccessRequest(
+      requestFor(token),
+      context(),
+      localEnvironment({ ACCESS_ISSUER: issuer, ACCESS_JWKS_URL: 'ftp://127.0.0.1:2121/jwks' }),
+      { now, fetch: globalThis.fetch },
+    )).rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it('rejects an issuer host that is a loopback alias other than 127.0.0.1 even with a matching issuer', async () => {
+    const port = new URL(jwksUrl).port;
+    const issuer = `http://localhost:${port}`;
+    const token = await signToken(privateKey, claims({ iss: issuer }));
+    await expect(verifyAccessRequest(
+      requestFor(token),
+      context(),
+      localEnvironment({ ACCESS_ISSUER: issuer }),
+      { now, fetch: globalThis.fetch },
+    )).rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it('rejects embedded credentials in each Access binding URL even with matching claims', async () => {
+    const port = new URL(jwksUrl).port;
+    const host = `127.0.0.1:${port}`;
+    const credentialCases: Array<[string, string, string]> = [
+      [`http://user@${host}`, jwksUrl, `http://user@${host}`],
+      [`http://:pass@${host}`, jwksUrl, `http://:pass@${host}`],
+      [`http://${host}`, `http://user@${host}/jwks`, `http://${host}`],
+      [`http://${host}`, `http://:pass@${host}/jwks`, `http://${host}`],
+    ];
+    for (const [issuer, jwks, tokenIssuer] of credentialCases) {
+      const token = await signToken(privateKey, claims({ iss: tokenIssuer }));
+      await expect(verifyAccessRequest(
+        requestFor(token),
+        context(),
+        localEnvironment({ ACCESS_ISSUER: issuer, ACCESS_JWKS_URL: jwks }),
+        { now, fetch: globalThis.fetch },
+      )).rejects.toBeInstanceOf(AccessVerificationError);
+    }
+  });
+
+  it('requests the JWKS document with a JSON Accept header', async () => {
+    clearAccessJwksCache();
+    jwksRequiresAccept = true;
+    const token = await signToken(privateKey, claims());
+    await expect(verifyAccessRequest(requestFor(token), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .resolves.toEqual({ issuer: ISSUER, subject: 'human-1' });
+  });
+
+  it.each([
+    ['null body', 'null'],
+    ['array body', '[]'],
+    ['primitive body', '1'],
+    ['missing keys', '{}'],
+    ['keys that are not an array', '{"keys":"nope"}'],
+    ['empty keys', '{"keys":[]}'],
+    ['keys with non-object entries', '{"keys":[null,1,"x"]}'],
+    ['keys missing n and e', '{"keys":[{"kty":"RSA","alg":"RS256","kid":"key-1"}]}'],
+  ])('fails closed for a JWKS response with %s', async (_name, body) => {
+    clearAccessJwksCache();
+    jwksBody = body;
+    const token = await signToken(privateKey, claims());
+    await expect(verifyAccessRequest(requestFor(token), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it('rejects a JWKS key that is explicitly marked for encryption', async () => {
+    clearAccessJwksCache();
+    jwksBody = JSON.stringify({ keys: [{ ...publicJwk, kid: jwksKid, alg: 'RS256', use: 'enc' }] });
+    const token = await signToken(privateKey, claims());
+    await expect(verifyAccessRequest(requestFor(token), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it('rejects a JWKS key advertised for a different RS256-adjacent algorithm', async () => {
+    clearAccessJwksCache();
+    jwksBody = JSON.stringify({ keys: [{ ...publicJwk, kid: jwksKid, alg: 'RS512', use: 'sig' }] });
+    const token = await signToken(privateKey, claims());
+    await expect(verifyAccessRequest(requestFor(token), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it('rejects a JWKS kid longer than 256 characters', async () => {
+    clearAccessJwksCache();
+    const longKid = 'k'.repeat(257);
+    jwksBody = JSON.stringify({ keys: [{ ...publicJwk, kid: longKid, alg: 'RS256', use: 'sig' }] });
+    const token = await signToken(privateKey, claims(), { kid: longKid });
+    await expect(verifyAccessRequest(requestFor(token), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it('accepts a JWKS key that omits use and a kid of exactly 256 characters', async () => {
+    clearAccessJwksCache();
+    const longKid = 'k'.repeat(256);
+    jwksBody = JSON.stringify({ keys: [{ ...publicJwk, kid: longKid, alg: 'RS256' }] });
+    const token = await signToken(privateKey, claims(), { kid: longKid });
+    await expect(verifyAccessRequest(requestFor(token), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .resolves.toEqual({ issuer: ISSUER, subject: 'human-1' });
+  });
+
+  it('accepts a JWKS body declared at exactly the maximum size', async () => {
+    clearAccessJwksCache();
+    jwksResponse = 'exact-max';
+    const token = await signToken(privateKey, claims());
+    await expect(verifyAccessRequest(requestFor(token), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .resolves.toEqual({ issuer: ISSUER, subject: 'human-1' });
+  });
+
+  it('fails closed when a chunked JWKS body exceeds the maximum without a content-length', async () => {
+    clearAccessJwksCache();
+    jwksResponse = 'chunked-oversize';
+    const token = await signToken(privateKey, claims());
+    await expect(verifyAccessRequest(requestFor(token), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it('fails closed when the JWKS endpoint returns an error status even with a parseable body', async () => {
+    clearAccessJwksCache();
+    jwksResponse = 'server-error';
+    const token = await signToken(privateKey, claims());
+    await expect(verifyAccessRequest(requestFor(token), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it('fails closed when a JWKS response has no body stream', async () => {
+    clearAccessJwksCache();
+    jwksResponse = 'empty';
+    const token = await signToken(privateKey, claims());
+    await expect(verifyAccessRequest(requestFor(token), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it.each([
+    ['max-age=60', 60_000],
+    ['public, max-age=120', 120_000],
+    ['max-age = 60', 60_000],
+    ['max-age=0', 1_000],
+    ['max-age=999999', 300_000],
+    ['x-max-age=60', 300_000],
+    ['max-age=abc', 300_000],
+    ['no-cache', 300_000],
+    [null, 300_000],
+  ] as Array<[string | null, number]>)('honors Cache-Control %s with a %i ms JWKS cache lifetime', async (cacheControl, lifetime) => {
+    await verifyJwksCacheLifetime(cacheControl, lifetime);
+  });
+
+  it('clears both the JWKS cache and the forced-refresh cooldown on demand', async () => {
+    clearAccessJwksCache();
+    const token = await signToken(privateKey, claims());
+    const verifyAt = (time: number) => verifyAccessRequest(
+      requestFor(token),
+      context(),
+      localEnvironment(),
+      { now: time, fetch: globalThis.fetch },
+    );
+    await verifyAt(now);
+    const fetches = jwksRequests;
+    await verifyAt(now);
+    expect(jwksRequests).toBe(fetches);
+    clearAccessJwksCache();
+    await verifyAt(now);
+    expect(jwksRequests).toBe(fetches + 1);
+
+    const unknownKid = await signToken(privateKey, claims(), { kid: 'missing-kid' });
+    const verifyUnknown = () => verifyAccessRequest(
+      requestFor(unknownKid),
+      context(),
+      localEnvironment(),
+      { now, fetch: globalThis.fetch },
+    );
+    clearAccessJwksCache();
+    await expect(verifyUnknown()).rejects.toBeInstanceOf(AccessVerificationError);
+    const afterFirstUnknown = jwksRequests;
+    await expect(verifyUnknown()).rejects.toBeInstanceOf(AccessVerificationError);
+    expect(jwksRequests).toBe(afterFirstUnknown);
+    clearAccessJwksCache();
+    await expect(verifyUnknown()).rejects.toBeInstanceOf(AccessVerificationError);
+    expect(jwksRequests).toBe(afterFirstUnknown + 2);
+  });
+
+  it.each([
+    ['', 'empty assertion'],
+    ['abc', 'single segment'],
+    ['a.b', 'two segments'],
+    ['a.b.c.d', 'four segments'],
+    ['a..c', 'empty payload segment'],
+    ['.b.c', 'empty header segment'],
+    ['a.b.', 'empty signature segment'],
+  ])('rejects the malformed token %s (%s)', async (token) => {
+    await expect(verifyAccessRequest(requestFor(token), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it('rejects a token with a fourth segment even when the first three verify', async () => {
+    const token = await signToken(privateKey, claims());
+    await expect(verifyAccessRequest(requestFor(`${token}.extra`), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it('rejects an invalid subject even when the runtime identity echoes it', async () => {
+    const subjects: unknown[] = ['', '   ', 'a'.repeat(513), 42];
+    for (const sub of subjects) {
+      const token = await signToken(privateKey, claims({ sub }));
+      await expect(verifyAccessRequest(
+        requestFor(token),
+        context(sub as string),
+        localEnvironment(),
+        { now, fetch: globalThis.fetch },
+      )).rejects.toBeInstanceOf(AccessVerificationError);
+    }
+  });
+
+  it('rejects iat or nbf at exp even inside the clock skew', async () => {
+    const current = Math.floor(now / 1_000);
+    for (const override of [
+      { iat: current + 30, exp: current + 30 },
+      { nbf: current + 30, exp: current + 30 },
+    ]) {
+      const token = await signToken(privateKey, claims(override));
+      await expect(verifyAccessRequest(requestFor(token), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+        .rejects.toBeInstanceOf(AccessVerificationError);
+    }
+  });
+
+  it('rejects a token whose signature does not cover its header and payload', async () => {
+    const token = await signToken(privateKey, claims());
+    const [header, payload, signature] = token.split('.');
+    const flipped = `${signature[0] === 'A' ? 'B' : 'A'}${signature.slice(1)}`;
+    await expect(verifyAccessRequest(requestFor(`${header}.${payload}.${flipped}`), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .rejects.toBeInstanceOf(AccessVerificationError);
+    const otherPayload = json(claims({ sub: 'human-2' }));
+    await expect(verifyAccessRequest(requestFor(`${header}.${otherPayload}.${signature}`), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it('accepts a token exactly at the maximum length and rejects one character more', async () => {
+    clearAccessJwksCache();
+    const sample = await signToken(privateKey, claims());
+    const signatureLength = sample.split('.')[2].length;
+    const tokenOfLength = async (target: number): Promise<string> => {
+      const lengthFor = (headerSize: number, pad: number) =>
+        headerSize + 2 + json(claims({ pad: 'p'.repeat(pad) })).length + signatureLength;
+      for (let headerPad = 0; headerPad < 8; headerPad += 1) {
+        const header = { alg: 'RS256', kid: 'key-1', typ: 'JWT', x: 'p'.repeat(headerPad) };
+        const headerSize = json(header).length;
+        let low = 0;
+        let high = 40_000;
+        while (low <= high) {
+          const mid = Math.floor((low + high) / 2);
+          const length = lengthFor(headerSize, mid);
+          if (length === target) return signToken(privateKey, claims({ pad: 'p'.repeat(mid) }), header);
+          if (length < target) low = mid + 1;
+          else high = mid - 1;
+        }
+        for (const pad of [low, low - 1, low - 2, low - 3]) {
+          if (pad < 0) continue;
+          if (lengthFor(headerSize, pad) === target) {
+            return signToken(privateKey, claims({ pad: 'p'.repeat(pad) }), header);
+          }
+        }
+      }
+      throw new Error(`could not build a token of length ${target}`);
+    };
+    const maxToken = await tokenOfLength(16_384);
+    expect(maxToken.length).toBe(16_384);
+    await expect(verifyAccessRequest(requestFor(maxToken), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .resolves.toEqual({ issuer: ISSUER, subject: 'human-1' });
+    const overLong = await tokenOfLength(16_385);
+    await expect(verifyAccessRequest(requestFor(overLong), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it.each([
+    ['missing Access type', null, { type: undefined }],
+    ['service token type claim', null, { token_type: 'access' }],
+    ['null token type claim', null, { token_type: null }],
+    ['whitespace subject', null, { sub: '   ' }],
+    ['non-string subject', null, { sub: 42 }],
+    ['subject over 512 characters', null, { sub: 'a'.repeat(513) }],
+    ['exp equal to now', null, { exp: Math.floor(now / 1_000) }],
+    ['iat beyond the clock skew', null, { iat: Math.floor(now / 1_000) + 61 }],
+    ['nbf beyond the clock skew', null, { nbf: Math.floor(now / 1_000) + 61 }],
+    ['iat at exp', null, { exp: Math.floor(now / 1_000) + 300, iat: Math.floor(now / 1_000) + 300 }],
+    ['iat after exp', null, { exp: Math.floor(now / 1_000) + 300, iat: Math.floor(now / 1_000) + 400 }],
+    ['nbf at exp', null, { exp: Math.floor(now / 1_000) + 300, nbf: Math.floor(now / 1_000) + 300 }],
+    ['array subject', null, { sub: [] }],
+    ['boolean iat', null, { iat: true }],
+    ['array iat', null, { iat: [] }],
+    ['empty audience array', null, { aud: [] }],
+    ['audience array with a non-string member', null, { aud: [AUDIENCE, 7] }],
+    ['non-string audience', null, { aud: 42 }],
+    ['wrong string audience', null, { aud: 'other-audience' }],
+  ] as Array<[string, Record<string, unknown> | undefined | null, Record<string, unknown>]>)('rejects %s', async (_name, header, override) => {
+    const token = header === undefined ? undefined : await signToken(privateKey, claims(override), header ?? undefined);
+    await expect(verifyAccessRequest(requestFor(token), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it('rejects an empty audience array from an otherwise valid signed token', async () => {
+    const token = await signToken(privateKey, claims({ aud: [] }));
+    await expect(verifyAccessRequest(requestFor(token), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .rejects.toBeInstanceOf(AccessVerificationError);
+  });
+
+  it('accepts the skew and subject length boundaries just inside the limits', async () => {
+    const current = Math.floor(now / 1_000);
+    const token = await signToken(privateKey, claims({
+      sub: 's'.repeat(512),
+      iat: current + 60,
+      nbf: current + 60,
+      exp: current + 3_600,
+    }));
+    await expect(verifyAccessRequest(requestFor(token), context('s'.repeat(512)), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .resolves.toEqual({ issuer: ISSUER, subject: 's'.repeat(512) });
+  });
+
+  it('accepts a string audience and an audience array holding the expected value', async () => {
+    for (const aud of [AUDIENCE, ['other-audience', AUDIENCE]] as unknown[]) {
+      const token = await signToken(privateKey, claims({ aud }));
+      await expect(verifyAccessRequest(requestFor(token), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+        .resolves.toEqual({ issuer: ISSUER, subject: 'human-1' });
+    }
+  });
+
+  it('bounds the operator email by length without rejecting the token', async () => {
+    const maxEmail = 'e'.repeat(512);
+    const withMax = await signToken(privateKey, claims({ email: maxEmail }));
+    await expect(verifyAccessRequest(requestFor(withMax), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .resolves.toEqual({ issuer: ISSUER, subject: 'human-1', email: maxEmail });
+    const tooLong = await signToken(privateKey, claims({ email: 'e'.repeat(513) }));
+    await expect(verifyAccessRequest(requestFor(tooLong), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .resolves.toEqual({ issuer: ISSUER, subject: 'human-1' });
+    const empty = await signToken(privateKey, claims({ email: '' }));
+    await expect(verifyAccessRequest(requestFor(empty), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .resolves.toEqual({ issuer: ISSUER, subject: 'human-1' });
+    const single = await signToken(privateKey, claims({ email: 'e' }));
+    await expect(verifyAccessRequest(requestFor(single), context(), localEnvironment(), { now, fetch: globalThis.fetch }))
+      .resolves.toEqual({ issuer: ISSUER, subject: 'human-1', email: 'e' });
+  });
+
+  it('rejects a missing, throwing, or service-token runtime identity', async () => {
+    const token = await signToken(privateKey, claims());
+    await expect(verifyAccessRequest(
+      requestFor(token),
+      { aud: AUDIENCE, async getIdentity() { return undefined; } },
+      localEnvironment(),
+      { now, fetch: globalThis.fetch },
+    )).rejects.toBeInstanceOf(AccessVerificationError);
+    await expect(verifyAccessRequest(
+      requestFor(token),
+      { aud: AUDIENCE, async getIdentity() { throw new Error('runtime identity unavailable'); } },
+      localEnvironment(),
+      { now, fetch: globalThis.fetch },
+    )).rejects.toBeInstanceOf(AccessVerificationError);
+    await expect(verifyAccessRequest(
+      requestFor(token),
+      { aud: AUDIENCE, async getIdentity() { return { user_uuid: 'human-1', service_token_id: 'service-1' }; } },
+      localEnvironment(),
+      { now, fetch: globalThis.fetch },
+    )).rejects.toBeInstanceOf(AccessVerificationError);
+    await expect(verifyAccessRequest(
+      requestFor(token),
+      { aud: AUDIENCE, async getIdentity() { return { user_uuid: 'human-1', service_token_id: '' }; } },
+      localEnvironment(),
+      { now, fetch: globalThis.fetch },
+    )).resolves.toEqual({ issuer: ISSUER, subject: 'human-1' });
   });
 });

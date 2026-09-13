@@ -165,4 +165,17 @@ describe('referral summary', () => {
       }),
     ).toMatchObject({ pendingCount: 0, confirmedCount: 0, redemptionCount: 0 });
   });
+
+  it('strips every trailing slash from the base URL before building the link', () => {
+    const { ownerId, code } = ownerWithCode(db, 'summary-slashes');
+
+    expect(
+      readReferralSummary(db, {
+        accountId: ownerId,
+        baseUrl: 'https://teacher.example.com///',
+      }),
+    ).toMatchObject({
+      link: `https://teacher.example.com/whiteboard?ref=${code}`,
+    });
+  });
 });

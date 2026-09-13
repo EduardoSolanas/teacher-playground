@@ -31,4 +31,12 @@ describe('shouldStoreViewport', () => {
       lastStored: { ...view, zoom: 2 },
     })).toBe(true);
   });
+
+  it('stores a view that only moved vertically', () => {
+    expect(shouldStoreViewport({
+      isHost: true,
+      next: view,
+      lastStored: { ...view, y: 21 },
+    })).toBe(true);
+  });
 });

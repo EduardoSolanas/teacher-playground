@@ -10,11 +10,14 @@
   ],
   "coverageAnalysis": "perTest",
   "tempDir": ".stryker-tmp",
-  "concurrency": 2,
+  "concurrency": 6,
   "timeoutMS": 30000,
-  "reporters": ["clear-text", "progress", "html"],
+  "reporters": ["clear-text", "progress", "html", "json"],
   "htmlReporter": {
     "fileName": "coverage/mutation/index.html"
+  },
+  "jsonReporter": {
+    "fileName": "coverage/mutation/report.json"
   },
   "thresholds": {
     "high": 90,

@@ -273,6 +273,86 @@ describe('checkoutSessionRequest', () => {
   });
 });
 
+describe('Stripe request validation hardening', () => {
+  const checkoutInput = {
+    accountId: 'acc_1',
+    planId: 'tutor_pro_monthly' as const,
+    priceId: 'price_server_monthly',
+    operationId: 'op_1',
+    successUrl: 'https://app.example/whiteboard?billing=ok',
+    cancelUrl: 'https://app.example/pricing',
+  };
+  const invoiceInput = {
+    companyId: 'co_1',
+    operationId: 'op_invoice_1',
+    processorCustomerId: 'cus_1',
+    priceId: 'price_corporate_seat',
+    quantity: 12,
+  };
+
+  it('names the InvalidStripeIdError class and keeps its message', () => {
+    const error = new InvalidStripeIdError('Invalid Stripe id for subscriptionId');
+    expect(error.name).toBe('InvalidStripeIdError');
+    expect(error.message).toBe('Invalid Stripe id for subscriptionId');
+  });
+
+  it('names the offending field in every id rejection', () => {
+    expect(() => collectionStateRequest(BASE, KEY, 'sub 1', 'paused', 7))
+      .toThrow('Invalid Stripe id for subscriptionId');
+    expect(() => checkoutSessionRequest(BASE, KEY, { ...checkoutInput, referralCode: 'PARTNER 7' }))
+      .toThrow('Invalid Stripe id for referralCode');
+    expect(() => checkoutSessionRequest(BASE, KEY, { ...checkoutInput, promotionCodeId: 'promo_7?x' }))
+      .toThrow('Invalid Stripe id for promotionCodeId');
+    expect(() => invoiceSubscriptionRequest(BASE, KEY, { ...invoiceInput, processorCustomerId: 'not a customer' }))
+      .toThrow('Invalid Stripe id for processorCustomerId');
+    expect(() => invoiceSubscriptionRequest(BASE, KEY, { ...invoiceInput, priceId: 'price with spaces' }))
+      .toThrow('Invalid Stripe id for priceId');
+    expect(() => invoiceSubscriptionRequest(BASE, KEY, { ...invoiceInput, quantity: 0 }))
+      .toThrow('Invalid quantity for subscription');
+  });
+
+  it('names the offending field in every idempotency-key rejection', () => {
+    expect(() => invoiceSubscriptionRequest(BASE, KEY, { ...invoiceInput, companyId: 'co 1' }))
+      .toThrow('Invalid operation key for companyId');
+    expect(() => invoiceSubscriptionRequest(BASE, KEY, { ...invoiceInput, operationId: 'op 1' }))
+      .toThrow('Invalid operation key for operationId');
+  });
+
+  it('accepts the quantity bounds and refuses values outside them', () => {
+    expect(invoiceSubscriptionRequest(BASE, KEY, { ...invoiceInput, quantity: 1 }).method).toBe('POST');
+    expect(invoiceSubscriptionRequest(BASE, KEY, { ...invoiceInput, quantity: 10_000 }).method).toBe('POST');
+    expect(() => invoiceSubscriptionRequest(BASE, KEY, { ...invoiceInput, quantity: 10_001 }))
+      .toThrow(InvalidStripeIdError);
+    expect(() => invoiceSubscriptionRequest(BASE, KEY, { ...invoiceInput, quantity: 2.5 }))
+      .toThrow(InvalidStripeIdError);
+  });
+
+  it('refuses an over-long or internally spaced operation key', () => {
+    expect(() => invoiceSubscriptionRequest(BASE, KEY, { ...invoiceInput, companyId: 'c'.repeat(129) }))
+      .toThrow(InvalidStripeIdError);
+    expect(() => invoiceSubscriptionRequest(BASE, KEY, { ...invoiceInput, operationId: 'op 1' }))
+      .toThrow(InvalidStripeIdError);
+  });
+
+  it('leaves the query string empty for requests that carry no search params', () => {
+    expect(new URL(checkoutSessionRequest(BASE, KEY, checkoutInput).url).search).toBe('');
+    expect(new URL(collectionStateRequest(BASE, KEY, 'sub_1', 'paused', 1).url).search).toBe('');
+    expect(new URL(portalSessionRequest(BASE, KEY, {
+      accountId: 'acc_1',
+      processorCustomerId: 'cus_1',
+      operationId: 'op_1',
+      returnUrl: 'https://app.example/whiteboard?billing=portal',
+    }).url).search).toBe('');
+  });
+
+  it('sets the form content type on collection-state POSTs', () => {
+    expect(collectionStateRequest(BASE, KEY, 'sub_1', 'paused', 1).headers.get('content-type'))
+      .toBe('application/x-www-form-urlencoded');
+    expect(collectionStateRequest(BASE, KEY, 'sub_1', 'active', 1).headers.get('content-type'))
+      .toBe('application/x-www-form-urlencoded');
+  });
+});
+
 describe('portalSessionRequest', () => {
   it('posts the customer and return_url to /v1/billing_portal/sessions', async () => {
     const request = portalSessionRequest(BASE, KEY, {

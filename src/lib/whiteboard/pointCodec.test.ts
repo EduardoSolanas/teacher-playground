@@ -17,6 +17,14 @@ describe('pointCodec', () => {
       expect(encodePoints([1, 2, 3])).toBe(null);
       expect(encodePoints([[1, 2], 3, [4, 5]])).toBe(null);
       expect(encodePoints([[1, 2], [3]])).toBe(null);
+      expect(encodePoints([[1, 2, 3]])).toBe(null);
+      expect(encodePoints([[1]])).toBe(null);
+    });
+
+    it('returns null for array-like entries that are not arrays', () => {
+      const arrayLike = { 0: 1, 1: 2, length: 2 };
+      expect(encodePoints([arrayLike])).toBe(null);
+      expect(encodePoints([{ 0: 1, 1: 2, length: 3 }])).toBe(null);
     });
 
     it('returns null for array with non-number coordinates', () => {
@@ -73,6 +81,13 @@ describe('pointCodec', () => {
       expect(decoded).toEqual(points);
     });
 
+    it('returns null for JSON strings that are not arrays', () => {
+      expect(decodePoints('42')).toBe(null);
+      expect(decodePoints('{}')).toBe(null);
+      expect(decodePoints('null')).toBe(null);
+      expect(decodePoints('"[[1,2]]"')).toBe(null);
+    });
+
     it('decodes legacy plain array format', () => {
       const points = [[1, 2], [3, 4]];
       const decoded = decodePoints(points);
@@ -88,6 +103,13 @@ describe('pointCodec', () => {
       // A buffer with version byte but incomplete data
       const truncated = new Uint8Array([1]);
       expect(decodePoints(truncated)).toBe(null);
+    });
+
+    it('returns null for a buffer that ends before its declared points', () => {
+      // Version 1, count 5, but no point data at all.
+      expect(decodePoints(new Uint8Array([1, 5]))).toBe(null);
+      // Version 1, one point claimed, but only its x delta is present.
+      expect(decodePoints(new Uint8Array([1, 1, 0]))).toBe(null);
     });
 
     it('returns null for foreign version byte', () => {

@@ -443,6 +443,17 @@ describe('opaque application session store', () => {
     expect(auditRows.length).toBeGreaterThan(0);
     expect(auditRows.every((row) => row.accountId.startsWith('erased:'))).toBe(true);
     expect(auditRows.every((row) => row.actor.startsWith('erased:'))).toBe(true);
+    const expectedPseudonym = `erased:${Array.from(
+      new Uint8Array(
+        await crypto.subtle.digest(
+          'SHA-256',
+          new TextEncoder().encode(`erasure:${mine.accountId}`),
+        ),
+      ),
+      (byte) => byte.toString(16).padStart(2, '0'),
+    ).join('').slice(0, 32)}`;
+    expect(auditRows.every((row) => row.accountId === expectedPseudonym)).toBe(true);
+    expect(auditRows.every((row) => row.actor === expectedPseudonym)).toBe(true);
     expect(auditRows.some((row) => row.accountId === mine.accountId)).toBe(false);
     expect(JSON.stringify(auditRows)).not.toContain(AUDIT.actor);
     expect(JSON.stringify(auditRows)).not.toContain(other.accountId);
@@ -1417,6 +1428,19 @@ describe('account erasure membership and referrals (E-1/E-2)', () => {
     expect(
       auditRows.filter((row) => row.subjectId.startsWith('erased:')),
     ).toHaveLength(1);
+    const expectedPseudonym = `erased:${Array.from(
+      new Uint8Array(
+        await crypto.subtle.digest(
+          'SHA-256',
+          new TextEncoder().encode(`erasure:${account.accountId}`),
+        ),
+      ),
+      (byte) => byte.toString(16).padStart(2, '0'),
+    ).join('').slice(0, 32)}`;
+    expect(auditRows).toContainEqual({
+      subjectKind: 'account',
+      subjectId: expectedPseudonym,
+    });
     expect(auditRows).toContainEqual({
       subjectKind: 'account',
       subjectId: other.accountId,

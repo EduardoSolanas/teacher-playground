@@ -37,6 +37,16 @@ describe('devicePreferences', () => {
     expect(readDevicePreference('speaker')).toBeUndefined();
   });
 
+  it('stores each preference under its documented storage key', () => {
+    writeDevicePreference('microphone', 'mic-id');
+    writeDevicePreference('camera', 'cam-id');
+    writeDevicePreference('speaker', 'spk-id');
+
+    expect(localStorage.getItem('whiteboard_call_device_microphone')).toBe('mic-id');
+    expect(localStorage.getItem('whiteboard_call_device_camera')).toBe('cam-id');
+    expect(localStorage.getItem('whiteboard_call_device_speaker')).toBe('spk-id');
+  });
+
   it('overwrites a previous preference', () => {
     writeDevicePreference('microphone', 'device-1');
     expect(readDevicePreference('microphone')).toBe('device-1');

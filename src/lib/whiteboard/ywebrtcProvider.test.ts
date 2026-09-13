@@ -101,6 +101,40 @@ describe('getSignalingUrls', () => {
 
     destroyProvider('server-render-room');
   });
+
+  it('falls back to the local signaling server when there is no window', () => {
+    vi.stubGlobal('window', undefined);
+    vi.stubEnv('NODE_ENV', 'development');
+
+    expect(getSignalingUrls()).toEqual(['ws://localhost:3001/signaling']);
+  });
+
+  it('caches one provider entry per room and rebuilds it after destroy', () => {
+    vi.stubGlobal('window', undefined);
+    const doc = new Y.Doc();
+
+    const first = createYWebRTCProvider(doc, 'cache-room');
+    const second = createYWebRTCProvider(doc, 'cache-room');
+
+    expect(second).toBe(first);
+    expect(first.status).toBe('connecting');
+    expect(first.synced).toBe(false);
+
+    destroyProvider('cache-room');
+    const third = createYWebRTCProvider(doc, 'cache-room');
+    expect(third).not.toBe(first);
+  });
+
+  it('returns no signaling URLs on a production server', () => {
+    vi.stubGlobal('window', undefined);
+    vi.stubEnv('NODE_ENV', 'production');
+
+    expect(getSignalingUrls()).toEqual([]);
+  });
+
+  it('destroyProvider ignores a room that was never created', () => {
+    expect(() => destroyProvider('never-created')).not.toThrow();
+  });
 });
 
 describe('production signaling URL policy', () => {
@@ -109,10 +143,52 @@ describe('production signaling URL policy', () => {
 
     expect(sanitizeSignalingUrl('ws://whiteboard.example.com/signaling', policy)).toBeNull();
     expect(sanitizeSignalingUrl('wss://user:pass@whiteboard.example.com/signaling', policy)).toBeNull();
+    expect(sanitizeSignalingUrl('wss://user@whiteboard.example.com/signaling', policy)).toBeNull();
+    expect(sanitizeSignalingUrl('wss://:pass@whiteboard.example.com/signaling', policy)).toBeNull();
     expect(sanitizeSignalingUrl('wss://whiteboard.example.com/signaling#frag', policy)).toBeNull();
     expect(sanitizeSignalingUrl('wss://whiteboard.example.com/other', policy)).toBeNull();
     expect(sanitizeSignalingUrl('wss://whiteboard.example.com/signaling?x=1', policy)).toBeNull();
     expect(sanitizeSignalingUrl('https://whiteboard.example.com/signaling', policy)).toBeNull();
+  });
+
+  it('rejects non-websocket protocols in development too', () => {
+    const policy = { production: false };
+
+    expect(sanitizeSignalingUrl('https://whiteboard.example.com/signaling', policy)).toBeNull();
+    expect(sanitizeSignalingUrl('http://whiteboard.example.com/signaling', policy)).toBeNull();
+  });
+
+  it('trims surrounding whitespace before parsing', () => {
+    vi.stubEnv('NEXT_PUBLIC_YWEBRTC_SIGNALING_ALLOWED_HOSTS', '');
+
+    expect(
+      sanitizeSignalingUrl('  wss://whiteboard.example.com/signaling  ', {
+        production: true,
+        pageHost: 'whiteboard.example.com',
+      }),
+    ).toBe('wss://whiteboard.example.com/signaling');
+  });
+
+  it('accepts an allowlisted host that carries an explicit port', () => {
+    vi.stubEnv('NEXT_PUBLIC_YWEBRTC_SIGNALING_ALLOWED_HOSTS', 'signals.example.com:8443');
+
+    expect(
+      sanitizeSignalingUrl('wss://signals.example.com:8443/signaling', {
+        production: true,
+        pageHost: 'whiteboard.example.com',
+      }),
+    ).toBe('wss://signals.example.com:8443/signaling');
+  });
+
+  it('trims whitespace around allowlisted hosts', () => {
+    vi.stubEnv('NEXT_PUBLIC_YWEBRTC_SIGNALING_ALLOWED_HOSTS', '  signals.example.com  , ');
+
+    expect(
+      sanitizeSignalingUrl('wss://signals.example.com/signaling', {
+        production: true,
+        pageHost: 'whiteboard.example.com',
+      }),
+    ).toBe('wss://signals.example.com/signaling');
   });
 
   it('rejects non-allowlisted hosts even when the rest of the URL is well-formed', () => {
@@ -182,6 +258,14 @@ describe('isWhiteboardDebugEnabled', () => {
   it('is on when NEXT_PUBLIC_WHITEBOARD_DEBUG=1 even in production', () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('NEXT_PUBLIC_WHITEBOARD_DEBUG', '1');
+
+    expect(isWhiteboardDebugEnabled()).toBe(true);
+  });
+
+  it('is on when NEXT_PUBLIC_E2E=1 even in production', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('NEXT_PUBLIC_WHITEBOARD_DEBUG', '');
+    vi.stubEnv('NEXT_PUBLIC_E2E', '1');
 
     expect(isWhiteboardDebugEnabled()).toBe(true);
   });

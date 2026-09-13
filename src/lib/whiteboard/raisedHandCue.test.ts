@@ -13,6 +13,14 @@ describe('newlyRaisedPeerIds', () => {
     expect(newlyRaisedPeerIds(previous, users, 'host')).toEqual(['ada']);
   });
 
+  it('excludes the local peer even when the local hand is raised', () => {
+    const users = [
+      { peerId: 'host', handRaised: true },
+      { peerId: 'ada', handRaised: true },
+    ];
+    expect(newlyRaisedPeerIds(new Set(), users, 'host')).toEqual(['ada']);
+  });
+
   it('does not re-fire while the same hand stays up', () => {
     const previous = new Set(['ada']);
     const users = [{ peerId: 'ada', handRaised: true }];

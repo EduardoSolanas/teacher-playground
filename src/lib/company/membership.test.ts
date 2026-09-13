@@ -440,6 +440,196 @@ describe('company membership', () => {
     ).toEqual({ name: 'Kept Room', updatedAt: 1_500 });
   });
 
+  it('reports not_found for every operation on an unknown company', () => {
+    const ownerId = accessAccount(db, 'unknown-company-owner');
+
+    expect(revokeMember(db, {
+      companyId: 'missing-company',
+      accountId: ownerId,
+      actorAccountId: ownerId,
+      now: 1_000,
+    })).toEqual({ outcome: 'not_found' });
+    expect(transferOwnership(db, {
+      companyId: 'missing-company',
+      actorAccountId: ownerId,
+      targetAccountId: ownerId,
+      now: 1_000,
+    })).toEqual({ outcome: 'not_found' });
+    expect(transferOwnershipForErasure(db, {
+      companyId: 'missing-company',
+      erasingAccountId: ownerId,
+      now: 1_000,
+    })).toEqual({ outcome: 'not_found' });
+    expect(disableCompany(db, {
+      companyId: 'missing-company',
+      actorAccountId: ownerId,
+      now: 1_000,
+    })).toEqual({ outcome: 'not_found' });
+  });
+
+  it('reports not_found for every operation on a disabled company', () => {
+    const ownerId = accessAccount(db, 'disabled-company-owner');
+    const created = createCompany(db, {
+      name: 'Disabled Co',
+      ownerAccountId: ownerId,
+      now: 1_000,
+    });
+    if (created.outcome !== 'created') throw new Error('expected a company');
+    const { companyId } = created.company;
+    expect(disableCompany(db, { companyId, actorAccountId: ownerId, now: 2_000 }))
+      .toEqual({ outcome: 'disabled', revokedAccountIds: [ownerId] });
+
+    expect(revokeMember(db, {
+      companyId,
+      accountId: ownerId,
+      actorAccountId: ownerId,
+      now: 3_000,
+    })).toEqual({ outcome: 'not_found' });
+    expect(transferOwnership(db, {
+      companyId,
+      actorAccountId: ownerId,
+      targetAccountId: ownerId,
+      now: 3_000,
+    })).toEqual({ outcome: 'not_found' });
+    expect(transferOwnershipForErasure(db, {
+      companyId,
+      erasingAccountId: ownerId,
+      now: 3_000,
+    })).toEqual({ outcome: 'not_found' });
+  });
+
+  it('forbids revoked or non-owner actors and missing actors', () => {
+    const ownerId = accessAccount(db, 'actor-guard-owner');
+    const adminId = accessAccount(db, 'actor-guard-admin');
+    const memberId = accessAccount(db, 'actor-guard-member');
+    const revokedId = accessAccount(db, 'actor-guard-revoked');
+    const created = createCompany(db, {
+      name: 'Actor Guard Co',
+      ownerAccountId: ownerId,
+      now: 1_000,
+    });
+    if (created.outcome !== 'created') throw new Error('expected a company');
+    const { companyId } = created.company;
+    db.prepare(
+      `INSERT INTO company_members (company_id, account_id, role, state, created_at, revoked_at)
+       VALUES (?, ?, 'admin', 'active', 2_000, NULL),
+              (?, ?, 'member', 'active', 3_000, NULL),
+              (?, ?, 'admin', 'revoked', 4_000, 5_000)`,
+    ).run(companyId, adminId, companyId, memberId, companyId, revokedId);
+
+    expect(revokeMember(db, {
+      companyId, accountId: memberId, actorAccountId: memberId, now: 6_000,
+    })).toEqual({ outcome: 'forbidden' });
+    expect(revokeMember(db, {
+      companyId, accountId: memberId, actorAccountId: revokedId, now: 6_000,
+    })).toEqual({ outcome: 'forbidden' });
+    expect(revokeMember(db, {
+      companyId, accountId: memberId, actorAccountId: 'missing-actor', now: 6_000,
+    })).toEqual({ outcome: 'forbidden' });
+    expect(transferOwnership(db, {
+      companyId, actorAccountId: adminId, targetAccountId: memberId, now: 6_000,
+    })).toEqual({ outcome: 'forbidden' });
+    expect(transferOwnership(db, {
+      companyId, actorAccountId: revokedId, targetAccountId: memberId, now: 6_000,
+    })).toEqual({ outcome: 'forbidden' });
+    expect(transferOwnershipForErasure(db, {
+      companyId, erasingAccountId: adminId, now: 6_000,
+    })).toEqual({ outcome: 'forbidden' });
+    expect(disableCompany(db, {
+      companyId, actorAccountId: revokedId, now: 6_000,
+    })).toEqual({ outcome: 'forbidden' });
+    expect(disableCompany(db, {
+      companyId, actorAccountId: 'missing-actor', now: 6_000,
+    })).toEqual({ outcome: 'forbidden' });
+    expect(readMember(db, companyId, memberId)).toMatchObject({ state: 'active' });
+    expect(readCompany(db, companyId)).toMatchObject({ state: 'active' });
+  });
+
+  it('reports not_found when the revocation target is unknown or already revoked', () => {
+    const ownerId = accessAccount(db, 'target-guard-owner');
+    const memberId = accessAccount(db, 'target-guard-member');
+    const created = createCompany(db, {
+      name: 'Target Guard Co',
+      ownerAccountId: ownerId,
+      now: 1_000,
+    });
+    if (created.outcome !== 'created') throw new Error('expected a company');
+    const { companyId } = created.company;
+    db.prepare(
+      `INSERT INTO company_members (company_id, account_id, role, state, created_at, revoked_at)
+       VALUES (?, ?, 'member', 'revoked', 2_000, 3_000)`,
+    ).run(companyId, memberId);
+
+    expect(revokeMember(db, {
+      companyId, accountId: 'missing-target', actorAccountId: ownerId, now: 4_000,
+    })).toEqual({ outcome: 'not_found' });
+    expect(revokeMember(db, {
+      companyId, accountId: memberId, actorAccountId: ownerId, now: 4_000,
+    })).toEqual({ outcome: 'not_found' });
+    expect(readMember(db, companyId, memberId)).toMatchObject({
+      state: 'revoked',
+      revokedAt: 3_000,
+    });
+  });
+
+  it('disables a company that has no subscription row', () => {
+    const ownerId = accessAccount(db, 'no-subscription-owner');
+    const created = createCompany(db, {
+      name: 'No Subscription Co',
+      ownerAccountId: ownerId,
+      now: 1_000,
+    });
+    if (created.outcome !== 'created') throw new Error('expected a company');
+    const { companyId } = created.company;
+
+    expect(disableCompany(db, { companyId, actorAccountId: ownerId, now: 2_000 }))
+      .toEqual({ outcome: 'disabled', revokedAccountIds: [ownerId] });
+    expect(readCompany(db, companyId)).toMatchObject({ state: 'disabled' });
+  });
+
+  it('names the owner assertion error with the company id', () => {
+    const ownerId = accessAccount(db, 'assert-name-owner');
+    const created = createCompany(db, {
+      name: 'Assert Name Co',
+      ownerAccountId: ownerId,
+      now: 1_000,
+    });
+    if (created.outcome !== 'created') throw new Error('expected a company');
+    const { companyId } = created.company;
+    db.prepare(
+      `UPDATE company_members SET state = 'revoked' WHERE company_id = ?`,
+    ).run(companyId);
+
+    expect(() => assertOneActiveOwner(db, companyId)).toThrow(
+      new CompanyOwnerAssertionError(companyId),
+    );
+    expect(() => assertOneActiveOwner(db, companyId)).toThrow(
+      `company ${companyId} must have exactly one active owner`,
+    );
+    try {
+      assertOneActiveOwner(db, companyId);
+      expect.unreachable('expected the owner assertion to throw');
+    } catch (error) {
+      expect(error).toMatchObject({ name: 'CompanyOwnerAssertionError' });
+    }
+  });
+
+  it('reads a stored invoice approval flag back as boolean true', () => {
+    const ownerId = accessAccount(db, 'invoice-approved-owner');
+    const created = createCompany(db, {
+      name: 'Invoice Approved Co',
+      ownerAccountId: ownerId,
+      now: 1_000,
+    });
+    if (created.outcome !== 'created') throw new Error('expected a company');
+    const { companyId } = created.company;
+    db.prepare(
+      `UPDATE companies SET invoice_approved = 1 WHERE company_id = ?`,
+    ).run(companyId);
+
+    expect(readCompany(db, companyId)?.invoiceApproved).toBe(true);
+  });
+
   it('forbids a non-owner from disabling the company', () => {
     const ownerId = accessAccount(db, 'disable-forbid-owner');
     const memberId = accessAccount(db, 'disable-forbid-member');

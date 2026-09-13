@@ -60,6 +60,15 @@ describe('referencedFileIds', () => {
     expect([...referenced].sort()).toEqual(['file-1', 'file-2']);
   });
 
+  it('drops a placeholder that is only nought in one dimension', () => {
+    const referenced = referencedFileIds([
+      { id: 'a', type: 'image', fileId: 'file-narrow', width: 0, height: 300 },
+      { id: 'b', type: 'image', fileId: 'file-flat', width: 400, height: 0 },
+      { id: 'c', type: 'image', fileId: 'file-real', width: 400, height: 300 },
+    ]);
+    expect([...referenced]).toEqual(['file-real']);
+  });
+
   it('counts a file some other element still shows', () => {
     // The same photograph pasted twice, one of them a placeholder that never
     // resolved: the live copy is still on the board and still needs its bytes.
@@ -83,6 +92,15 @@ describe('orphanKeys', () => {
       now: NOW,
     });
     expect(keys).toEqual(['rooms/room-1/files/gone']);
+  });
+
+  it('collects a file that reaches the grace period exactly', () => {
+    const keys = orphanKeys({
+      files: [stored('exactly', ORPHAN_GRACE_MS)],
+      referenced: new Set(),
+      now: NOW,
+    });
+    expect(keys).toEqual(['rooms/room-1/files/exactly']);
   });
 
   it('keeps a file the board still references, however old', () => {
@@ -145,6 +163,7 @@ describe('fileIdFromKey', () => {
     expect(fileIdFromKey('rooms/abc/files/nested/file-9')).toBeNull();
     expect(fileIdFromKey('rooms/abc/file-9')).toBeNull();
     expect(fileIdFromKey('')).toBeNull();
+    expect(fileIdFromKey('prefixrooms/abc/files/file-9')).toBeNull();
   });
 });
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ACCESS_LOGOUT_PATH,
+  CF_ACCESS_LOGOUT_PATH,
   accessLogoutUrl,
   clearCfAuthorizationSetCookie,
   safeRedirectPath,
@@ -30,5 +31,17 @@ describe('accessLogoutUrl', () => {
   it('clears CF_Authorization with Max-Age=0', () => {
     expect(clearCfAuthorizationSetCookie()).toContain('CF_Authorization=');
     expect(clearCfAuthorizationSetCookie()).toContain('Max-Age=0');
+  });
+
+  it('pins the exact app and edge logout paths', () => {
+    expect(ACCESS_LOGOUT_PATH).toBe('/auth/access/logout');
+    expect(CF_ACCESS_LOGOUT_PATH).toBe('/cdn-cgi/access/logout');
+    expect(accessLogoutUrl('/pricing')).toBe('/auth/access/logout?redirect=%2Fpricing');
+  });
+
+  it('pins the exact CF_Authorization clearing cookie', () => {
+    expect(clearCfAuthorizationSetCookie()).toBe(
+      'CF_Authorization=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure; HttpOnly; SameSite=Lax',
+    );
   });
 });

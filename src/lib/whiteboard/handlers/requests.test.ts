@@ -4,7 +4,7 @@ import { handleRequestsIdPost } from './requestsId';
 import { handleRoomPost } from './room';
 import { handleAccessGet } from './access';
 import { getRoomDb } from '../roomDb';
-import { banAccount, getMembership } from '../membership';
+import { approveAccount, banAccount, getMembership, requestAccess } from '../membership';
 
 function roomUrl(roomId: string, path: string, accountId?: string) {
   const url = new URL(`http://localhost/api/whiteboard/room/${roomId}${path}`);
@@ -26,6 +26,7 @@ describe('access request API', () => {
         }),
       );
       expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: 'Invalid JSON body' });
     });
 
     it('returns 401 if no verified account is present, even with a bearer token', async () => {
@@ -43,6 +44,7 @@ describe('access request API', () => {
         }),
       );
       expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: 'Account required' });
     });
 
     it('returns 400 if userName is missing', async () => {
@@ -57,6 +59,9 @@ describe('access request API', () => {
         }),
       );
       expect(response.status).toBe(400);
+      const data = await response.json() as { error?: string };
+      expect(typeof data.error).toBe('string');
+      expect(data.error!.length).toBeGreaterThan(0);
     });
 
     it('creates a pending access request keyed by account id', async () => {
@@ -231,6 +236,7 @@ describe('access request API', () => {
         }),
       );
       expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: 'Forbidden' });
       expect(getMembership(getRoomDb(), roomId, accountId)?.role).toBe('banned');
     });
   });
@@ -244,6 +250,7 @@ describe('access request API', () => {
         new Request(roomUrl(roomId, '/requests')),
       );
       expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: 'Account required' });
     });
 
     it('lists pending requests from room_members', async () => {
@@ -315,6 +322,7 @@ describe('access request API', () => {
         new Request(roomUrl(roomId, '/requests', requester)),
       );
       expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: 'Forbidden' });
     });
   });
 
@@ -343,6 +351,67 @@ describe('access request API', () => {
         }),
       );
       expect(response.status).toBe(400);
+      const data = await response.json() as { error?: string };
+      expect(typeof data.error).toBe('string');
+      expect(data.error!.length).toBeGreaterThan(0);
+    });
+
+    it('returns 401 when no verified account is present', async () => {
+      const roomId = `requests-action-no-token-${crypto.randomUUID()}`;
+      const response = await handleRequestsIdPost(
+        getRoomDb(),
+        roomId,
+        'acc-someone',
+        new Request(roomUrl(roomId, '/requests/acc-someone'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'approve' }),
+        }),
+      );
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: 'Account required' });
+    });
+
+    it('returns 403 when the caller is a granted non-owner', async () => {
+      const roomId = `requests-action-non-owner-${crypto.randomUUID()}`;
+      const owner = `acc-owner-${crypto.randomUUID()}`;
+      const editor = `acc-editor-${crypto.randomUUID()}`;
+      const requester = `acc-req-${crypto.randomUUID()}`;
+
+      await handleRoomPost(
+        getRoomDb(),
+        roomId,
+        new Request(roomUrl(roomId, '', owner), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ elements: [], viewport: { x: 0, y: 0, zoom: 1 } }),
+        }),
+      );
+      await handleRequestsPost(
+        getRoomDb(),
+        roomId,
+        new Request(roomUrl(roomId, '/requests', requester), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userName: 'Alice' }),
+        }),
+      );
+      requestAccess(getRoomDb(), { roomId, accountId: editor, userName: 'Ed' });
+      approveAccount(getRoomDb(), roomId, editor, { role: 'editor' });
+
+      const response = await handleRequestsIdPost(
+        getRoomDb(),
+        roomId,
+        requester,
+        new Request(roomUrl(roomId, `/requests/${requester}`, editor), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'approve' }),
+        }),
+      );
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: 'Forbidden' });
+      expect(getMembership(getRoomDb(), roomId, requester)?.role).toBe('pending');
     });
 
     it('returns 404 if request does not exist and leaves tables unchanged', async () => {
@@ -370,8 +439,37 @@ describe('access request API', () => {
         }),
       );
       expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: 'Request not found' });
       const after = getRoomDb().prepare(`SELECT COUNT(*) AS n FROM room_members WHERE room_id = ?`).get(roomId) as { n: number };
       expect(after.n).toBe(before.n);
+    });
+
+    it('returns 404 when denying an account that is not pending and leaves it unbanned', async () => {
+      const roomId = `requests-deny-not-found-${crypto.randomUUID()}`;
+      const owner = `acc-${crypto.randomUUID()}`;
+      await handleRoomPost(
+        getRoomDb(),
+        roomId,
+        new Request(roomUrl(roomId, '', owner), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ elements: [], viewport: { x: 0, y: 0, zoom: 1 } }),
+        }),
+      );
+
+      const response = await handleRequestsIdPost(
+        getRoomDb(),
+        roomId,
+        'no-such-account',
+        new Request(roomUrl(roomId, '/requests/no-such-account', owner), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'deny' }),
+        }),
+      );
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: 'Request not found' });
+      expect(getMembership(getRoomDb(), roomId, 'no-such-account')).toBeNull();
     });
 
     it('approves the path account as peer, ignoring a bearer token', async () => {
@@ -508,6 +606,7 @@ describe('access request API', () => {
         }),
       );
       expect(denyResponse.status).toBe(200);
+      expect(await denyResponse.json()).toEqual({ success: true });
       expect(getMembership(getRoomDb(), roomId, requester)?.role).toBe('banned');
 
       const accessResponse = await handleAccessGet(
@@ -531,6 +630,7 @@ describe('access request API', () => {
         }),
       );
       expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: 'Account required' });
     });
 
     it('returns approved status with role for the room owner', async () => {
@@ -585,6 +685,41 @@ describe('access request API', () => {
         new Request(roomUrl(roomId, '/access', 'acc-none')),
       );
       expect(await response.json()).toEqual({ status: 'none' });
+    });
+
+    it('returns none status when an editor grant has expired', async () => {
+      const roomId = `access-expired-${crypto.randomUUID()}`;
+      const accountId = `acc-${crypto.randomUUID()}`;
+      const longAgo = Date.now() - 25 * 60 * 60 * 1000;
+      requestAccess(getRoomDb(), { roomId, accountId, userName: 'Expired', now: longAgo });
+      approveAccount(getRoomDb(), roomId, accountId, { role: 'editor', now: longAgo });
+
+      const response = await handleAccessGet(
+        getRoomDb(),
+        roomId,
+        new Request(roomUrl(roomId, '/access', accountId)),
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: 'none' });
+    });
+
+    it('returns approved status with the viewer role for a viewer grant', async () => {
+      const roomId = `access-viewer-${crypto.randomUUID()}`;
+      const accountId = `acc-${crypto.randomUUID()}`;
+      requestAccess(getRoomDb(), { roomId, accountId, userName: 'Watcher' });
+      approveAccount(getRoomDb(), roomId, accountId, { role: 'viewer' });
+
+      const response = await handleAccessGet(
+        getRoomDb(),
+        roomId,
+        new Request(roomUrl(roomId, '/access', accountId)),
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        status: 'approved',
+        role: 'viewer',
+        expiresAt: null,
+      });
     });
   });
 

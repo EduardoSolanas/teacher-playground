@@ -7,6 +7,7 @@ import {
   presenceSignatureFromRoster,
   readActiveUsers,
   readWaitingPeers,
+  sweepExpiredPresence,
 } from './presence';
 import { getRoomAllowFirstUserHost, setRoomAllowFirstUserHost } from './roomSchema';
 import { insertOwner } from './membership';
@@ -151,6 +152,36 @@ describe('presence query optimizations', () => {
     expect(fromRoster).toContain('alice:0:1');
     expect(fromRoster).toContain('bob:0:0');
     expect(fromRoster).toContain('|charlie');
+  });
+
+  it('orders and separates peers in the signature regardless of input order', () => {
+    const signature = presenceSignatureFromRoster(
+      [
+        { peerId: 'zoe', handRaised: true, isHost: false },
+        { peerId: 'amy', handRaised: false, isHost: true },
+      ],
+      [{ peerId: 'yuri' }, { peerId: 'bob' }],
+    );
+
+    expect(signature).toBe('amy:0:1,zoe:1:0|bob,yuri');
+  });
+
+  it('sweeps expired presence with the default window, keeping fresh peers', () => {
+    seedRoom(null);
+    const now = Date.now();
+    seedPeer('fresh-peer', now);
+    const expiredLastSeen = now - ACTIVE_WINDOW_MS - 5000;
+    db.prepare(
+      `INSERT INTO room_presence (room_id, peer_id, user_name, color, first_seen, last_seen, account_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(ROOM, 'expired-peer', 'Expired', '#333333', expiredLastSeen, expiredLastSeen, null);
+
+    sweepExpiredPresence(db, ROOM);
+
+    const remaining = db.prepare(
+      `SELECT peer_id FROM room_presence WHERE room_id = ? ORDER BY peer_id`,
+    ).all(ROOM) as Array<{ peer_id: string }>;
+    expect(remaining.map((row) => row.peer_id)).toEqual(['fresh-peer']);
   });
 
   it('filters out expired rows on readActiveUsers without deleting them from db unless requested', () => {

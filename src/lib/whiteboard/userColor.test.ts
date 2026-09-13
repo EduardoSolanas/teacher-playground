@@ -9,11 +9,24 @@ import {
   resolveUserColor,
 } from './userColor';
 
+describe('userColor constants', () => {
+  it('pins the persisted key and default colour', () => {
+    expect(USER_COLOR_STORAGE_KEY).toBe('whiteboard_user_color');
+    expect(DEFAULT_USER_COLOR).toBe('#3498db');
+  });
+});
+
 describe('generateUserColor', () => {
   beforeEach(() => localStorage.clear());
 
   it('gives the same name the same colour every time', () => {
     expect(generateUserColor('Alice Smith')).toBe(generateUserColor('Alice Smith'));
+  });
+
+  it('derives the palette entry the hash algorithm names', () => {
+    expect(generateUserColor('Alice')).toBe('#607d8b');
+    expect(generateUserColor('Carla')).toBe('#2ecc71');
+    expect(generateUserColor('Bob')).toBe('#9b59b6');
   });
 
   it('gives different names different colours', () => {
@@ -71,5 +84,26 @@ describe('contrastTextOn', () => {
 
   it('defaults to white when the input is not a colour', () => {
     expect(contrastTextOn('not-a-colour')).toBe('#ffffff');
+  });
+
+  it('expands short hex without the hash and ignores surrounding space', () => {
+    expect(contrastTextOn('#abc')).toBe('#0f172a');
+    expect(contrastTextOn('  #fff  ')).toBe('#0f172a');
+    expect(contrastTextOn('fff')).toBe('#0f172a');
+    expect(contrastTextOn('F1C40F')).toBe('#0f172a');
+  });
+
+  it('rejects trailing hex fragments that are not the whole colour', () => {
+    expect(contrastTextOn('zzz#fff')).toBe('#ffffff');
+    expect(contrastTextOn('#fffzzz')).toBe('#ffffff');
+  });
+
+  it('pins the WCAG pipeline at colours that sit near the ink flip', () => {
+    expect(contrastTextOn('#808080')).toBe('#0f172a');
+    expect(contrastTextOn('#0077f6')).toBe('#ffffff');
+    expect(contrastTextOn('#07f')).toBe('#0f172a');
+    expect(contrastTextOn('#050505')).toBe('#ffffff');
+    expect(contrastTextOn('#00d')).toBe('#ffffff');
+    expect(contrastTextOn('#07d')).toBe('#ffffff');
   });
 });

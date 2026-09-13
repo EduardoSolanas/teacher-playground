@@ -59,6 +59,35 @@ describe('sanitizeSceneDoc (SEC-A02)', () => {
     expect(idsIn(doc)).toEqual(['photo-1']);
   });
 
+  it('keeps an element whose type is not a string rather than reading it as blocked', () => {
+    const doc = sceneDoc([
+      { id: 'no-type' },
+      { id: 'numeric-type', type: 7 },
+      { id: 'rect-1', type: 'rectangle' },
+    ]);
+
+    const result = sanitizeSceneDoc(doc);
+
+    expect(result).toEqual({
+      changed: false,
+      removedBlocked: 0,
+      removedLinks: 0,
+      removedMalformed: 0,
+      removedOverflow: 0,
+    });
+    expect(idsIn(doc)).toEqual(['no-type', 'numeric-type', 'rect-1']);
+  });
+
+  it('deletes inside the server-sanitize transaction origin', () => {
+    const doc = sceneDoc([{ id: 'iframe-1', type: 'iframe' }]);
+    const origins: unknown[] = [];
+    doc.on('afterTransaction', (transaction: Y.Transaction) => origins.push(transaction.origin));
+
+    sanitizeSceneDoc(doc);
+
+    expect(origins).toEqual(['server-sanitize']);
+  });
+
   it('removes entries that are not element maps, and counts them', () => {
     const doc = new Y.Doc();
     doc.transact(() => {

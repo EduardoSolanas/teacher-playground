@@ -109,6 +109,27 @@ describe('resolveEffectivePlan', () => {
     expect(plan.limits).toBe(PLAN_CATALOG.corporate_seat.limits);
   });
 
+  it('prefers the entitling company row regardless of row order', () => {
+    const personal = row({ planId: 'tutor_pro_monthly', source: 'personal', companyId: null });
+    const company = row({ planId: 'corporate_seat', source: 'company', companyId: 'co-1' });
+
+    const plan = resolveEffectivePlan([company, personal], 1_000);
+
+    expect(plan.planId).toBe('corporate_seat');
+    expect(plan.source).toBe('company');
+    expect(plan.companyId).toBe('co-1');
+  });
+
+  it('does not report a hold for a non-entitling row that is not collection-paused', () => {
+    const plan = resolveEffectivePlan(
+      [row({ status: 'canceled', collectionPaused: false })],
+      1_000,
+    );
+
+    expect(plan.planId).toBe('free');
+    expect(plan.collectionPaused).toBe(false);
+  });
+
   it('does not let a non-entitling company row block an entitling personal row', () => {
     const personal = row({ planId: 'tutor_pro_annual', source: 'personal' });
     const pausedCompany = row({ source: 'company', companyId: 'co-1', collectionPaused: true });

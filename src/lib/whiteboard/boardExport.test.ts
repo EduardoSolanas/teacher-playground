@@ -73,6 +73,19 @@ describe('exportableElements', () => {
     expect(kept.map((element) => element.id)).toEqual(['a', 'c']);
   });
 
+  it('drops values that are not elements at all', () => {
+    const kept = exportableElements([42, 'text', null, undefined, { id: 'ok' }]);
+    expect(kept.map((element) => element.id)).toEqual(['ok']);
+  });
+
+  it('drops an image that is nought in either direction', () => {
+    const kept = exportableElements([
+      { id: 'flat-width', type: 'image', fileId: 'f1', width: 0, height: 10 },
+      { id: 'flat-height', type: 'image', fileId: 'f2', width: 10, height: 0 },
+    ]);
+    expect(kept).toEqual([]);
+  });
+
   it('drops an image that never got a size', () => {
     const kept = exportableElements([image('a', 'photo-1'), placeholder('b', 'photo-2')]);
     expect(kept.map((element) => element.id)).toEqual(['a']);
@@ -136,6 +149,7 @@ describe('buildExcalidrawContainer', () => {
     expect(container.version).toBe(2);
     expect(container.source).toBe('teacher-playground');
     expect(container.elements).toEqual([{ id: 'a' }]);
+    expect(container.appState).toEqual({ viewBackgroundColor: '#ffffff' });
   });
 
   it('packs only the images the kept elements still refer to', () => {
@@ -188,5 +202,26 @@ describe('boardFileName', () => {
   it('keeps a very long name to something a file system will take', () => {
     const name = boardFileName('abc12345', 'x'.repeat(300), 'excalidraw', when);
     expect(name.length).toBeLessThan(90);
+  });
+
+  it('collapses runs of invalid characters and whitespace', () => {
+    expect(boardFileName('abc12345', 'a...b', 'excalidraw', when))
+      .toBe('a-b 2026-08-30.excalidraw');
+    expect(boardFileName('abc12345', 'a   b', 'excalidraw', when))
+      .toBe('a b 2026-08-30.excalidraw');
+  });
+
+  it('strips a whole run of leading and trailing punctuation, not one character', () => {
+    expect(boardFileName('abc12345', '---lesson---', 'excalidraw', when))
+      .toBe('lesson 2026-08-30.excalidraw');
+    expect(boardFileName('abc12345', '---lesson', 'excalidraw', when))
+      .toBe('lesson 2026-08-30.excalidraw');
+    expect(boardFileName('abc12345', 'lesson---', 'excalidraw', when))
+      .toBe('lesson 2026-08-30.excalidraw');
+  });
+
+  it('falls back to the sliced room id when sanitizing leaves nothing', () => {
+    expect(boardFileName('abcdef12345', '...', 'excalidraw', when))
+      .toBe('room-abcdef12 2026-08-30.excalidraw');
   });
 });

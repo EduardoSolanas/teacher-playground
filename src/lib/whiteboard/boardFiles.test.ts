@@ -47,6 +47,18 @@ describe('dataURLToBytes', () => {
     expect(dataURLToBytes('data:text/plain;base64,hello')).toBeNull();
   });
 
+  it('returns null when the data URL scheme is embedded rather than leading', () => {
+    expect(dataURLToBytes('prefix data:image/png;base64,iVBORw0KGgo=')).toBeNull();
+  });
+
+  it('returns null when a non-base64 tail follows the payload', () => {
+    expect(dataURLToBytes('data:image/png;base64,iVBORw0KGgo=\nnot-base64')).toBeNull();
+  });
+
+  it('returns null for a non-image payload with valid base64', () => {
+    expect(dataURLToBytes('data:text/plain;base64,aGVsbG8=')).toBeNull();
+  });
+
   it('returns null for data URLs without base64 encoding', () => {
     expect(dataURLToBytes('data:image/png,somedata')).toBeNull();
   });

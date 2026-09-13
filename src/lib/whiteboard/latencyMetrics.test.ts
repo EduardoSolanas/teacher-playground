@@ -13,6 +13,16 @@ describe("summarizeLatencySamples", () => {
     });
   });
 
+  it("keeps a zero-latency sample", () => {
+    expect(summarizeLatencySamples([0, 2])).toEqual({
+      count: 2,
+      min: 0,
+      max: 2,
+      p50: 0,
+      p95: 2,
+    });
+  });
+
   it("ignores negative and non-finite samples", () => {
     expect(
       summarizeLatencySamples([10, -1, Number.NaN, Number.POSITIVE_INFINITY, 20]),

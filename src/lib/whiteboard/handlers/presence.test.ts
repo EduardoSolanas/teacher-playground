@@ -5,7 +5,7 @@ import { handleRoomPost, handleRoomSettings } from './room';
 import { handleWaitingPost } from './waiting';
 import { getRoomDb } from '../roomDb';
 import { ACTIVE_WINDOW_MS, activePeerIds } from '../presence';
-import { approveAccount, requestAccess } from '../membership';
+import { approveAccount, getGrantRole, requestAccess } from '../membership';
 
 const ISSUED_PEER_ID = new RegExp(`^user-[0-9a-f]{${CSPRNG_ID_HEX_LENGTH}}$`);
 
@@ -113,8 +113,7 @@ describe('room presence API', () => {
     );
 
     expect(response.status).toBe(400);
-    const data = await response.json();
-    expect(data.error).toBeDefined();
+    expect(await response.json()).toEqual({ error: 'Invalid JSON body' });
   });
 
   it('issues a stable server peerId and ignores client-chosen ids', async () => {
@@ -164,6 +163,9 @@ describe('room presence API', () => {
     );
 
     expect(response.status).toBe(400);
+    const data = await response.json() as { error?: string };
+    expect(typeof data.error).toBe('string');
+    expect(data.error!.length).toBeGreaterThan(0);
   });
 
   it('requires an account to join', async () => {
@@ -178,6 +180,7 @@ describe('room presence API', () => {
       }),
     );
     expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'Account required' });
   });
 
   it('defaults to Anonymous userName when not provided', async () => {
@@ -192,6 +195,7 @@ describe('room presence API', () => {
       expect.objectContaining({
         peerId: data.peerId,
         userName: 'Anonymous',
+        color: '#3498db',
         isHost: true,
         isWaiting: false,
       }),
@@ -387,7 +391,7 @@ describe('room presence API', () => {
       color: '#e74c3c',
     });
 
-    await handleWaitingPost(
+    const approved = await handleWaitingPost(
       getRoomDb(),
       roomId,
       new Request(accountUrl(roomId, '/waiting', owner), {
@@ -396,6 +400,9 @@ describe('room presence API', () => {
         body: JSON.stringify({ peerId: join.data.peerId, action: 'approve' }),
       }),
     );
+    const approvedBody = await approved.json() as { success?: boolean; users?: Array<{ peerId: string }> };
+    expect(approvedBody.success).toBe(true);
+    expect(approvedBody.users?.some((user) => user.peerId === join.data.peerId)).toBe(true);
 
     const heartbeat = await postPresence(roomId, guest, {
       peerId: 'peer-student',
@@ -445,6 +452,7 @@ describe('room presence API', () => {
     });
 
     expect(heartbeat.response.status).toBe(403);
+    expect(heartbeat.data).toEqual({ error: 'Forbidden' });
   });
 
   it('marks a rejected waiting account as forbidden on their next heartbeat', async () => {
@@ -458,7 +466,7 @@ describe('room presence API', () => {
       userName: 'Student',
       color: '#e74c3c',
     });
-    await handleWaitingPost(
+    const rejected = await handleWaitingPost(
       getRoomDb(),
       roomId,
       new Request(accountUrl(roomId, '/waiting', owner), {
@@ -467,6 +475,11 @@ describe('room presence API', () => {
         body: JSON.stringify({ peerId: join.data.peerId, action: 'reject' }),
       }),
     );
+    expect(await rejected.json()).toEqual({
+      success: true,
+      bannedPeer: { accountId: guest },
+    });
+    expect(storedPeerId(roomId, guest)).toBeUndefined();
 
     const heartbeat = await postPresence(roomId, guest, {
       peerId: 'peer-student',
@@ -475,6 +488,7 @@ describe('room presence API', () => {
     });
 
     expect(heartbeat.response.status).toBe(403);
+    expect(heartbeat.data).toEqual({ error: 'Forbidden' });
   });
 
   it('moves a suspended approved peer back to waiting on heartbeat', async () => {
@@ -593,6 +607,10 @@ describe('room presence API', () => {
     );
 
     expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      kickedPeer: { peerId: join.data.peerId, accountId: guest },
+    });
+    expect(storedPeerId(roomId, guest)).toBeUndefined();
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!)).toMatchObject({
       event: 'auth_event',
@@ -636,7 +654,72 @@ describe('room presence API', () => {
     );
 
     expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'Forbidden' });
     expect(lines).toEqual([]);
+  });
+
+  it('returns 404 when a kick names only a stale peer id', async () => {
+    const roomId = `presence-kick-stale-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+
+    const response = await handlePresencePost(
+      getRoomDb(),
+      roomId,
+      postRequest(roomId, owner, { action: 'kick', peerId: 'ghost-peer' }),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'Peer not bound to an account' });
+  });
+
+  it('refuses a kick that names the owner account itself', async () => {
+    const roomId = `presence-kick-self-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+
+    const response = await handlePresencePost(
+      getRoomDb(),
+      roomId,
+      postRequest(roomId, owner, { action: 'kick', accountId: owner }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'Forbidden' });
+    expect(getGrantRole(getRoomDb(), roomId, owner)).toBe('owner');
+  });
+
+  it('resolves the kicked peer label from the stored row when only the account is named', async () => {
+    const roomId = `presence-kick-by-account-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const guest = `acc-guest-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+
+    const join = await postPresence(roomId, guest, {
+      peerId: 'peer-student',
+      userName: 'Student',
+      color: '#e74c3c',
+    });
+    await handleWaitingPost(
+      getRoomDb(),
+      roomId,
+      new Request(accountUrl(roomId, '/waiting', owner), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ peerId: join.data.peerId, action: 'approve' }),
+      }),
+    );
+
+    const response = await handlePresencePost(
+      getRoomDb(),
+      roomId,
+      postRequest(roomId, owner, { action: 'kick', accountId: guest }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      kickedPeer: { peerId: join.data.peerId, accountId: guest },
+    });
   });
 
   it('logs a revocation auth event after a successful suspend', async () => {
@@ -669,6 +752,10 @@ describe('room presence API', () => {
     );
 
     expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      suspendedPeer: { peerId: join.data.peerId, accountId: guest, userName: 'Student' },
+    });
+    expect(storedPeerId(roomId, guest)).toBe(join.data.peerId);
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!)).toMatchObject({
       event: 'auth_event',
@@ -749,6 +836,59 @@ describe('room presence API', () => {
 
     const raised = await postPresence(roomId, guest, { action: 'raise-hand' });
     expect(raised.response.status).toBe(403);
+    expect(raised.data).toEqual({ error: 'Forbidden' });
+  });
+
+  it('refuses raise-hand for a granted account that never joined presence', async () => {
+    const roomId = `presence-raise-no-row-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const editor = `acc-editor-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+    requestAccess(getRoomDb(), { roomId, accountId: editor, userName: 'Ed' });
+    approveAccount(getRoomDb(), roomId, editor, { role: 'editor' });
+
+    const raised = await postPresence(roomId, editor, { action: 'raise-hand' });
+
+    expect(raised.response.status).toBe(403);
+    expect(raised.data).toEqual({ error: 'Forbidden' });
+  });
+
+  it('refuses raise-hand for a pending account that somehow holds a presence row', async () => {
+    const roomId = `presence-raise-pending-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const guest = `acc-guest-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+    requestAccess(getRoomDb(), { roomId, accountId: guest, userName: 'Guest' });
+    getRoomDb().prepare(
+      `INSERT INTO room_presence (room_id, peer_id, user_name, color, first_seen, last_seen, account_id)
+       VALUES (?, 'peer-seeded', 'Guest', '#3498db', ?, ?, ?)`,
+    ).run(roomId, Date.now(), Date.now(), guest);
+
+    const raised = await postPresence(roomId, guest, { action: 'raise-hand' });
+
+    expect(raised.response.status).toBe(403);
+    expect(raised.data).toEqual({ error: 'Forbidden' });
+  });
+
+  it('kicks a known account that has no presence row using its account id as label', async () => {
+    const roomId = `presence-kick-no-row-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const editor = `acc-editor-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+    requestAccess(getRoomDb(), { roomId, accountId: editor, userName: 'Ed' });
+    approveAccount(getRoomDb(), roomId, editor, { role: 'editor' });
+
+    const response = await handlePresencePost(
+      getRoomDb(),
+      roomId,
+      postRequest(roomId, owner, { action: 'kick', accountId: editor }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      kickedPeer: { peerId: editor, accountId: editor },
+    });
+    expect(getGrantRole(getRoomDb(), roomId, editor)).toBe('banned');
   });
 
   it('does not raise another account hand even when the body names their peerId', async () => {
@@ -872,5 +1012,238 @@ describe('room presence API', () => {
 
     await handlePresenceDelete(getRoomDb(), roomId, deleteRequest(roomId, owner, peerId));
     expect(presenceTimes(roomId, peerId)).toBeUndefined();
+  });
+
+  it('returns 400 for a malformed waiting action body', async () => {
+    const roomId = `waiting-malformed-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+
+    const response = await handleWaitingPost(
+      getRoomDb(),
+      roomId,
+      new Request(accountUrl(roomId, '/waiting', owner), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ peerId: 'peer-someone' }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    const data = await response.json() as { error?: string };
+    expect(typeof data.error).toBe('string');
+    expect(data.error!.length).toBeGreaterThan(0);
+  });
+
+  it('returns 401 for a waiting action without an account', async () => {
+    const roomId = `waiting-no-account-${crypto.randomUUID()}`;
+    const response = await handleWaitingPost(
+      getRoomDb(),
+      roomId,
+      new Request(`http://localhost/api/whiteboard/room/${roomId}/waiting`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ peerId: 'peer-someone', action: 'approve' }),
+      }),
+    );
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'Account required' });
+  });
+
+  it('returns 403 for a waiting action from a granted non-owner', async () => {
+    const roomId = `waiting-non-owner-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const editor = `acc-editor-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+    requestAccess(getRoomDb(), { roomId, accountId: editor, userName: 'Ed' });
+    approveAccount(getRoomDb(), roomId, editor, { role: 'editor' });
+
+    const response = await handleWaitingPost(
+      getRoomDb(),
+      roomId,
+      new Request(accountUrl(roomId, '/waiting', editor), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ peerId: 'peer-someone', action: 'approve' }),
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'Forbidden' });
+  });
+
+  it('returns 404 for a waiting target that resolves to nothing', async () => {
+    const roomId = `waiting-ghost-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+
+    const response = await handleWaitingPost(
+      getRoomDb(),
+      roomId,
+      new Request(accountUrl(roomId, '/waiting', owner), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ peerId: 'ghost-peer', action: 'approve' }),
+      }),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'Peer not bound to an account' });
+  });
+
+  it('returns 404 when approving an account that is no longer pending', async () => {
+    const roomId = `waiting-not-pending-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const editor = `acc-editor-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+    requestAccess(getRoomDb(), { roomId, accountId: editor, userName: 'Ed' });
+    approveAccount(getRoomDb(), roomId, editor, { role: 'editor' });
+
+    const response = await handleWaitingPost(
+      getRoomDb(),
+      roomId,
+      new Request(accountUrl(roomId, '/waiting', owner), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: editor, action: 'approve' }),
+      }),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'Peer not found in waiting list' });
+  });
+
+  it('returns 500 when the approve transaction fails for another reason', async () => {
+    const roomId = `waiting-approve-error-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const guest = `acc-guest-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+    const join = await postPresence(roomId, guest, {
+      peerId: 'peer-student',
+      userName: 'Student',
+      color: '#e74c3c',
+    });
+
+    const inner = getRoomDb();
+    const db = {
+      prepare(sql: string) {
+        const stmt = inner.prepare(sql);
+        if (sql.includes('UPDATE room_members') && sql.includes("role = 'pending'")) {
+          return {
+            run() {
+              throw new Error('injected');
+            },
+          };
+        }
+        return stmt;
+      },
+      exec: inner.exec.bind(inner),
+      transaction: inner.transaction.bind(inner),
+    };
+
+    const lines: string[] = [];
+    const response = await handleWaitingPost(
+      db as never,
+      roomId,
+      new Request(accountUrl(roomId, '/waiting', owner), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ peerId: join.data.peerId, action: 'approve' }),
+      }),
+      (line) => lines.push(line),
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: 'Internal server error' });
+    expect(lines).toEqual([]);
+  });
+
+  it('clears the kicked marker when a waiting account is admitted', async () => {
+    const roomId = `waiting-kicked-clear-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const guest = `acc-guest-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+
+    const join = await postPresence(roomId, guest, {
+      peerId: 'peer-student',
+      userName: 'Student',
+      color: '#e74c3c',
+    });
+    getRoomDb().prepare(
+      `INSERT INTO kicked_peers (room_id, peer_id, kicked_at) VALUES (?, ?, ?)`,
+    ).run(roomId, join.data.peerId, Date.now());
+
+    const response = await handleWaitingPost(
+      getRoomDb(),
+      roomId,
+      new Request(accountUrl(roomId, '/waiting', owner), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ peerId: join.data.peerId, action: 'approve' }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const kicked = getRoomDb().prepare(
+      `SELECT COUNT(*) AS n FROM kicked_peers WHERE room_id = ? AND peer_id = ?`,
+    ).get(roomId, join.data.peerId) as { n: number };
+    expect(kicked.n).toBe(0);
+  });
+
+  it('suspends a waiting account under its waiting row peer id', async () => {
+    const roomId = `presence-suspend-waiting-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    const guest = `acc-guest-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+
+    const join = await postPresence(roomId, guest, {
+      peerId: 'peer-student',
+      userName: 'Student',
+      color: '#e74c3c',
+    });
+    expect(join.data.isWaiting).toBe(true);
+
+    const response = await handlePresencePost(
+      getRoomDb(),
+      roomId,
+      postRequest(roomId, owner, { action: 'suspend', accountId: guest }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      suspendedPeer: { peerId: join.data.peerId, accountId: guest },
+    });
+    expect(storedPeerId(roomId, guest)).toBe(join.data.peerId);
+  });
+
+  it('refuses a presence DELETE without a peerId', async () => {
+    const roomId = `presence-delete-no-peer-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+
+    const response = await handlePresenceDelete(
+      getRoomDb(),
+      roomId,
+      new Request(accountUrl(roomId, '/presence', owner), { method: 'DELETE' }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'peerId is required' });
+  });
+
+  it('refuses a presence DELETE without an account', async () => {
+    const roomId = `presence-delete-no-account-${crypto.randomUUID()}`;
+    const response = await handlePresenceDelete(
+      getRoomDb(),
+      roomId,
+      new Request(
+        `http://localhost/api/whiteboard/room/${roomId}/presence?peerId=peer-x`,
+        { method: 'DELETE' },
+      ),
+    );
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'Account required' });
   });
 });

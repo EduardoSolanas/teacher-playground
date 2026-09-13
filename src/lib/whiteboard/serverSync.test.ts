@@ -65,11 +65,25 @@ describe('serverSync', () => {
       // Handle it on server
       const replies = handleSyncFrame(serverDoc, step2Frame);
 
+      // An update has nothing to answer: no reply frame is owed.
+      expect(replies).toEqual([]);
+
       // Server doc should have the content
       const serverArray = serverDoc.getArray('items');
       expect(serverArray.length).toBe(1);
       const item = serverArray.get(0);
       expect(item).toEqual({ name: 'item1' });
+    });
+
+    it('read-only mode ignores a non-sync frame', () => {
+      const serverDoc = new Y.Doc();
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, 1);
+      encoding.writeVarString(encoder, JSON.stringify({ clientID: 123 }));
+
+      expect(
+        handleSyncFrame(serverDoc, encoding.toUint8Array(encoder), undefined, { readOnly: true }),
+      ).toEqual([]);
     });
 
     it('read-only mode answers sync step 1 without requesting viewer state', () => {

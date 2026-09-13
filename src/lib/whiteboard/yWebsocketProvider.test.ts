@@ -11,7 +11,8 @@ const { webrtcCtor, websocketCtor } = vi.hoisted(() => {
       shouldConnect: boolean;
       connect: () => void;
       destroy: () => void;
-      on: () => void;
+      on: (name: string, callback: (...args: any[]) => void) => void;
+      handlers: Record<string, (...args: any[]) => void>;
       doc?: Y.Doc;
       messageHandlers?: any;
     },
@@ -24,7 +25,10 @@ const { webrtcCtor, websocketCtor } = vi.hoisted(() => {
     this.shouldConnect = options?.connect !== false;
     this.connect = vi.fn();
     this.destroy = vi.fn();
-    this.on = vi.fn();
+    this.handlers = {};
+    this.on = vi.fn((name: string, callback: (...args: any[]) => void) => {
+      this.handlers[name] = callback;
+    });
     this.doc = doc;
     this.messageHandlers = [];
   });
@@ -42,6 +46,7 @@ vi.mock('y-websocket', () => ({
 import { createYWebsocketProvider, destroyProvider, type WhiteboardProvider } from './yWebsocketProvider';
 import { PRESENCE_MESSAGE_TYPE, encodePresenceMessage } from './presenceMessage';
 import { FOLLOW_MESSAGE_TYPE, encodeFollowMessage } from './followMessage';
+import { CALL_MESSAGE_TYPE, encodeCallMessage } from './callMessage';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -387,6 +392,213 @@ describe('createYWebsocketProvider', () => {
       expect(websocketCtor).toHaveBeenCalledTimes(1);
 
       destroyProvider('multi-call-room');
+    });
+  });
+
+  describe('server stub and entry state', () => {
+    it('uses the server stub without touching the websocket provider when there is no window', () => {
+      vi.stubGlobal('window', undefined);
+
+      const entry = createYWebsocketProvider(new Y.Doc(), 'server-room');
+
+      expect(websocketCtor).not.toHaveBeenCalled();
+      expect(entry.provider.wsconnected).toBe(false);
+      expect(entry.provider.shouldConnect).toBe(false);
+      expect(entry.provider.awareness).toBeDefined();
+      expect(entry.status).toBe('connecting');
+      expect(entry.synced).toBe(false);
+
+      destroyProvider('server-room');
+    });
+
+    it('tracks status and synced from provider events', () => {
+      vi.stubGlobal('window', {
+        location: {
+          protocol: 'https:',
+          hostname: 'whiteboard.example.com',
+          host: 'whiteboard.example.com',
+        },
+      });
+
+      const entry = createYWebsocketProvider(new Y.Doc(), 'events-room');
+      const instance = websocketCtor.mock.instances.at(-1) as unknown as {
+        handlers: Record<string, (...args: any[]) => void>;
+      };
+
+      expect(entry.status).toBe('connecting');
+      expect(entry.synced).toBe(false);
+
+      instance.handlers.status({ connected: true });
+      expect(entry.status).toBe('connected');
+
+      instance.handlers.status({ status: 'connected' });
+      expect(entry.status).toBe('connected');
+
+      instance.handlers.status({ connected: false });
+      expect(entry.status).toBe('disconnected');
+
+      instance.handlers.synced(true);
+      expect(entry.synced).toBe(true);
+      expect(entry.status).toBe('synced');
+
+      instance.handlers.status({ connected: true });
+      instance.handlers.synced({ synced: false });
+      expect(entry.synced).toBe(false);
+      expect(entry.provider.synced).toBe(false);
+      expect(entry.status).toBe('connected');
+
+      destroyProvider('events-room');
+    });
+
+    it('falls back to an empty signaling URL when every configured URL is rejected', () => {
+      vi.stubGlobal('window', {
+        location: {
+          protocol: 'https:',
+          hostname: 'whiteboard.example.com',
+          host: 'whiteboard.example.com',
+        },
+      });
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('NEXT_PUBLIC_YWEBRTC_SIGNALING_URL', 'ws://whiteboard.example.com/signaling');
+
+      createYWebsocketProvider(new Y.Doc(), 'unsafe-signaling-room');
+      const instance = websocketCtor.mock.instances.at(-1) as unknown as { url: string };
+
+      expect(instance.url).toBe('');
+
+      destroyProvider('unsafe-signaling-room');
+    });
+
+    it('keys the cache by room, not only by doc', () => {
+      vi.stubGlobal('window', {
+        location: {
+          protocol: 'https:',
+          hostname: 'whiteboard.example.com',
+          host: 'whiteboard.example.com',
+        },
+      });
+
+      const doc = new Y.Doc();
+      const first = createYWebsocketProvider(doc, 'room-a');
+      const second = createYWebsocketProvider(doc, 'room-b');
+
+      expect(second).not.toBe(first);
+
+      destroyProvider('room-a');
+      destroyProvider('room-b');
+    });
+
+    it('destroys the cached provider and builds a fresh one afterwards', () => {
+      vi.stubGlobal('window', {
+        location: {
+          protocol: 'https:',
+          hostname: 'whiteboard.example.com',
+          host: 'whiteboard.example.com',
+        },
+      });
+
+      const doc = new Y.Doc();
+      const first = createYWebsocketProvider(doc, 'destroy-room');
+      const instance = websocketCtor.mock.instances.at(-1) as unknown as {
+        connect: ReturnType<typeof vi.fn>;
+        destroy: ReturnType<typeof vi.fn>;
+      };
+      expect(instance.connect).toHaveBeenCalled();
+
+      destroyProvider('destroy-room');
+      expect(instance.destroy).toHaveBeenCalled();
+
+      const second = createYWebsocketProvider(doc, 'destroy-room');
+      expect(second).not.toBe(first);
+
+      destroyProvider('destroy-room');
+    });
+
+    it('destroyProvider ignores a room that was never created', () => {
+      expect(() => destroyProvider('never-created')).not.toThrow();
+    });
+  });
+
+  describe('message handler edge cases', () => {
+    const windowStub = {
+      location: {
+        protocol: 'https:',
+        hostname: 'whiteboard.example.com',
+        host: 'whiteboard.example.com',
+      },
+    };
+
+    it('clears the follow and call slots when a remount omits them', () => {
+      vi.stubGlobal('window', windowStub);
+
+      const doc = new Y.Doc();
+      const entry = createYWebsocketProvider(doc, 'slot-room', undefined, vi.fn(), vi.fn());
+      const provider = entry.provider;
+      expect(provider.messageHandlers?.[FOLLOW_MESSAGE_TYPE]).toBeDefined();
+      expect(provider.messageHandlers?.[CALL_MESSAGE_TYPE]).toBeDefined();
+
+      createYWebsocketProvider(doc, 'slot-room');
+
+      expect(provider.messageHandlers?.[FOLLOW_MESSAGE_TYPE]).toBeUndefined();
+      expect(provider.messageHandlers?.[CALL_MESSAGE_TYPE]).toBeUndefined();
+
+      destroyProvider('slot-room');
+    });
+
+    it('ignores a malformed presence frame', () => {
+      vi.stubGlobal('window', windowStub);
+
+      const onPresence = vi.fn();
+      const entry = createYWebsocketProvider(new Y.Doc(), 'bad-presence-room', onPresence);
+      const provider = entry.provider;
+      const decoder = decoding.createDecoder(new Uint8Array([PRESENCE_MESSAGE_TYPE]));
+
+      provider.messageHandlers?.[PRESENCE_MESSAGE_TYPE]?.(encoding.createEncoder(), decoder);
+
+      expect(onPresence).not.toHaveBeenCalled();
+
+      destroyProvider('bad-presence-room');
+    });
+
+    it('ignores a malformed follow frame', () => {
+      vi.stubGlobal('window', windowStub);
+
+      const onFollow = vi.fn();
+      const entry = createYWebsocketProvider(new Y.Doc(), 'bad-follow-room', undefined, onFollow);
+      const provider = entry.provider;
+      const decoder = decoding.createDecoder(new Uint8Array([FOLLOW_MESSAGE_TYPE]));
+
+      provider.messageHandlers?.[FOLLOW_MESSAGE_TYPE]?.(encoding.createEncoder(), decoder);
+
+      expect(onFollow).not.toHaveBeenCalled();
+
+      destroyProvider('bad-follow-room');
+    });
+
+    it('delivers call messages and ignores malformed call frames', () => {
+      vi.stubGlobal('window', windowStub);
+
+      const onCall = vi.fn();
+      const entry = createYWebsocketProvider(
+        new Y.Doc(),
+        'call-room',
+        undefined,
+        undefined,
+        onCall,
+      );
+      const provider = entry.provider;
+      const state = { active: true as const, hostAccountId: 'acc-1', startedAt: 123 };
+      const decoder = decoding.createDecoder(encodeCallMessage(state));
+      expect(decoding.readVarUint(decoder)).toBe(CALL_MESSAGE_TYPE);
+
+      provider.messageHandlers?.[CALL_MESSAGE_TYPE]?.(encoding.createEncoder(), decoder);
+      expect(onCall).toHaveBeenCalledWith(state);
+
+      const badDecoder = decoding.createDecoder(new Uint8Array([CALL_MESSAGE_TYPE]));
+      provider.messageHandlers?.[CALL_MESSAGE_TYPE]?.(encoding.createEncoder(), badDecoder);
+      expect(onCall).toHaveBeenCalledTimes(1);
+
+      destroyProvider('call-room');
     });
   });
 });

@@ -9,6 +9,8 @@ import {
   PLAN_LIMIT_STATUS,
   canAddOwnedRoom,
   maxUsersAllowedOnFreePlan,
+  maxUsersAllowedOnPlan,
+  planLimitJsonResponse,
 } from './limits';
 
 describe('free plan limits', () => {
@@ -42,9 +44,24 @@ describe('free plan limits', () => {
     expect(maxUsersAllowedOnFreePlan(10)).toBe(false);
   });
 
+  it('rejects a fractional, zero, or negative user cap', () => {
+    expect(maxUsersAllowedOnPlan(1.5, 2)).toBe(false);
+    expect(maxUsersAllowedOnPlan(0, 2)).toBe(false);
+    expect(maxUsersAllowedOnPlan(-1, 2)).toBe(false);
+    expect(maxUsersAllowedOnPlan(2, 2)).toBe(true);
+  });
+
   it('uses a distinct over-plan status that does not name the tier', () => {
     expect(PLAN_LIMIT_STATUS).toBe(402);
     expect(PLAN_LIMIT_ERROR).toBe('Plan limit reached');
     expect(PLAN_LIMIT_ERROR.toLowerCase()).not.toContain('free');
+  });
+
+  it('answers an over-plan request with a non-cacheable 402 body', async () => {
+    const response = planLimitJsonResponse();
+
+    expect(response.status).toBe(PLAN_LIMIT_STATUS);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.json()).toEqual({ error: PLAN_LIMIT_ERROR });
   });
 });

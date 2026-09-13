@@ -70,7 +70,20 @@ describe('snapshot chunking', () => {
   });
 
   it('rejects a chunk size that could never terminate', () => {
-    expect(() => chunkSnapshot(new Uint8Array(4), 0)).toThrow(RangeError);
+    expect(() => chunkSnapshot(new Uint8Array(4), 0)).toThrow('chunkBytes must be at least 1');
+  });
+
+  it('accepts a chunk size of exactly one byte', () => {
+    const chunks = chunkSnapshot(new Uint8Array(2), 1);
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0].byteLength).toBe(1);
+    expect(chunks[1].byteLength).toBe(1);
+  });
+
+  it('names the meta, chunk, and legacy keys exactly', () => {
+    expect(snapshotMetaKey('room-a')).toBe('ydoc-meta:room-a');
+    expect(snapshotChunkKey('room-a', 3)).toBe('ydoc-chunk:room-a:3');
+    expect(legacySnapshotKey('room-a')).toBe('ydoc:room-a');
   });
 
   it('keys are distinct per room and per index', () => {
