@@ -1321,7 +1321,7 @@ describe('ExcalidrawWrapper room library', () => {
     expect(posts).toHaveLength(0);
   });
 
-  it('clears a pending library save when the board unmounts', async () => {
+  it('flushes a pending library save when the board unmounts', async () => {
     const posts: string[] = [];
     setFetchHandler((url, init) => {
       if (url.endsWith('/library') && init?.method === 'POST') {
@@ -1342,10 +1342,70 @@ describe('ExcalidrawWrapper room library', () => {
       view.unmount();
     });
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 1100));
+      await new Promise((resolve) => setTimeout(resolve, 50));
     });
 
-    expect(posts).toHaveLength(0);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toContain('lib-unmount');
+  });
+
+  it('sends a pending library save when the page is hidden, so leaving the room keeps it', async () => {
+    const posts: Array<{ body: string; keepalive: boolean }> = [];
+    setFetchHandler((url, init) => {
+      if (url.endsWith('/library') && init?.method === 'POST') {
+        posts.push({ body: String(init.body), keepalive: init.keepalive === true });
+        return new Response(null, { status: 200 });
+      }
+      if (url.endsWith('/library')) return jsonResponse({ items: [] });
+      return new Response(null, { status: 404 });
+    });
+    const { api } = await renderWrapper();
+    await settleApiReady();
+    const items = await libraryItems(['lib-pagehide']);
+
+    await act(async () => {
+      await api.updateLibrary({ libraryItems: items as never, merge: false });
+    });
+
+    // Leaving the room is a full page navigation in the built app, so the
+    // pending save has to go out while the document goes away.
+    await act(async () => {
+      window.dispatchEvent(new Event('pagehide'));
+    });
+
+    expect(posts).toHaveLength(1);
+    expect(posts[0].body).toContain('lib-pagehide');
+    expect(posts[0].keepalive).toBe(true);
+  });
+
+  it('does not save the library twice when unmounting after the save fired', async () => {
+    const posts: string[] = [];
+    setFetchHandler((url, init) => {
+      if (url.endsWith('/library') && init?.method === 'POST') {
+        posts.push(String(init.body));
+        return new Response(null, { status: 200 });
+      }
+      if (url.endsWith('/library')) return jsonResponse({ items: [] });
+      return new Response(null, { status: 404 });
+    });
+    const { view, api } = await renderWrapper();
+    await settleApiReady();
+    const items = await libraryItems(['lib-late-unmount']);
+
+    await act(async () => {
+      await api.updateLibrary({ libraryItems: items as never, merge: false });
+    });
+    await waitFor(() => {
+      expect(posts).toHaveLength(1);
+    }, { timeout: 2500 });
+    await act(async () => {
+      view.unmount();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(posts).toHaveLength(1);
   });
 });
 

@@ -89,4 +89,27 @@ test.describe('the room library', () => {
     )), { timeout: 25000, message: 'the saved shape came back without its picture' })
       .toBeGreaterThan(0);
   });
+
+  test('keeps a shape saved moments before the teacher leaves the room', async ({ page }) => {
+    test.setTimeout(120_000);
+    const roomId = await createRoomWithMaxUsers(page, 'LibraryLeave', 2);
+    await pasteImage(page, makePhotoPng(300, 200));
+
+    const canvas = page.locator('canvas.excalidraw__canvas.interactive').first();
+    const box = await canvas.boundingBox();
+    await page.keyboard.press('Control+a');
+    await page.waitForTimeout(200);
+    await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2, { button: 'right' });
+    await page.locator('.context-menu').getByText(/add to library/i).first().click();
+
+    /*
+     * A lesson ends by leaving, often within a second of the last shape going
+     * into the library. The save debounce must not eat that shape: leaving
+     * has to flush it, and the room has to still hold it afterwards.
+     */
+    await page.getByTestId('whiteboard-back-to-rooms').click();
+    await expect(page).toHaveURL(/\/whiteboard\/?$/);
+
+    await expect.poll(() => storedLibrary(page, roomId), { timeout: 25000 }).toBe(1);
+  });
 });

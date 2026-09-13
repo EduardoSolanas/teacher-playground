@@ -1181,6 +1181,8 @@ export default function ExcalidrawWrapper({
   /** State of the stored library load: pending, loaded, or failed. */
   const libraryLoadedRef = useRef<LibraryLoadState>('pending');
   const librarySaveTimerRef = useRef<number | null>(null);
+  /** The snapshot waiting behind the debounce, so leaving the room can flush it. */
+  const pendingLibrarySaveRef = useRef<readonly unknown[] | null>(null);
 
   /*
    * The room's shape library.
@@ -1250,26 +1252,60 @@ export default function ExcalidrawWrapper({
    * Debounced because dragging a shape in fires this more than once, and each
    * one replaces the whole library.
    */
+  const saveLibrary = useCallback((items: readonly unknown[], keepalive = false) => {
+    void ajaxFetch(`/api/whiteboard/room/${roomId}/library`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items }),
+      ...(keepalive ? { keepalive: true } : {}),
+    }).catch(() => {
+      // Nothing to retry against: the next change writes the whole library
+      // again, so a lost save costs nothing a later one does not repair.
+    });
+  }, [roomId]);
+
   const handleLibraryChange = useCallback((items: readonly unknown[]) => {
     if (!isLocalHost || !canSaveLibrary(libraryLoadedRef.current)) return;
     const snapshot = [...items];
+    pendingLibrarySaveRef.current = snapshot;
     if (librarySaveTimerRef.current !== null) window.clearTimeout(librarySaveTimerRef.current);
     librarySaveTimerRef.current = window.setTimeout(() => {
       librarySaveTimerRef.current = null;
-      void ajaxFetch(`/api/whiteboard/room/${roomId}/library`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: snapshot }),
-      }).catch(() => {
-        // Nothing to retry against: the next change writes the whole library
-        // again, so a lost save costs nothing a later one does not repair.
-      });
+      pendingLibrarySaveRef.current = null;
+      saveLibrary(snapshot);
     }, 1000);
-  }, [isLocalHost, roomId]);
+  }, [isLocalHost, saveLibrary]);
 
-  useEffect(() => () => {
-    if (librarySaveTimerRef.current !== null) window.clearTimeout(librarySaveTimerRef.current);
-  }, []);
+  /*
+   * Leaving the room must not cost the teacher their last shapes.
+   *
+   * There are two ways to leave, and both used to lose whatever was still
+   * waiting behind the save debounce. Navigating away is a full page load in
+   * the built app -- React never unmounts, so the pending snapshot has to go
+   * out from pagehide, with keepalive so the request survives the document
+   * going away. A true React unmount (the board replaced while the page lives
+   * on) flushes through the same snapshot instead. Either way a save whose
+   * debounce already fired has cleared the snapshot and is never sent twice,
+   * and a library past keepalive's body cap is no worse off than before: the
+   * debounce had a second to save it, and the next change rewrites it whole.
+   */
+  useEffect(() => {
+    const flushPendingSave = (keepalive: boolean) => {
+      if (librarySaveTimerRef.current !== null) {
+        window.clearTimeout(librarySaveTimerRef.current);
+        librarySaveTimerRef.current = null;
+      }
+      const pending = pendingLibrarySaveRef.current;
+      pendingLibrarySaveRef.current = null;
+      if (pending) saveLibrary(pending, keepalive);
+    };
+    const onPageHide = () => flushPendingSave(true);
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      flushPendingSave(false);
+    };
+  }, [saveLibrary]);
 
   if (!isClient) {
     return <div className="w-full h-full min-h-0" />;
