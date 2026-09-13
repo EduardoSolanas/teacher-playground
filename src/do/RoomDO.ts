@@ -63,6 +63,9 @@ import {
   type RemoveLiveKitParticipantInput,
   type RemoveLiveKitParticipantResult,
   muteLiveKitParticipant,
+  setLiveKitScreenShare,
+  type SetLiveKitScreenShareInput,
+  type SetLiveKitScreenShareResult,
   type MuteLiveKitParticipantInput,
   type MuteLiveKitParticipantResult,
 } from '../lib/av/livekitRoomService';
@@ -370,6 +373,11 @@ export class RoomDO extends DurableObject {
 
   /** Populated by tests when {@link evictLiveKitParticipant} is replaced with a spy. */
   liveKitEvictCalls?: { roomId: string; identity: string }[];
+
+  /** Injectable hook; defaults to {@link setLiveKitScreenShare}. */
+  setLiveKitScreenShareHook: (
+    input: SetLiveKitScreenShareInput,
+  ) => Promise<SetLiveKitScreenShareResult> = setLiveKitScreenShare;
 
   /** Injectable hook; defaults to {@link muteLiveKitParticipant}. */
   muteLiveKitParticipantHook: (
@@ -843,9 +851,14 @@ export class RoomDO extends DurableObject {
     if (section === 'av') {
       if (method !== 'POST') return forbidden();
       const action = stringField(body, 'action');
-      if (action === 'mute') {
+      if (action === 'mute' || action === 'allow-screen-share' || action === 'revoke-screen-share') {
         if (guest) return forbidden();
         return owner ? null : forbidden();
+      }
+      // Ending a share acts only on the caller, so any participant who can
+      // publish may do it; a viewer never had one to end.
+      if (action === 'end-screen-share') {
+        return isGrantedRole(role) && role !== 'viewer' ? null : forbidden();
       }
       // Token minting: granted participants only. Pending, banned, and outsiders
       // get 403 so this route cannot probe room existence.
@@ -1026,6 +1039,43 @@ export class RoomDO extends DurableObject {
             return Response.json({ ok: false }, { status: 502 });
           }
 
+          return Response.json({ ok: true }, { status: 200 });
+        }
+
+        if (action === 'allow-screen-share' || action === 'revoke-screen-share') {
+          const target = stringField(body, 'target');
+          if (!target) {
+            return Response.json({ error: 'Missing target' }, { status: 400 });
+          }
+          // Only an admitted participant who can publish: a viewer has no
+          // publish grant to widen, and the owner's share is theirs by right.
+          const targetRole = getGrantRole(this.db, roomId, target);
+          if (!isGrantedRole(targetRole) || targetRole === 'viewer' || targetRole === 'owner') {
+            return Response.json({ error: 'Not a participant who can share' }, { status: 409 });
+          }
+          const result = await this.setLiveKitScreenShareHook({
+            env: this.roomEnv,
+            roomId,
+            identity: target,
+            allowed: action === 'allow-screen-share',
+          });
+          if (!result.ok) return Response.json({ ok: false }, { status: 502 });
+          return Response.json({ ok: true }, { status: 200 });
+        }
+
+        if (action === 'end-screen-share') {
+          // The caller, never a named target. An owner's token was never
+          // narrowed, so there is nothing to end and nothing is sent.
+          if (isOwnerRole(getGrantRole(this.db, roomId, accountId))) {
+            return Response.json({ ok: true, skipped: true }, { status: 200 });
+          }
+          const result = await this.setLiveKitScreenShareHook({
+            env: this.roomEnv,
+            roomId,
+            identity: accountId,
+            allowed: false,
+          });
+          if (!result.ok) return Response.json({ ok: false }, { status: 502 });
           return Response.json({ ok: true }, { status: 200 });
         }
 

@@ -16,9 +16,17 @@
 
 export const LIVEKIT_TOKEN_TTL_SECONDS = 60 * 60; // 1 hour (LiveKit default)
 
+/** A track source a participant may publish, in LiveKit's token vocabulary. */
+export type LiveKitTrackSource = 'camera' | 'microphone' | 'screen_share' | 'screen_share_audio';
+
 /** LiveKit room (video) grants. */
 export interface LiveKitGrant {
   readonly canPublish?: boolean;
+  /**
+   * Which sources `canPublish` covers. Absent means every source (LiveKit's
+   * default); present, anything not named is refused by the media server.
+   */
+  readonly canPublishSources?: readonly LiveKitTrackSource[];
   readonly canSubscribe?: boolean;
   readonly canPublishData?: boolean;
   readonly roomCreate?: boolean;
@@ -81,6 +89,9 @@ export async function buildLiveKitToken(
     canSubscribe: input.grant?.canSubscribe ?? true,
     canPublishData: input.grant?.canPublishData ?? true,
     roomJoin: input.grant?.roomJoin ?? true,
+    ...(input.grant?.canPublishSources
+      ? { canPublishSources: [...input.grant.canPublishSources] }
+      : {}),
     room: input.room,
   };
 

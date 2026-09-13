@@ -250,6 +250,31 @@ describe('issueAvTokenResponse', () => {
   });
 
 
+  it('keeps screen share to the owner: every other token publishes camera and microphone only', async () => {
+    // Host-controlled sharing is the classroom default (Phase 10). The owner's
+    // token names no allowlist; a participant gets screen share only when the
+    // owner grants it for the live call, never from the token.
+    const db = memoryDb();
+    insertOwner(db, 'room-1', 'acct-owner');
+    requestAccess(db, { roomId: 'room-1', accountId: 'acct-editor', userName: 'Editor' });
+    approveAccount(db, 'room-1', 'acct-editor', { role: 'editor' });
+
+    const videoFor = async (accountId: string) => {
+      const res = await issueAvTokenResponse({ db, env: LIVEKIT_ENV, roomId: 'room-1', accountId });
+      expect(res.status).toBe(200);
+      const { token } = (await res.json()) as { token: string };
+      return (await verifyLiveKitToken(token, LIVEKIT_ENV.LIVEKIT_API_SECRET)).payload.video as Record<string, unknown>;
+    };
+
+    const ownerVideo = await videoFor('acct-owner');
+    expect(Object.prototype.hasOwnProperty.call(ownerVideo, 'canPublishSources')).toBe(false);
+    expect(ownerVideo.canPublish).toBe(true);
+
+    const editorVideo = await videoFor('acct-editor');
+    expect(editorVideo.canPublishSources).toEqual(['camera', 'microphone']);
+    expect(editorVideo.canPublish).toBe(true);
+  });
+
   it('token identity and room are verified server values', async () => {
     const db = memoryDb();
     insertOwner(db, 'room-1', 'acct-owner');

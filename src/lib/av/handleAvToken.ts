@@ -93,6 +93,12 @@ async function mintTokenResponse(
       canPublishData: role !== 'viewer',
       canSubscribe: true,
       roomJoin: true,
+      /*
+       * Screen share belongs to the owner (Phase 10). Anyone else may share
+       * only while the owner allows it on the live call, which the room grants
+       * through LiveKit's UpdateParticipant and a rejoin takes away again.
+       */
+      ...(role === 'owner' ? {} : { canPublishSources: ['camera', 'microphone'] as const }),
     },
   });
 

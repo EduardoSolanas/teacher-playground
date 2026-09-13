@@ -99,6 +99,23 @@ describe('buildLiveKitToken', () => {
     expect(video.roomJoin).toBe(true);
   });
 
+  it('carries a source allowlist only when one is given', async () => {
+    // Absent means every source, which is LiveKit's own default; an allowlist
+    // is how screen share is kept from everyone but the owner (Phase 10).
+    const unrestricted = await buildLiveKitToken({
+      apiKey: API_KEY, apiSecret: SECRET, room: 'room-sources', identity: 'owner',
+    });
+    const unrestrictedVideo = (await verifyLiveKitToken(unrestricted, SECRET)).payload.video as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(unrestrictedVideo, 'canPublishSources')).toBe(false);
+
+    const limited = await buildLiveKitToken({
+      apiKey: API_KEY, apiSecret: SECRET, room: 'room-sources', identity: 'student',
+      grant: { canPublishSources: ['camera', 'microphone'] },
+    });
+    const limitedVideo = (await verifyLiveKitToken(limited, SECRET)).payload.video as Record<string, unknown>;
+    expect(limitedVideo.canPublishSources).toEqual(['camera', 'microphone']);
+  });
+
   it('pins the token TTL to one hour', () => {
     expect(LIVEKIT_TOKEN_TTL_SECONDS).toBe(3_600);
   });

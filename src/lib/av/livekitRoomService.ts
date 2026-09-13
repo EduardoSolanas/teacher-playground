@@ -169,3 +169,67 @@ export async function muteLiveKitParticipant(
     return { ok: false, status: 0 };
   }
 }
+
+export interface SetLiveKitScreenShareInput {
+  readonly env: unknown;
+  readonly roomId: string;
+  readonly identity: string;
+  /** True lets the participant share their screen on this call; false takes it back. */
+  readonly allowed: boolean;
+}
+
+export type SetLiveKitScreenShareResult =
+  | { readonly ok: true; readonly skipped?: true }
+  | { readonly ok: false; readonly status: number };
+
+const CAMERA_AND_MICROPHONE = ['CAMERA', 'MICROPHONE'] as const;
+const WITH_SCREEN_SHARE = [...CAMERA_AND_MICROPHONE, 'SCREEN_SHARE', 'SCREEN_SHARE_AUDIO'] as const;
+
+/**
+ * Grants or withdraws screen share for one participant on the live call.
+ *
+ * A participant's join token allows camera and microphone only; the owner
+ * widens that for the call in progress with UpdateParticipant, and a rejoin
+ * mints a narrow token again, so an approval lasts one sitting (Phase 10).
+ * UpdateParticipant replaces the whole permission object, so every field this
+ * application grants a publishing participant is restated here -- leaving one
+ * out would silently revoke it. LiveKit unpublishes a track whose source is no
+ * longer permitted, which is what makes withdrawing stop a share in progress.
+ */
+export async function setLiveKitScreenShare(
+  input: SetLiveKitScreenShareInput,
+): Promise<SetLiveKitScreenShareResult> {
+  const config = parseLiveKitConfig(input.env);
+  if (!config) {
+    return { ok: true, skipped: true };
+  }
+
+  const host = liveKitHttpHost(config.url);
+  try {
+    const token = await buildLiveKitRoomServiceToken({
+      apiKey: config.apiKey,
+      apiSecret: config.apiSecret,
+      room: input.roomId,
+    });
+    const response = await fetch(`${host}/twirp/livekit.RoomService/UpdateParticipant`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        room: input.roomId,
+        identity: input.identity,
+        permission: {
+          can_subscribe: true,
+          can_publish: true,
+          can_publish_data: true,
+          can_publish_sources: input.allowed ? WITH_SCREEN_SHARE : CAMERA_AND_MICROPHONE,
+        },
+      }),
+    });
+    return response.status === 200 ? { ok: true } : { ok: false, status: response.status };
+  } catch {
+    return { ok: false, status: 0 };
+  }
+}

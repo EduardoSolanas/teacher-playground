@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { verifyLiveKitToken } from './livekitToken';
-import { liveKitHttpHost, removeLiveKitParticipant, muteLiveKitParticipant } from './livekitRoomService';
+import { createServer, type IncomingMessage, type Server } from 'node:http';
+import { liveKitHttpHost, removeLiveKitParticipant, muteLiveKitParticipant, setLiveKitScreenShare } from './livekitRoomService';
 
 const LIVEKIT_ENV = {
   LIVEKIT_URL: 'wss://example.livekit.cloud',
@@ -415,5 +416,98 @@ describe('muteLiveKitParticipant', () => {
     const video = verified.payload.video as Record<string, unknown>;
     expect(video.roomAdmin).toBe(true);
     expect(video.room).toBe('room-alpha');
+  });
+});
+
+/*
+ * A real HTTP server standing in for the LiveKit host: the request is sent over
+ * a real socket by the real fetch, and the test reads what actually arrived.
+ */
+describe('setLiveKitScreenShare', () => {
+  let server: Server;
+  let port = 0;
+  let status = 200;
+  const received: { url: string; authorization: string; contentType: string; body: unknown }[] = [];
+
+  beforeEach(async () => {
+    received.length = 0;
+    status = 200;
+    server = createServer((request: IncomingMessage, response) => {
+      let raw = '';
+      request.on('data', (chunk) => { raw += chunk; });
+      request.on('end', () => {
+        received.push({
+          url: request.url ?? '',
+          authorization: request.headers.authorization ?? '',
+          contentType: request.headers['content-type'] ?? '',
+          body: raw ? JSON.parse(raw) : null,
+        });
+        response.writeHead(status, { 'content-type': 'application/json' });
+        response.end('{}');
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    port = (server.address() as { port: number }).port;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  const envFor = () => ({ ...LIVEKIT_ENV, LIVEKIT_URL: `ws://127.0.0.1:${port}` });
+
+  it('grants screen share on the live call with UpdateParticipant, keeping camera and microphone', async () => {
+    const result = await setLiveKitScreenShare({ env: envFor(), roomId: 'room-share', identity: 'acct-student', allowed: true });
+
+    expect(result).toEqual({ ok: true });
+    expect(received).toHaveLength(1);
+    expect(received[0].url).toBe('/twirp/livekit.RoomService/UpdateParticipant');
+    // Twirp decides JSON versus protobuf from this header.
+    expect(received[0].contentType).toBe('application/json');
+    expect(received[0].body).toEqual({
+      room: 'room-share',
+      identity: 'acct-student',
+      permission: {
+        can_subscribe: true,
+        can_publish: true,
+        can_publish_data: true,
+        can_publish_sources: ['CAMERA', 'MICROPHONE', 'SCREEN_SHARE', 'SCREEN_SHARE_AUDIO'],
+      },
+    });
+    const token = received[0].authorization.replace(/^Bearer /, '');
+    const verified = await verifyLiveKitToken(token, LIVEKIT_ENV.LIVEKIT_API_SECRET);
+    expect(verified.valid).toBe(true);
+    expect(verified.payload.video).toMatchObject({ roomAdmin: true, room: 'room-share' });
+  });
+
+  it('withdraws screen share by narrowing the sources back to camera and microphone', async () => {
+    const result = await setLiveKitScreenShare({ env: envFor(), roomId: 'room-share', identity: 'acct-student', allowed: false });
+
+    expect(result).toEqual({ ok: true });
+    expect((received[0].body as { permission: { can_publish_sources: string[] } }).permission.can_publish_sources)
+      .toEqual(['CAMERA', 'MICROPHONE']);
+  });
+
+  it('reports the status when LiveKit refuses, and skips when LiveKit is not configured', async () => {
+    status = 404;
+    expect(await setLiveKitScreenShare({ env: envFor(), roomId: 'room-share', identity: 'gone', allowed: true }))
+      .toEqual({ ok: false, status: 404 });
+
+    const unconfigured = await setLiveKitScreenShare({ env: {}, roomId: 'room-share', identity: 'acct', allowed: true });
+    expect(unconfigured).toEqual({ ok: true, skipped: true });
+    expect(received).toHaveLength(1);
+  });
+
+  it('reports status 0 when the LiveKit host cannot be reached', async () => {
+    const closedPort = port;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    server = createServer();
+    const result = await setLiveKitScreenShare({
+      env: { ...LIVEKIT_ENV, LIVEKIT_URL: `ws://127.0.0.1:${closedPort}` },
+      roomId: 'room-share',
+      identity: 'acct',
+      allowed: true,
+    });
+    expect(result).toEqual({ ok: false, status: 0 });
   });
 });
