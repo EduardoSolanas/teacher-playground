@@ -454,16 +454,40 @@ for (const device of [DESKTOP, PHONE]) {
       }
     });
 
-    test('web embed places an embed on the board', async ({ browser }) => {
+    test('web embed is not offered, because the room removes embeds for everyone', async ({ browser }) => {
+      /*
+       * The server's scene guard deletes every embeddable element from the
+       * live document (SEC-005: embeds are an injection surface, off until an
+       * owner-controlled allowlist exists). A tool whose result vanishes a
+       * moment after it is drawn is a broken tool, so it is not in the menu.
+       * The rest of More tools stays, Mermaid included.
+       */
       const board = await openBoard(browser, device, 'embeddable');
       try {
-        await chooseExtraTool(board, 'Web Embed');
+        const trigger = board.page.getByTitle('More tools');
+        if (device.name === 'phone') await trigger.tap();
+        else await trigger.click();
+        const menu = board.page.locator('.App-toolbar__extra-tools-dropdown');
+        await expect(menu.getByText('Frame tool', { exact: true })).toBeVisible();
+        await expect(menu.getByText('Mermaid to Excalidraw', { exact: true })).toBeVisible();
+        await expect(menu.getByText('Web Embed', { exact: true })).toBeHidden();
+      } finally {
+        await board.close();
+      }
+    });
+
+    test('an embed that reaches the room anyway never survives on the board', async ({ browser }) => {
+      const board = await openBoard(browser, device, 'embeddable-scrub');
+      try {
+        await board.page.evaluate(() => (window as any).__debugExcalidrawApi.setActiveTool({ type: 'embeddable' }));
         await expect.poll(async () => (await appState(board.page)).tool).toBe('embeddable');
         await board.input.drag(spot(device, 0.2, 0.2), spot(device, 0.8, 0.8));
 
-        await expect.poll(() => ofType(board.page, 'embeddable')).toHaveLength(1);
-        const [embed] = await ofType(board.page, 'embeddable');
-        await expect.poll(() => sharedTypes(board.page, embed.id)).toBe('embeddable');
+        // Drawn locally for an instant, then removed by the server's guard for
+        // this client too; it never stays in the shared document.
+        await expect.poll(() => ofType(board.page, 'embeddable'), { timeout: 15000 }).toHaveLength(0);
+        await expect.poll(async () => (await shared(board.page)).filter((element) => element.type === 'embeddable'))
+          .toEqual([]);
       } finally {
         await board.close();
       }

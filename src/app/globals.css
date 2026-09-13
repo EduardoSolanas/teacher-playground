@@ -293,6 +293,16 @@ textarea {
   margin-bottom: 0.375rem;
 }
 
+/* Web Embed is not offered. The room's scene guard deletes every embeddable
+   element from the live document (SEC-005: embeds are an injection surface and
+   stay off until an owner-controlled allowlist exists), so the tool drew
+   something that vanished a moment later for everyone. The fork gives Web Embed
+   and Mermaid the same test id; Web Embed is the one ahead of the laser item,
+   which is what keeps Mermaid in the menu. */
+.excalidraw .App-toolbar__extra-tools-dropdown [data-testid="toolbar-embeddable"]:has(~ [data-testid="toolbar-laser"]) {
+  display: none;
+}
+
 /* UX-A20: honour the OS reduce-motion preference across the app. The one-shot
    raised-hand cue, the waiting/status pulses and the panel slides all set
    their own durations, so the neutralisation has to be global and !important:
