@@ -1,9 +1,8 @@
 # Secret and key rotation runbook
 
-Created 2026-09-12. This is the document the Phase 7 item calls for
-("secret rotation", `security.md:1552-1554`; `spec/IMPLEMENTATION_SPEC.md:892-894`,
-`:1549`, `:1555`) and the "session/key rotation" half of the Phase 6 operational
-gate row (`security.md:1862`).
+Created 2026-09-12. The secret and key rotation procedures for every credential
+this deployment holds (`spec/IMPLEMENTATION_SPEC.md:892-894`, `:1549`, `:1555`);
+the rest of operations is in `SECURITY_OPERATIONS.md`.
 
 Every command, path, and line number below was verified against this working
 tree on 2026-09-12. Where the repository does **not** pin a command, the entry
@@ -24,7 +23,7 @@ value is fixed in code.
     `prod` / `staging` environments (`deploy-cloudflare.yml:21`,
     `configure-livekit.yml:13`, `billing-staging.yml:42`).
   - **`.dev.vars`** or a shell export: local only, throwaway credentials only
-    (`security.md:1826-1831`; README's copy instruction at `README.md:107`).
+    (`security.md` "Running locally"; README's copy instruction at `README.md:107`).
     `.dev.vars.example` does **not** exist; `.env.local.example` is the template.
 - Never put a secret in `[vars]`, code, client bundles, or logs
   (`spec/IMPLEMENTATION_SPEC.md:892-894`).
@@ -113,7 +112,7 @@ signature check ([`src/worker.ts:1912-1920`](src/worker.ts)).
 **Verified limitation - read before rotating.** The signature verifier accepts
 several configured secrets and several `v1` signatures, which is what makes a
 cosigned rotation possible ([`src/lib/billing/stripeSignature.ts:5-8`](src/lib/billing/stripeSignature.ts),
-`:100-112`; `security.md:2269-2273` lists it as a control). But the Worker
+`:100-112`; `security.md` "Positive findings" lists it as a control). But the Worker
 passes exactly **one** configured secret:
 
 ```ts
@@ -194,7 +193,7 @@ Steps:
    rotation (section 8).
 
 Local values live in `.dev.vars` and are throwaway
-(`README.md:103-109`; `security.md:1826-1831`). Never copy production LiveKit
+(`README.md:103-109`; `security.md` "Running locally"). Never copy production LiveKit
 credentials into `.dev.vars` or `wrangler.local.toml`.
 
 ## 5. Cloudflare account credentials
@@ -313,7 +312,7 @@ Access issuer - staging does not exist yet
 (`CLOUDFLARE_ACCESS_STAGING.md:114-126`).
 
 The local Access issuer generates a fresh RSA keypair per process
-(`security.md:1815`; `scripts/local-access-issuer.mjs`); there is nothing to
+(`security.md` "Running locally"; `scripts/local-access-issuer.mjs`); there is nothing to
 rotate.
 
 ## 7. Session material

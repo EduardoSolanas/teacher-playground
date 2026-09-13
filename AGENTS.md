@@ -33,8 +33,8 @@ fresh checkout or when build inputs change. The worker runner checks for
 
 Run unit, workers, and typecheck for every behavior change. Run e2e whenever
 the change can be reached from the browser, an HTTP route, a cookie/session,
-or a WebSocket. Do not claim a `security.md` task complete without the e2e
-that task names.
+or a WebSocket. Do not record a `security.md` control or resolution without the
+e2e that proves it.
 
 For documentation-only changes, verify referenced commands and paths and run
 `git diff --check`; application suites and TDD are not required unless runtime
@@ -78,7 +78,7 @@ Rules:
 
 After green unit/worker tests, run `npm run test:e2e` for user-visible or
 HTTP/session work. If a run is too slow for every micro-cycle, still run it
-before handing a task to a verifier and before checking a `security.md` box.
+before handing a task to a verifier and before recording evidence in `security.md`.
 
 Relevant specs live in `tests/e2e/` (`room-authorization.spec.ts`,
 `access-session.spec.ts`, `waiting-room.spec.ts`, collaboration specs). Add or
@@ -180,7 +180,7 @@ if the incoming changes touch your files, then push.
 For security-remediation tasks, after an implementer finishes or a verifier
 returns `APPROVE` / `REJECT` / `APPROVE-AS-BLOCKED`, update
 `C:/Users/eduar/.cursor/projects/d-new-projects-teacher-playground/canvases/security-remediation-review.canvas.tsx`
-so phase tables, in-flight rows, and SEC status match `security.md` and the
+so in-flight rows and SEC status match `security.md` and the
 latest verdicts. Do not leave the canvas describing the previous phase.
 This is a machine-local companion file: if it is unavailable, report that
 limitation and keep repository evidence current. Do not create a replacement
@@ -204,7 +204,8 @@ The orchestrating session owns high-context decisions and verification:
   attempt one mutant on any new or changed guard. Treat subagent-reported
   results as unverified until independently checked.
 - Keep architecture, security decisions, conflict resolution, and anything
-  touching `security.md` checkboxes in the orchestrating session.
+  that records evidence, a resolution, or a decision in `security.md` in the
+  orchestrating session.
 
 One subagent per task slice; do not fan out overlapping edits to the same
 files in parallel.
@@ -221,6 +222,8 @@ Select the verifier model using the delegation rule above. Verdict is
 `APPROVE` (all required checks passed), `REJECT` (defects found), or
 `APPROVE-AS-BLOCKED` (no defect found in completed checks, but required evidence
 is missing; not completion approval). Record commands, results, blockers, and
-the reviewed commit or diff. Do not check `security.md` `[x]`
-until `APPROVE`. The orchestrator still re-runs or spot-checks; a cheap
+the reviewed commit or diff. Do not record a `security.md` resolution as done
+until `APPROVE`. `security.md` holds controls, evidence and decisions, not a task
+list; new findings that need a person go to `SECURITY_OPERATIONS.md` §8, and
+requirements for unbuilt features to `SECURITY_FEATURE_REQUIREMENTS.md`. The orchestrator still re-runs or spot-checks; a cheap
 verifier is not a substitute for that.

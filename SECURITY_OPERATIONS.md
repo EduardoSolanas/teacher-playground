@@ -1,11 +1,9 @@
 # Security operations runbook
 
-Created 2026-09-12 to supply the operational half of the Phase 6 gate row in
-[`security.md`](security.md) ("Operational owners, deadlines, incident response,
-backup/restore, session/key rotation, monitoring, emergency revocation
-procedures documented", line 1862) and the Phase 7 billing-operations item
-("secret rotation, and who is on call when payment state and access state
-disagree", `security.md:1552-1554`).
+Created 2026-09-12; revised 2026-09-13 when `security.md` was reduced to controls
+and decisions. This is where the operational side lives: ownership, incident
+response, monitoring, emergency revocation, backup and restore, billing
+operations, and the owner actions in section 8 that code cannot perform.
 
 Everything below is either **verified in this working tree** (with a
 `path:line` citation) or explicitly marked **not present / unverified**. No
@@ -28,7 +26,7 @@ Companion documents:
 Nothing in the repository defines a rota, a pager, an escalation path, or a
 named owner. The table records the roles the Phase 6 gate requires; assign a
 person and a date in the "Assigned" column before the release owner signs the
-Phase 6 gate (`security.md:1863` requires that signature).
+release sign-off (section 8).
 
 | Role | Responsibility in this runbook | Assigned (TBD) |
 | --- | --- | --- |
@@ -37,7 +35,7 @@ Phase 6 gate (`security.md:1863` requires that signature).
 | Release owner | Signs the Phase 6/Phase 7 gates, accepts bounded waivers | **TBD - unassigned** |
 | Cloudflare account owner | Owns zone, Access application, API tokens, and the hostname-closure runbook | **TBD - unassigned** ([`DEPLOY.md:112-144`](DEPLOY.md)) |
 | Backup / restore operator | Runs the PITR restore and the staging drill | **TBD - unassigned** (`SECURITY_BACKUP_RESTORE.md:53` calls the RTO "operator-dependent") |
-| Billing on-call | Decides when payment state and access state disagree (dunning, disputes, stuck holds) | **TBD - unassigned** (`security.md:1552-1554`) |
+| Billing on-call | Decides when payment state and access state disagree (dunning, disputes, stuck holds) | **TBD - unassigned** (section 7) |
 | Data owner | Decides whether affected rows are real personal data and whether notification applies | **TBD - unassigned** (`SECURITY_INCIDENT_2026-08-17.md:46-56`) |
 
 Deadlines are also unassigned. Proposed starting values, to be confirmed or
@@ -71,8 +69,9 @@ drafts, not policy.
 5. **Notify.** The security owner and data owner make the notification decision.
    `SECURITY_INCIDENT_2026-08-17.md` is the existing pattern: aggregate
    evidence only, no names, emails, room ids, board content, or token hashes.
-6. **Post-incident.** Complete the log template in section 7 and convert every
-   unresolved item into an owned task on `security.md`.
+6. **Post-incident.** Complete the incident record template in section 9, fix
+   what code can fix with a failing test first, and add anything that needs a
+   person to the owner actions in section 8.
 
 ### 2.3 Evidence handling
 
@@ -87,7 +86,7 @@ drafts, not policy.
 - `SECURITY_INCIDENT_2026-08-17.md` is deliberately aggregate-only and is the
   template for tone and detail.
 - Repository-incident follow-up already requires rotating or revoking affected
-  credentials (`security.md:1139`); do not close an incident on a code fix
+  credentials (`SECURITY_INCIDENT_2026-08-17.md`); do not close an incident on a code fix
   alone.
 
 ## 3. Monitoring and alerting
@@ -149,14 +148,12 @@ The phase-7 spec says price-tier drift "must page" (`spec/IMPLEMENTATION_SPEC.md
 
 - `[observability] enabled = true` ([`wrangler.toml:32-33`](wrangler.toml))
   enables Workers Logs for the Worker.
-- `scheduled()` ([`src/worker.ts:3270-3276`](src/worker.ts)) emits the billing
-  alerts above. **Cron trigger gap, verified in the working tree:** the
-  in-flight, uncommitted move of production under `[env.prod]` in
-  `wrangler.toml` removes `[triggers]` / `crons = ["17 3 * * *"]` (present at
-  `HEAD`). Until the trigger is restored with `--env prod` semantics, the daily
-  reconcile does not run. Do not mark the reconcile alerts as operational until
-  a deployed cron is verified. (Another session owns `wrangler.toml`; this is an
-  observation, not a change.)
+- `scheduled()` (`src/worker.ts`) runs the daily billing reconcile and emits
+  the billing alerts above. It is triggered by `[env.prod.triggers]` `crons =
+  ["23 4 * * *"]` in `wrangler.toml`; `deploymentPolicy.test.ts` fails if
+  production loses that trigger (triggers are not inherited by `[env.prod]`,
+  which is how it went missing once). After the next deploy, confirm the trigger
+  under Workers & Pages > teacher-playground > Settings > Triggers.
 - Live inspection: `npx wrangler tail teacher-playground --format json --search
   frame_shed` - the command the code records for the signaling-budget signal
   ([`src/do/RoomDO.ts:194`](src/do/RoomDO.ts)).
@@ -228,21 +225,20 @@ available.
   immediately. **Enable** restores `active` without resurrecting revoked
   sessions (`SECURITY_REVOCATION_BOUND.md:123`).
 
-**Reachability gap - verified.** These are internal Durable Object routes; the
-public Worker exposes no path to them. A test pins that
-`/api/internal/identity/accounts/disable` and the sibling paths return **404**
-through the Worker ([`src/do/identityDO.workers.test.ts:1209-1224`](src/do/identityDO.workers.test.ts)).
-There is no admin console, operator CLI, or maintenance route in this
-repository. The spec's operator mechanism (D11) is not implemented - O-1/O-2
-operator actions are still deferred (`spec/IMPLEMENTATION_SPEC.md:123`,
-`:1548-1549`).
+**How an operator runs them.** The internal Durable Object paths stay
+unreachable through the Worker (`/api/internal/identity/*` is 404, pinned in
+`identityDO.workers.test.ts`). The operator surface exposes them instead:
 
-Consequence: **there is no runnable one-command emergency disable today.** An
-operator can only invoke these routes by shipping a code path that calls the
-`IDENTITY` binding (for example a short-lived maintenance Worker or an
-operator-only route), then deploying it. That decision needs the release owner
-and the security owner; until it exists, record it as an operational gap in
-section 6.
+```bash
+curl -X POST "https://app-playground.sen-tutor.co.uk/api/operator/accounts/disable"   -H "Origin: https://app-playground.sen-tutor.co.uk"   -H "Content-Type: application/json"   --cookie "CF_Authorization=<your Access cookie>"   -d '{"accountId":"<account id>","reason":"<why, as it should read in the audit>"}'
+```
+
+- Actions: `disable`, `enable`, `revoke-all`. Run from a browser session signed
+  in through Access as an address on `OPERATOR_EMAILS` (the route is 404 while
+  that list is unset, 403 for any other address).
+- The audit actor is always `operator:<your email>`; the body cannot name one.
+- Unknown account 404, malformed body 400 (`worker.company.workers.test.ts ›
+  operator account revocation`).
 
 ### 4.3 Verifying a revocation took effect
 
@@ -262,10 +258,21 @@ section 6.
 Blocking a user or an identity provider at Cloudflare Access (or at the IdP)
 stops the next Access login and any new token, but **does not by itself close
 an app session or a live socket**; that needs section 4.2, logout, or TTL
-expiry. The exact dashboard navigation for revoking an Access user's existing
-sessions is not verifiable from this repository - the account owner must locate
-it in the current Zero Trust dashboard and record the path here before relying
-on it.
+expiry. Use both:
+
+1. **Revoke the Access session** (per Cloudflare's session-management
+   documentation, checked 2026-09-13): Zero Trust > Team & Resources > Users,
+   select the checkbox next to the user, **Revoke sessions**. Access clears the
+   authorization cookie and stops accepting that user's tokens within 20-30
+   seconds, across every application. To end every user's session for this
+   application instead: Zero Trust > Access controls > Applications > Teacher
+   Playground > Configure > **Revoke existing tokens**.
+2. **Disable the application account** with the operator route in section 4.2,
+   which revokes local sessions and closes sockets within the revocation bound.
+
+A revoked Access user can sign in again while the policy still admits them
+(the production policy admits any authenticated identity); step 2 is what keeps
+them out of the product.
 
 ### 4.5 Session-level detail
 
@@ -331,31 +338,55 @@ The operational summary:
   rotate them with the commands in `SECRETS_ROTATION.md` and record each
   rotation in its log template.
 
-## 7. Unassigned work (explicit)
+## 7. Billing operations
 
-These are placeholders, not controls. The Phase 6 gate stays open until they
-are owned and done.
+What the product does on its own, and what a person decides. Stripe is the source
+of truth for payment state; this application never edits entitlement rows by
+hand, only through the entitlement writer, which audits every change.
 
-1. Assign the roles in section 1 and record names and dates.
-2. Publish acknowledgment/containment deadlines and a contact path (no rota or
-   pager exists in the repository).
-3. Build and test the Cloudflare Workers Logs alert rules in section 3.3; enable
-   Stripe webhook failure notifications; restore and verify the daily reconcile
-   Cron Trigger under the refactored `[env.prod]` configuration (section 3.2 -
-   the current working tree does not declare it).
-4. Build the operator revocation mechanism (spec D11) so `/accounts/disable`
-   and `/accounts/revoke-all` are reachable without a code deploy; add the
-   negative authorization test and mutation evidence the spec demands.
-5. Record the Access/IdP dashboard path for revoking an existing user session
-   (section 4.4).
-6. Run and record the PITR staging drill and assign the restore operator.
-7. Record refund/dispute/dunning ownership and the on-call decision for
-   payment-vs-access disagreement (`security.md:1552-1554`); O-2 operator
-   review is still unbuilt (`spec/IMPLEMENTATION_SPEC.md:1548-1549`).
-8. Independently verify this runbook against a staging deployment, as the
-   Phase 6 gate row requires (`security.md:1862`).
+| Situation | What happens automatically | What the billing on-call does |
+| --- | --- | --- |
+| Renewal payment fails | `invoice.payment_failed` opens a **7-day grace** window with full access; Stripe's own retries and dunning emails run; access stops at `grace_until` with no job needed (`billing.workers.test.ts › opens the 7-day grace window`) | Nothing unless the tutor asks; point them to the Customer Portal to update the card |
+| Payment recovers | `invoice.paid` clears grace | Nothing |
+| Subscription cancelled | Entitlement ends at the effective boundary; rooms over the Free limit are archived, never deleted | Nothing |
+| Refund issued | Referral credit for that invoice is reversed; entitlement is unchanged, because a refund is not a cancellation | Cancel in the Stripe dashboard as well if access should end |
+| Chargeback / dispute opened | A dispute hold suspends collection and entitlement; lost disputes cancel | Respond to the dispute in Stripe; release or confirm a hold under review with `POST /api/company/operator/disputes/review` |
+| Payment and access disagree | The daily reconcile re-reads every stored subscription from Stripe, applies drift once per run, and logs `collection_drift` / `reconcile_*` alerts (section 3) | Fix the state **in Stripe**, then let the next reconcile (or the next webhook) apply it; never edit SQLite |
+| Stuck in-flight collection marker | The reconcile times markers out after 15 minutes and claims a fresh repair generation | Nothing unless `collection_failed` repeats for the same subscription |
+| Invoice-billed company (10+ seats) | Nothing until approved | Approve with `POST /api/company/operator/invoice-approval` |
 
-## 8. Incident record template
+**Webhook endpoint.** Register Stripe's endpoint as
+`https://playground.sen-tutor.co.uk/api/billing/webhook`, the marketing hostname.
+The teacher hostname sits entirely behind Cloudflare Access, which answers
+Stripe with a login redirect (`SECURITY_ROUTE_REVIEW.md`). Enable Stripe's
+webhook failure notifications for that endpoint.
+
+**Invoice retention versus erasure.** Statutory retention wins for billing
+identifiers only; see `SECURITY_DATA_PROTECTION.md` "Billing records and
+erasure".
+
+**Secrets.** `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` are Worker secrets,
+never in `wrangler.toml` or the repository; rotate with `SECRETS_ROTATION.md` §3.
+
+## 8. Owner actions (outside the code)
+
+Everything the code can enforce is in `security.md`. These remain because they
+need a person with authority, an outside party, or an account this repository
+cannot reach. They are the only open security items.
+
+| # | Action | Why it cannot be done in code | How |
+| --- | --- | --- | --- |
+| 1 | Assign the roles in section 1 and confirm the deadlines | Names and commitments belong to the business | Fill in the table |
+| 2 | Protect the `prod` and `staging` GitHub environments: required reviewer, deployment branches limited to `main` (and `infra/*` for Terraform plans) | Repository security settings are changed by the owner, not by a workflow | `gh api -X PUT repos/EduardoSolanas/teacher-playground/environments/prod --input env-prod.json` with `reviewers` and `deployment_branch_policy`; the same for `staging` (SEC-A17, SEC-A28) |
+| 3 | Create and test the alert rules in section 3.3 | Cloudflare notifications and Stripe Workbench settings live in those dashboards | Create each rule, then fire a synthetic event to prove it |
+| 4 | Commission an independent penetration test before public launch, and an independent human sign-off of `SECURITY_ROUTE_REVIEW.md` | Independence is the point of both | Scope: authentication bypass, IDOR, privilege escalation, CSRF, WebSocket abuse, resource exhaustion, revocation, retention, alternate origins |
+| 5 | Run and record the PITR restore drill, including the erasure-ledger step in section 5 | Needs the Cloudflare account and a staging copy | `SECURITY_BACKUP_RESTORE.md` "Verification" |
+| 6 | Close the 2026-08-17 repository incident | The remaining steps are decisions and requests only the data owner can make | Ask GitHub Support to purge cached views of the rewritten commits; decide whether the purged local `.data/` rows were real personal data and whether notification applies; identify old clones and forks. Production never used that data: it runs on Durable Object storage first deployed 2026-09-02 (`SECURITY_INCIDENT_2026-08-17.md`) |
+| 7 | Accept the Cloudflare Access plan fit | A commercial decision | `CLOUDFLARE_ACCESS_PRODUCT_FIT.md`; the code caps tutor accounts at the free plan's 50 seats, and students use the guest hostname, which consumes no seats |
+| 8 | Before charging anyone: set the Stripe price variables and secrets, register the webhook endpoint above, and run the billing staging evidence run once a staging environment exists | Needs the Stripe account | `scripts/run-billing-staging.mjs`, which now refuses anything but a test key bound for `api.stripe.com` |
+| 9 | Release sign-off | The release owner signs | After items 1-5 |
+
+## 9. Incident record template
 
 Copy this into a new `SECURITY_INCIDENT_<date>.md` (aggregate evidence only):
 
@@ -388,7 +419,7 @@ SECRETS_ROTATION.md>
 <each with an owner and a due date>
 ```
 
-## 9. Reference verification (2026-09-12)
+## 10. Reference verification (2026-09-12)
 
 Every path cited in this document was checked with `Test-Path` against the
 working tree on 2026-09-12 and exists. Commands cited (`npm run security:scan`,

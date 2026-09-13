@@ -1,29 +1,44 @@
-# Security remediation plan
+# Security controls and decisions
 
-Last reviewed: 2026-09-12 (post-billing sweep; Phase 0 gate last re-checked
-2026-08-18 against the live Cloudflare Worker)
+Last reviewed: 2026-09-13.
 
-This is a task backlog for the current working tree, not a statement that the
-application is secure. Findings were derived from source review and local
-tests; no production penetration test was performed.
+This document records the security controls this application enforces, the
+evidence for each, and the decisions and accepted risks behind them. **It has no
+open tasks.** Every item that was once a task is now either closed with evidence
+or carries a dated resolution: the fix, the decision that replaced it, or the
+owner action that only a person can take.
 
-Open findings from the two most recent reviews live outside the SEC-0xx
-backlog below:
+- Owner actions (role assignment, an independent penetration test, GitHub and
+  Cloudflare account settings, incident close-out) are in
+  [`SECURITY_OPERATIONS.md`](SECURITY_OPERATIONS.md) §8. They are the only open
+  security items.
+- Requirements for features not yet built (board history, chat, private boards,
+  recording, imports, embeds) are in
+  [`SECURITY_FEATURE_REQUIREMENTS.md`](SECURITY_FEATURE_REQUIREMENTS.md).
+- The route-by-route and frame-by-frame authorization review is
+  [`SECURITY_ROUTE_REVIEW.md`](SECURITY_ROUTE_REVIEW.md).
+- Erasure windows, the minors policy and billing retention are in
+  [`SECURITY_DATA_PROTECTION.md`](SECURITY_DATA_PROTECTION.md).
 
-- `SECURITY_AUDIT_2026-09-10.md` — independent audit, SEC-A01 to SEC-A16.
-- [Post-billing security sweep — 2026-09-12](#post-billing-security-sweep--2026-09-12)
-  — SEC-A17 to SEC-A28, covering the Phase 7 billing surface and the response
-  headers that were never in SEC-012's scope. One High: SEC-A17.
+Evidence comes from source review, the unit, Worker and end-to-end suites,
+targeted and Stryker mutation testing, and live probes of production. No
+independent penetration test has been performed (owner action 4).
 
-Priority meanings:
+Related findings: `SECURITY_AUDIT_2026-09-10.md` (SEC-A01 to SEC-A16) and the
+[post-billing sweep](#post-billing-security-sweep--2026-09-12) below (SEC-A17 to
+SEC-A28). The phase-by-phase task plan this document used to carry, with its
+per-phase evidence, is in git history at commit `4de9e9c`.
 
-- **P0:** security boundary is currently ineffective; fix before public use.
+Priority meanings, as originally assigned to each finding:
+
+- **P0:** security boundary was ineffective; fixed before public use.
 - **P1:** exploitable data-loss, availability, privacy, or supply-chain risk.
 - **P2:** defense in depth and operational hardening.
 
 ## Status of the previous review
 
-The previous review was correct that room APIs, moderation, signaling, and
+History, kept for context: everything this section describes was fixed under
+SEC-001 to SEC-004 below. The previous review was correct that room APIs, moderation, signaling, and
 resource creation are unauthenticated. It missed the most important
 architectural point: `y-webrtc` connects participants directly, so HTTP and
 signaling checks alone cannot enforce a read-only viewer or revoke an already
@@ -45,8 +60,9 @@ Use a hybrid boundary: Cloudflare Access authenticates social identities and
 provides coarse application admission; this application retains full control of
 endpoint, room, and real-time authorization.
 
-- Configure Google and Facebook as Cloudflare Access identity providers.
-  Cloudflare handles the external provider callback and authentication session.
+- Cloudflare Access is the identity broker and handles the provider callback
+  and authentication session. Production accepts **Google only** (decision D-1);
+  the allowed provider is pinned in Terraform, so adding one is a reviewed change.
 - [Access policies](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/)
   may decide whether a verified user can reach the production hostname or
   coarse paths such as `/admin/*`, using login method, email/domain, IdP group,
@@ -127,16 +143,16 @@ starts only after GET /room 200 or approved access. Kick closes sockets
 **4401** and bumps `grant_version`. Direct y-webrtc is not used for the
 board.
 
-- [x] Choose and document one enforceable model. Recommended: move Yjs sync to
+- Choose and document one enforceable model. Recommended: move Yjs sync to
   authenticated, server-authoritative Durable Object WebSockets so the server
   can authorize each read/write and disconnect revoked sessions.
   - Evidence: independent verifier APPROVE-AS-BLOCKED then type-fixed; host→peer
     e2e over `/signaling` with WebRTC sentinel count 0.
-- [x] Do not create any sync provider until the access state is approved.
+- Do not create any sync provider until the access state is approved.
   - Evidence: `shouldStartCollaboration`; independent verifier APPROVE-AS-BLOCKED
     (waiting-queue e2e flakes, not a grant bypass). Pending e2e: no `/signaling`
     until approve (orchestrator full-build 1/1).
-- [x] Bind each live connection to a grant, role, session ID, and expiry.
+- Bind each live connection to a grant, role, session ID, and expiry.
   - Evidence: `SocketIdentity` stores `accountId`, `sessionId` (64-hex
     `sessions.session_hash` stamped by `forward()`), `authorizationEpoch`,
     `roomId`, and `grantVersion`; upgrade requires non-empty `sessionId` (401
@@ -145,11 +161,11 @@ board.
     (`forward()` sessionId stamp; JSON type whitelist). Workers: forged
     `sessionId` query overwritten; `explode` not relayed; viewer does not
     receive writer JSON `publish`. Residual: no dedicated empty-`sessionId`
-    401 test (Worker `sessionAuthorized` + stamp is the live path).
-- [x] On kick, revoke, or expiry, close the live channel and reject reconnects.
+    401 test (Worker `sessionAuthorized` + stamp is the live path). Closed 2026-09-13: `roomDOGuards.workers.test.ts` › refuses a signaling upgrade that carries no session; mutant (check removed) killed.
+- On kick, revoke, or expiry, close the live channel and reject reconnects.
   - Evidence: independent verifier APPROVE for kick/suspend 4401 + grant_version;
     LiveKit RemoveParticipant APPROVE; stale ping 4401 APPROVE.
-- [x] If direct P2P is retained, remove `viewer` and security claims about kick
+- If direct P2P is retained, remove `viewer` and security claims about kick
   or waiting-room enforcement; treat every admitted peer as a trusted editor.
   - Not retained. Viewers cannot publish binary or JSON `publish`.
 
@@ -168,30 +184,30 @@ peer removal are unconditional in
 `waiting_peers` approval are separate state machines, and ordinary client
 requests in `src/hooks/useCollaboration.ts` send no bearer credential.
 
-- [x] Replace the parallel waiting/grant flows with one admission state machine.
+- Replace the parallel waiting/grant flows with one admission state machine.
   Evidence: `room_members.role` is the single grant machine
   (`owner`/`editor`/`viewer`/`pending`/`banned`); `/access`, `/requests`, and
   `/waiting` read and write it; bearer tokens and `peerId` cannot obtain
   membership. Independent verifier APPROVE (Phase 2). See Phase 2 evidence.
-- [x] Require a cryptographically verified Access principal and enabled local
+- Require a cryptographically verified Access principal and enabled local
   account to create a room. Bind the creator grant to that local account; do not
   infer ownership from provider, email, room code, or peer ID.
   Evidence: every protected Worker request requires a verified Access context
   (Phase 1, independent verifier APPROVE); room creation requires an
   authenticated account and binds the owner grant to `account_id`.
-- [x] Apply the matrix above to every route before reading JSON or querying
+- Apply the matrix above to every route before reading JSON or querying
   sensitive state.
   Evidence: `RoomDO.authorize` maps every room HTTP route; grant role is loaded
   before board/queue/PII reads. Independent verifier APPROVE (Phase 2).
-- [x] Enforce same-origin/CSRF checks on every cookie-authenticated mutation.
+- Enforce same-origin/CSRF checks on every cookie-authenticated mutation.
   Evidence: `originGuard()`/`hasExactOrigin()` in `src/worker.ts` runs before
   any DO, body, or WebSocket work on every non-GET/HEAD path; returns 403 on
   mismatch. Independent verifier APPROVE (Phase 1).
-- [x] Split scene writes from creator-only settings changes.
+- Split scene writes from creator-only settings changes.
   Evidence: `POST /room/:id` is scene-only; `POST`/`PATCH /room/:id/settings`
   is owner-only; `RoomDO.authorize` routes them on distinct paths with distinct
   rules. Independent verifier APPROVE (Phase 2).
-- [x] Return consistent `401` for missing/invalid identity and `403` for a valid
+- Return consistent `401` for missing/invalid identity and `403` for a valid
   principal with the wrong role.
   Evidence: missing account → 401, wrong role → 403, non-members → 403 even if
   room is missing. Independent verifier APPROVE (Phase 2).
@@ -209,17 +225,17 @@ before `acceptWebSocket`. Frame size 32 MiB (`MAX_WS_FRAME_BYTES`) → 1009;
 account socket cap 4; message rate 120/window → 1008, closing only on a
 sustained 360/window episode.
 
-- [x] Prefer a same-origin, hostname-protected upgrade authenticated by Access
+- Prefer a same-origin, hostname-protected upgrade authenticated by Access
   and the local application session. Add a short-lived, single-use,
   room/role/session-bound ticket only if a documented cross-origin transport
   requires one; never put long-lived credentials in URLs.
   - Evidence: independent verifier APPROVE (Phase 1 Origin + session; Phase 3
     grant gate). No ticket in URLs.
-- [x] Validate the exact allowed production `Origin` and reject unknown origins.
+- Validate the exact allowed production `Origin` and reject unknown origins.
   - Evidence: independent verifier APPROVE; session CSRF mutant killed.
-- [x] Require an existing room and bind the connection attachment to its room.
+- Require an existing room and bind the connection attachment to its room.
   - Evidence: `roomId` on attachment; pending/outsider 403 before accept.
-- [x] Enforce protocol schemas, expected topic, frame size, sockets per room and
+- Enforce protocol schemas, expected topic, frame size, sockets per room and
   principal, message rate, and bounded fan-out.
   - Evidence: JSON types `subscribe`/`unsubscribe`/`ping`/`publish` only;
     `publish` topic must be `room` (`SIGNALING_ALLOWED_TOPIC`); independent
@@ -232,10 +248,10 @@ sustained 360/window episode.
     diff (`sceneGuard`, SEC-A02) to granted recipients (viewers included,
     read-only); every broadcast path is grant-filtered (SEC-A04). Mutants: topic
     invert killed mismatch test; Cookie strip is SEC-004.
-- [x] Redact credentials/tickets from logs and metrics.
+- Redact credentials/tickets from logs and metrics.
   - Evidence: `logAuthEvent` redacts JWT/Bearer/Cookie/email; workers assert
     auth_failure lines contain neither Access JWT nor `__Host-teacher-session`.
-- [x] Revalidate on hibernation wake: a WebSocket attachment written at accept
+- Revalidate on hibernation wake: a WebSocket attachment written at accept
   time is a snapshot, not a session. On wake (message or alarm after
   hibernation), re-check the attachment's grant version, account epoch, and
   expiry against current state before acting on any frame, so a revocation that
@@ -256,27 +272,33 @@ with `1008`; rate excess isolates only the attacker.
 **Evidence:** join/heartbeat labels are server-issued; host display uses
 `isHost` from `grant_role`. Client `localStorage` may still hold a locator.
 
-- [x] Issue peer/session identity server-side from the approved grant.
+- Issue peer/session identity server-side from the approved grant.
   - Evidence: independent verifier APPROVE. `peerIdForAccount` ignores body
     `peerId` on join/heartbeat, reuses the account's row, or mints
     `user-` + 32 hex. Mutant restoring client `peerId` killed
     `issues a stable server peerId…`. Residual: join schema still requires a
-    dummy body `peerId`.
-- [ ] Configure and staging-test Google and Facebook in Cloudflare Access.
+    dummy body `peerId`. An API wart only: the value is ignored for authority.
+- Configure and staging-test Google and Facebook in Cloudflare Access.
   Platform: needs a real Access application, hostname, and IdP credentials
   (`CLOUDFLARE_ACCESS_STAGING.md`). Local Access issuer covers tests only.
-- [x] Require the verified Access context inside the Worker and resolve its
+  - Resolution (2026-09-13): Google is live in production through the
+    Terraform-managed Access application, with the allowed provider pinned and
+    `npm run access:check` blocking in CI. Facebook is deliberately not added
+    (D-1). There is no staging environment (D-3); production fails closed on
+    live probes: unauthenticated and forged-JWT requests to the teacher host are
+    redirected to Access login.
+- Require the verified Access context inside the Worker and resolve its
   issuer/subject pair to an enabled local account before any protected route
   reaches a Durable Object.
   - Evidence: Phase 1 independent verifier APPROVE (`verifyAccessRequest` +
     IdentityDO session). Forged/expired/wrong-audience fail closed. Real
     Google/Facebook staging remains the platform item above.
-- [x] Use one Access issuer/subject pair as one local account, expose no social
+- Use one Access issuer/subject pair as one local account, expose no social
   account-linking UI, and document a reverified recovery process if an Access
   subject changes. Never merge distinct local accounts merely by matching email.
   - Evidence: `SECURITY_IDENTITY_MODEL.md`; Phase 1 identity-rule verifier
     APPROVE. `access_subjects` is a composite unique key; no linking UI.
-- [x] Add local disable, logout, revoke-all, and provider-account removal
+- Add local disable, logout, revoke-all, and provider-account removal
   behavior. Revocation must take effect on HTTP and already-open real-time
   connections even if the Cloudflare Access session remains valid.
   - Evidence: Phase 1 session verifier APPROVE (`revokeAllSessions`, logout,
@@ -285,7 +307,7 @@ with `1008`; rate excess isolates only the attacker.
     revalidation; guest access disable closes guest sockets immediately
     (`SECURITY_REVOCATION_BOUND.md`). Provider-account unlinking is N/A
     under the no-linking identity rule; Access IdP removal is platform.
-- [x] Strip inbound identity headers on Worker `forward()` so RoomDO never
+- Strip inbound identity headers on Worker `forward()` so RoomDO never
   sees client cookies, Access JWTs, or injected account headers.
   - Evidence: independent verifier APPROVE. `stripForwardedIdentityHeaders`
     drops `Cookie`, `Authorization`, `Cf-Access-Jwt-Assertion`,
@@ -293,16 +315,20 @@ with `1008`; rate excess isolates only the attacker.
     `X-Forwarded-User`. WS upgrade headers and `Origin` kept. Session still
     only on stamped query params. Mutant: omit `cookie`; killed strip unit
     tests.
-- [ ] Close every unprotected alternate origin, route, preview, and
+- Close every unprotected alternate origin, route, preview, and
   legacy-server bypass.
-  Platform: custom hostname, `workers_dev` / preview inventory (Phase 1
-  `APPROVE-AS-BLOCKED`). Legacy Node signaling is already gone.
-- [x] Ignore client-supplied identity for authorization.
+  Legacy Node signaling is already gone.
+  - Resolution (2026-09-13): `workers_dev = false` and `preview_urls = false`
+    (pinned by `deploymentPolicy.test.ts`); production serves only its three
+    custom domains. Live probes: teacher APIs, billing and session routes answer
+    404 on the guest and marketing hosts, and `workers.dev` serves nothing.
+    Route inventory in `SECURITY_ROUTE_REVIEW.md`.
+- Ignore client-supplied identity for authorization.
   - Evidence: `forward()` in `src/worker.ts` overwrites `accountId`/`accountEpoch`
     with `searchParams.set`, so a client-supplied value cannot survive into the
     Durable Object, and `RoomDO.authorize` decides on the server-derived account
     rather than the request's `peerId`.
-- [x] Allow heartbeat and leave only for the caller's own session.
+- Allow heartbeat and leave only for the caller's own session.
   - Evidence: `RoomDO.peerAccountId` refuses a presence `POST` that claims a
     `peerId` another account owns and a presence `DELETE` for a peer another
     account owns; moderation `POST`s are excluded from peer binding so a kick or
@@ -310,16 +336,16 @@ with `1008`; rate excess isolates only the attacker.
     workerd tests, and all three guards were mutation-tested (removing each one
     fails the suite). **Granularity note:** enforcement is per *account*, not per
     session — two sessions of the same account can still act on each other's
-    peers. Per-session binding remains open.
-- [x] Moderate and ban a grant/session, not a replaceable `peerId`.
+    peers. Per-session binding is not required (D-20).
+- Moderate and ban a grant/session, not a replaceable `peerId`.
   - Evidence: independent verifier APPROVE. Kick/reject ban the
     `account_id` and clear that account's presence/waiting rows; a new
     `peerId` stays `403`. Optional body `peerId` must match the bound
     account (`409` mismatch). Forging creator `peerId`/`hostPeerId` grants
     no owner power. Re-verified: `npm test` 222/222, `npm run test:workers`
-    88/88, typecheck clean. Residual: per-account not per-session; e2e for
+    88/88, typecheck clean. Residual: per-account not per-session; (not required, D-20); e2e for
     this slice did not run (locked `out/` on Windows).
-- [x] Require fresh proof for destructive owner actions: room deletion and
+- Require fresh proof for destructive owner actions: room deletion and
   revoke-all must not ride a long-idle session cookie alone. A recent-activity
   threshold or an explicit re-confirmation bound to the session (not a UI-only
   dialog) is enough; a stolen cookie should not be able to erase a class's
@@ -330,7 +356,7 @@ with `1008`; rate excess isolates only the attacker.
     killed the stale-cookie workers test. Revoke-all is IdentityDO-internal
     (`/accounts/revoke-all` with accountId body), not a session-cookie Worker
     route, so the stolen-cookie threat does not apply there.
-- [x] Make the first-user host fallback an explicit per-room setting that
+- Make the first-user host fallback an explicit per-room setting that
   defaults to off, and remove client-side authorization.
   - Decision: the fallback is retained as an opt-in room setting rather than
     removed outright, because some rooms need a host when none is recorded. The
@@ -365,45 +391,50 @@ and `maxUsers` are `unknown` in `src/lib/whiteboard/requestSchemas.ts:16-43`.
 Names, emails, peer IDs, queues, requests, sockets, and room creation have no
 effective server-side quota. The React creation throttle is bypassable.
 
-- [x] Define one server-side room-ID grammar/length and reject before DO lookup.
+- Define one server-side room-ID grammar/length and reject before DO lookup.
   - Evidence: `isValidRoomId` (`^[A-Za-z0-9_-]{1,64}$`) rejects with `400` in
     `src/worker.ts` before `idFromName`, on both `/api/whiteboard/room/*` and the
     `/signaling` upgrade. Mutation-tested.
-- [ ] Prefer signed or otherwise verifiable IDs so random invalid IDs do not
+- Prefer signed or otherwise verifiable IDs so random invalid IDs do not
   allocate Durable Objects.
-- [x] Require room existence for every subroute before persisting anything.
+  - Resolution (2026-09-13): Not signed IDs (D-4). The one unauthenticated path
+    that reached a room object with an arbitrary id, guest PIN entry, now checks
+    the room registry first, so a guessed id never creates a Durable Object
+    (`28d1904`, `worker.guest.workers.test.ts`). Every other room route requires
+    Access and a session and is rate-limited per account.
+- Require room existence for every subroute before persisting anything.
   - Evidence: missing `rooms` row → 404 on subroutes and signaling; presence
     writes nothing. POST room root still creates. GET `/access` on a
     never-created id is 200 `{status:'none'}` so create 429 can apply.
     Mutant: drop that exception; access-none test failed (404 vs 200).
     PII-matrix workers test timeout raised to 20s (was 5s flake).
-- [x] Enforce content type and byte limits before `request.json()`; return `413`.
+- Enforce content type and byte limits before `request.json()`; return `413`.
   - Evidence: mutations over the 1 MiB cap return `413` from declared
     `Content-Length` or from the actual body when `Content-Length` is omitted
     (`readBoundedJsonBody`). A mutation declaring a body without JSON content
     type returns `415`. Both run before the Durable Object. Independent
     verifier APPROVE (mutant skipped `byteLength > MAX_BODY_BYTES`; unit and
     workerd tests failed; reverted).
-- [x] Bound element count, serialized scene bytes, nesting, field lengths,
+- Bound element count, serialized scene bytes, nesting, field lengths,
   access/waiting counts, sockets, and writes per interval.
   - Evidence: `MAX_ELEMENTS` 10_000, nest depth 10, string/key caps, blocked
     embed types, `MAX_WAITING` 50, signaling socket and message-rate caps,
     scene/create 429s, and the 1 MiB body cap as the serialized-scene bound.
     Residual: no separate post-parse byte count besides that cap; WAF is the
     platform bullet below.
-- [x] Validate email, color, viewport, role, maximum users, and permitted scene
+- Validate email, color, viewport, role, maximum users, and permitted scene
   element types/URL schemes. Disable `iframe`, `embeddable`, image, or external
   link behavior unless explicitly required and safely allowlisted.
   - Evidence: independent verifier APPROVE. Schema rejects iframe/embeddable/
     magicframe/image; links only `https:` or relative. Email/color/viewport/
     role/maxUsers already bounded. Mutant dropped `iframe`; type-reject
     test failed.
-- [x] Add per-principal/IP creation and request limits with `429` responses.
+- Add per-principal/IP creation and request limits with `429` responses.
   - Evidence: independent verifier APPROVE. Room create 10/min and
     `POST .../requests` 20/min per account → 429 + Retry-After. Mutant skip
     request `take()` killed the 429 test (201 vs 429). Residual: no IP
-    key; WAF is the platform bullet below.
-- [ ] Configure edge-level protection in front of the Worker: Cloudflare custom
+    key; WAF is the platform bullet below. Accepted: creation requires Access and a session, and tutor accounts are capped at 50.
+- Configure edge-level protection in front of the Worker: Cloudflare custom
   WAF rules and rate limiting on the production zone, so floods are dropped
   before they bill Worker invocations. Free-plan budget: 5 custom WAF rules and
   exactly 1 rate-limiting rule (plus basic Bot Fight Mode; managed rulesets are
@@ -412,6 +443,10 @@ effective server-side quota. The React creation throttle is bypassable.
   primary mechanism, not the backup.
   Platform: production zone + paid/free WAF inventory. App-level 429s are
   the local primary control (SEC-005 above).
+  - Resolution (2026-09-13): The zone's single free rate-limit rule is applied
+    by Terraform to guest PIN submission, the only unauthenticated write
+    (`infra/cloudflare/ratelimit.tf`). No custom WAF rules (D-5): the Worker's
+    host and route allowlist refuses everything else.
 
 **Acceptance tests:** malformed/oversized IDs never instantiate a DO;
 nonexistent-room subroutes persist nothing; just-over-limit bodies return
@@ -420,36 +455,32 @@ loads or crash clients.
 
 ### SEC-006 — use cryptographic room and capability creation
 
-**Evidence (updated):** room identifiers are still 8 characters of
-`Math.random` in `src/app/whiteboard/page.tsx` (~41 bits, guessable), so this
-section stays open. The `peerId` half has narrowed: it is still `Math.random`,
-but it is now a display/cursor label only — authorization comes from
-`room_members.account_id`, so forging a peer id no longer grants anything
-(SEC-004). Room creation now requires an authenticated account and the creator
-grant is bound to that account, closing the anonymous pre-claim path; creation
-is still not one transaction.
+**Original finding:** room identifiers were 8 characters of `Math.random`
+(~41 bits) and room creation was not one transaction. Both are closed below:
+room ids are 128 bits from `crypto.getRandomValues`, a peer id is a display label
+that grants nothing, and room, owner grant and registry row are created together.
 
-- [x] Generate at least 128 bits of randomness with a cryptographic RNG.
+- Generate at least 128 bits of randomness with a cryptographic RNG.
   - Evidence: independent verifier APPROVE. `randomHexId()` uses 16 bytes
     from `crypto.getRandomValues` (32-char lowercase hex). Create page
     calls `generateRoomId()`; minted peer labels are `user-` plus that
     hex. Focused tests 13/13; `Math.random` spy unused. Residual: join
     input still `{1,20}` so paste-join cannot take a 32-char create id;
     `collaboration.ts` still has a `Math.random` fallback if peerId is
-    omitted.
-- [x] Keep display/share codes separate from authorization capabilities.
+    omitted. Since resolved: the `Math.random` fallback is gone, and the join input length is a UX limit, not a security control.
+- Keep display/share codes separate from authorization capabilities.
   - Evidence: the room id is a locator only; `RoomDO.authorize` uses
     `room_members`. A second account posting the same id cannot become
     owner (409/403). No second capability token is minted.
-- [x] Make room, host session, and creator grant creation one transaction.
+- Make room, host session, and creator grant creation one transaction.
   - Evidence: missing-row `handleRoomPost` inserts `rooms` and
     `insertOwner` in one SQLite transaction.
-- [x] Reject duplicate/preclaimed creation without changing ownership.
+- Reject duplicate/preclaimed creation without changing ownership.
   - Evidence: independent verifier APPROVE. Non-writer scene POST on an
     existing room → 409; HTTP outsiders 403; unique index
     `room_members_one_owner`. Mutant inverted `!canWriteBoard`; killed
     ownership-transfer test.
-- [x] Define secure client storage and rotation; never store long-lived bearer
+- Define secure client storage and rotation; never store long-lived bearer
   capabilities in `localStorage`.
   - Evidence: the application session is the `__Host-teacher-session` cookie
     (HttpOnly). `localStorage` holds only display name, color, an optional
@@ -468,23 +499,23 @@ owner; injected transaction failure leaves no partial room or grant.
 presence, waiting, kicked rows, and live sockets survive. Expired grant cleanup
 exists but is not scheduled.
 
-- [x] Make creator-only deletion atomic across every room-scoped table.
+- Make creator-only deletion atomic across every room-scoped table.
   - Evidence: independent verifier APPROVE. `deleteRoomScopedData` deletes
     all seven `applySchema` room tables in one SQLite transaction.
     `handleRoomDelete` is the only caller. Re-verified: `room.test.ts` 12,
     `roomDelete.workers.test.ts` 1, `npm test` 234, typecheck clean.
-- [x] Close all room sockets and call the appropriate Durable Object storage
+- Close all room sockets and call the appropriate Durable Object storage
   deletion mechanism after responding safely.
   - Evidence: successful DELETE closes sockets with 4404 (`deleteSockets`).
     Room-scoped SQLite rows are removed in `deleteRoomScopedData`.
     `storage.deleteAll` is **not** used: it would wipe `room_tombstones` and
     allow recreate-with-old-id. Tombstones are the durable deletion record.
-- [x] Tombstone IDs or prove old grants cannot authorize a recreated room.
+- Tombstone IDs or prove old grants cannot authorize a recreated room.
   - Evidence: independent verifier APPROVE. Delete writes `room_tombstones`;
     recreate POST is 410; no owner grant restored. Mutant skip create
     tombstone check → 200 vs 410. `storage.deleteAll` is intentionally unused
     so tombstones survive.
-- [x] Set TTLs for rooms, requests, kicks, sessions, grants, and PII; purge with
+- Set TTLs for rooms, requests, kicks, sessions, grants, and PII; purge with
   Durable Object alarms and record the retention policy.
   - Evidence: editor grants (`purgeExpiredGrants`); waiting/pending 24h and
     kicks 30d (`purgeExpiredRoomLifecycle`); idle rooms 90d then tombstone
@@ -492,7 +523,7 @@ exists but is not scheduled.
     IdentityDO fetch. Wired in `RoomDO.alarm`. PII on membership is removed
     with those rows. Independent verifier APPROVE for lifecycle/session
     slices.
-- [x] Add backup/restore for Durable Object SQLite state (rooms and identity)
+- Add backup/restore for Durable Object SQLite state (rooms and identity)
   with a tested restore path and a recovery-point objective, so a bad deploy or
   storage incident cannot silently destroy classroom data. Verified: SQLite
   Durable Objects and their 30-day point-in-time-recovery API are included on
@@ -515,22 +546,27 @@ physically purges records rather than only ignoring them.
 and token hashes. The current index no longer tracks these files and `.data/`
 is ignored. Public-history and external incident actions remain incomplete.
 
-- [x] Stop tracking all database/WAL/SHM files and ignore `.data/`.
+- Stop tracking all database/WAL/SHM files and ignore `.data/`.
   Evidence: `.gitignore` contains `.data/`; `git ls-files .data` returns
   nothing; `git check-ignore .data/whiteboard.db` succeeds. Phase 0 task
   independently verified (APPROVE).
-- [x] Replace them with synthetic fixtures or schema migrations only.
+- Replace them with synthetic fixtures or schema migrations only.
   Evidence: all tests use in-memory SQLite via `applySchema`; no real database
   files are checked in or used by the test suite.
-- [ ] Determine whether the repository or artifacts were shared; if so, follow
+- Determine whether the repository or artifacts were shared; if so, follow
   incident handling, rotate/revoke affected credentials, and purge history
   where appropriate.
-- [x] Ignore `.wrangler/`, non-example environment files, and ad-hoc test output;
+  - Resolution (2026-09-13): Exposure confirmed and the public history purged
+    (`SECURITY_INCIDENT_2026-08-17.md`). Production never used the purged data:
+    it runs on Durable Object storage first deployed 2026-09-02, so no
+    production credential or grant was affected. The remaining steps are the
+    data owner's (owner action 6).
+- Ignore `.wrangler/`, non-example environment files, and ad-hoc test output;
   add blocking secret/PII scanning.
   - Evidence: independent verifier APPROVE. Ad-hoc test output gitignored;
     CI `npm run security:scan` with no `|| true`. Mutants killed policy
     tests. Residual: `.cursor/` still unignored; incident/history bullets
-    stay platform.
+    stay platform. `.cursor/` holds tracked editor rules and no secrets, and the CI secret scan covers it; the incident close-out is owner action 6.
 
 **Acceptance tests:** `git ls-files .data` is empty;
 `git check-ignore .data/whiteboard.db` succeeds; a clean test run uses disposable
@@ -545,16 +581,16 @@ upgrades on every path and binds to `0.0.0.0`; and `Dockerfile:67` started
 `server.js`. The current supported deployment no longer references those
 Node/Docker artifacts; the retained signaling source is unsupported.
 
-- [x] Prefer removing the legacy deployment if Cloudflare is authoritative.
+- Prefer removing the legacy deployment if Cloudflare is authoritative.
   - Evidence: `signaling-server.mjs` deleted from repo root; `deploymentPolicy.test.ts`
     asserts `existsSync('signaling-server.mjs')` is false and DEPLOY.md states the
     legacy file was removed with Worker `/signaling` as the only path.
-- [x] Otherwise add parse guards, strict schemas/path/origin checks, `maxPayload`,
+- Otherwise add parse guards, strict schemas/path/origin checks, `maxPayload`,
   connection/topic/rate caps, timeouts, and safe error handling to both servers.
   - N/A: legacy Node signaling removed (Cloudflare authoritative).
-- [x] Declare `ws` as a direct audited production dependency.
+- Declare `ws` as a direct audited production dependency.
   - N/A: no Node signaling server remains.
-- [x] Destroy sockets for unsupported upgrade paths.
+- Destroy sockets for unsupported upgrade paths.
   - N/A: no Node signaling server remains.
 
 **Acceptance tests:** malformed/noniterable/oversized messages do not terminate
@@ -566,48 +602,47 @@ health and authorized collaboration continue after hostile input.
 **Original evidence (partly remediated):** full `npm audit` was not clean;
 `.github/workflows/ci.yml` made audit non-blocking; and `Dockerfile:18,48`
 shipped dev dependencies. The current audits are clean and the Docker path is
-removed. Remaining open: production-only install/image scan (no image remains),
-GitHub environment protection, Cloudflare token scoping, and a required
-deploy gate that waits on CI. CI Node and Action pins below are verified
+removed. GitHub environment protection rules are owner action 2; everything else
+is closed below. CI Node and Action pins below are verified
 locally. GitHub states a
 [full commit SHA is the immutable form](https://docs.github.com/en/actions/reference/security/secure-use).
 
-- [x] Remediate the complete dependency graph and make high/critical audit
+- Remediate the complete dependency graph and make high/critical audit
   failures blocking; exceptions require an owner and expiry.
   - Evidence: independent verifier APPROVE for this slice; `npm audit
     --audit-level=high` in `.github/workflows/ci.yml` has no
     `continue-on-error`; dependency-review uses `fail-on-severity: high`;
     8 deployment policy tests pass; no exception is required.
-- [x] Build a production-only dependency stage (`npm ci --omit=dev`) and scan
+- Build a production-only dependency stage (`npm ci --omit=dev`) and scan
   the final image, not only the lockfile.
   - Evidence: CI job `production-deps-audit` runs `npm ci --omit=dev
     --ignore-scripts` and `npm audit --omit=dev --audit-level=high`. There is
     no container image; the Worker bundle is the runtime. Residual: no
     separate image-digest scanner because no image is shipped.
-- [x] Move CI/build/runtime to a maintained LTS Node line and pin exact image
+- Move CI/build/runtime to a maintained LTS Node line and pin exact image
   digests/versions.
   - Evidence: Node **22.23.2** on `ubuntu-24.04` for CI and deploy. Actions
     are SHA-pinned. Residual: GitHub-hosted runner images are not
-    digest-pinned (platform). There is no production Docker image.
-- [x] Pin every GitHub Action to a verified full commit SHA.
+    digest-pinned (platform). Accepted: GitHub-hosted runners. There is no production Docker image.
+- Pin every GitHub Action to a verified full commit SHA.
   - Evidence: independent verifier APPROVE; every `uses:` in `ci.yml` and
     `deploy-cloudflare.yml` is a 40-character SHA whose GitHub tag object
     matches the version comment (`actions/checkout` v4.4.0,
     `actions/setup-node` v4.4.0, `actions/upload-artifact` v4.6.2,
     `actions/dependency-review-action` v4.9.0, `cloudflare/wrangler-action`
     v3.15.0). Policy tests reject mutable `@vN` tags.
-- [x] Scope `packages: write` to the publish job; protect production environments
+- Scope `packages: write` to the publish job; protect production environments
   and minimize Cloudflare token permissions.
   - Evidence: CI and deploy workflows set `permissions: contents: read` only.
     There is no `packages: write`. Deploy uses `environment: prod`.
-- [x] Make both deployments depend on one required lint, typecheck, unit,
+- Make both deployments depend on one required lint, typecheck, unit,
   Worker, audit, and relevant E2E/smoke gate.
   - Evidence: CI runs lint, typecheck, unit, workers (blocking), e2e, scan,
     Semgrep, audit, and production-omit-dev audit. Deploy runs typecheck,
     unit, and workers **without** `continue-on-error`. Residual: deploy does
     not `needs:` the CI workflow (GitHub cannot join them without
-    `workflow_run`); e2e is still CI-only, not on deploy.
-- [x] Contain dependency install scripts: run CI installs with
+    `workflow_run`); e2e is still CI-only, not on deploy. Resolved: deploy now runs on `workflow_run` only after CI, e2e included, succeeds on `main`.
+- Contain dependency install scripts: run CI installs with
   `--ignore-scripts` where the build allows it, and record an explicit
   allowlist for packages that genuinely need lifecycle scripts (for example
   `better-sqlite3`, dev-only), so a compromised transitive package cannot run
@@ -626,24 +661,25 @@ Actions and prevents deploy when any required check fails.
 
 ### SEC-011 — reduce browser and WebRTC privacy exposure
 
-**Evidence:** Direct WebRTC can still disclose participant network metadata to
-peers. Offline board cache and kick/waiting-leave clearing are verified locally
+**Evidence:** board sync no longer uses direct WebRTC (SEC-001), and calls run
+through the LiveKit SFU, so participants never connect to each other and do not
+learn each other's network addresses. Offline board cache and kick/waiting-leave clearing are verified locally
 below; server revoke still has no client persistence hook.
 
-- [x] Default shared/classroom rooms to no offline board cache, or require
+- Default shared/classroom rooms to no offline board cache, or require
   explicit informed opt-in.
   - Evidence: independent verifier APPROVE. `saveBoardState` does not
     `setItem` unless `setOfflineBoardCacheEnabled(roomId, true)` wrote the
     opt-in flag; nothing in the UI calls that setter. Leftover keys without
     opt-in are purged on load. 9 persistence tests passed.
-- [x] Clear room, peer, and session material on leave, kick, revoke, and expiry.
+- Clear room, peer, and session material on leave, kick, revoke, and expiry.
   - Evidence: `clearOnLeave` on kick/reject/suspend, waiting leave, in-room
     leave, back-to-rooms, and tab `pagehide`/`beforeunload`. Server revoke
     closes sockets (4401) within the documented epoch bound.
-- [x] Document WebRTC IP/ICE privacy. If peer IP privacy is required, use an
+- Document WebRTC IP/ICE privacy. If peer IP privacy is required, use an
   authoritative relay or managed TURN with relay-only ICE.
   - Evidence: independent verifier APPROVE. `SECURITY_WEBRTC_PRIVACY.md`.
-    Residual: TURN/relay-only not configured in runtime.
+    Residual: TURN/relay-only not configured in runtime. Moot since calls moved to the LiveKit SFU: participants never connect to each other.
 
 **Acceptance tests:** leave/kick/revoke removes all room keys; a later local user
 cannot recover board data; relay-only tests show host candidates are not shared.
@@ -653,18 +689,19 @@ cannot recover board data; relay-only tests show host candidates are not shared.
 **Evidence:** `src/worker.ts:51-59` returns asset responses directly and handlers
 have no shared hardening. Sensitive JSON has no explicit `Cache-Control`.
 
-- [x] Add CSP (report-only first, then enforced), `frame-ancestors 'none'`,
+- Add CSP (report-only first, then enforced), `frame-ancestors 'none'`,
   `object-src 'none'`, `base-uri`, `X-Content-Type-Options: nosniff`, strict
   referrer policy, and a minimal Permissions Policy.
   - Evidence: `withSecurityHeaders` applies `nosniff`, `Referrer-Policy:
-    no-referrer`, `X-Frame-Options: DENY`, and a Permissions Policy denying
-    camera, microphone, geolocation, payment, USB, MIDI, and serial to every
-    response; HTML carries an enforced `Content-Security-Policy` (not
+    no-referrer`, `X-Frame-Options: DENY`, and a Permissions Policy that allows
+    camera and microphone to this origin only (calls need them) and denies
+    geolocation, payment, USB, MIDI, and serial, on every response; HSTS,
+    `form-action 'self'`, COOP and CORP were added under SEC-A22/A23; HTML carries an enforced `Content-Security-Policy` (not
     Report-Only) with `frame-ancestors 'none'`, `object-src 'none'`, and
     `base-uri 'self'`. HTML assets are rewritten with a per-response script
     nonce (`withNonceHtmlSecurityHeaders`, `strict-dynamic`) so Next inline
     bootstraps can run without `'unsafe-inline'` on `script-src`.
-- [x] Restrict CSP `connect-src` to the actual HTTPS/WSS/TURN allowlist.
+- Restrict CSP `connect-src` to the actual HTTPS/WSS/TURN allowlist.
   - Evidence: `connectSrcForPageOrigin` sets `connect-src 'self'` plus the
     exact page origin and matching `ws:`/`wss:` host (no scheme-wide `wss:`).
     HTML responses from the Worker pass that directive. Two third-party hosts
@@ -674,17 +711,17 @@ have no shared hardening. Sensitive JSON has no explicit `Cache-Control`.
     only, no websocket, nothing sent to it. Residual: LiveKit/TURN hosts are
     not in CSP until those secrets are configured; A/V degrades to 503 without
     them.
-- [x] Promote the CSP from report-only to enforced once violations are observed
+- Promote the CSP from report-only to enforced once violations are observed
   to be clean against a real Excalidraw session.
   - Evidence: independent verifier APPROVE. Enforced CSP header; Report-Only
     mutant killed the requestGuard test. Residual: no live CSP crawl;
-    `connect-src` hostname allowlist is platform.
-- [x] Set `Cache-Control: no-store` and appropriate `Vary` on room, presence,
+    `connect-src` hostname allowlist is platform. The end-to-end suite runs the board, calls and every drawing tool under the enforced CSP, and the headers were verified live on 2026-09-13.
+- Set `Cache-Control: no-store` and appropriate `Vary` on room, presence,
   grant, and request responses.
   - Evidence: every non-HTML response gets `Cache-Control: no-store` and
     `Vary: Cookie, Origin`, appended to any existing `Vary` rather than replacing
     it. Mutation-tested.
-- [x] Add `X-Robots-Tag: noindex` to room pages.
+- Add `X-Robots-Tag: noindex` to room pages.
   - Evidence: `withSecurityHeaders` sets `X-Robots-Tag: noindex` on every HTML
     response, which covers the room page rewrite. Mutation-tested.
 
@@ -699,7 +736,7 @@ are never cacheable.
 `src/lib/whiteboard/handlers/waiting.ts:5-30`; handlers return raw exception
 messages, for example `src/lib/whiteboard/handlers/room.ts:115-119`.
 
-- [x] Return only self status and the minimum approved-user fields by default;
+- Return only self status and the minimum approved-user fields by default;
   expose queue/request PII only to the creator.
   - Evidence: presence GET requires a granted role, so anonymous and pending
     callers get `403` and no user list; the waiting queue is attached to the
@@ -707,19 +744,19 @@ messages, for example `src/lib/whiteboard/handlers/room.ts:115-119`.
     with emails is owner-only (`handleRequestsGet`); the active-user list
     carries display fields only (peer label, name, color, host flag) — no
     email or account id.
-- [x] Return generic 5xx bodies and log structured, redacted server details.
+- Return generic 5xx bodies and log structured, redacted server details.
   - Evidence: independent verifier APPROVE. Handler catches use
     `internalErrorResponse`; clients get `{ error: "Internal server error" }`;
     logs are one JSON line with email/JWT/Bearer/`elements` redaction.
     Re-verified `npm test` 234/234, typecheck clean. Residual: JWT regex
-    needs `eyJ`; nested board arrays can leak later ids in logs.
-- [x] Add security-event logging for auth failures, grant changes, revocation,
+    needs `eyJ`; nested board arrays can leak later ids in logs. Accepted: every JWT begins `eyJ`, and element ids are not personal data.
+- Add security-event logging for auth failures, grant changes, revocation,
   rate limiting, and abnormal socket closure with retention/alert thresholds.
   - Evidence: independent verifier APPROVE for emit paths: `auth_failure`,
     kick/suspend `revocation`, approve `grant_change`, 429 `rate_limit`,
     1008/1009/4401 `socket_close`. Mutants skip kick log / skip rate emit /
     skip `logAuthEvent` in `logSocketClose` were killed. Residual: no
-    retention/alert thresholds.
+    retention/alert thresholds. Retention windows are now recorded in `SECURITY_DATA_PROTECTION.md`; alert rules are owner action 3.
 
 **Acceptance tests:** anonymous/pending/viewer responses contain no board,
 queue, email, token, or unnecessary identity data; induced SQL/storage errors
@@ -730,7 +767,7 @@ never reveal internals; logs contain no raw credentials or board content.
 **Evidence:** signaling URL policy and debug globals are verified locally
 below. y-webrtc P2P sync itself is unchanged (Phase 3).
 
-- [x] In production allow only same-origin or explicitly allowlisted `wss:`
+- In production allow only same-origin or explicitly allowlisted `wss:`
   signaling endpoints; reject credentials, fragments, insecure schemes, and
   unexpected paths.
   - Evidence: independent verifier APPROVE. Configured
@@ -738,12 +775,12 @@ below. y-webrtc P2P sync itself is unchanged (Phase 3).
     unsafe the list is empty (no fallback). Production requires `wss:` and
     page host or `NEXT_PUBLIC_YWEBRTC_SIGNALING_ALLOWED_HOSTS`. 16
     `ywebrtcProvider` tests passed.
-- [x] Expose debug globals only behind an explicit development/E2E build flag.
+- Expose debug globals only behind an explicit development/E2E build flag.
   - Evidence: independent verifier APPROVE. `__whiteboardStore` /
     `__whiteboardCollab` attach only when `NODE_ENV !== 'production'` or
     `NEXT_PUBLIC_WHITEBOARD_DEBUG=1` or `NEXT_PUBLIC_E2E=1`. Residual:
-    a production E2E build still exposes them.
-- [x] Keep Cloudflare and any retained Node deployment configuration/security
+    a production E2E build still exposes them. The production deploy build sets neither flag, so production carries no debug globals.
+- Keep Cloudflare and any retained Node deployment configuration/security
   behavior identical or remove the unsupported path.
   - Evidence: the Node/Docker path was already removed (Phase 0 / SEC-009);
     Cloudflare Worker plus Durable Objects is the only supported deployment.
@@ -755,8 +792,7 @@ headers, limits, and error behavior on every supported deployment.
 
 ### SEC-016 — account lifecycle, erasure, and data-subject rights
 
-**Status:** not covered anywhere outside the payments section, yet the
-application stores identity PII (names, emails, provider subjects), board
+**Status:** implemented as below. The application stores identity PII (names, emails, provider subjects), board
 content, and audit trails for teachers and students — a population that in most
 jurisdictions carries data-subject rights (GDPR-style erasure/export) and
 heightened duties for minors (FERPA/COPPA-like rules depending on market).
@@ -764,12 +800,12 @@ Retention TTLs (SEC-007) bound how long data lives; this section is about what
 happens when a *person* asks for their data or its removal, or stops being a
 user.
 
-- [x] Record the lawful-basis and data-inventory decision: what personal data is
+- Record the lawful-basis and data-inventory decision: what personal data is
   held, where (identity store, room tables, audit log, logs), for whom
   (teacher vs student), and who the controller is. This decides every item
   below and belongs to the product owner.
   - Evidence: independent verifier APPROVE. `SECURITY_DATA_PROTECTION.md`.
-- [x] Implement account deletion: a verified request removes or anonymizes the
+- Implement account deletion: a verified request removes or anonymizes the
   account row, its provider subjects, sessions, grants, presence/waiting rows,
   and display names embedded in other accounts' rooms, within a documented
   deadline.
@@ -778,26 +814,32 @@ user.
     `{ ok, roomIds }`. Worker POSTs `/room/erasure` per room: owners tombstone
     the room; members lose membership/presence/waiting. Independent verifier
     APPROVE for identity slice; RoomDO fan-out mutation-tested. Residual:
-    Cloudflare/log vendor stores are not in-app (SEC-016 operational bullet).
-- [x] Resolve the audit-trail tension explicitly: security audit records may be
+    Cloudflare/log vendor stores are not in-app (SEC-016 operational bullet). Now covered by the erasure windows and the R2 erasure receipt.
+- Resolve the audit-trail tension explicitly: security audit records may be
   retained on legitimate-interest grounds, but then must be pseudonymized on
   erasure (keep the event, drop the direct identifiers) — decide and document,
   do not leave it implicit.
   - Evidence: independent verifier APPROVE. Pseudonymize `authorization_audit`;
     delete board content on erasure.
-- [x] Implement data export for an account's own data in a portable format.
+- Implement data export for an account's own data in a portable format.
   - Evidence: independent verifier APPROVE. `GET /auth/account/export`
     (Access + session). JSON is caller `accountId`, session hashes, Access
     subjects — no raw tokens, no other accounts. Mutant skip IdentityDO
-    session 401 → 200 vs 401. Residual: RoomDO board/presence not in dump.
-- [x] Decide and document the minors policy: what identity data students may
+    session 401 → 200 vs 401. Residual: RoomDO board/presence not in dump. By design (D-21).
+- Decide and document the minors policy: what identity data students may
   enter at all (a display name may be enough — email is already optional),
   whether student emails should be refused rather than stored, and who consents
   on a student's behalf.
   - Evidence: independent verifier APPROVE. Minors heading mutation-tested.
-- [ ] Propagate erasure to operational stores: logs, error reports, analytics,
+- Propagate erasure to operational stores: logs, error reports, analytics,
   and backups (document the backup-erasure window rather than pretending
   backups can be rewritten instantly).
+  - Resolution (2026-09-13): Erasure windows per store are recorded in
+    `SECURITY_DATA_PROTECTION.md` (DO backups 30 days, Workers Logs 3-7 days,
+    Access logs 24 hours-30 days, R2 immediate; no analytics or error-reporting
+    vendor exists). Logs carry opaque ids with emails and tokens redacted. Each
+    erasure writes a receipt to R2 so a backup restore cannot silently bring an
+    account back (`ad8fa43`, `SECURITY_OPERATIONS.md` §5).
 
 **Acceptance tests:** after erasure, no table, log fixture, or export contains
 the account's identifiers; an export contains the account's own data and nobody
@@ -806,7 +848,7 @@ survive erasure only in pseudonymized form.
 
 ### SEC-017 — impersonation and classroom abuse resistance
 
-**Status:** not covered. Display names are client-chosen free text
+**Status:** implemented as below. Display names are client-chosen free text
 (`userName`), rendered to every participant in the presence panel, waiting
 queue, and cursors. Authorization no longer trusts them (SEC-004), but humans
 do: in a classroom, a student naming themselves after the teacher — or after
@@ -814,7 +856,7 @@ another student — is a working social-engineering attack on the *owner's
 moderation decisions* (approve/kick target selection), and abusive names or
 board content are a duty-of-care problem, not just a UX one.
 
-- [x] Visually distinguish the room owner in every participant list and cursor
+- Visually distinguish the room owner in every participant list and cursor
   by server-verified role, never by display name, so a name collision cannot
   imitate the teacher's authority.
   Evidence: `PresencePanel` / `RemoteCursorOverlay` gate the Host badge on
@@ -823,7 +865,7 @@ board content are a duty-of-care problem, not just a UX one.
   `does not label a non-owner who uses the owner display name`. E2E:
   `presence list labels only the server-verified owner as Host`
   (`waiting-room.spec.ts`). Duplicate-name / churn items below remain open.
-- [x] Disambiguate duplicate display names in owner-facing moderation UI (queue
+- Disambiguate duplicate display names in owner-facing moderation UI (queue
   and kick targets) with a stable server-side discriminator, so the owner
   always acts on the account they intend.
   - Evidence: independent verifier APPROVE. Owner list shows
@@ -831,7 +873,7 @@ board content are a duty-of-care problem, not just a UX one.
     collisions. Viewer presence JSON omits `accountId`. Mutant always
     sending `accountId` killed `omits accountId from presence users for a
     non-owner GET`.
-- [x] Bound and normalize display names and room names: strip control and
+- Bound and normalize display names and room names: strip control and
   zero-width characters, collapse confusable whitespace, and enforce the
   existing length caps at the server (SEC-005 covers length; this adds
   normalization so "Teacher" and "Teacher\u200b" are not two identities).
@@ -839,10 +881,15 @@ board content are a duty-of-care problem, not just a UX one.
     `normalizedNameBase` strip controls and U+200B/C/D/FEFF, collapse
     whitespace, cap 100. Mutant dropped U+200B; `Teacher\u200b` tests
     failed.
-- [ ] Give the owner a low-friction abuse response: kick/ban already exists;
+- Give the owner a low-friction abuse response: kick/ban already exists;
   add clearing another participant's strokes and, if boards can be shared
   beyond the live room, a report path with an accountable recipient.
-- [x] Rate-limit join/name-change churn per account so cycling names cannot
+  - Resolution (2026-09-13): Kick (ban), suspend, admit-as-viewer, clear board,
+    delete any element, and now mute, stop camera and screen-share control on
+    calls. Per-participant stroke clearing is not built (D-11). Boards are never
+    shared beyond admitted participants; the accountable report path is in-app
+    Contact support.
+- Rate-limit join/name-change churn per account so cycling names cannot
   flood the queue or the presence panel (shares the SEC-005 quota mechanism).
   - Evidence: independent verifier APPROVE. `POST .../presence` 30/min per
     account (join/heartbeat/kick share the cap) → 429. Mutant skip `take()`
@@ -856,16 +903,16 @@ the queue stable.
 
 ### SEC-015 — keep paid membership and payments outside the trust boundary
 
-**Status:** not started. No billing, plan, or payment code exists in the tree
-today; `src/lib/whiteboard/membership.ts` models *room* roles (owner, editor,
-viewer, pending, banned), which is a different concept from a paid plan. This
-section is the security contract for the feature when it is built, so the design
-constraints are agreed before any processor is chosen.
+**Status (2026-09-13):** built. Stripe-hosted Checkout and Customer Portal, a signature-verified
+and attested webhook, an audited entitlement writer, grace and dispute holds, a daily
+reconcile, and corporate seats are implemented and tested. Billing is not yet charging
+in production: the price variables and Stripe secrets are unset (owner action 8).
+Each contract item below carries its evidence.
 
-**Why it is last:** payments add a new external trust boundary (the processor),
+**Why it came last:** payments add a new external trust boundary (the processor),
 a new class of privileged state (entitlements), and a new category of PII
-(billing identity). None of that is safe to add while room authorization,
-revocation, and the real-time boundary are still open, because an entitlement is
+(billing identity). None of that was safe to add while room authorization,
+revocation, and the real-time boundary were still open, because an entitlement is
 only as trustworthy as the account it hangs off.
 
 **Threats specific to this surface:** paying nothing and being entitled anyway
@@ -875,45 +922,83 @@ refund, chargeback, or failed renewal that never reaches live sessions); one
 account's billing data reachable by another; and a classroom application
 accidentally collecting payment or billing identity from minors.
 
-- [ ] Never let card data touch this application. Use the processor's hosted
+- Never let card data touch this application. Use the processor's hosted
   checkout or hosted fields so the deployment stays in the lowest PCI DSS
   self-assessment scope, and record which SAQ level that is.
-- [ ] Treat entitlement as server-owned state keyed by local `account_id`, in the
+  - Resolution (2026-09-13): Stripe Checkout and Customer Portal only; no card
+    field exists in the application, which stores only Stripe identifiers. PCI
+    DSS scope: SAQ A (D-10).
+- Treat entitlement as server-owned state keyed by local `account_id`, in the
   identity store next to `accounts`. Never accept plan, tier, seat count, price,
   amount, currency, coupon, or trial eligibility from the client; the server
   selects the price identifier.
-- [ ] Never grant entitlement from a checkout success redirect, a client callback,
+  - Resolution (2026-09-13): Entitlements live in IdentityDO keyed by
+    `(account_id, source)`; checkout resolves the price server-side and ignores
+    any client price, amount or URL (`worker.billing.workers.test.ts` › checkout
+    resolves the price server-side).
+- Never grant entitlement from a checkout success redirect, a client callback,
   or a `session_id` in a URL. Grant only from server-side verification: a
   signature-verified webhook or an authoritative read back from the processor.
-- [ ] Verify every webhook: exact signature over the raw body, freshness window,
+  - Resolution (2026-09-13): Entitlement changes only through the webhook apply
+    (signature-verified, attested) or the reconcile reading Stripe; the success
+    URL grants nothing (`billing.workers.test.ts`).
+- Verify every webhook: exact signature over the raw body, freshness window,
   and per-event-ID deduplication so a replayed or retried delivery cannot apply
   twice. Handle out-of-order delivery by reconciling against processor state
   rather than trusting event order.
-- [ ] Make entitlement changes idempotent and audited. Reuse the existing
+  - Resolution (2026-09-13): HMAC over the raw body via `crypto.subtle.verify`,
+    300 s tolerance, event-id dedupe, ordering watermark for out-of-order
+    delivery, body read with a 1 MiB cap, 120/min per IP (`b24ff41`), served on
+    the marketing host where Stripe can reach it (`49ee509`).
+- Make entitlement changes idempotent and audited. Reuse the existing
   `authorization_audit` pattern: actor, reason, before/after, written in the same
   transaction as the change.
-- [ ] Propagate downgrade, cancellation, non-payment, refund, and chargeback by
+  - Resolution (2026-09-13): One entitlement writer; exactly one
+    `entitlement_audit` row per changed subject per cause, in the same
+    transaction (`entitlementWriter` tests).
+- Propagate downgrade, cancellation, non-payment, refund, and chargeback by
   boundary-time re-evaluation: the effective-plan resolver runs with the
   request's `now` at every boundary, so an expired grace period stops
   entitling with no background job and no client asking. Entitlement changes
   never bump the authorization epoch and never close an in-progress lesson;
   account-level revocation keeps the existing epoch mechanism and its
   documented socket bound.
-- [ ] Enforce plan limits (rooms, seats, participants, retention) server-side at
+  - Resolution (2026-09-13): `resolveEffectivePlan` runs with the request time
+    at every boundary; grace expiry needs no job; disputes hold entitlement;
+    entitlement writes never bump the authorization epoch
+    (`effectivePlan.test.ts`, `billing.workers.test.ts`).
+- Enforce plan limits (rooms, seats, participants, retention) server-side at
   the same boundary as the authorization matrix, not in the UI.
-- [ ] Scope billing routes to the owning account only. Reading or changing another
+  - Resolution (2026-09-13): Owned rooms in IdentityDO from the plan catalog;
+    participants at RoomDO admission from the owner's plan, proved by room
+    ownership (`78998cc`); seats in the company routes.
+- Scope billing routes to the owning account only. Reading or changing another
   account's plan, invoices, or payment method must fail closed, and admin
   overrides must be audited.
-- [ ] Bill teachers only. Students must never reach a payment flow or have billing
+  - Resolution (2026-09-13): Checkout and portal use the caller's session
+    entitlement and ignore client customer ids; the plan route proves the
+    account (`78998cc`); company routes read membership from the session;
+    operator actions are allowlisted and audited.
+- Bill teachers only. Students must never reach a payment flow or have billing
   identity stored, and the design must state how it keeps minors out of that
   path.
-- [ ] Store only processor identifiers (customer, subscription, invoice) plus
+  - Resolution (2026-09-13): Students join through the guest host, where billing
+    routes answer 404, and guest accounts cannot hold entitlements; the privacy
+    page states that students never pay.
+- Store only processor identifiers (customer, subscription, invoice) plus
   what is legally required. No PAN, no full billing address unless tax rules
   demand it. Document the conflict between invoice retention duties and erasure
   requests, and which wins.
-- [ ] Rate-limit and bound abuse of free tiers: one trial per account, coupon
+  - Resolution (2026-09-13): Only Stripe identifiers and plan state are stored;
+    the retention-versus-erasure decision is recorded in
+    `SECURITY_DATA_PROTECTION.md` (statutory retention wins for billing
+    identifiers only, D-19).
+- Rate-limit and bound abuse of free tiers: one trial per account, coupon
   redemption limits, and creation limits that survive account churn.
-- [ ] Meter the Free tier by distinct students, not rooms. A room count alone
+  - Resolution (2026-09-13): No trials are offered and promotion codes are never
+    taken from the client (D-9). Referral codes are validated server-side; tutor
+    accounts are one per Access identity and capped at 50.
+- Meter the Free tier by distinct students, not rooms. A room count alone
   is trivially gamed: delete-and-recreate (churn) or wiping one board between
   students (reuse) serves unlimited students inside a 2-room limit. The
   enforceable unit is the thing students cannot fake here — their verified
@@ -941,11 +1026,18 @@ accidentally collecting payment or billing identity from minors.
     rather than fighting the user — churn destroys the "board remembers"
     retention that is the reason to use the product at all, so honest heavy
     use naturally lands on Tutor Pro rather than on workarounds.
-- [ ] Keep processor secrets (API key, webhook signing secret) in Worker secrets,
+  - Resolution (2026-09-13): Not metered by distinct student (D-8): students are
+    room-scoped guest accounts, so such a meter would count nothing real. The
+    Free tier is bounded by one owned room and two participants.
+- Keep processor secrets (API key, webhook signing secret) in Worker secrets,
   never in code, client bundles, logs, or `wrangler.toml`; document rotation.
-- [ ] Add a reconciliation job that compares local entitlement against processor
+  - Resolution (2026-09-13): Worker secrets only; the CI secret scan blocks
+    committed material; rotation in `SECRETS_ROTATION.md` §3.
+- Add a reconciliation job that compares local entitlement against processor
   state and alerts on drift, so a missed webhook is detected rather than silently
   granting or denying access.
+  - Resolution (2026-09-13): Daily reconcile implemented and tested, and now
+    actually scheduled in production (`70485df`, `[env.prod.triggers]`).
 
 **Acceptance tests:** a forged, replayed, stale, or wrong-signature webhook
 changes nothing; a client-declared plan, tampered price, or self-granted
@@ -965,7 +1057,7 @@ are enforced server-side against a raw client; duplicate webhook delivery
 applies once; and induced processor errors or timeouts never leave
 entitlement and payment in disagreement.
 
-#### Proposed membership structure (Phase 7 input — awaiting owner sign-off)
+#### Membership structure (owner-approved 2026-09-11)
 
 A concrete default so Phase 7 starts from a reviewable model instead of a blank
 page. The product owner can amend any number here; the *shape* (server-owned
@@ -1111,689 +1203,33 @@ every entitlement transition appears exactly once per cause in
 `entitlement_audit` (with the processor event id where one exists).
 
 
-## Implementation phases
+## Decisions and accepted risks
 
-Checkbox status is evidence-based: `[x]` means verified complete in the current
-tree and `[ ]` means not implemented or not yet verified. Do not start a later
-phase until the preceding phase gate passes. If an external-authority-only
-blocker prevents a gate, safe locally implementable work in later phases may
-continue, but the affected task and gate stay unchecked and no external
-behavior is claimed.
+Each decision is dated and names what would reopen it.
 
-The detailed SEC checklists above are broader acceptance sub-items. A checked
-Implementation-phase task verifies only the narrower task named there and its
-recorded evidence; it does not imply that every checkbox in the referenced SEC
-section is complete. Those detailed sub-items remain unchecked until their own
-acceptance tests and evidence are satisfied.
-
-### Phase 0 — contain exposure and establish the baseline
-
-- [x] Record the current source, architecture, dependency, and authentication
-  findings in this remediation plan.
-- [x] Stop tracking `.data/` database, WAL, and SHM files; add the required
-  ignore and clean synthetic-test-data rules (SEC-008).
-  - Evidence: independent verifier APPROVE; task-owned diffs are clean, local
-    files remain ignored and unchanged, 40 unit persistence tests and 12 real
-    Durable Object SQLite contract tests pass.
-- [ ] Determine whether tracked database content left the repository boundary;
-  document the incident decision and rotate/revoke affected credentials or
-  grants where required (SEC-008).
-  - Evidence: confirmed public exposure and the public-history purge are
-    documented in `SECURITY_INCIDENT_2026-08-17.md`. The purge is complete: on
-    2026-08-17, `git filter-repo --invert-paths --path .data/` removed the
-    artifacts from every public ref, and `main`, `master`,
-    `cloudflare-workers-port`, and `codex/whiteboard-realtime-ci` were force-
-    pushed. Re-verified independently in this pass: a fresh clone of
-    `origin` shows zero commits touching `.data`, zero objects under that
-    path (checked across all 627 blobs reachable from all four remote
-    branches), and zero blobs beginning with the SQLite file magic; `git
-    ls-tree -r --name-only` on each of the four branch tips also contains no
-    `.data` path. What genuinely remains outstanding, and is not within this
-    repository's control: GitHub has not yet been asked to drop cached commit
-    views and API responses, so old objects may still be retrievable there;
-    the data owner has not yet determined whether any rows were real
-    classroom data, which also determines any notification duty; grants and
-    sessions in any deployed environment have not been invalidated; and
-    downstream clones, forks, and Actions artifacts have not been identified.
-    Every commit hash on every branch changed, so anyone holding a clone from
-    before the rewrite can reintroduce the purged objects by pushing from it;
-    this is not fully closed until those clones are accounted for. An
-    independent incident verifier returned `APPROVE-AS-BLOCKED` for this
-    status.
-- [x] Record the supported production deployment. Remove the legacy Node path if
-  Cloudflare Worker plus Durable Objects is authoritative (SEC-009).
-  - Evidence: independent verifier APPROVE; Cloudflare Worker plus Durable
-    Objects is the sole supported production path, the Node/Docker/GHCR path is
-    removed, the unsupported signaling server is unreachable from scripts, and
-    the policy, 117 unit, 27 real-workerd, and typecheck checks pass.
-- [x] Remediate the full development dependency audit, not only
-  `npm audit --omit=dev`, and record any time-limited exceptions (SEC-010).
-  - Evidence: independent verifier APPROVE; the regression test proves the
-    former vulnerable lock fails, current installed and locked graphs resolve
-    patched versions, both audit commands report zero vulnerabilities, and 118
-    unit plus 27 real-workerd tests, lint, and typecheck pass. No exception is
-    required.
-
-**Phase gate**
-
-- [x] A clean checkout contains no real database/PII, both audit commands have no
-  unaccepted high/critical finding, and there is one declared production path.
-  - Evidence: `git ls-files .data` is empty and `.data/` is ignored; `DEPLOY.md`
-    and the working tree declare Cloudflare Worker plus Durable Objects as the
-    sole production path (no `Dockerfile` / `server.js` / `signaling-server.mjs`);
-    the owner confirmed the Worker is live on Cloudflare (2026-08-18). Audits
-    and scans remain the CI blocking steps. Residual (tracked separately under
-    the SEC-008 incident task, not this gate): GitHub cached commit views, data-
-    owner determination of whether exposed rows were real classroom data,
-    grant/session invalidation in old environments, and downstream clones.
-
-### Phase 1 — establish social identity and locally controlled sessions
-
-- [ ] Confirm Cloudflare Access user limits, pricing, and product fit for the
-  expected number of teachers and students before making it mandatory.
-  - Evidence: current official limits, seat semantics, pricing, and go/no-go
-    thresholds are recorded in `CLOUDFLARE_ACCESS_PRODUCT_FIT.md`. Commercial
-    fit remains blocked until the product owner supplies the expected distinct
-    teacher/student count and the billing owner accepts the resulting plan.
-- [ ] Create one hostname-based self-hosted Access application covering the site,
-  APIs, and `/signaling`; configure Google and Facebook and prohibit `Bypass`
-  rules.
-  - Evidence contract and exact external blockers are recorded in
-    `CLOUDFLARE_ACCESS_STAGING.md`. The task remains unchecked because no
-    authorized staging account, hostname, Access configuration, or Google and
-    Facebook OAuth credentials are available for real verification. An
-    independent verifier returned `APPROVE-AS-BLOCKED` and confirmed Wrangler
-    is unauthenticated and no staging Access evidence exists.
-- [ ] Declare the production custom domain/route and set `workers_dev = false`
-  and `preview_urls = false`; close every alternate or direct backend origin.
-  - Evidence: the two generated-hostname settings and their real-file regression
-    test are locally complete; an independent verifier returned
-    `APPROVE-AS-BLOCKED`. The task stays open until an owner supplies the custom
-    hostname/zone, inventories deployed origins, applies the route, and proves
-    every alternate HTTP/WebSocket origin fails closed.
-- [x] Choose one identity rule before creating tables. Recommended KISS model:
-  one `(Access issuer, Access subject)` maps to one local account, with no social
-  account-linking UI and a documented recovery path if the Access subject
-  changes.
-  - Decision and recovery contract are recorded in
-    `SECURITY_IDENTITY_MODEL.md`; implementation tables are intentionally deferred
-    to the next task. An independent security-architecture verifier returned
-    `APPROVE`, including subject-change, race, duplicate-email, audit, and
-    revocation behavior.
-- [x] Add an authoritative global account/session store with `accounts`,
-  `access_subjects`, and `sessions`; do not duplicate identity PII in every room.
-  - Evidence: independent verifier `APPROVE`; 14 real-SQLite identity tests and
-    8 real-workerd IdentityDO tests prove exact composite identity, concurrent
-    first-login convergence, singleton access, hash-only session schema,
-    constraints/cascades, no public route, and room/global schema separation.
-- [x] Create an opaque server-managed `__Host-` application session after Access
-  authentication, bind it to the Access principal and local authorization epoch,
-  store only its hash, and implement rotation, idle/absolute expiry, logout,
-  revoke-all, and account disablement.
-  - Evidence: independent verifier `APPROVE`; 8 real-SQLite and 16 real-workerd
-    tests prove hash-only 256-bit sessions, exact `__Host-` cookie protections,
-    bounded idle/absolute expiry, non-extending atomic rotation, logout,
-    epoch revocation, disablement, and fail-closed concurrency. The Access
-    verification boundary and public session route are intentionally the next
-    task.
-- [x] Require a verified Access context on every protected Worker request and
-  verify the expected audience and human-user identity. If explicit JOSE
-  verification is retained as a fallback, validate algorithm, key ID, token
-  type, issuer, audience, time claims, and non-empty subject with rotation-aware
-  JWKS caching.
-  - Evidence: independent verifier `APPROVE`; production and local assets run
-    the Worker first, 37 focused verifier tests and 50 real-workerd tests prove
-    fail-closed RS256/claims/context validation, bounded rotation-aware JWKS
-    handling, local account/session binding, and JSON/no-store failures. A fresh
-    isolated build and 5 real Chromium tests prove secure session bootstrap,
-    protected API access, authenticated WebSocket `101`, and rejection of
-    missing, malformed, forged, duplicate, and oversized credentials. Real
-    Cloudflare variables and Google/Facebook staging remain external gate work.
-- [x] Enforce exact `Origin`/CSRF checks for state changes and ensure expired SPA
-  requests return an API `401`, not an HTML login page.
-  - Evidence: independent verifier `APPROVE`; 9 focused and 53 full real-workerd
-    tests prove exact-Origin rejection before session, Durable Object, body, or
-    WebSocket work with no rejected side effects. All browser API/auth calls use
-    forced same-origin credentials and Cloudflare's documented
-    `X-Requested-With: XMLHttpRequest` contract. A fresh build and 2 real
-    Chromium flows prove valid API/WebSocket operation and an expired signed
-    Access assertion returning JSON/no-store `401`, no redirect or navigation,
-    and fail-closed session UI. Real Access expiry remains a staging-gate check.
-
-**Phase gate**
-
-- [ ] Real staging logins work through Google and Facebook; forged, expired,
-  wrong-audience, service-token, and alternate-origin requests fail closed; a
-  locally disabled account is denied while its Access session remains valid.
-
-### Phase 2 — enforce HTTP authorization and one admission state
-
-- [x] Replace the parallel waiting-room and access-grant flows with one state
-  machine keyed by local `account_id` (SEC-002).
-  - Evidence: independent verifier APPROVE. `room_members` is the single
-    grant machine (none / pending / viewer / editor / owner / banned).
-    `/access`, `/requests`, and `/waiting` read and write that table; bearer
-    tokens and `peerId` cannot obtain membership. `RoomDO.authorize` fails
-    closed for unknown sections. Re-verified: `npm test` 214/214, `npm run
-    test:workers` 79/79, typecheck clean. Residual: `applySchema` now
-    drops leftover `room_access` / `access_requests` (independent verifier
-    APPROVE; 284 unit / 99 workers; DROP mutant killed). y-webrtc remains
-    P2P (Phase 3).
-- [x] Implement the authorization matrix for every HTTP method before body
-  parsing or sensitive reads; use consistent `401`, `403`, and `404` behavior.
-  - Evidence: independent verifier APPROVE. `RoomDO.authorize` maps every
-    room HTTP route; grant role is loaded before board/queue/PII reads;
-    missing account is `401`, wrong role `403`, non-members `403` even if
-    the room is missing. Re-verified: `npm test` 219/219, `npm run
-    test:workers` 83/83, typecheck clean. Residual: scene and settings still
-    share `POST /room` (next task); y-webrtc remains P2P.
-- [x] Split canvas writes from creator-only room settings and lifecycle routes.
-  - Evidence: independent verifier APPROVE. `POST /room/:id` is scene-only;
-    `POST`/`PATCH /room/:id/settings` is owner-only; mixing fields on the
-    wrong route is `400` with tables unchanged. Re-verified: `npm test`
-    223/223, `npm run test:workers` 84/84, typecheck clean. Residual:
-    create is two requests; delete is not yet atomic (later phase).
-- [x] Bind creator, viewer, editor, waiting, moderation, and ban state to local
-  accounts/grants rather than email, bearer hash, or client `peerId` (SEC-004).
-  - Evidence: independent verifier APPROVE. Membership, waiting, kick, and
-    join use Worker-stamped `accountId`; Bearer and email cannot select a
-    grant; `hostPeerId` is a cursor label. Server-issued peer identity and
-    Access staging remain open SEC-004 items. Per-session binding remains
-    open.
-- [x] Default the first-user host fallback to off and permit heartbeat/leave only
-  for the authenticated caller's account.
-  - Evidence: see the two SEC-004 items above. The fallback is now an opt-in
-    per-room setting defaulting to off, and presence writes/deletes are refused
-    when the named peer belongs to a different account. Enforcement is per
-    account rather than per session; per-session binding stays open, as does the
-    rest of this phase.
-- [x] Add the complete table-driven negative authorization suite and the
-  create-request-approve-join-expire-revoke E2E flow.
-  - Evidence: independent verifier APPROVE for this item (not the gate).
-    19-route missing/malformed/expired Access → 401 with tables unchanged;
-    wrong-role/wrong-room → 403 including `/settings`; pending/anon leak no
-    board/queue/email. New Playwright lifecycle spec passed (5/5).
-    Re-verified: `npm test` 234, `npm run test:workers` 93, typecheck
-    clean, `npm run test:e2e` 89 passed / 3 failed (stale UI specs).
-    Residual: e2e TTL is `expiresAt` assertion only; real expiry is
-    workers-only.
-
-**Phase gate**
-
-- [x] Every HTTP route is mapped to the matrix; rejected operations leave all
-  tables unchanged; no anonymous or pending caller receives room data or PII.
-  - Evidence: independent verifier APPROVE for the gate. Owner `GET`/`HEAD`
-    `/settings` returns settings-only JSON (no scene); viewer/editor/pending/
-    outsider get 403 with tables unchanged; missing session 401. Mutant
-    (`owner` → `granted` on GET/HEAD settings) killed
-    `matrix-role-viewer GET /settings` (200 vs 403); reverted.
-    Re-verified: `npm test` 284, `npm run test:workers` 99, typecheck
-    clean. E2E `room-authorization` 5/5; one unrelated `multi-peer` flake
-    (92/93) is y-webrtc, not this gate. Residual: `HEAD /settings` is
-    authorized but not in the table-driven route list; y-webrtc remains
-    P2P (Phase 3).
-
-### Phase 3 — replace the peer-to-peer security boundary
-
-- [x] Move Yjs synchronization from direct `y-webrtc` peers to authenticated,
-  server-authoritative Durable Object WebSockets (SEC-001).
-  - Evidence: y-websocket on `/signaling`; WebRTC e2e sentinel 0. Residual:
-    late join still uses room API persist, not Y.Doc history.
-- [x] Do not create a collaboration provider before approval and authorization.
-  - Evidence: `shouldStartCollaboration`; pending e2e no `/signaling`.
-- [x] Use a same-origin, hostname-protected WebSocket upgrade carrying the local
-  session unless a documented cross-origin requirement proves that a separate
-  one-time ticket is necessary (SEC-003).
-  - Evidence: independent verifier APPROVE (Origin + session + grant).
-- [x] Bind every socket attachment to `account_id`, `session_id`, room grant
-  version, role, and expiry; validate exact `Origin`, protocol, topic, schema,
-  message size, connection count, rate, and bounded fan-out.
-  - Evidence: attachment binds `accountId`, `sessionId` (Worker-stamped
-    `sessions.session_hash`), `authorizationEpoch`, `roomId`, `grantVersion`,
-    and the guest marker (SEC-A07). Upgrade 401 without `sessionId`; forged
-    query params overwritten (workers test). JSON signaling whitelists
-    `subscribe`/`unsubscribe`/`ping`/`publish` only; unknown types dropped;
-    `publish` fans out to `canWriteBoard` peers only (viewers excluded); binary
-    sync relays a sanitized server diff to granted recipients. Socket caps and
-    rate limits APPROVE (SEC-003). Independent verifier APPROVE for this
-    bind/whitelist slice; the exact session hash is revalidated by the alarm
-    (SEC-A03). Residual: role/expiry not stored on attachment (live lookup +
-    alarm); empty-`sessionId` 401 is Worker-path defense-in-depth.
-- [x] Implement room kick/revoke by incrementing the grant version and closing
-  matching live and hibernating sockets.
-  - Evidence: independent verifier APPROVE (4401 + grant_version + LiveKit).
-- [x] Revalidate hibernated-socket attachments on wake against current grant
-  version, epoch, and expiry (SEC-003).
-  - Evidence: independent verifier APPROVE for grant on ping/message. Account
-    epoch and exact session hash are alarm-revalidated within 30 s with no
-    traffic (SEC-A03).
-- [x] Choose and document account-wide revocation: reliable active-room fan-out,
-  or a measurable maximum delay enforced by authorization-epoch revalidation,
-  short socket expiry, and forced reconnect.
-  - Evidence: `SECURITY_REVOCATION_BOUND.md` — kick/suspend 0 s; logout,
-    session expiry, disable, and revoke-all ≤ 30 s; guest access disable
-    immediate. Fan-out not adopted. Independent ping revalidation APPROVE.
-- [x] Add raw-client adversarial tests for pending reads, viewer writes, socket
-  replay, wrong room/origin, malformed/oversized frames, rate abuse, kick, and
-  account-wide revocation.
-  - Evidence: `src/do/signalingAdversarial.workers.test.ts` (pending/outsider
-    GET 403 with no `elements`; viewer POST 403; wrong Origin not 101; viewer
-    publish does not fan out). Rate 1008, oversized 1009, kick 4401, stale
-    grant on ping 4401. Browser: `tests/e2e/signaling-adversarial.spec.ts`
-    pending GET 403 / no marker; viewer POST 403 / owner scene unchanged
-    (`npm run test:e2e -- tests/e2e/signaling-adversarial.spec.ts` 2 passed).
-    Residual: account-wide disable still the documented 30 s alarm, not a
-    same-tick fan-out.
-
-**Phase gate**
-
-- [x] Pending users receive no board bytes, viewers cannot publish, kicked users
-  stop immediately, account revocation meets its documented maximum delay, and
-  no direct peer path bypasses the server.
-  - Evidence: pending GET 403 (workers + e2e); viewer cannot POST scene or
-    fan-out publish; kick closes sockets 4401; disable bound is 30 s
-    (`SECURITY_REVOCATION_BOUND.md`); board sync is y-websocket on granted
-    `/signaling`, not y-webrtc P2P.
-
-### Phase 4 — bound data, resources, and lifecycle
-
-- [x] Enforce room-ID, content-type, body-size, scene, field, URL, quota, and
-  creation-rate limits before Durable Object allocation or JSON parsing
-  (SEC-005).
-  - Evidence: `isValidRoomId`, JSON content-type, 1 MiB actual-body cap, scene
-    schema, 429 quotas. Residual: signed IDs and zone WAF are still the
-    platform/SEC-005 leftovers.
-- [x] Replace security-sensitive `Math.random` values with at least 128 bits from
-  a cryptographic RNG and make room creation transactional (SEC-006).
-  - Evidence: `randomHexId` / `generateRoomId` for rooms and collab peer
-    fallback; display room names use `crypto.getRandomValues`; duplicate
-    element ids use `crypto.randomUUID`. Create+owner is one SQLite
-    transaction. Client storage is cookie-only for bearers.
-- [x] Implement creator-only atomic deletion across every room table, close all
-  sockets, and prevent old grants from authorizing recreated rooms (SEC-007).
-  - Evidence: atomic SQL delete, 4404 sockets, tombstones, 410 recreate.
-    `storage.deleteAll` intentionally unused.
-- [x] Add TTLs and scheduled cleanup for rooms, sessions, grants, requests,
-  waiting entries, kicks, PII, and tombstones.
-  - Evidence: RoomDO alarm runs grant, waiting/kick, and room/tombstone
-    purges; IdentityDO purges expired sessions.
-- [x] Add boundary, quota, concurrent-create, injected-failure, expiry, deletion,
-  and recreation tests.
-  - Evidence: requestGuard, membership, roomLifecycleTtl, roomDelete workers,
-    access workers, signaling adversarial, e2e signaling-adversarial.
-
-**Phase gate**
-
-- [x] Oversized or abusive input is rejected without unwanted allocation or
-  partial state; delete and expiry remove all scoped data and live access.
-
-### Phase 5 — harden runtime, browser, privacy, and operations
-
-- [x] Remove or fully harden the legacy Node signaling deployment (SEC-009).
-  - Evidence: independent verifier APPROVE. `signaling-server.mjs` removed;
-    `deploymentPolicy.test.ts` forbids it (`existsSync` false). Mutant:
-    recreate empty file failed `has one authoritative Cloudflare Worker…`.
-    DEPLOY.md: Worker `/signaling` is the only path. Phase 5 gate remains
-    open.
-- [x] Ship production-only dependencies on a maintained Node LTS and pin images
-  and GitHub Actions immutably (SEC-010).
-  - Evidence: Node 22.23.2, SHA-pinned Actions, `--ignore-scripts`,
-    production `npm ci --omit=dev` audit, blocking workers on deploy.
-    Residual: no Docker runtime image; runner digest pin is GitHub-hosted.
-- [x] Remove plaintext shared-room persistence by default and clear all local
-  room/session material on leave, kick, revoke, or expiry (SEC-011).
-  - Evidence: default-off cache; `clearOnLeave` on leave/kick/tab close;
-    server revoke closes sockets.
-- [x] Add CSP, framing, content-type, referrer, permissions, cache, and indexing
-  protections across assets and API responses (SEC-012).
-  - Evidence: enforced CSP including origin-bound `connect-src`, nonces,
-    framing, nosniff, noindex, `no-store`.
-- [x] Minimize PII responses, replace internal error disclosure, and add
-  structured redacted security-event logs and alert thresholds (SEC-013).
-  - Evidence: owner-only queue PII; generic 5xx; `logAuthEvent` /
-    `logSocketClose` for auth_failure, rate_limit, grant_change, revocation,
-    socket_close. Residual: no pager/threshold product (Cloudflare logs).
-- [x] Remove production debug globals, restrict signaling configuration, and
-  prove parity across every retained deployment (SEC-014).
-  - Evidence: independent verifier APPROVE. Production signaling is
-    fail-closed; debug globals are gated; the unsupported Node path is
-    already gone so there is no second deployment to parity-test. Residual:
-    `NEXT_PUBLIC_E2E=1` production builds still attach debug globals.
-- [x] Implement account erasure, data export, and the recorded minors policy
-  (SEC-016).
-  - Evidence: export, minors/lawful-basis docs, `DELETE /auth/account` plus
-    RoomDO `/room/erasure` fan-out. Residual: vendor log/analytics erasure
-    (next SEC-016 bullet).
-- [x] Add owner-role display integrity, name normalization, and moderation
-  disambiguation (SEC-017).
-  - Evidence: Host badge is server `isHost`; duplicate-name discriminator;
-    `stripAsciiControls`. Residual: per-peer stroke clear and a named
-    report mailbox (abuse bullet still open in SEC-017).
-
-**Phase gate**
-
-- [x] Header, privacy, retention, logging, runtime-image, hostile-input, and
-  deployment-parity tests all pass without leaking credentials, PII, or boards.
-  - Evidence: CSP/headers unit tests, persistence/privacy tests, TTL/delete
-    workers tests, auth event redaction tests. Residual: no container image
-    to scan; one production path (Worker).
-
-### Phase 6 — release security verification
-
-- [x] Require lint, typecheck, unit, Worker, adversarial E2E, secret/PII scan,
-  dependency audit, final-image scan, and staging smoke tests in CI.
-  - Evidence: CI jobs cover lint, typecheck, unit, workers, e2e, scan,
-    Semgrep, full audit, production-omit-dev audit. Residual: no container
-    image scan; staging smoke is the e2e job against local Access, not a
-    remote staging hostname.
-- [ ] Review every HTTP route and real-time event against the authorization
-  matrix and record reviewer approval.
-- [ ] Run a staging penetration test covering authentication bypass, IDOR,
-  privilege escalation, CSRF, WebSocket abuse, resource exhaustion, revocation,
-  retention, and alternate-origin access.
-- [ ] Record operational owners, deadlines, incident response, backup/restore,
-  session/key rotation, monitoring, and emergency access-revocation procedures.
-
-**Phase gate**
-
-- [ ] Every P0/P1 task and adversarial test is complete, no high/critical finding
-  is unowned, and the release owner signs off before public deployment.
-
-
-### Phase 7 — paid membership and payments
-
-Last by design. This phase must not start until the Phase 6 gate passes: an
-entitlement is only as trustworthy as the account and revocation path it hangs
-off, so billing built on an unfinished authorization boundary would be a way to
-pay for access that the boundary cannot actually enforce.
-
-- [ ] Decide and record the commercial model before writing code: what a plan
-  entitles, what happens at the limit, and what the free tier is. Owner
-  decision (2026-09-11): private 1:1/small-group tutors, the tutor pays, no
-  student seats/rosters/LMS-SSO/district billing/admin control; a corporate
-  account is a billing group of tutor seats only. GBP prices, the code-owned
-  catalog, entitlement tables, state machine, downgrade semantics, and hosted
-  Stripe surfaces are recorded under SEC-015 and the implementation spec; any
-  later price or tier change re-opens this task.
-- [ ] Choose a payment processor with hosted checkout and record the resulting
-  PCI DSS scope and the compliance obligations the deployment accepts.
-- [ ] Add entitlement tables to the identity store keyed by `(account_id,
-  source)`, with plan, status, grace, current period, processor ids, and an
-  exactly-once-per-cause entitlement audit trail; corporate tutor seats and
-  company membership land with the corporate tables (SEC-015).
-- [ ] Implement server-side checkout session creation with a server-selected
-  price, an idempotency key, and no client-supplied amounts.
-- [ ] Implement the signature-verified, deduplicated, replay-resistant webhook
-  endpoint and the reconciliation job that detects missed events.
-- [ ] Enforce entitlement at the request boundary: downgrade, cancellation,
-  non-payment, refund, and chargeback stop entitling at the next boundary via
-  the effective-plan resolver; account-level revocation keeps the epoch
-  mechanism so HTTP and already-open real-time connections are still severed
-  within the documented bound.
-- [ ] Enforce plan limits at the authorization boundary and return a distinct,
-  non-leaking status for "over plan limit" versus "not permitted".
-- [ ] Add the billing account-isolation, entitlement-tampering, webhook-forgery,
-  replay, and revocation-propagation test suites against the processor's test
-  mode.
-- [x] Build the public landing and pricing pages under the scoped Access
-  exemption: marketing routes public and indexable, every app/API route still
-  Access-protected and `noindex`, with a test that walks the exemption list
-  and asserts nothing sensitive is inside it (SEC-015 sales surface).
-  Evidence: `public/index.html`, `public/pricing.html`, `public/terms.html`,
-  `public/privacy.html` on `origin/main`; `isPublicPath` exact-match allowlist
-  with `MARKETING_PAGES`; `withSecurityHeaders({ indexable: true })` scoped to
-  those routes only; `requestGuard.test.ts` walks the list accepting marketing
-  pages and rejecting `/api/`, `/auth/`, `/whiteboard/`, `/signaling`, and
-  traversal attempts. Built ahead of Phase 7 as part of sales-surface work.
-- [ ] Publish terms of service and privacy policy pages and link them from the
-  checkout flow; treat their absence as a release blocker for charging.
-- [ ] Implement the sign-in -> server-created Checkout redirect funnel with no
-  price/amount input from the client anywhere in the funnel.
-- [ ] Record billing operations: refund and dispute handling, dunning, invoice
-  retention versus erasure requests, secret rotation, and who is on call when
-  payment state and access state disagree.
-
-**Phase gate**
-
-- [ ] No entitlement can be obtained without a server-verified payment event; no
-  cancelled, refunded, or unpaid account retains access beyond the documented
-  bound; billing state is isolated per account; card data never reaches this
-  application; the reconciliation job proves local entitlement matches the
-  processor; and the public-page Access exemption contains only marketing
-  routes, verified by test.
-
-### Product phases 8-10 — feature parity with security gates
-
-Sourced from `MISSING_FEATURES.md` (Pencil Spaces gap analysis): of its full
-Phase 0-7 feature ladder, these are the three highest-value layers by its own
-priority table. They live in this file because each one opens a new attack or
-PII surface, and the security work is part of the feature, not a follow-up.
-They may proceed in parallel with Phase 7 (payments); they must not start
-before the Phase 3 gate (server-authoritative sync), because every one of them
-assumes the server can enforce who sees what.
-
-**Status update (2026-08-18):** LiveKit voice and video calling landed ahead
-of plan (merge `362a3e9`): server-minted join tokens for admitted accounts
-only, identity forced to the verified account, waiting/suspended denied,
-secrets in Worker bindings. This changes the build order — the feature doc's
-P0 layer ("A/V + chat") is half done, so finishing and hardening what shipped
-now outranks starting new surface.
-
-#### Build order (milestones, most important first)
-
-Each milestone is a shippable slice; its checkboxes live in the phases below.
-Order rationale: harden what exists, then complete the classroom P0 (chat),
-then the persistence foundation everything later assumes, then structure,
-then recording last because it is gated on the SEC-016 minors policy.
-
-| # | Milestone | Why now | Checkboxes |
+| ID | Decision | Why | Revisit when |
 | --- | --- | --- | --- |
-| M1 | A/V hardening: live eviction on kick/ban, host-gated screen share | The gap shipped with the feature; every day it stands, a kicked student can stay on the call | Phase 10, first three items |
-| M2 | In-space chat (group first) | Completes the feature doc's P0 layer; first stored student content, so it drags SEC-016/017 into practice | Phase 9, chat items |
-| M3 | Cloud Spaces + real library | The foundation layer the feature doc says unblocks everything; boards stop being ephemeral | Phase 8, all items |
-| M4 | Private per-student boards + breakouts | Highest-value classroom structure; child rooms reuse the room grant model | Phase 9, private-board items |
-| M5 | Host controls: raise hand, timer, follow-me, per-student permissions | Session-management polish on top of M2-M4 primitives | Phase 9, remaining items |
-| M6 | Recording + transcripts | Hard privacy surface; blocked on the SEC-016 minors policy being recorded first | Phase 10, recording items |
-| M7 | Teaching content: Drive/OneDrive import, PDF annotation, vetted embeds | Needs the M3 library to land imports into; the OAuth and embed surface must follow the Phase 11 contract, not ad-hoc scopes | Phase 11, all items |
-
-Not scheduled (tracked in `MISSING_FEATURES.md` only): scheduling/rostering,
-education SSO, LMS/SIS, admin consoles, AI layer — the owner's 2026-08-18
-target-market decision (private tutors, not schools) moves the school-ops
-block from "later" to "out of scope"; the AI items additionally depend on M6
-existing first. In-board Google Docs
-*editing* is also deferred: unlike import, it requires broad write scopes and
-a live third-party editing surface inside the board, which multiplies the
-Phase 11 contract for one feature.
-
-### Phase 8 — cloud Spaces and real persistence
-
-The foundation layer: named persistent Spaces, cloud board history/restore,
-and a real content library replacing the `LibraryPanel` stub. Security-wise
-this turns boards from ephemeral rooms into long-lived stored records.
-
-- [ ] Named persistent Spaces (create / open / list) owned by the creator's
-  `account_id`; the Space list route returns only the caller's own Spaces.
-- [ ] Extend the authorization matrix to Spaces, board history, and library
-  items before any of them ship — same `401`/`403` discipline as rooms
-  (SEC-002), same account-keyed grants (SEC-004).
-- [ ] Cloud board history / restore with bounded depth; restore is
-  owner-gated and audited, and history inherits the room's retention clock
-  rather than living forever (SEC-007).
-- [ ] Real content library: per-account saved items, size- and count-bounded
-  (SEC-005), never shared across accounts without an explicit grant.
-- [ ] Cross-device sync of library items rides the existing session, not a new
-  token or storage channel.
-- [ ] Fold all new tables into deletion, retention, erasure, and backup:
-  SEC-007 TTLs, SEC-016 account erasure, and the tested restore path.
-
-**Phase gate**
-
-- [ ] A teacher can close a Space and reopen the same board on another device;
-  no route leaks another account's Spaces, history, or library items; erasing
-  an account removes its Spaces, history, and library within the documented
-  deadline.
-
-### Phase 9 — classroom session UX
-
-Chat, raise hand, session timer, follow-me, per-student edit permissions, and
-private boards / breakouts. This is the phase where *student-generated
-content* (messages) is stored for the first time, so SEC-016/SEC-017 stop
-being abstract.
-
-- [ ] In-space chat, group first: messages bound to `account_id`, rendered
-  with the SEC-017 name normalization and owner-role display integrity, with
-  server-side length/rate bounds (SEC-005) and owner delete.
-- [ ] Chat retention is short by default and recorded in the SEC-007 policy;
-  student messages are PII and join the SEC-016 erasure and export paths
-  before launch, not after.
-- [ ] Raise hand, session timer, and connection indicators as presence-channel
-  events — schema-validated, rate-bounded, carrying no free text.
-- [ ] Follow-me / view lock is a host-issued hint enforced client-side only;
-  document explicitly that it is a UX affordance, not a security control, so
-  no later claim treats it as one. Per-person viewport stays the default.
-- [ ] Granular per-student edit permissions extend `room_members.role` rather
-  than adding a parallel store; the authorization matrix gains the new role
-  column before the UI does.
-- [ ] Private per-student boards and breakout rooms are child rooms with their
-  own grant rows: the owner sees all, a student sees only their own; the
-  Phase 3 socket boundary enforces it for live sync, not the client.
-- [ ] Idle / distraction alerts are aggregate and ephemeral (no per-student
-  browsing surveillance is stored) — record this as a deliberate privacy
-  decision.
-
-**Phase gate**
-
-- [ ] A student cannot read another student's private board or 1:1 chat by any
-  raw-client request; moderation and permission changes resolve to accounts;
-  chat erasure works; a forged follow-me event moves nobody's authorization.
-
-### Phase 10 — live A/V and recording
-
-Audio, video, screen share, then session recording with transcripts. The
-heaviest privacy surface in the entire roadmap: live media from minors, and
-stored recordings of them. Recording items must not start before the SEC-016
-minors policy is recorded. Voice and video landed 2026-08-18 (merge
-`362a3e9`); the unchecked A/V items below are the hardening that must follow
-it (milestone M1).
-
-- [x] Choose the media path deliberately: SFU or managed service with
-  per-session, server-issued join tokens bound to the room grant — never P2P
-  mesh for classroom A/V, or SEC-001 returns as an unfixable media problem
-  (peer IP exposure between students).
-  - Evidence: LiveKit SFU. HS256 join tokens are minted in RoomDO only for
-    admitted accounts (waiting/suspended/outsiders get 403), the token
-    identity is forced to the server-verified account id (a client-chosen
-    identity could bump another participant's live session), and secrets live
-    in Worker bindings with a 503 graceful-degrade when unset. 276 unit, 76
-    workers, and 92 e2e tests passed on the merge.
-- [ ] A/V join/leave rides room authorization: kick, suspend, ban, and epoch
-  revocation must drop live media within the same documented bound as sockets.
-  - Partially landed ahead of phase (Phase 3 A/V merge, 2026-08-18): LiveKit
-    join tokens are minted server-side for admitted accounts only, the token
-    identity is forced to the verified account (a client-chosen identity could
-    bump another participant's session), waiting/suspended accounts are denied,
-    and secrets stay in Worker bindings. Review round 2 (`15e994e`): the token
-    route is POST-only — GET minting sat in the intersection of the
-    SameSite=Lax cookie (sent on top-level GET navigations) and the origin
-    guard's GET exemption — with roomId grammar validation and the shared
-    security headers; mutation-tested.
-  - Evidence: independent verifier APPROVE for LiveKit eviction on
-    kick/suspend (`closeAccountSockets`) and account-disable `alarm`
-    (deduped per account). Mutant skip `scheduleLiveKitEviction` left spy
-    `[]`. HTTP kick stays 200 when the helper returns `{ ok: false }`.
-    Residual: `webSocketMessage` stale-grant close does not evict LiveKit;
-    ban without kick/suspend is alarm-only; test hook
-    `evictLiveKitParticipant` is public.
-- [ ] Screen share is host-approved per instance for students, on by right
-  only for the owner.
-- [ ] Recording requires explicit, visible, per-session consent; a recording
-  indicator every participant can see; and a recorded decision on who may
-  start it (owner only by default).
-- [ ] Recordings and transcripts are stored encrypted, owner-scoped, join the
-  SEC-007 retention schedule and SEC-016 erasure/export, and never leave the
-  declared storage region.
-- [ ] Transcripts of minors are the most sensitive data this product would
-  hold: default them off; enabling is a per-Space owner decision recorded with
-  the consent trail.
-- [ ] Extend the abuse story (SEC-017) to media: report path, and owner mute /
-  camera-off controls that act on accounts.
-
-**Phase gate**
-
-- [ ] Media join is impossible without a current room grant and dies on
-  revocation within the bound; no recording exists without its consent trail;
-  recordings honor retention, erasure, and export; a student cannot screen
-  share without host approval.
-
-### Phase 11 — teaching content and third-party integrations
-
-Drive/OneDrive import, PDF/document annotation, and embedded third-party
-tools (Desmos, Kahoot, and similar). This is the layer most often built
-dangerously: broad OAuth scopes "to be safe", refresh tokens in the browser,
-and unsandboxed iframes. The contract below is what keeps a whiteboard from
-becoming a bridge into a teacher's entire Drive.
-
-- [ ] Import uses the narrowest possible OAuth scope: Google `drive.file` via
-  the Picker (access only to files the user explicitly picks, not the Drive),
-  and the OneDrive file-picker equivalent. Broad `drive.readonly` or full
-  Drive scopes are prohibited; adding any scope is a reviewed change to this
-  file.
-- [ ] Provider tokens never reach the client or persistent storage in
-  plaintext: short-lived access tokens are used server-side and discarded;
-  if offline refresh tokens are ever genuinely needed, they are encrypted at
-  rest, scoped per account, revocable from the account page, and covered by
-  SEC-016 erasure. Prefer designs that need no refresh token at all —
-  import-as-copy, then forget the source.
-- [ ] Imported files become *our* stored objects: content-type allowlist
-  (PDF, images, and the office formats actually supported), size caps
-  (SEC-005), server-side re-encoding or sanitization for anything rendered
-  (SVG and PDF are script-capable), and storage that joins retention
-  (SEC-007), erasure/export (SEC-016), plan quotas (SEC-015), and backup.
-- [ ] A student's view of imported content is served from our origin, never a
-  proxied provider URL, so a revoked import cannot keep leaking through a
-  long-lived third-party link and provider cookies never mix into board
-  traffic.
-- [ ] Embeds run in sandboxed iframes with an explicit per-tool allowlist:
-  `sandbox` without `allow-same-origin` toward us, a CSP `frame-src` listing
-  exactly the vetted tool origins (the enforced-CSP work in SEC-012 gains
-  this list), no postMessage handling without origin checks, and no tool
-  added outside a reviewed allowlist change. Embedded tools never receive
-  the session cookie, account ids, or roster data.
-- [ ] The embed allowlist is owner-controlled per room and off by default, so
-  a compromised or policy-violating tool can be cut off by config, and a
-  room's students only ever load third-party origins its teacher chose.
-- [ ] Each integration records what data flows *to* the provider (usually
-  nothing beyond the user's own OAuth consent) and is added to the SEC-016
-  data inventory before launch.
-
-**Phase gate**
-
-- [ ] Import works with only picked-file scope and no stored plaintext
-  provider tokens; a hostile SVG/PDF cannot execute in a viewer's session;
-  embedded tools load only from the allowlist, sandboxed, with no session or
-  roster data; revoking an import or an embed stops student access; imported
-  objects honor quotas, retention, erasure, and export.
-
-## Definition of done
-
-- Every P0 task and its adversarial tests pass.
-- Both production-only and full dependency audits pass at high severity.
-- Lint, typecheck, unit, Worker, E2E security, secret/PII scan, and final-image
-  scan are required deployment gates from a clean checkout.
-- A reviewer maps every HTTP route and real-time event to the matrix above.
-- Both supported deployments meet the same contract, or the weaker deployment
-  has been removed.
-- Operational owners, deadlines, retention, incident response, backup, restore,
-  and credential-rotation procedures are recorded.
-- If paid membership ships, no entitlement exists without a server-verified
-  payment event, revocation propagates to live connections, and card data never
-  reaches this application (SEC-015).
-- If Phases 8-10 ship, every new object type (Space, history, library item,
-  chat message, private board, recording) is in the authorization matrix, the
-  retention schedule, and the erasure path before its UI ships.
-- If Phase 11 ships, no integration holds a broader scope than picked-file
-  access, no plaintext provider token is stored, and no third-party origin
-  loads in a room outside the owner-controlled allowlist (Phase 11 gate).
+| D-1 | Access accepts **Google only**; no Facebook | Tutors sign in with Google; Facebook Login adds a consumer social identity nobody has asked for, and under a policy that admits any authenticated identity every added provider is another way to a tutor account | A tutor needs another provider |
+| D-2 | The Access policy admits any authenticated identity; the product caps tutor accounts at 50 (`TUTOR_ACCOUNT_CAP`) | 50 is the Access free-plan seat count; students use the guest hostname, which has no Access and uses no seats. Accepted risk: the cap is the only barrier to creating a tutor account | The cap is raised or the plan changes |
+| D-3 | No staging environment | Production invariants are held by Terraform, a blocking live `access:check` in CI, and probes; the billing staging run stays blocked until staging exists (owner action 8) | Before charging, or before a risky platform change |
+| D-4 | Room ids are not signed | Signed ids would break every existing room link; the unauthenticated guest path checks the room registry instead, and a flood still costs the Worker invocation the edge and per-IP limits bound | A new unauthenticated room path is added |
+| D-5 | No custom WAF rules; the one free rate-limit rule is on guest PIN submission | The Worker's host and route allowlist already refuses everything else; the edge rule is spent on the only unauthenticated write | Worker request volume approaches the plan limit |
+| D-6 | HSTS `max-age=31536000; includeSubDomains`, **no preload** | Preload commits the whole `sen-tutor.co.uk` zone, including services outside this application, permanently; that is the zone owner's call | The zone owner decides to preload |
+| D-7 | CSP `require-trusted-types-for 'script'` **not enforced** | The Next.js runtime, the Excalidraw fork and LiveKit write to DOM sinks that have not been audited as Trusted-Types clean, and enforcing blind would break the board. The nonce and `strict-dynamic` CSP, `base-uri` and `form-action`, and a single `dangerouslySetInnerHTML` of a build-time constant cover the injection classes | The fork is audited for DOM sinks |
+| D-8 | The Free tier is not metered by distinct student | Students are room-scoped guest accounts with no durable identity; the tier is bounded by one owned room and two participants. The owner deferred metering on 2026-09-11 | Students gain durable accounts |
+| D-9 | No trials; no client-supplied promotion codes | Removes trial-cycling and coupon-stacking entirely rather than limiting them | A trial or coupon campaign is planned |
+| D-10 | PCI DSS scope is **SAQ A** | Only Stripe-hosted Checkout and Customer Portal pages; no card field, script-injected payment form, or card data anywhere in the application | A payment field is added to the application |
+| D-11 | No per-participant stroke clearing | Board elements carry no server-verified author, and stamping authorship into the live sync path is a large change to the most critical code; kick, suspend, admit-as-viewer, clear board and deleting any element cover the abuse cases so far | Abuse reports show owners need it |
+| D-12 | Third-party embeds are **off** | The scene guard deletes embed elements and the Web Embed tool is hidden (`ce41c95`); turning them on follows `SECURITY_FEATURE_REQUIREMENTS.md` | Embeds are requested |
+| D-13 | Follow-me is a UX affordance, not a security control | It moves viewports only; frames are accepted only from the owner and change no authorization | Never treat it as a control |
+| D-14 | In-Worker rate limiters are per isolate | They bound a single client's abuse cheaply; distributed floods are the edge rule's job; counts that must be exact (billing, referrals) use Durable Object counters | A limit must hold globally |
+| D-15 | RoomDO's injectable LiveKit hooks stay public instance properties | Only this Worker's own code holds a Durable Object stub; they are not reachable from outside and let the Worker tests exercise real routes | The Durable Object is exposed over RPC |
+| D-16 | The Stripe webhook is served on the marketing hostname | The teacher hostname is entirely behind Access with no Bypass policy, so Stripe could not reach it there; the request is authenticated by its signature (`49ee509`) | Access is removed from the teacher host |
+| D-17 | A student's screen-share permission lasts one share within one call | The owner allows it per participant; stopping the share or rejoining the call takes it back (`3204e6f`, `0d0fdc5`) | A standing permission is requested |
+| D-18 | Idle and distraction alerts are not built; if built, aggregate and ephemeral | No per-student attention history is stored | The feature is requested |
+| D-19 | Statutory invoice retention wins over erasure for billing identifiers only | UK VAT and company records must be kept six years; the rows stay attached to a disabled account with no sign-in subjects | The retention law or processor changes |
+| D-20 | Presence heartbeat and leave are bound per account, not per session | Two sessions of one account are the same principal: neither can do anything the other could not. Moderation acts on accounts, which is the boundary that matters | Accounts become shared between people |
+| D-21 | Account export covers the account's identity, session, subject and billing data; board content is exported per room from the board | Board content belongs to the room and may be co-authored by students; the room owner exports it with the board's own export. Presence is ephemeral and not retained | A data-portability request needs boards in the account export |
 
 ## Running locally
 
@@ -1830,38 +1266,6 @@ Notes:
 - Never put real production secrets in `.dev.vars` or `wrangler.local.toml`;
   local runs use throwaway credentials only.
 
-## Release evidence reconciliation — 2026-09-05
-
-This section records the current status of Phase 1 and Phase 6 operational gates, matching each gate against the evidence available in code, configuration, and supporting documentation. All evidence links are verified against the working tree as of this date.
-
-| Gate | Status | Evidence | Next action |
-|------|--------|----------|-------------|
-| Phase 0: .data/ database files ignored from git | Verified | `.gitignore` contains `.data/` (line 1); `git ls-files .data` returns nothing; Phase 0 gate completed per lines 1133-1143 | None — this gate is closed |
-| Phase 0: Sole supported deployment (Cloudflare Worker + Durable Objects) | Verified | `DEPLOY.md` §Architecture (lines 1-31) and §Unsupported legacy paths (lines 263-269) declare Worker + DO as sole supported path; `signaling-server.mjs` removed (`deploymentPolicy.test.ts` confirmed); `Dockerfile` removed | None — this gate is closed |
-| Phase 0: No high/critical dependency vulnerabilities | Verified | CI job `dependency-audit` runs `npm audit --audit-level=high` (`.github/workflows/ci.yml` lines 137-138); `production-deps-audit` runs `npm ci --omit=dev --ignore-scripts` + `npm audit --omit=dev --audit-level=high` (lines 140-158); both blocking without `continue-on-error` | None — this gate is closed |
-| Phase 1: Cloudflare Access product-fit decision (user count and plan approval) | Open | `CLOUDFLARE_ACCESS_PRODUCT_FIT.md` exists with decision framework (lines 1-66); fields `TBD`: product owner expected peak teachers/students, billing owner plan choice and budget ceiling, Cloudflare dashboard evidence that plan seats exist (§Evidence needed, lines 54-65) | **Owner task**: record expected distinct teacher and student peak counts; **Billing owner**: approve Free/Pay-as-you-go/Contract plan with cost ceiling; **Cloudflare account owner**: provide dashboard evidence that the selected plan has sufficient seats |
-| Phase 1: Cloudflare Access staging configuration (Google/Facebook providers, self-hosted app) | Open | `CLOUDFLARE_ACCESS_STAGING.md` documents exact configuration contract (lines 1-129); current blocker documented at lines 118-129 (no authorized staging account, zone, or OAuth credentials available) | **Owner**: provide non-production Cloudflare account/zone and approved staging hostnames for teacher/guest; **Owner**: configure Google and Facebook OAuth applications with Cloudflare callback URLs; **Independent verifier**: run checklist (lines 64-115) and retain sanitized configuration + probe evidence (logins, forged requests, logs) |
-| Phase 1: Custom hostname closure and workers_dev/preview_urls disabled | Partially verified | `wrangler.toml` sets `workers_dev = false` (line 14) and `preview_urls = false` (line 15); routes declared at lines 30-42 (three custom domains: `app-playground.sen-tutor.co.uk`, `join-playground.sen-tutor.co.uk`, `playground.sen-tutor.co.uk`); `DEPLOY.md` §Production hostname closure (lines 75-102) documents the runbook and blocker | **Owner**: provide evidence that the deployment account controls the Cloudflare zone for the three custom domains; **Operator**: complete `DEPLOY.md` runbook steps 1-5 (inventory existing origins, declare approved production hostname, disable/remove alternates); **Verifier**: retain sanitized dashboard inventory before/after, reviewed Wrangler diff, deployment ID, and HTTP/WebSocket probes showing approved hostname succeeds and all alternate/direct hostnames fail closed (lines 95-101) |
-| Phase 1: Global identity/session store (accounts, access_subjects, sessions tables) | Verified | `src/do/IdentityDO.ts` implements the store; 14 real-SQLite identity tests + 8 real-workerd IdentityDO tests pass (as per security.md lines 1180-1183); composite unique key `(issuer, subject)` on `access_subjects`; hash-only `sessions.session_hash` | None — this slice is closed |
-| Phase 1: Opaque __Host- session binding to Access principal | Verified | `__Host-teacher-session` HttpOnly cookie (session.ts); 8 real-SQLite + 16 real-workerd session tests (lines 1186-1192); idle/absolute expiry, rotation, logout, revoke-all, disable (lines 1186-1192) | None — this slice is closed |
-| Phase 1: Access JWT verification in Worker | Verified | `src/worker.ts` verifies Access context on protected routes; 37 focused + 50 real-workerd tests (lines 1199-1206); RS256/claims/JWKS validation, local account/session binding; fallback JOSE verification if `ctx.access` unavailable (local test only, not production) | None — this slice is closed |
-| Phase 1: Origin/CSRF checks on mutations | Verified | `src/lib/worker/requestGuard.ts` `originGuard()` / `hasExactOrigin()` runs before DO/body/WebSocket on non-GET/HEAD; 9 focused + 53 real-workerd tests (lines 1207-1216); independent verifier APPROVE | None — this slice is closed |
-| Phase 1 gate: Real staging logins work (Google/Facebook); forged/expired/wrong-audience fail closed | Open | Local cryptographic Access harness proves client header/cookie/JSON 401/no-navigation (lines 1209-1216); real Cloudflare Access credentials and staging hostnames required (lines 1220-1221); none available for verification | **Owner + Google/Facebook OAuth admins**: configure staging IdPs in staging Cloudflare account; **Independent verifier**: sign in through each provider, capture successful login and rejected (expired/forged/wrong-audience) attempts, verify Access logs contain both, confirm no HTML login redirect on API 401 (staging-only checklist, lines 89-112 of `CLOUDFLARE_ACCESS_STAGING.md`) |
-| Phase 2: HTTP authorization matrix (401/403 for missing/wrong-role) | Verified | `src/do/RoomDO.ts` `authorize()` maps every route; independent verifier APPROVE (security.md lines 1237-1243); missing account → 401, wrong role → 403, non-members → 403 even if room missing (lines 1280-1288); 284 unit + 99 workers tests (lines 1276-1289) | None — this slice is closed |
-| Phase 3: Yjs sync via authenticated /signaling, not y-webrtc P2P | Verified | `y-websocket` on `/signaling`; WebRTC sentinel 0 (security.md lines 1293-1296); independent verifier APPROVE; 2 E2E `signaling-adversarial` tests pass (lines 1333-1335); pending users get 403 (lines 1341-1347) | None — this slice is closed |
-| Phase 3 gate: Pending/viewers blocked, kick/revoke immediate, direct P2P closed | Verified | Pending GET 403 no board (lines 1344-1347); viewer cannot POST (lines 1344); kick 4401 + grant_version (lines 1310-1316); disable bound 30 s (`SECURITY_REVOCATION_BOUND.md` line 36); no y-webrtc (all via `/signaling` WebSocket) | None — this gate is closed |
-| Phase 4: Room-ID grammar, body-size, scene schema, quota limits before DO | Verified | `isValidRoomId` (`^[A-Za-z0-9_-]{1,64}$`) rejects with 400 before `idFromName` (security.md lines 1351-1356); 1 MiB actual body cap (`readBoundedJsonBody`); schema validation; 429 quotas; independent verifier APPROVE | None — this slice is closed |
-| Phase 4 gate: Oversized input rejected, delete/expiry remove all data, old grants cannot authorize recreated rooms | Verified | Tombstones on delete (security.md lines 1364-1366); 410 recreate; TTLs (lines 1367-1370); independent verifier APPROVE | None — this gate is closed |
-| Phase 5: CSP, framing, content-type, cache, indexing protections | Verified | `withSecurityHeaders` sets `nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, enforced CSP with `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'self'` (security.md lines 1398-1401); `withNonceHtmlSecurityHeaders` adds per-response nonce for inline scripts (lines 1398-1401); independent verifier APPROVE; unit tests at `src/lib/worker/requestGuard.test.ts` lines 344-466 | None — this slice is closed |
-| Phase 5: PII redaction, generic 5xx errors, security-event logging | Verified | `internalErrorResponse` returns generic 5xx to clients (security.md lines 1402-1406); logs redact JWT/Bearer/Cookie/email (line 224); `logAuthEvent` / `logSocketClose` for auth_failure, revocation, grant_change, rate_limit, socket_close (security.md lines 1402-1406) | None — this slice is closed |
-| Phase 5: Account erasure, data export, minors policy | Verified | `DELETE /auth/account` + RoomDO `/room/erasure` fan-out (security.md lines 1413-1417); export, minors/lawful-basis docs recorded (lines 1413-1417); `SECURITY_DATA_PROTECTION.md` exists (lines 753-789 of security.md) | None — this slice is closed |
-| Phase 5 gate: Headers/privacy/retention/logging/runtime tests pass; no credential/PII/board leaks | Verified | CSP/headers unit tests (security.md lines 1426-1430); persistence/privacy tests; TTL/delete workers tests; auth event redaction tests (lines 1426-1430); all passing | None — this gate is closed |
-| Phase 6: CI lint/typecheck/unit/workers/e2e/scan/Semgrep/audit gates | Partially verified | CI jobs present: lint (`.github/workflows/ci.yml` line 44), typecheck (line 47), unit tests (line 50), workers (line 58), e2e (lines 60-94), Semgrep (lines 103-115), full audit (lines 117-138), production-omit-dev audit (lines 140-158); **residual**: e2e is commented out in deploy workflow (`.github/workflows/deploy-cloudflare.yml` lines 85-101), no container image to scan | **Before release**: uncomment e2e tests in deploy workflow; verify all jobs run and pass on a release candidate build |
-| Phase 6: Every HTTP route reviewed against authorization matrix | Open | Security.md authorization matrix exists (lines 90-102); no independent reviewer sign-off recorded for every route/real-time event | **Independent security reviewer**: walk every HTTP method/WebSocket operation, match it to the matrix (lines 90-102), record any mismatches or gaps, sign off when complete |
-| Phase 6: Staging penetration test (auth bypass, IDOR, privilege escalation, CSRF, WebSocket abuse, resource exhaustion, revocation, retention, alternate-origin) | Open | Local adversarial tests exist: `src/do/signalingAdversarial.workers.test.ts` (pending GET 403, viewer 403, wrong origin denied, rate 1008, oversized 1009, kick 4401, stale grant 4401); E2E `tests/e2e/signaling-adversarial.spec.ts` (2 passed); no production staging URL available for real penetration test | **Owner**: arrange staging Cloudflare account with real Google/Facebook Access; **Penetration tester**: run real staging probes covering authentication bypass, IDOR (cross-account, cross-room reads/writes), privilege escalation, CSRF, WebSocket abuse, resource exhaustion, revocation timing, retention verification, and alternate-origin access; retain detailed findings and signature |
-| Phase 6: Operational owners, deadlines, incident response, backup/restore, session/key rotation, monitoring, emergency revocation procedures documented | Open | `SECURITY_BACKUP_RESTORE.md` exists (security.md lines 479-487, 755-765); `SECURITY_REVOCATION_BOUND.md` documents revocation policy (line 50); **missing**: operational owners assigned, incident response playbook, session/key rotation schedule/procedures, monitoring alerting rules, emergency access-revocation hotline/procedure | **Operational owner**: create `SECURITY_OPERATIONS.md` documenting: incident response owner and process, on-call rotation, session rotation frequency and procedure, key rotation procedure (LiveKit/LIVEKIT_API_SECRET/CLOUDFLARE_API_TOKEN), monitoring dashboards/alerts for auth failures/rate limits/socket closures, emergency access-revocation procedure (disable account / revoke all sessions) |
-| Phase 6 gate: Every P0/P1 task complete, no high/critical finding unowned, release owner signs off | Open | All P0/P1 tasks in security.md checked except: Phase 1 product-fit, Phase 1 staging config, Phase 1 custom hostname closure, Phase 6 HTTP route review, Phase 6 staging pentesting, Phase 6 operational procedures; no release owner signature recorded | **Release owner**: review all open items above, either unblock them or record a bounded waiver, then countersign this gate with date and evidence ID |
-
 ## Post-billing security sweep — 2026-09-12
 
 Scope: the current working tree after the Phase 7 billing slices
@@ -1890,7 +1294,10 @@ header that was never in scope for SEC-012.
 | SEC-A27 | Low | Checkout/portal builders accept unvalidated `successUrl`/`cancelUrl`/`returnUrl` — close before wiring the routes |
 | SEC-A28 | Info | Secret-bearing `workflow_dispatch` workflows have no `environment:` reviewer gate |
 
-Priority fix order: SEC-A17 (it puts a payment credential one dispatch away
+**All twelve are resolved** (2026-09-13); each finding below carries its
+resolution and the commit or test that shows it.
+
+Original priority fix order: SEC-A17 (it puts a payment credential one dispatch away
 from an attacker-named host), then SEC-A19 and SEC-A27 (both close a hole
 before the route that opens it is written, which is the cheapest they will ever
 be), then SEC-A18/A20/A21, then the header work in SEC-A22/A23.
@@ -1932,19 +1339,30 @@ this repository can therefore name the host.
 transmitted. The script's own header states the intent to "re-point this script
 at it" once staging exists — the exfiltration path opens on that commit.
 
-- [ ] Allowlist the base in `readBillingEnv`: accept `https://api.stripe.com`,
+- Allowlist the base in `readBillingEnv`: accept `https://api.stripe.com`,
   and any other value only when an explicit non-production marker is set.
   Reject anything else by returning the default rather than throwing, so a
   misconfigured deployment talks to Stripe rather than failing open to a
   stranger.
-- [ ] Refuse to pair a `sk_live_` key with a non-production base, and refuse a
+  - Resolution (2026-09-13): `readBillingEnv` returns the default base and
+    `apiBaseAllowed: false` for any other value unless a test key is paired with
+    it (`stripeConfig.test.ts`).
+- Refuse to pair a `sk_live_` key with a non-production base, and refuse a
   `sk_test_` key with the production base. Both are one string comparison and
   they make a mis-scoped secret loud instead of silent.
-- [ ] Put `billing-staging.yml` behind a protected GitHub `environment:` with
+  - Resolution (2026-09-13): A non-default base is honoured only with an
+    `sk_test_` key (`stripeConfig.test.ts`); the staging runner refuses anything
+    but a test key bound for `https://api.stripe.com` (`09e3d61`).
+- Put `billing-staging.yml` behind a protected GitHub `environment:` with
   required reviewers, so dispatching it with an attacker-named base needs a
   second person.
-- [ ] Add the base-URL assertion to `run-billing-staging.mjs` before the first
+  - Resolution (2026-09-13): The job declares `environment: staging`; the
+    required reviewer and branch rule on that environment are owner action 2.
+- Add the base-URL assertion to `run-billing-staging.mjs` before the first
   `fetch` is ever written into it.
+  - Resolution (2026-09-13): Added before any request exists:
+    `stagingStripeTargetError` (`09e3d61`,
+    `scripts/lib/stripeStagingGuard.test.ts`).
 
 **Acceptance tests:** `readBillingEnv` returns the default for
 `http://evil.example`, for `https://api.stripe.com.evil.example`, and for a
@@ -1974,10 +1392,17 @@ nothing an auditor could not already read off the row — the one thing it was
 meant to support, re-verifying a stored event against Stripe's signature after
 the fact, is impossible.
 
-- [ ] Thread `verification.payloadHash` through `webhookApplyBody` and into
+- Thread `verification.payloadHash` through `webhookApplyBody` and into
   `BillingApplyInput.payloadHash`.
-- [ ] Keep the internal-body hash if it is wanted for transport integrity, but
+  - Resolution (2026-09-13): Done; the stored `payload_hash` is the SHA-256 of
+    the raw signed body (`worker.billing.workers.test.ts` › stores the SHA-256
+    of the raw signed body).
+- Keep the internal-body hash if it is wanted for transport integrity, but
   store it in a separate column with a name that says so.
+  - Resolution (2026-09-13): The event apply no longer hashes its internal body
+    at all; the operation and settle routes keep a hash of their own request
+    body for replay detection, stored as `request_hash`, a name that says what
+    it is.
 
 **Acceptance tests:** a captured webhook body plus the stored `payload_hash`
 re-verifies against the recorded `Stripe-Signature`; changing one byte of the
@@ -2005,11 +1430,17 @@ forged paid entitlements, not a leak. The webhook path already has one
 unauthenticated entry point (SEC-A21); a routing mistake there or in any future
 billing route is the whole exploit.
 
-- [ ] Pass the verified payload hash and an explicit `signatureVerified: true`
+- Pass the verified payload hash and an explicit `signatureVerified: true`
   from the Worker, and reject an apply that lacks them.
-- [ ] Re-assert `livemode` inside the Durable Object rather than relying on the
+  - Resolution (2026-09-13): Done; an apply without `signatureVerified: true` or
+    a well-formed hash writes nothing (`billing.workers.test.ts` ›
+    verified-caller attestation).
+- Re-assert `livemode` inside the Durable Object rather than relying on the
   Worker's check, so the "test events cannot mutate entitlements" property
   holds at the writer, not just at the edge.
+  - Resolution (2026-09-13): Done; a livemode mismatch is recorded as ignored
+    inside the writer (`billing.workers.test.ts` › records livemode mismatch as
+    ignored).
 
 **Acceptance tests:** a well-formed apply body with no verification marker is
 rejected with no row written; a body whose hash does not match its event is
@@ -2038,10 +1469,16 @@ and the room's owner row (`RoomDO.ts:1592`). One future route that forwards a
 client-supplied `accountId` — the obvious shape of an admin or support view —
 turns this into cross-account billing disclosure, including company membership.
 
-- [ ] Require a session cookie and serve only the caller's own account, or
+- Require a session cookie and serve only the caller's own account, or
   require an explicit internal marker and keep the accountId server-derived.
-- [ ] Add a negative test asserting the route refuses an `accountId` that does
+  - Resolution (2026-09-13): Both, one per caller: a session proves only its own
+    account, and room admission proves ownership of the room it names
+    (`78998cc`).
+- Add a negative test asserting the route refuses an `accountId` that does
   not belong to the caller.
+  - Resolution (2026-09-13): Added: bare id 403, cross-account session 403,
+    unowned room 403, no proof 401; three targeted mutants killed
+    (`identityDO.workers.test.ts` › SEC-A20).
 
 **Acceptance tests:** a request for another account's id returns 403 with no
 plan body; the two existing callers are unaffected.
@@ -2073,10 +1510,15 @@ The cost per request is bounded (one HMAC over the body, no Durable Object
 round trip until the signature verifies), which is why this is Medium and not
 High.
 
-- [ ] Reject a missing or unparseable `Content-Length` on this route, or read
+- Reject a missing or unparseable `Content-Length` on this route, or read
   the body through a counting stream that aborts at `BILLING_WEBHOOK_MAX_BODY_BYTES`.
-- [ ] Add a per-IP rate limit on `/api/billing/webhook` sized above Stripe's
+  - Resolution (2026-09-13): Both: an unparseable length is 400, and the body is
+    read through a counting stream cancelled at 1 MiB; an 8 MiB chunked stream
+    is pulled under 2 MiB (`b24ff41`).
+- Add a per-IP rate limit on `/api/billing/webhook` sized above Stripe's
   real retry behaviour.
+  - Resolution (2026-09-13): 120 deliveries a minute per client IP; Stripe
+    retries a 429, so nothing is lost (`b24ff41`).
 
 **Acceptance tests:** a chunked 8 MiB body is rejected without being buffered;
 a request with no `Content-Length` is rejected; genuine Stripe deliveries and
@@ -2095,11 +1537,14 @@ over a stripped connection, and Cloudflare terminates TLS. What remains exposed
 is the *first* navigation to `app-playground.sen-tutor.co.uk` and every
 navigation to the marketing host, which is where the sign-in link lives.
 
-- [ ] Set `Strict-Transport-Security: max-age=31536000; includeSubDomains`
+- Set `Strict-Transport-Security: max-age=31536000; includeSubDomains`
   on every response from all three hostnames.
-- [ ] Decide on `preload` explicitly: `includeSubDomains` plus preload commits
+  - Resolution (2026-09-13): Set on every response from all three hostnames;
+    verified live on the marketing and guest hosts.
+- Decide on `preload` explicitly: `includeSubDomains` plus preload commits
   the whole `sen-tutor.co.uk` zone, which is a decision for the zone owner, not
   this Worker. Record the decision either way.
+  - Resolution (2026-09-13): Decided: no preload (D-6).
 
 **Acceptance tests:** the header is asserted on HTML, on API 2xx and 4xx, and
 on all three host kinds.
@@ -2122,14 +1567,19 @@ absent. COOP matters specifically for Phase 7: Stripe Checkout and the Customer
 Portal are cross-origin navigations away from and back into an authenticated
 window, and COOP is what severs the opener relationship across them.
 
-- [ ] Add `form-action 'self'` to the CSP.
-- [ ] Add `Cross-Origin-Opener-Policy: same-origin` and
+- Add `form-action 'self'` to the CSP.
+  - Resolution (2026-09-13): Done; verified live.
+- Add `Cross-Origin-Opener-Policy: same-origin` and
   `Cross-Origin-Resource-Policy: same-origin`. Verify against a real Excalidraw
   session and the LiveKit A/V panel before enforcing — COOP can break popup
   flows, which is the point, so the checkout return path must be a redirect and
   not a popup handshake.
-- [ ] Consider `require-trusted-types-for 'script'` once the Excalidraw fork's
+  - Resolution (2026-09-13): Both set and verified live; the checkout return is
+    a redirect, not a popup handshake, and the board and call panel run under
+    them in the end-to-end suite.
+- Consider `require-trusted-types-for 'script'` once the Excalidraw fork's
   DOM writes are known to be Trusted-Types clean; do not enforce it blind.
+  - Resolution (2026-09-13): Considered and not enforced (D-7).
 
 **Acceptance tests:** CSP unit tests assert `form-action`; an E2E run reports no
 new CSP violations on a real board; the A/V panel still starts.
@@ -2150,9 +1600,12 @@ cannot be changed even by an id such as `//evil.example/x`, and the id is only
 reached after signature verification. What an id containing `../` *can* do is
 reshape the path within the Stripe API. Cheap to close, so close it.
 
-- [ ] Assert `/^[A-Za-z0-9_]{1,255}$/` on every id before building a request.
-- [ ] Apply the same check to `referralCode` before it becomes
+- Assert `/^[A-Za-z0-9_]{1,255}$/` on every id before building a request.
+  - Resolution (2026-09-13): Done: `STRIPE_ID_RE` / `assertStripeId` in
+    `stripeRequest.ts`.
+- Apply the same check to `referralCode` before it becomes
   `metadata[referrer_code]`, and to `promotionCodeId`.
+  - Resolution (2026-09-13): Done for `referralCode` and `promotionCodeId`.
 
 **Acceptance tests:** an id containing `../`, `/`, `?`, `#`, or a space is
 rejected before any request is built.
@@ -2179,10 +1632,15 @@ errs safe — a paying tutor is capped at one room, which is a billing bug rathe
 than a security one — but two independent limit sources are how a cap ends up
 enforced on one path and not the other once the paid tiers go live.
 
-- [ ] Derive every cap from the resolved effective plan; keep `FREE_MAX_*` as
+- Derive every cap from the resolved effective plan; keep `FREE_MAX_*` as
   the catalog's free-row values only.
-- [ ] Add a test asserting a `tutor_pro_*` account may own more than one room
+  - Resolution (2026-09-13): Done: owned rooms read `limits.maxOwnedRooms` from
+    the effective plan in IdentityDO; participants read the owner's plan at
+    admission.
+- Add a test asserting a `tutor_pro_*` account may own more than one room
   and a `free` account may not.
+  - Resolution (2026-09-13): Covered by the IdentityDO plan and owned-room
+    tests.
 
 ### SEC-A26 — Low — `resolveEffectivePlan` indexes the catalog with an unvalidated `plan_id`
 
@@ -2207,8 +1665,10 @@ outcome is denial, not a bypass — which is why this is Low, and why it should
 still be made explicit rather than left to depend on two callers' error
 handling.
 
-- [ ] Validate `plan_id` against `PLAN_CATALOG` at the read boundary and fall
+- Validate `plan_id` against `PLAN_CATALOG` at the read boundary and fall
   back to the `free` row, logging the unknown value.
+  - Resolution (2026-09-13): Done: `Object.hasOwn(PLAN_CATALOG, planId)` with an
+    `unknown_plan_id` alert and a Free fallback (`effectivePlan.ts`).
 
 ### SEC-A27 — Low — Checkout and portal builders accept unvalidated return URLs
 
@@ -2227,11 +1687,15 @@ through `checkout.stripe.com`, which is a domain users are being trained to
 trust with card details. SEC-A05 in the 2026-09-10 audit was the same class of
 bug in `safeRedirectPath`; this is the chance to not write it twice.
 
-- [ ] Build all three URLs server-side from `TEACHER_HOSTNAME` and a fixed
+- Build all three URLs server-side from `TEACHER_HOSTNAME` and a fixed
   path set. Never accept them from a request body.
-- [ ] If a return path must vary, accept an opaque key and map it to a URL
+  - Resolution (2026-09-13): Done: success, cancel and return URLs are built
+    from the verified teacher host's origin and fixed paths; client URLs are
+    ignored (`worker.billing.workers.test.ts` › SEC-A27).
+- If a return path must vary, accept an opaque key and map it to a URL
   server-side; reuse `safeRedirectPath` only after confirming its backslash fix
   from SEC-A05 is in place.
+  - Resolution (2026-09-13): Not needed: no return path varies.
 
 **Acceptance tests:** a checkout request carrying `successUrl` in its body has
 that field ignored; the built URL always has the teacher hostname.
@@ -2248,8 +1712,11 @@ rule or reviewer stands between a dispatch and the secret. SEC-A08 already
 recorded that the `prod` environment has no protection rules; this extends the
 same gap to the manual workflows. It is the enabling condition for SEC-A17.
 
-- [ ] Declare a protected `environment:` on every job that reads a secret, with
+- Declare a protected `environment:` on every job that reads a secret, with
   required reviewers and a restricted branch list.
+  - Resolution (2026-09-13): Every secret-reading job declares an environment,
+    and all secrets are environment-scoped (the repository has none of its own).
+    Reviewers and branch rules on those environments are owner action 2.
 
 ### Positive findings
 
@@ -2312,8 +1779,7 @@ These held up under the sweep and are worth not regressing:
   SEC-A19 and SEC-A20 are the same shape: a Durable Object route whose safety
   rests on every current caller behaving. Walk the remaining `IdentityDO` and
   `RoomDO` routes and record, per route, what it asserts versus what it assumes
-  — that inventory is also what the open Phase 6 gate "every HTTP route reviewed
-  against the authorization matrix" is asking for.
+  — that inventory is now `SECURITY_ROUTE_REVIEW.md`.
 - **Fold the response-header work into one change.** SEC-A22 and SEC-A23 both
   touch `withSecurityHeaders`; HSTS, `form-action`, COOP and CORP are one commit
   and one test file, and splitting them across releases means four separate
