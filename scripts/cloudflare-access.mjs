@@ -17,51 +17,50 @@
  * It is the automated form of the manual evidence checklist in
  * `CLOUDFLARE_ACCESS_STAGING.md`.
  *
+ * Terraform (infra/cloudflare/access.tf) declares the teacher application and
+ * its policy. It cannot prove invariants 3 and 4, which are ABSENCES: Terraform
+ * sees only the resources it manages, so an application another tool created on
+ * the guest hostname is invisible to it. Reading the live account is the only
+ * thing that settles those, which is what this script does.
+ *
  * Usage:
  *   node scripts/cloudflare-access.mjs check          # read-only (default)
  *   node scripts/cloudflare-access.mjs apply-app      # create/update teacher app
  *   node scripts/cloudflare-access.mjs apply-branding # login page branding
  *
+ * The environment is chosen by TP_ENV, or is the only one
+ * `infra/environments.json` defines. Every hostname and name comes from that
+ * manifest. This script used to regex-parse wrangler.toml's top-level `[vars]`,
+ * which stops being correct the moment a second environment keeps its values in
+ * an `[env.<name>]` block instead: the read would go on returning production's
+ * hostnames while the output claimed to be checking something else.
+ *
  * Credentials come from the environment and are never written to disk:
  *   CLOUDFLARE_API_TOKEN   required; needs Access: Apps + Orgs edit
- *   CLOUDFLARE_ACCOUNT_ID  optional; discovered when a single account exists
+ *   CLOUDFLARE_ACCOUNT_ID  optional; overrides the manifest's accountId
  *
  * Store the token in `.dev.vars` (gitignored) or export it for one shell.
  * Never paste it into a file this repository tracks.
  */
 
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readEnvironment, resolveEnvironmentName } from './lib/environments.mjs';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const API = 'https://api.cloudflare.com/client/v4';
 
 /**
- * Every `KEY = "value"` pair in a wrangler.toml, as a map.
+ * The two hostnames the §6.5 invariants are stated about.
  *
- * Deliberately one hardcoded regex rather than a pattern built per key: a
- * RegExp assembled from a variable trips semgrep's detect-non-literal-regexp
- * (ReDoS) rule, and there is no reason to construct one here.
+ * The marketing hostname is deliberately not returned: it needs the same
+ * absence as the guest hostname, and it gets it for free -- anything that does
+ * not cover the teacher hostname exactly is already reported below.
  */
-function tomlStringVars(toml) {
-  const pair = /^[^\S\r\n]*([A-Za-z_][A-Za-z0-9_]*)[^\S\r\n]*=[^\S\r\n]*"([^"]*)"[^\S\r\n]*$/gm;
-  const vars = new Map();
-  for (const match of toml.matchAll(pair)) vars.set(match[1], match[2]);
-  return vars;
-}
-
-/** wrangler.toml is the single source of truth for both hostnames. */
-function hostnamesFromWrangler() {
-  const toml = readFileSync(join(root, 'wrangler.toml'), 'utf8');
-  const vars = tomlStringVars(toml);
-  const read = (key) => vars.get(key) || null;
-  const teacher = read('TEACHER_HOSTNAME');
-  const guest = read('GUEST_HOSTNAME');
+function hostnamesFor(environment) {
+  const teacher = environment.hostnames?.teacher;
+  const guest = environment.hostnames?.guest;
   if (!teacher || !guest) {
-    fail('wrangler.toml must define both TEACHER_HOSTNAME and GUEST_HOSTNAME.');
+    fail('infra/environments.json must define hostnames.teacher and hostnames.guest.');
   }
-  if (teacher === guest) fail('TEACHER_HOSTNAME and GUEST_HOSTNAME must differ.');
+  if (teacher === guest) fail('The teacher and guest hostnames must differ.');
   return { teacher, guest };
 }
 
@@ -72,8 +71,12 @@ function fail(message) {
 
 const token = process.env.CLOUDFLARE_API_TOKEN;
 if (!token) {
+  // Scoped to the command, so a read-only check does not ask for a token that
+  // could rewrite the login boundary it is only meant to inspect.
+  const write = (process.argv[2] ?? 'check') !== 'check';
   fail('CLOUDFLARE_API_TOKEN is not set. Create a token with Access: Apps and '
-    + 'Access: Organizations edit permissions, then export it for this shell.');
+    + `Access: Organizations ${write ? 'Edit' : 'Read'} permissions, then export `
+    + 'it for this shell.');
 }
 
 async function api(path, init = {}) {
@@ -93,8 +96,13 @@ async function api(path, init = {}) {
   return body.result;
 }
 
-async function resolveAccountId() {
+async function resolveAccountId(environment) {
+  // Precedence: an explicit override, then the manifest, then discovery. The
+  // manifest ahead of discovery is the point -- a login that can see more than
+  // one account must not be able to point a check at the wrong one and report
+  // a green against an account nothing is deployed to.
   if (process.env.CLOUDFLARE_ACCOUNT_ID) return process.env.CLOUDFLARE_ACCOUNT_ID;
+  if (environment.accountId) return environment.accountId;
   const accounts = await api('/accounts');
   if (accounts.length !== 1) {
     fail(`Found ${accounts.length} accounts. Set CLOUDFLARE_ACCOUNT_ID to choose one:\n`
@@ -171,8 +179,31 @@ function reportCheck(hosts, state) {
   }
 
   // Invariant 1 — exactly one teacher application.
+  //
+  // Zero is a FAILURE once the environment declares an audience, not a note.
+  // This check previously passed while seeing nothing at all: a token without
+  // Access permissions gets an empty list rather than an error, and "no
+  // applications exist" and "I cannot see any applications" are indistinguishable
+  // from here. Reporting OK for either is the worst outcome available -- the
+  // whole point of this script is to prove these invariants, and it was
+  // certifying them while blind.
+  //
+  // An audience in the manifest means an application was created and its AUD
+  // copied out, so one MUST exist. A brand-new environment has no audience yet,
+  // and there zero is genuinely just a note.
   if (state.teacherApps.length === 0) {
-    notes.push(`No application covers ${hosts.teacher} yet. Run: apply-app`);
+    if (environment.access?.audience) {
+      problems.push(
+        `No application covers ${hosts.teacher}, but access.audience is set in `
+        + 'infra/environments.json -- so one is supposed to exist. Either it was '
+        + 'deleted, or this token cannot see Access applications. '
+        + `The account returned ${state.apps.length} application(s) in total; if `
+        + 'that is also zero, grant the token Access: Apps and Policies (Read) '
+        + 'and run this again. Do not treat this as a pass.',
+      );
+    } else {
+      notes.push(`No application covers ${hosts.teacher} yet. Run: apply-app`);
+    }
   } else if (state.teacherApps.length > 1) {
     problems.push(`${state.teacherApps.length} applications cover ${hosts.teacher}. Keep exactly one.`);
   }
@@ -190,16 +221,17 @@ function reportCheck(hosts, state) {
     }
   }
 
+  // The AUD is generated by Cloudflare, so the manifest cannot be its source:
+  // it is copied there after the application is created. That copy is the step
+  // a human forgets, and the symptom is every teacher token rejected, so it is
+  // compared against the live application on every check.
   const teacherAud = state.teacherApps[0]?.app?.aud;
-  if (teacherAud) {
-    const toml = readFileSync(join(root, 'wrangler.toml'), 'utf8');
-    const configured = toml.match(/^\s*ACCESS_AUDIENCE\s*=\s*"([^"]+)"/m)?.[1];
-    if (configured && configured !== teacherAud) {
-      problems.push(
-        `ACCESS_AUDIENCE in wrangler.toml (${configured}) does not match the `
-        + `application AUD (${teacherAud}). The Worker will reject every token.`,
-      );
-    }
+  const configured = environment.access?.audience;
+  if (teacherAud && configured && configured !== teacherAud) {
+    problems.push(
+      `access.audience in infra/environments.json (${configured}) does not match `
+      + `the application AUD (${teacherAud}). The Worker will reject every token.`,
+    );
   }
 
   console.log('');
@@ -220,10 +252,10 @@ async function applyApp(accountId, hosts, state) {
   }
   const existing = state.teacherApps[0];
   const payload = {
-    name: 'Teacher Playground (teachers)',
+    name: environment.access.applicationName,
     domain: hosts.teacher,
     type: 'self_hosted',
-    session_duration: '24h',
+    session_duration: environment.access.sessionDuration,
     app_launcher_visible: false,
     allowed_idps: [],
     auto_redirect_to_identity: false,
@@ -253,7 +285,7 @@ async function applyApp(accountId, hosts, state) {
     }),
   });
   console.log(`  aud ${created.aud}`);
-  console.log('\n  Set this in wrangler.toml as ACCESS_AUDIENCE, then redeploy.\n');
+  console.log('\n  Set this as access.audience in infra/environments.json, then redeploy.\n');
   return created;
 }
 
@@ -275,9 +307,13 @@ async function applyBranding(accountId) {
 }
 
 const command = process.argv[2] ?? 'check';
-const hosts = hostnamesFromWrangler();
-const accountId = await resolveAccountId();
+const environmentName = resolveEnvironmentName();
+const environment = readEnvironment(environmentName);
+const hosts = hostnamesFor(environment);
+const accountId = await resolveAccountId(environment);
 const state = await loadState(accountId, hosts);
+
+console.log(`\n  environment       ${environmentName}`);
 
 if (command === 'check') {
   process.exit(reportCheck(hosts, state));

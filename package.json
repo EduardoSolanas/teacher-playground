@@ -7,10 +7,10 @@
     "dev:next": "next dev --webpack",
     "prebuild": "node scripts/copy-excalidraw-assets.mjs",
     "build": "next build --webpack",
-    "dev:worker": "npm run build && wrangler dev",
+    "dev:worker": "npm run build && wrangler dev --env prod",
     "dev:access": "node scripts/local-access-issuer.mjs",
     "dev:local": "node scripts/dev-local.mjs",
-    "deploy": "npm run build && wrangler deploy",
+    "deploy": "npm run build && wrangler deploy --env prod",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.worker.json",
     "test": "vitest run",
@@ -21,6 +21,7 @@
     "access:check": "node scripts/cloudflare-access.mjs check",
     "access:apply": "node scripts/cloudflare-access.mjs apply-app",
     "access:branding": "node scripts/cloudflare-access.mjs apply-branding",
+    "infra:check": "npm run access:check && npm run r2:check",
     "test:watch": "vitest",
     "test:e2e": "node scripts/run-e2e.mjs",
     "test:e2e:ui": "node scripts/run-e2e.mjs --ui",
@@ -73,7 +74,7 @@
     "ts-node": "^10.9.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.11",
-    "wrangler": "^4.123.0"
+    "wrangler": "^4.129.1"
   },
   "overrides": {
     "dompurify": "3.4.13",
@@ -91,5 +92,8 @@
       "nanoid": "5.1.16",
       "@mermaid-js/parser": "1.2.0"
     }
+  },
+  "allowScripts": {
+    "better-sqlite3@12.10.0": true
   }
 }

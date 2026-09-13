@@ -7,7 +7,7 @@
  * go to R2 instead, under `rooms/<roomId>/files/<fileId>`, and the Worker
  * decides who may read them.
  *
- * ONE bucket, for the whole deployment. Not one per teacher and not one per
+ * ONE bucket per environment. Not one per teacher and not one per
  * room, for two reasons that are worth stating because the instinct is
  * otherwise:
  *
@@ -28,30 +28,44 @@
  * Invariants this checks, none of which any test in this repository can prove
  * because they live in Cloudflare rather than in code:
  *
- *   1. The bucket named by wrangler.toml exists.
+ *   1. The bucket named by infra/environments.json exists.
  *   2. It is NOT public. R2 can expose a bucket on an r2.dev URL or a custom
  *      domain, and either one would put every pupil's uploaded picture on the
  *      open internet behind a guessable path, bypassing the room grant
  *      entirely. Absence of public access is the design, not an oversight.
  *
+ * Terraform (infra/cloudflare/r2.tf) declares the bucket. It cannot prove
+ * invariant 2, which is an ABSENCE: Terraform creates no public domain for the
+ * bucket, but it cannot see one enabled through the dashboard, because an
+ * unmanaged resource is invisible to it. Reading the live bucket is the only
+ * thing that settles that, which is what this script does.
+ *
  * Usage:
  *   node scripts/cloudflare-r2.mjs check    # read-only (default)
  *   node scripts/cloudflare-r2.mjs apply    # create the bucket if absent
  *
+ * The environment is chosen by TP_ENV, or is the only one
+ * `infra/environments.json` defines. The bucket name and location come from
+ * that manifest. This script used to regex-parse the first `[[r2_buckets]]`
+ * block in wrangler.toml, which stops being correct the moment a second
+ * environment adds its own: the first match would still be production's.
+ *
  * Credentials come from the environment and are never written to disk:
  *   CLOUDFLARE_API_TOKEN   required; needs Workers R2 Storage: Edit
- *   CLOUDFLARE_ACCOUNT_ID  optional; discovered when a single account exists
+ *   CLOUDFLARE_ACCOUNT_ID  optional; overrides the manifest's accountId
  *
  * Store the token in `.dev.vars` (gitignored) or export it for one shell.
  * Never paste it into a file this repository tracks.
  */
 
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readEnvironment, resolveEnvironmentName } from './lib/environments.mjs';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const API = 'https://api.cloudflare.com/client/v4';
+
+function fail(message) {
+  console.error(`\n  ERROR  ${message}\n`);
+  process.exit(1);
+}
 
 /**
  * Where the bytes live, when Cloudflare offers a choice.
@@ -60,30 +74,32 @@ const API = 'https://api.cloudflare.com/client/v4';
  * bucket is hinted to western Europe rather than left to land wherever the
  * first write happens to originate. A hint is not a guarantee of residency —
  * it is the only control R2 exposes, and the alternative is no control at all.
+ *
+ * The manifest carries the Terraform provider's uppercase spelling; this REST
+ * API takes the lowercase one, so the single stored value is lowered here
+ * rather than written twice.
  */
-const LOCATION_HINT = 'weur';
-
-function fail(message) {
-  console.error(`\n  ERROR  ${message}\n`);
-  process.exit(1);
+function locationHint(environment) {
+  return String(environment.r2?.locationHint ?? 'WEUR').toLowerCase();
 }
 
-/** wrangler.toml is the single source of truth for the bucket name. */
-function bucketNameFromWrangler() {
-  const toml = readFileSync(join(root, 'wrangler.toml'), 'utf8');
-  const block = /\[\[r2_buckets\]\][\s\S]*?bucket_name\s*=\s*"([^"]+)"/.exec(toml);
-  if (!block) {
-    fail('wrangler.toml has no [[r2_buckets]] entry with a bucket_name. '
-      + 'The binding is what the Worker reaches R2 through; without it the '
+function bucketNameFor(environment) {
+  const name = environment.r2?.boardFilesBucket;
+  if (!name) {
+    fail('infra/environments.json has no r2.boardFilesBucket for this environment. '
+      + 'The binding is what the Worker reaches R2 through; without a bucket the '
       + 'upload route finds env.BOARD_FILES undefined at runtime.');
   }
-  return block[1];
+  return name;
 }
 
 const token = process.env.CLOUDFLARE_API_TOKEN;
 if (!token) {
+  // Read is enough to check; only `apply` creates a bucket.
+  const write = (process.argv[2] ?? 'check') !== 'check';
   fail('CLOUDFLARE_API_TOKEN is not set. Create a token with Workers R2 '
-    + 'Storage: Edit permission, then export it for this shell.');
+    + `Storage: ${write ? 'Edit' : 'Read'} permission, then export it for this `
+    + 'shell.');
 }
 
 async function api(path, init = {}) {
@@ -108,8 +124,12 @@ async function apiOrFail(path, init = {}) {
   return result.body.result;
 }
 
-async function resolveAccountId() {
+async function resolveAccountId(environment) {
+  // Manifest ahead of discovery: a login that can see more than one account
+  // must not be able to report a green against an account nothing is deployed
+  // to.
   if (process.env.CLOUDFLARE_ACCOUNT_ID) return process.env.CLOUDFLARE_ACCOUNT_ID;
+  if (environment.accountId) return environment.accountId;
   const accounts = await apiOrFail('/accounts');
   if (accounts.length !== 1) {
     fail(`Found ${accounts.length} accounts. Set CLOUDFLARE_ACCOUNT_ID to choose one:\n`
@@ -168,7 +188,7 @@ async function check(accountId, name) {
   console.log('  OK       no public access (r2.dev disabled, no enabled custom domain)\n');
 }
 
-async function apply(accountId, name) {
+async function apply(accountId, name, hint) {
   const existing = await findBucket(accountId, name);
   if (existing) {
     console.log(`\n  OK       bucket "${name}" already exists; nothing to create.\n`);
@@ -177,22 +197,29 @@ async function apply(accountId, name) {
 
   await apiOrFail(`/accounts/${accountId}/r2/buckets`, {
     method: 'POST',
-    body: JSON.stringify({ name, locationHint: LOCATION_HINT }),
+    body: JSON.stringify({ name, locationHint: hint }),
   });
-  console.log(`\n  CREATED  bucket "${name}" (location hint ${LOCATION_HINT})`);
+  console.log(`\n  CREATED  bucket "${name}" (location hint ${hint})`);
   // Created private: R2 buckets expose nothing until a domain is turned on,
   // so this reports rather than configures, and fails if that ever changes.
   return check(accountId, name);
 }
 
 const command = process.argv[2] ?? 'check';
-const accountId = await resolveAccountId();
-const bucketName = bucketNameFromWrangler();
+const environmentName = resolveEnvironmentName();
+const environment = readEnvironment(environmentName);
+const accountId = await resolveAccountId(environment);
+const bucketName = bucketNameFor(environment);
+
+console.log(`\n  environment  ${environmentName}`);
 
 if (command === 'check') {
   await check(accountId, bucketName);
 } else if (command === 'apply') {
-  await apply(accountId, bucketName);
+  // Kept alongside Terraform for a brand-new environment where running one
+  // script is cheaper than an init/plan/apply cycle. Terraform adopts what it
+  // finds (infra/cloudflare/imports.tf), so the two do not fight.
+  await apply(accountId, bucketName, locationHint(environment));
 } else {
   fail(`Unknown command "${command}". Use "check" or "apply".`);
 }

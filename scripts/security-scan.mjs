@@ -80,9 +80,28 @@ function isReservedEmailDomain(domain) {
   return false;
 }
 
+/**
+ * A URL's userinfo is not an email address.
+ *
+ * A URL of the form scheme://user:secret@host contains no email, but the
+ * pattern above happily matches the second half of the userinfo together with
+ * the host and calls it one. That produced a blocking
+ * "non-reserved email address" finding against a SEC-A17 test whose whole point
+ * is that such a URL is REFUSED -- and the host has to be Stripe's real one for
+ * the test to mean anything, so quieting the scanner by editing the fixture
+ * would have removed the test's teeth instead of the false positive.
+ *
+ * Only the userinfo is dropped, and only for the email rule. The credential and
+ * private-key patterns still see the untouched text, so a secret embedded in a
+ * URL is still caught by the rule that is actually about secrets.
+ */
+function withoutUrlUserinfo(text) {
+  return text.replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/?#@]*@/g, '$1');
+}
+
 function containsNonReservedEmail(text) {
   emailPattern.lastIndex = 0;
-  for (const match of text.matchAll(emailPattern)) {
+  for (const match of withoutUrlUserinfo(text).matchAll(emailPattern)) {
     if (!isReservedEmailDomain(match[1])) {
       return true;
     }
