@@ -427,6 +427,63 @@ describe('RoomDO method and lifecycle guards', () => {
     for (const readyState of readyStates) expect(readyState).not.toBe(WebSocket.OPEN);
   });
 
+  it('takes an ungranted account off the call when its socket speaks, but not a merely stale one', async () => {
+    /*
+     * Phase 10: media must die with the grant. Kick, suspend, ban and the
+     * revocation alarm already evict LiveKit; a socket found ungranted on its
+     * next message was closed and left its owner in the call.
+     */
+    const owner = await bootstrapLocalSession(`guard-evict-owner-${crypto.randomUUID()}`);
+    const roomId = `guard-evict-room-${crypto.randomUUID()}`;
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const outcome = await runInDurableObject(stub(roomId), async (instance: RoomDO, state) => {
+      const evicted: { roomId: string; identity: string }[] = [];
+      instance.evictLiveKitParticipant = async (input) => {
+        evicted.push({ roomId: input.roomId, identity: input.identity });
+        return { ok: true };
+      };
+      const grantVersion = (instance as unknown as { db: { prepare(sql: string): { get(...args: unknown[]): unknown } } })
+        .db.prepare('SELECT grant_version AS v FROM rooms WHERE room_id = ?')
+        .get(roomId) as { v: number };
+
+      const ungranted = new WebSocketPair();
+      state.acceptWebSocket(ungranted[1]);
+      ungranted[1].serializeAttachment({
+        accountId: 'account-without-a-grant',
+        sessionId: 'session',
+        authorizationEpoch: 0,
+        roomId,
+        grantVersion: grantVersion.v,
+      });
+      await instance.webSocketMessage(ungranted[1], 'ping');
+
+      // The owner still holds the room: an old grant version closes the socket
+      // (it must reconnect and re-stamp) but is no reason to cut the call.
+      const staleOwner = new WebSocketPair();
+      state.acceptWebSocket(staleOwner[1]);
+      staleOwner[1].serializeAttachment({
+        accountId: owner.accountId,
+        sessionId: 'session',
+        authorizationEpoch: 0,
+        roomId,
+        grantVersion: grantVersion.v - 1,
+      });
+      await instance.webSocketMessage(staleOwner[1], 'ping');
+      await Promise.resolve();
+
+      return {
+        evicted,
+        ungrantedOpen: ungranted[1].readyState === WebSocket.OPEN,
+        staleOwnerOpen: staleOwner[1].readyState === WebSocket.OPEN,
+      };
+    });
+
+    expect(outcome.ungrantedOpen).toBe(false);
+    expect(outcome.staleOwnerOpen).toBe(false);
+    expect(outcome.evicted).toEqual([{ roomId, identity: 'account-without-a-grant' }]);
+  });
+
   it('keeps the active guide while another owner tab remains open', async () => {
     const owner = await bootstrapLocalSession(`guard-tabs-owner-${crypto.randomUUID()}`);
     const roomId = `guard-tabs-room-${crypto.randomUUID()}`;

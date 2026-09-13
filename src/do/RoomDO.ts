@@ -2345,12 +2345,22 @@ export class RoomDO extends DurableObject {
 
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
     const attachment = ws.deserializeAttachment() as SocketIdentity | null;
-    if (
-      !attachment?.accountId
-      || !attachment.roomId
-      || this.isStaleGrant(attachment)
-      || !isGrantedRole(getGrantRole(this.db, attachment.roomId, attachment.accountId))
-    ) {
+    if (!attachment?.accountId || !attachment.roomId) {
+      this.closeRevoked(ws, attachment);
+      return;
+    }
+    const granted = isGrantedRole(getGrantRole(this.db, attachment.roomId, attachment.accountId));
+    if (!granted) {
+      // No grant, no media: the call goes with the socket, within the same
+      // bound (Phase 10). A socket that is only stale keeps its call below.
+      this.closeRevoked(ws, attachment);
+      this.scheduleLiveKitEviction(attachment.accountId, attachment.roomId);
+      return;
+    }
+    if (this.isStaleGrant(attachment)) {
+      // Still granted, but stamped before a grant change: reconnect and
+      // re-stamp. Cutting the call here would drop a teacher mid-lesson every
+      // time someone else in the room was admitted or kicked.
       this.closeRevoked(ws, attachment);
       return;
     }
