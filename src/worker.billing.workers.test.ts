@@ -22,6 +22,7 @@ import {
   type IdentityDO,
 } from './do/IdentityDO';
 import { bootstrapLocalSession, authenticatedFetch, localAccessToken } from './test/workerAuth';
+import { BILLING_WEBHOOK_RATE_MAX } from './lib/worker/rateLimits';
 import { writeEntitlement } from './lib/identity/entitlementWriter';
 import { ensureReferralCode } from './lib/referrals/codes';
 import { readBillingEnv, type BillingEnv } from './lib/billing/stripeConfig';
@@ -179,6 +180,72 @@ describe('Worker POST /api/billing/webhook boundary', () => {
     expect(response.status).toBe(413);
 
     expect(await eventRow('evt_oversized')).toBeUndefined();
+  });
+
+  it('stops reading a chunked webhook body at the cap instead of buffering it (SEC-A21)', async () => {
+    /*
+     * The only unauthenticated POST on the teacher host. Without a
+     * Content-Length the declared-size check has nothing to read, so the body
+     * itself has to be the thing that is bounded: an 8 MiB stream must not be
+     * pulled much past 1 MiB before the Worker answers.
+     */
+    const chunk = new Uint8Array(64 * 1024).fill(0x78);
+    const total = 8 * 1024 * 1024;
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled >= total) {
+          controller.close();
+          return;
+        }
+        pulled += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+    });
+
+    const response = await SELF.fetch(`${TEACHER_BASE}${WEBHOOK_PATH}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+      duplex: 'half',
+    } as RequestInit);
+
+    expect(response.status).toBe(413);
+    expect(pulled).toBeLessThan(2 * 1024 * 1024);
+  });
+
+  it('refuses an unparseable Content-Length on the webhook (SEC-A21)', async () => {
+    const body = eventBody('evt_bad_length', 'invoice.paid', true, 1, 'in_bad_length');
+    const response = await postWebhook(body, {
+      ...(await stripeSignatureHeader(body)),
+      'content-length': 'not-a-number',
+    });
+    expect(response.status).toBe(400);
+    expect(await eventRow('evt_bad_length')).toBeUndefined();
+  });
+
+  it('rate-limits webhook deliveries per client IP with 429 and Retry-After (SEC-A21)', async () => {
+    /*
+     * Stripe retries a 429 with backoff for up to three days, so a limit here
+     * delays a genuine delivery and loses nothing; it bounds the HMAC work an
+     * unauthenticated caller can force from one address.
+     */
+    const body = eventBody('evt_rate_limit', 'invoice.paid', true, 1, 'in_rate_limit');
+    const send = (ip: string) => postWebhook(body, {
+      'stripe-signature': 't=1,v1=00',
+      'cf-connecting-ip': ip,
+      'x-test-strict-rate-limit': '1',
+    });
+
+    for (let index = 0; index < BILLING_WEBHOOK_RATE_MAX; index += 1) {
+      expect((await send('203.0.113.21')).status, `delivery ${index}`).toBe(400);
+    }
+    const limited = await send('203.0.113.21');
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get('retry-after'))).toBeGreaterThan(0);
+
+    // One address being throttled does not throttle another.
+    expect((await send('203.0.113.22')).status).toBe(400);
   });
 
   it('rejects a missing or invalid signature with 400 and writes no event row', async () => {

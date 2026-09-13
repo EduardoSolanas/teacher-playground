@@ -362,6 +362,54 @@ export async function readBoundedJsonBody(request: Request): Promise<BoundedJson
   return { ok: true, buffer };
 }
 
+export type BoundedText =
+  | { ok: true; text: string }
+  | { ok: false; status: 400 | 413 };
+
+/** A Content-Length is a run of decimal digits and nothing else (RFC 9110 §8.6). */
+const CONTENT_LENGTH_RE = /^\d+$/;
+
+/**
+ * Reads a request body as UTF-8 text, never holding more than `maxBytes` of it.
+ *
+ * For a route that runs before any authentication (SEC-A21). A declared
+ * Content-Length is checked first, and one that is not a plain decimal count is
+ * refused rather than compared as `NaN > cap` -- which is false, and let the
+ * old code buffer whatever followed. Without a declared length the stream
+ * itself is counted and cancelled the moment it passes the cap, so a chunked
+ * request is bounded by what was read rather than by what was sent.
+ */
+export async function readBoundedText(request: Request, maxBytes: number): Promise<BoundedText> {
+  const declared = request.headers.get('content-length');
+  if (declared !== null) {
+    if (!CONTENT_LENGTH_RE.test(declared)) return { ok: false, status: 400 };
+    if (Number(declared) > maxBytes) return { ok: false, status: 413 };
+  }
+  if (request.body === null) return { ok: true, text: '' };
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return { ok: false, status: 413 };
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { ok: true, text: new TextDecoder().decode(bytes) };
+}
+
 /** JSON API mutations must declare a JSON content type. */
 export function isJsonContentType(contentType: string | null): boolean {
   if (contentType === null) return false;

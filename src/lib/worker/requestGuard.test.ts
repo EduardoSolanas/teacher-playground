@@ -16,6 +16,7 @@ import {
   MARKETING_PAGES,
   stripForwardedIdentityHeaders,
   readBoundedJsonBody,
+  readBoundedText,
   routeHostKind,
   isRouteAllowedOnHost,
   isOriginGuardedPath,
@@ -398,6 +399,73 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
     it('ignores absent or unparseable content lengths', () => {
       expect(bodyTooLarge(null)).toBe(false);
       expect(bodyTooLarge('not-a-number')).toBe(false);
+    });
+  });
+
+  describe('readBoundedText (SEC-A21)', () => {
+    function streamed(chunks: readonly Uint8Array[], headers: Record<string, string> = {}) {
+      let pulls = 0;
+      let index = 0;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (index >= chunks.length) {
+            controller.close();
+            return;
+          }
+          pulls += 1;
+          controller.enqueue(chunks[index]);
+          index += 1;
+        },
+      // highWaterMark 0: pull only when the reader asks, so `pulls` counts
+      // exactly what was consumed rather than the queue's read-ahead.
+      }, { highWaterMark: 0 });
+      const request = new Request('https://example.com/api/billing/webhook', {
+        method: 'POST',
+        headers,
+        body,
+        duplex: 'half',
+      } as RequestInit);
+      return { request, pulls: () => pulls };
+    }
+
+    it('returns the whole body as text when it is at or under the cap', async () => {
+      const text = 'é'.repeat(4);
+      const bytes = new TextEncoder().encode(text);
+      const { request } = streamed([bytes.slice(0, 3), bytes.slice(3)]);
+      expect(await readBoundedText(request, bytes.byteLength)).toEqual({ ok: true, text });
+    });
+
+    it('stops pulling the stream as soon as the cap is passed', async () => {
+      const chunk = new Uint8Array(10).fill(0x61);
+      const { request, pulls } = streamed(Array.from({ length: 100 }, () => chunk));
+      expect(await readBoundedText(request, 25)).toEqual({ ok: false, status: 413 });
+      // 25 bytes is passed on the third 10-byte chunk; nothing after it is read.
+      expect(pulls()).toBe(3);
+    });
+
+    it('refuses a declared length over the cap before reading anything', async () => {
+      const { request, pulls } = streamed([new Uint8Array(1)], { 'content-length': '26' });
+      expect(await readBoundedText(request, 25)).toEqual({ ok: false, status: 413 });
+      expect(pulls()).toBe(0);
+    });
+
+    it('accepts a declared length exactly at the cap', async () => {
+      const { request } = streamed([new Uint8Array(25).fill(0x62)], { 'content-length': '25' });
+      expect(await readBoundedText(request, 25)).toEqual({ ok: true, text: 'b'.repeat(25) });
+    });
+
+    it('refuses an unparseable, negative, or fractional declared length with 400', async () => {
+      for (const value of ['not-a-number', '-1', '1.5', '', '0x10', '1e3']) {
+        const { request, pulls } = streamed([new Uint8Array(1)], { 'content-length': value });
+        expect(await readBoundedText(request, 25), `content-length ${JSON.stringify(value)}`)
+          .toEqual({ ok: false, status: 400 });
+        expect(pulls()).toBe(0);
+      }
+    });
+
+    it('reads an empty body as empty text', async () => {
+      const request = new Request('https://example.com/api', { method: 'POST' });
+      expect(await readBoundedText(request, 25)).toEqual({ ok: true, text: '' });
     });
   });
 

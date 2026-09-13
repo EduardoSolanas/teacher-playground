@@ -34,6 +34,16 @@ export const PRESENCE_POST_RATE_MAX = 90;
 /** Existing-room scene POSTs per account per minute. */
 export const SCENE_WRITE_RATE_MAX = 120;
 
+/**
+ * Stripe webhook deliveries per client IP per minute (SEC-A21).
+ *
+ * Stripe sends from a small published set of addresses and retries a 429 with
+ * backoff for up to three days, so this delays a burst rather than dropping an
+ * event; its job is bounding the signature work an unauthenticated caller can
+ * force from one address. Far above this product's real delivery rate.
+ */
+export const BILLING_WEBHOOK_RATE_MAX = 120;
+
 /** Guest PIN submissions per client IP per minute. */
 export const GUEST_AUTH_RATE_MAX = 5;
 

@@ -31,6 +31,7 @@ import {
   RATE_WINDOW_MS,
   ROOM_CREATE_RATE_MAX,
   SCENE_WRITE_RATE_MAX,
+  BILLING_WEBHOOK_RATE_MAX,
 } from './lib/worker/rateLimits';
 import {
   bodyTooLarge,
@@ -38,6 +39,7 @@ import {
   isRouteAllowedOnHost,
   isOriginGuardedPath,
   readBoundedJsonBody,
+  readBoundedText,
   isPublicPath,
   isValidRoomId,
   MARKETING_PAGES,
@@ -316,6 +318,22 @@ function guestAuthLimiterFor(env: Env) {
   return env.ENVIRONMENT === 'local-test'
     ? strictLocalTestGuestAuthLimiter
     : productionGuestAuthLimiter;
+}
+
+/** Stripe webhook deliveries per client IP within a one-minute window (SEC-A21). */
+const productionBillingWebhookLimiter = createRateLimiter({
+  windowMs: RATE_WINDOW_MS,
+  max: BILLING_WEBHOOK_RATE_MAX,
+});
+const strictLocalTestBillingWebhookLimiter = createRateLimiter({
+  windowMs: RATE_WINDOW_MS,
+  max: BILLING_WEBHOOK_RATE_MAX,
+});
+
+function billingWebhookLimiterFor(env: Env) {
+  return env.ENVIRONMENT === 'local-test'
+    ? strictLocalTestBillingWebhookLimiter
+    : productionBillingWebhookLimiter;
 }
 
 function guestAuthRateKey(request: Request): string {
@@ -2166,14 +2184,21 @@ async function handleStripeWebhook(
   request: Request,
   ctx: ExecutionContext,
 ): Promise<Response> {
-  const declaredLength = request.headers.get('content-length');
-  if (declaredLength !== null && Number(declaredLength) > BILLING_WEBHOOK_MAX_BODY_BYTES) {
-    return withSecurityHeaders(new Response('Body too large', { status: 413 }));
+  // The one unauthenticated POST on the teacher host (SEC-A21): bound the work
+  // a caller can force before the signature says who it is. Per client IP,
+  // checked before the body is read; Stripe retries a 429 and loses nothing.
+  if (shouldRateLimitRoomCreate(env, request)) {
+    const limit = billingWebhookLimiterFor(env).take(guestAuthRateKey(request));
+    if (!limit.ok) return rateLimited(env, limit.retryAfterMs);
   }
-  const rawBody = await request.text();
-  if (new TextEncoder().encode(rawBody).byteLength > BILLING_WEBHOOK_MAX_BODY_BYTES) {
-    return withSecurityHeaders(new Response('Body too large', { status: 413 }));
+  const bounded = await readBoundedText(request, BILLING_WEBHOOK_MAX_BODY_BYTES);
+  if (!bounded.ok) {
+    return withSecurityHeaders(new Response(
+      bounded.status === 413 ? 'Body too large' : 'Invalid Content-Length',
+      { status: bounded.status },
+    ));
   }
+  const rawBody = bounded.text;
 
   const billing = readBillingEnv({
     STRIPE_API_BASE: env.STRIPE_API_BASE,
