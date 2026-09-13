@@ -45,26 +45,10 @@ jobs:
         run: npm install -g npm@12.0.2 --ignore-scripts --loglevel=error
 
       # Lifecycle scripts are disabled so a compromised transitive package cannot
-      # run install/postinstall. Allowlist: better-sqlite3 (native addon required
-      # by unit and worker tests). Rebuild that package explicitly after the
-      # ignored install.
+      # run install/postinstall. Verification runs in CI (workflow_run gate
+      # below); this job installs only what the export and Wrangler need.
       - name: Install dependencies
         run: npm ci --ignore-scripts --loglevel=error
-
-      - name: Rebuild allowlisted native addons
-        run: npm rebuild better-sqlite3
-
-      - name: Scan tracked files for secrets and PII
-        run: npm run security:scan
-
-      - name: Static application security testing
-        run: pip install semgrep && semgrep scan --config auto --error --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='*.spec.ts' --exclude-rule='javascript.express.security.x-frame-options-misconfiguration.x-frame-options-misconfiguration'
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Unit tests
-        run: npm test
 
       # The Excalidraw asset base is inlined into the export, so it is chosen
       # here rather than bound on the Worker. Reading it from the manifest is
@@ -90,9 +74,6 @@ jobs:
           NEXT_PUBLIC_SUPPORT_EMAIL: ${{ secrets.SUPPORT_EMAIL }}
           NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH: ${{ steps.assets.outputs.base }}
         run: npm run build
-
-      - name: Worker tests (real workerd)
-        run: npm run test:workers
 
       - name: Verify required LiveKit secrets
         env:

@@ -235,24 +235,24 @@ describe('getElementsFromArray point recovery', () => {
 
   /*
    * Excalidraw's restore() reads `points.length` on a linear or freedraw
-   * element without checking it is there, so one element missing its points
-   * throws out of the observer and takes the whole scene down for every peer
-   * -- not just the element that is broken. Empty points is the honest answer
-   * when the geometry cannot be recovered, and Excalidraw then drops that one
-   * element as invisibly small.
+   * element without checking it is there, and its bounds then destructure
+   * `points[0]`, so a linear element needs a point rather than an empty list.
+   * One element in that state throws out of the observer and takes the whole
+   * scene down for every peer -- not just the element that is broken.
    */
-  it('gives a linear element empty points when the map holds none', () => {
+  it('gives a linear element a single origin point when the map holds none', () => {
     const [element] = getElementsFromArray(seed({ id: 'line-1', type: 'line' }));
-    expect((element as { points?: unknown }).points).toEqual([]);
+    expect((element as { points?: unknown }).points).toEqual([[0, 0]]);
   });
 
-  it('gives an arrow empty points when the map holds none', () => {
+  it('gives an arrow a single origin point when the map holds none', () => {
     const [element] = getElementsFromArray(seed({ id: 'arrow-1', type: 'arrow' }));
-    expect((element as { points?: unknown }).points).toEqual([]);
+    expect((element as { points?: unknown }).points).toEqual([[0, 0]]);
   });
 
   it('gives a freedraw element empty points when the encoding is unreadable', () => {
-    // A leading byte that is not the codec version: decode refuses it.
+    // A leading byte that is not the codec version: decode refuses it. Empty
+    // is safe here: with no points the shape never reads `pressures`.
     const corrupt = new Uint8Array([9, 9, 9, 9]);
     const [element] = getElementsFromArray(
       seed({ id: 'draw-1', type: 'freedraw', points: corrupt }),

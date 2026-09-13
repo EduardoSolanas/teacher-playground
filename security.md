@@ -642,6 +642,12 @@ locally. GitHub states a
     unit, and workers **without** `continue-on-error`. Residual: deploy does
     not `needs:` the CI workflow (GitHub cannot join them without
     `workflow_run`); e2e is still CI-only, not on deploy. Resolved: deploy now runs on `workflow_run` only after CI, e2e included, succeeds on `main`.
+  - Amendment (2026-09-13): verification was consolidated in CI. The deploy
+    workflow now runs no tests or scans — it builds the environment-specific
+    export and deploys after CI succeeds on the same SHA
+    (`deploymentPolicy.test.ts` forbids verification steps in the deploy
+    workflow). Manual `workflow_dispatch` remains the one path without a CI
+    gate; `environment: prod` is its operator control.
 - Contain dependency install scripts: run CI installs with
   `--ignore-scripts` where the build allows it, and record an explicit
   allowlist for packages that genuinely need lifecycle scripts (for example

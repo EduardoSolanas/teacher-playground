@@ -138,7 +138,8 @@ describe('production deployment policy', () => {
 
     expect(existsSync(resolve(repositoryRoot, '.github/workflows/deploy-cloudflare.yml'))).toBe(true);
     const deploymentWorkflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
-    expect(deploymentWorkflow).toContain('npm run security:scan');
+    // Verification is CI's job; the deploy workflow builds and deploys only.
+    expect(deploymentWorkflow).not.toContain('npm run security:scan');
     expect(deploymentWorkflow).not.toContain('npm run security:scan || true');
     expect(deploymentWorkflow).toContain('wrangler-action');
     expect(deploymentWorkflow).not.toContain('wrangler.local.toml');
@@ -364,14 +365,34 @@ describe('production deployment policy', () => {
     expect(preceding).not.toMatch(/continue-on-error:\s*true/);
 
     const deployWorkflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
-    expect(deployWorkflow).toMatch(/^\s+run:\s+npm run test:workers\s*$/m);
-    const deployWorkers = deployWorkflow.split(/\r?\n/).findIndex((line) =>
-      /^\s+run:\s+npm run test:workers\s*$/.test(line),
-    );
-    const deployPreceding = deployWorkflow.split(/\r?\n/).slice(Math.max(0, deployWorkers - 6), deployWorkers).join('\n');
-    expect(deployPreceding).not.toMatch(/continue-on-error:\s*true/);
+    expect(deployWorkflow).not.toMatch(/^\s+run:\s+npm run test:workers\s*$/m);
     expect(ciWorkflow).toContain('npm ci --omit=dev --ignore-scripts');
     expect(ciWorkflow).toContain('npm audit --omit=dev --audit-level=high');
+  });
+
+  it('runs no verification in the deploy workflow; CI is the only gate', () => {
+    const deploymentWorkflow = readRepositoryFile('.github/workflows/deploy-cloudflare.yml');
+
+    for (const forbidden of [
+      /^\s+run:\s+npm test\s*$/m,
+      /^\s+run:\s+npm run test:workers\s*$/m,
+      /^\s+run:\s+npm run typecheck\s*$/m,
+      /^\s+run:\s+npm run lint\s*$/m,
+      /^\s+run:\s+npm run security:scan\s*$/m,
+    ]) {
+      expect(deploymentWorkflow, String(forbidden)).not.toMatch(forbidden);
+    }
+    expect(deploymentWorkflow).not.toMatch(/pip install semgrep|semgrep scan/);
+    // The rebuild exists only for the native addon the tests need; a deploy
+    // that runs no tests has no use for it.
+    expect(deploymentWorkflow).not.toContain('npm rebuild better-sqlite3');
+
+    // What remains must still be the deploy itself, not a truncated shell:
+    // the environment-specific export, the LiveKit preflight, and Wrangler.
+    expect(deploymentWorkflow).toContain("Resolve the environment's asset base");
+    expect(deploymentWorkflow).toContain('npm run build');
+    expect(deploymentWorkflow).toContain('Missing required LiveKit secret');
+    expect(deploymentWorkflow).toContain('- name: Deploy with Wrangler');
   });
 
   it('installs CI and deploy dependencies with ignore-scripts or an explicit lifecycle allowlist', () => {
