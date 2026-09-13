@@ -296,6 +296,23 @@ facts:
 - A staging drill is expected at least once per environment or after material
   platform changes (`SECURITY_BACKUP_RESTORE.md:107-124`). Owner: **TBD -
   unassigned**. No drill is recorded in this repository.
+- **Erasures survive a restore only through the erasure ledger.** Restoring
+  `IdentityDO` to a point before an account was erased brings that account back,
+  and the restored database has no record that it was erased. Every successful
+  erasure writes `erasure-ledger/<accountId>.json` (`{accountId, erasedAt}`) to
+  the `BOARD_FILES` R2 bucket, which a Durable Object restore does not roll back
+  (`src/worker.ts`, `accountErase`). Before reopening traffic after an
+  `IdentityDO` restore:
+  1. List the bucket prefix `erasure-ledger/` and take every entry whose
+     `erasedAt` is later than the restore point.
+  2. For each, `POST /api/operator/accounts/disable` with
+     `{"accountId": "<id>", "reason": "re-applying erasure after restore"}`.
+     That puts the account beyond use at once: sessions revoked, sign-in
+     refused, sockets closed within the revocation bound.
+  3. Record the restore and the re-applied erasures in the incident record. A
+     disabled account stays disabled: there is no path from here back to a
+     usable account except an operator `enable`, which must not be run for an
+     account on the ledger.
 
 ## 6. Session and key rotation
 

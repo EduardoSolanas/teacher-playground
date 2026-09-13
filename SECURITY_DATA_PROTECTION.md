@@ -103,16 +103,44 @@ sockets within the revocation bound in [`SECURITY_REVOCATION_BOUND.md`](SECURITY
 - Error reporting and structured security-event logging (SEC-013) are not yet
   wired to external vendors in-tree.
 
-### Platform and backups
+### Platform and backups: how long erased data survives
 
-- **Cloudflare Worker, Durable Object, and Access logs** are platform-operated
-  diagnostic and security logs. They may contain request metadata, IP addresses,
-  and session-related identifiers for a platform-defined retention window. They
-  are not application tables and cannot be rewritten instantly on erasure;
-  document the **backup and log erasure window** when export/erasure is
-  implemented rather than implying immediate purge everywhere.
-- LiveKit A/V metadata and media, when used, are governed by LiveKit/project
-  retention settings outside this repo.
+Erasure (`DELETE /auth/account`) removes or pseudonymizes the application's own
+rows at once. Copies outside those tables cannot be rewritten on request; they
+age out on the schedules below, which are the **erasure windows** this policy
+commits to. Figures were checked against the providers' documentation on
+2026-09-13 for the plans this deployment runs on.
+
+| Store | What it can hold about a person | Erasure window | Source |
+| --- | --- | --- | --- |
+| Durable Object SQLite (IdentityDO, RoomDO) | Everything in the data inventory above | Immediate in the live database; recoverable through point-in-time recovery for **30 days** | [`SECURITY_BACKUP_RESTORE.md`](SECURITY_BACKUP_RESTORE.md) |
+| A PITR restore run during an erasure window | A pre-erasure copy | The restore operator re-runs the erasure for every account erased after the restore point before reopening traffic | [`SECURITY_OPERATIONS.md`](SECURITY_OPERATIONS.md) §5 |
+| R2 board files | Pictures pasted onto a board | Deleted with the room; the bucket has no object versioning, so no copy remains | `RoomDO` room delete, `roomDelete.workers.test.ts` |
+| Workers Logs (`[observability]`) | Auth events with opaque account and room ids; emails, tokens and cookies are redacted before logging | **3 days** on Workers Free, **7 days** on Workers Paid | [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/), `src/lib/security/authEvents.ts` |
+| Cloudflare Access authentication logs | The sign-in email and IP for each Access login | **24 hours** on the Zero Trust Free plan, **30 days** on Standard | [Zero Trust logs](https://developers.cloudflare.com/cloudflare-one/insights/logs/) |
+| LiveKit Cloud | Participant identity (the opaque account id), display name, and session analytics; media is relayed, never recorded (no egress is configured) | LiveKit Cloud's project analytics retention; LiveKit acts as processor | LiveKit project settings |
+| Stripe | A tutor's billing identity, invoices and payment records | Retained by Stripe under its own legal obligations; not deleted by application erasure | Stripe as independent controller for payment data |
+
+There are no analytics, error-reporting or advertising vendors in this
+deployment, so no further copies exist.
+
+### Billing records and erasure
+
+Invoice and payment records are subject to statutory retention: UK VAT and
+company records must be kept for **six years** (HMRC). That duty wins over an
+erasure request for those records only. On erasure the application therefore:
+
+- keeps the account's entitlement rows (plan, status, processor customer and
+  subscription ids) attached to the now-**disabled** account, whose Access
+  subjects are deleted and whose audit entries are pseudonymized, so the rows no
+  longer lead back to a sign-in identity;
+- keeps the billing tables themselves free of card data, names and addresses:
+  checkout and the portal are Stripe-hosted, so the application only ever holds
+  Stripe identifiers (SAQ A scope, see `security.md` SEC-015);
+- leaves Stripe's own invoice records to Stripe's retention; a person wanting
+  those removed must also ask Stripe, which the privacy page states.
+
+Students are never billable and have no billing identity to retain.
 
 ## References
 

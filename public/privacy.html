@@ -18,7 +18,7 @@
 is not legal advice and needs review by a qualified adviser before the service
 charges money or is used with children at scale.</div>
 <h1>Privacy Policy</h1>
-<p class="updated">Last updated 20 August 2026</p>
+<p class="updated">Last updated 13 September 2026</p>
 <p>Teacher Playground is a shared whiteboard for one-to-one and small-group
 tutoring. This policy explains exactly what the service stores, for how long, and
 why. It is written to be checked against the software rather than to be
@@ -32,13 +32,24 @@ sign-up, and it is deliberate: the safest way to hold a child's personal data is
 not to collect any.</p>
 
 <h2>Teachers</h2>
-<p>Teachers sign in with Google or Facebook through Cloudflare Access. We receive
+<p>Teachers sign in with Google through Cloudflare Access. We receive
 a verified account identifier from the sign-in provider, plus the name and email
 address on that account. The account identifier is the only thing used to decide
 what a teacher may do; the name and email are shown in the interface and are
 never used to grant access.</p>
 <p>We never receive a teacher's password, and we never receive or store access
-tokens for Google or Facebook.</p>
+tokens for Google.</p>
+
+<h2>Payments</h2>
+<p>If a teacher subscribes to a paid plan, payment is handled entirely by
+<strong>Stripe</strong>, on Stripe's own pages. We never see or store card
+numbers, bank details, or billing addresses. We keep only Stripe's reference
+numbers for the customer and the subscription, so that we know which plan an
+account is on.</p>
+<p>Stripe keeps invoices and payment records under its own legal obligations. If
+you delete your account, ask Stripe as well if you want those removed.</p>
+<p>Students never pay, never see a payment page, and have no billing details
+stored about them.</p>
 
 <h2>Students and guests</h2>
 <p>A student joining a room provides a display name they choose themselves. We do
@@ -79,6 +90,8 @@ into the room.</p>
 <li><strong>Teacher sessions</strong> — expire after 30 minutes idle, 12 hours maximum.</li>
 <li><strong>Idle rooms</strong> — deleted after 90 days without use.</li>
 <li><strong>Deleted-room markers</strong> — a record that a room existed is kept for 365 days so a deleted room's link cannot be reused.</li>
+<li><strong>Deleted teacher accounts</strong> — removed from the live service at once. Copies in platform security logs are gone within 7 days, and in backups within 30 days.</li>
+<li><strong>Billing records of a deleted account</strong> — the plan and Stripe reference numbers are kept for six years, because UK tax law requires it, attached to an account that can no longer sign in.</li>
 </ul>
 <p>Deleting a room deletes its board content, its participant list, and its
 waiting queue.</p>

@@ -1618,6 +1618,25 @@ async function accountErase(
   if (!result.ok) {
     return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
   }
+  /*
+   * The erasure receipt (SEC-016), written outside the Durable Object backups.
+   *
+   * A point-in-time restore of IdentityDO to before this moment would bring
+   * the account back with no trace that it was erased. R2 is not rolled back
+   * by that restore, so the receipt is what lets the operator put the account
+   * beyond use again before reopening (SECURITY_OPERATIONS.md §5). The opaque
+   * account id and a time, nothing that identifies a person. The erasure has
+   * already happened by now, so a failed write is an alert, not a refusal.
+   */
+  try {
+    await env.BOARD_FILES.put(
+      `erasure-ledger/${outcome.session.accountId}.json`,
+      JSON.stringify({ accountId: outcome.session.accountId, erasedAt: Date.now() }),
+      { httpMetadata: { contentType: 'application/json' } },
+    );
+  } catch {
+    console.error('[erasure]', JSON.stringify({ alert: 'erasure_receipt_failed', outcome: 'failed' }));
+  }
   let roomIds: string[] = [];
   try {
     const body = (await result.json()) as { roomIds?: unknown };

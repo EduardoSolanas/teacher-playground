@@ -269,6 +269,46 @@ describe('real local Access boundary through workerd', () => {
     expect((await authenticatedFetch('/auth/session/current', other)).status).toBe(200);
   });
 
+  it('keeps an erasure receipt outside the Durable Object backups (SEC-016)', async () => {
+    /*
+     * A point-in-time restore of IdentityDO to before an erasure brings the
+     * erased account back, and the restored database holds no trace of the
+     * erasure. The receipt lives in R2, which that restore does not roll back,
+     * so the operator can put every account erased after the restore point
+     * beyond use again before reopening. It holds the opaque account id and a
+     * time, and nothing else.
+     */
+    const session = await bootstrapLocalSession('erase-ledger-account');
+    const receiptKey = `erasure-ledger/${session.accountId}.json`;
+    const bucket = (env as unknown as { BOARD_FILES: R2Bucket }).BOARD_FILES;
+
+    await runInDurableObject(
+      getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>),
+      (instance: IdentityDO) => {
+        instance.db
+          .prepare(
+            `UPDATE sessions SET created_at = created_at - ?
+             WHERE account_id = ? AND revoked_at IS NULL`,
+          )
+          .run(DESTRUCTIVE_FRESH_MS + 60_000, session.accountId);
+      },
+    );
+    // A refused erasure leaves no receipt.
+    expect((await authenticatedFetch('/auth/account', session, { method: 'DELETE' })).status).toBe(403);
+    expect(await bucket.head(receiptKey)).toBeNull();
+
+    expect((await authenticatedFetch('/auth/session/confirm', session, { method: 'POST' })).status).toBe(200);
+    const before = Date.now();
+    expect((await authenticatedFetch('/auth/account', session, { method: 'DELETE' })).status).toBe(200);
+
+    const receipt = await bucket.get(receiptKey);
+    expect(receipt).not.toBeNull();
+    const body = await receipt!.json() as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(['accountId', 'erasedAt']);
+    expect(body.accountId).toBe(session.accountId);
+    expect(body.erasedAt).toBeGreaterThanOrEqual(before);
+  });
+
   it('collects an image nothing references and keeps the one still on the board', async () => {
     /*
      * Clearing a board removes the element but not the bytes, so the picture
