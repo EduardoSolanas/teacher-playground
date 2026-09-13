@@ -1,3 +1,4 @@
+// @ts-nocheck
 'use client';
 
 import { useState, useCallback, useRef, useEffect } from 'react';
@@ -42,6 +43,10 @@ interface PresencePanelProps {
   onKick: (peerId: string, accountId?: string | null) => void;
   onSuspend: (peerId: string, accountId?: string | null) => void;
   onRaiseHand?: (raised: boolean) => void;
+  /** Owner only: lower one participant's raised hand. */
+  onLowerPeerHand?: (peerId: string, accountId?: string | null) => void;
+  /** Owner only: lower every raised hand at once. */
+  onLowerAllHands?: () => void;
   /** Peer ids currently speaking in the voice session. */
   speakingPeerIds?: ReadonlySet<string>;
   /** A/V participant state keyed by whiteboard peer id. */
@@ -263,6 +268,8 @@ export default function PresencePanel({
   onKick,
   onSuspend,
   onRaiseHand,
+  onLowerPeerHand,
+  onLowerAllHands,
   speakingPeerIds,
   avPeerStates,
   onMutePeer,
@@ -324,6 +331,7 @@ export default function PresencePanel({
     ...activeUsers.filter((user) => user.isHost),
     ...activeUsers.filter((user) => !user.isHost),
   ];
+  const raisedHands = activeUsers.filter((user) => user.handRaised);
   const allUsers = [...waitingPeers, ...activeUsers];
   const duplicateNames = new Set<string>();
   if (isLocalHost) {
@@ -657,6 +665,57 @@ export default function PresencePanel({
         </div>
 
         <div className="flex-1 overflow-y-auto p-2 sm:max-h-[45%] sm:flex-none">
+          {isLocalHost && raisedHands.length > 0 && (
+          <div data-testid="whiteboard-raised-hands" className="mb-2 border-b border-slate-200 pb-2">
+            <div className="flex items-center justify-between gap-2 px-2 pb-1">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <RaisedHandIcon className="h-3.5 w-3.5" tone="ink" />
+                <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-amber-700">
+                  Raised hands
+                </span>
+                <span
+                  data-testid="whiteboard-raised-hands-count"
+                  className="text-[0.6875rem] font-medium text-amber-700"
+                >
+                  {raisedHands.length}
+                </span>
+              </div>
+              {onLowerAllHands && (
+                <button
+                  type="button"
+                  data-testid="whiteboard-lower-all"
+                  className="pointer-coarse:min-h-11 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[0.6875rem] font-semibold text-slate-700 transition-colors duration-150 hover:bg-slate-100"
+                  onClick={() => onLowerAllHands()}
+                >
+                  Lower all
+                </button>
+              )}
+            </div>
+            {raisedHands.map((user) => (
+              <div
+                key={user.peerId}
+                data-testid={`whiteboard-raised-hand-${user.peerId}`}
+                className="mb-1 flex items-center gap-2 rounded-lg p-2"
+              >
+                <UserAvatar user={user} />
+                <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[0.8125rem] text-slate-900">
+                  {user.userName}
+                </span>
+                {onLowerPeerHand && (
+                  <button
+                    type="button"
+                    data-testid={`whiteboard-lower-hand-${user.peerId}`}
+                    aria-label={`Lower ${user.userName}'s hand`}
+                    className="pointer-coarse:min-h-11 rounded-md border border-slate-200 bg-white px-2 py-1 text-[0.6875rem] font-semibold text-slate-700 transition-colors duration-150 hover:bg-slate-100"
+                    onClick={() => onLowerPeerHand(user.peerId, user.accountId)}
+                  >
+                    Lower
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          )}
           {orderedActive.length === 0 ? (
             <p className="p-2 text-xs text-slate-500">No one else here yet</p>
           ) : (

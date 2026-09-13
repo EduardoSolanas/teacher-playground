@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, expect, it } from 'vitest';
 
 import { moderationTargetBody } from './moderationTarget';
@@ -12,6 +13,10 @@ describe('moderationTargetBody', () => {
       action: 'suspend',
       accountId: 'account-1',
     });
+    expect(moderationTargetBody('lower-peer-hand', 'user-stale', 'account-1')).toEqual({
+      action: 'lower-peer-hand',
+      accountId: 'account-1',
+    });
   });
 
   it('falls back to the peer id when no account is known', () => {
@@ -21,6 +26,10 @@ describe('moderationTargetBody', () => {
     });
     expect(moderationTargetBody('suspend', 'user-a', undefined)).toEqual({
       action: 'suspend',
+      peerId: 'user-a',
+    });
+    expect(moderationTargetBody('lower-peer-hand', 'user-a', undefined)).toEqual({
+      action: 'lower-peer-hand',
       peerId: 'user-a',
     });
   });

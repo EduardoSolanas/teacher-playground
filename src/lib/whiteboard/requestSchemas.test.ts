@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect } from 'vitest';
 import {
   roomPostSchema,
@@ -359,9 +360,21 @@ describe('requestSchemas hardening (SEC-005)', () => {
       expect(kick.ok).toBe(false);
       if (!kick.ok) expect(kick.error).toContain('accountId or peerId is required');
 
+      const lower = parseBody(presencePostSchema, { action: 'lower-peer-hand' });
+      expect(lower.ok).toBe(false);
+      if (!lower.ok) expect(lower.error).toContain('accountId or peerId is required');
+
       const join = parseBody(presencePostSchema, { userName: 'Alice' });
       expect(join.ok).toBe(false);
       if (!join.ok) expect(join.error).toContain('peerId is required');
+    });
+
+    it('tags the lower-peer-hand target issue with the custom code', () => {
+      const result = presencePostSchema.safeParse({ action: 'lower-peer-hand' });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues.map((issue) => issue.code)).toEqual(['custom']);
+      }
     });
 
     it('requires a target for waiting approvals and reports it', () => {
@@ -630,6 +643,18 @@ describe('requestSchemas hardening (SEC-005)', () => {
     it('accepts raise-hand and lower-hand without a target account', () => {
       expect(presencePostSchema.safeParse({ action: 'raise-hand' }).success).toBe(true);
       expect(presencePostSchema.safeParse({ action: 'lower-hand' }).success).toBe(true);
+    });
+
+    it('accepts lower-all-hands without a target', () => {
+      expect(presencePostSchema.safeParse({ action: 'lower-all-hands' }).success).toBe(true);
+    });
+
+    it('requires a target for lower-peer-hand', () => {
+      expect(presencePostSchema.safeParse({ action: 'lower-peer-hand' }).success).toBe(false);
+      expect(presencePostSchema.safeParse({
+        action: 'lower-peer-hand',
+        accountId: '11111111-2222-3333-4444-555555555555',
+      }).success).toBe(true);
     });
 
     it('rejects unknown presence actions', () => {

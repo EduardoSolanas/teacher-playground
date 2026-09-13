@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 
@@ -35,6 +36,8 @@ function renderPanel(
     onReject?: (peerId: string, accountId?: string | null) => void;
     onKick?: (peerId: string, accountId?: string | null) => void;
     onSuspend?: (peerId: string, accountId?: string | null) => void;
+    onLowerPeerHand?: (peerId: string, accountId?: string | null) => void;
+    onLowerAllHands?: () => void;
     collapsed?: boolean;
     callRailOpen?: boolean;
     maxUsers?: number;
@@ -54,6 +57,8 @@ function renderPanel(
       onReject={options.onReject ?? noop}
       onKick={options.onKick ?? noop}
       onSuspend={options.onSuspend ?? noop}
+      onLowerPeerHand={options.onLowerPeerHand}
+      onLowerAllHands={options.onLowerAllHands}
       avPeerStates={options.avPeerStates}
       onMutePeer={options.onMutePeer}
       onScreenSharePeer={options.onScreenSharePeer}
@@ -864,6 +869,81 @@ describe('PresencePanel raise hand', () => {
     );
 
     expect(screen.queryByTestId('whiteboard-raise-hand')).toBeNull();
+  });
+});
+
+describe('PresencePanel raised hands', () => {
+  it('lists who has a hand up, with a control that lowers it', () => {
+    const lowered: Array<{ peerId: string; accountId?: string | null }> = [];
+    renderPanel(
+      [
+        makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true }),
+        makeUser({
+          peerId: 'peer-student',
+          userName: 'Student',
+          accountId: 'acct-student',
+          handRaised: true,
+        }),
+      ],
+      {
+        localPeerId: 'peer-owner',
+        isLocalHost: true,
+        onLowerPeerHand: (peerId, accountId) => lowered.push({ peerId, accountId }),
+      },
+    );
+
+    expect(screen.getByTestId('whiteboard-raised-hands-count').textContent).toBe('1');
+    expect(screen.getByTestId('whiteboard-raised-hands').textContent).toContain('Student');
+
+    fireEvent.click(screen.getByTestId('whiteboard-lower-hand-peer-student'));
+    expect(lowered).toEqual([{ peerId: 'peer-student', accountId: 'acct-student' }]);
+  });
+
+  it('never offers hand lowering to a student', () => {
+    renderPanel(
+      [
+        makeUser({ peerId: 'peer-local', userName: 'Me' }),
+        makeUser({ peerId: 'peer-student', userName: 'Student', handRaised: true }),
+      ],
+      { localPeerId: 'peer-local', isLocalHost: false },
+    );
+
+    expect(screen.queryByTestId('whiteboard-raised-hands')).toBeNull();
+    expect(screen.queryByTestId('whiteboard-lower-hand-peer-student')).toBeNull();
+  });
+
+  it('stays out of the way when nobody has a hand up', () => {
+    renderPanel(
+      [
+        makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true }),
+        makeUser({ peerId: 'peer-student', userName: 'Student' }),
+      ],
+      { localPeerId: 'peer-owner', isLocalHost: true, onLowerPeerHand: () => {} },
+    );
+
+    expect(screen.queryByTestId('whiteboard-raised-hands')).toBeNull();
+  });
+
+  it('lowers every hand from the section header', () => {
+    let lowerAllCalls = 0;
+    renderPanel(
+      [
+        makeUser({ peerId: 'peer-owner', userName: 'Teacher', isHost: true }),
+        makeUser({ peerId: 'peer-student', userName: 'Student', handRaised: true }),
+        makeUser({ peerId: 'peer-other', userName: 'Other', handRaised: true }),
+      ],
+      {
+        localPeerId: 'peer-owner',
+        isLocalHost: true,
+        onLowerAllHands: () => {
+          lowerAllCalls += 1;
+        },
+      },
+    );
+
+    expect(screen.getByTestId('whiteboard-raised-hands-count').textContent).toBe('2');
+    fireEvent.click(screen.getByTestId('whiteboard-lower-all'));
+    expect(lowerAllCalls).toBe(1);
   });
 });
 

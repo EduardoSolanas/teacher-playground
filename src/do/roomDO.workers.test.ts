@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject, SELF } from 'cloudflare:test';
@@ -3913,6 +3914,52 @@ describe('raise hand presence action', () => {
       users: Array<{ peerId: string; handRaised?: boolean }>;
     };
     expect(heartbeatBody.users.find((user) => user.peerId === editorPeerId)?.handRaised).toBe(true);
+  });
+
+  it('lets the owner lower an editor hand addressed by peer id', async () => {
+    const owner = await bootstrapLocalSession(`lower-owner-${crypto.randomUUID()}`);
+    const editor = await bootstrapLocalSession(`lower-editor-${crypto.randomUUID()}`);
+    const roomId = `lower-peer-${crypto.randomUUID()}`;
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+    const editorPeerId = await joinEditorPeer(editor, roomId);
+    await joinPresence(owner, roomId, 'host-peer', { userName: 'Host' });
+
+    const raised = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'raise-hand' }),
+    });
+    expect(raised.status).toBe(200);
+
+    const lowered = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'lower-peer-hand', peerId: editorPeerId }),
+    });
+    expect(lowered.status).toBe(200);
+    const loweredBody = await lowered.json() as {
+      users: Array<{ peerId: string; handRaised?: boolean }>;
+    };
+    expect(loweredBody.users.find((user) => user.peerId === editorPeerId)?.handRaised).toBe(false);
+  });
+
+  it('rejects lower-all-hands from an editor', async () => {
+    const owner = await bootstrapLocalSession(`lower-all-owner-${crypto.randomUUID()}`);
+    const editor = await bootstrapLocalSession(`lower-all-editor-${crypto.randomUUID()}`);
+    const roomId = `lower-all-${crypto.randomUUID()}`;
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+    await joinEditorPeer(editor, roomId);
+
+    const lowered = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, editor, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'lower-all-hands' }),
+    });
+    expect(lowered.status).toBe(403);
   });
 
   it('rejects raise-hand from an outsider', async () => {

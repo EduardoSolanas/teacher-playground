@@ -1,5 +1,5 @@
 /**
- * Builds the body for a kick / suspend presence POST.
+ * Builds the body for a targeted presence POST (kick / suspend / lower hand).
  *
  * Presence mints its own peer id when an account is admitted, so a peer id the
  * host captured while the peer was still queued can already be stale by the
@@ -9,7 +9,7 @@
  * is known.
  */
 export function moderationTargetBody(
-  action: 'kick' | 'suspend',
+  action: 'kick' | 'suspend' | 'lower-peer-hand',
   peerId: string,
   accountId?: string | null,
 ): Record<string, string> {

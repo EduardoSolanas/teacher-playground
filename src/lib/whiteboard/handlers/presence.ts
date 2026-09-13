@@ -118,6 +118,35 @@ export async function handlePresencePost(
       return Response.json(presencePayload(db, roomId, request));
     }
 
+    if (action === 'lower-all-hands') {
+      if (!isOwnerRole(getGrantRole(db, roomId, caller))) {
+        return Response.json({ error: 'Forbidden' }, { status: 403 });
+      }
+
+      db.prepare(
+        `UPDATE room_presence SET hand_raised = 0 WHERE room_id = ? AND hand_raised = 1`,
+      ).run(roomId);
+      return Response.json(presencePayload(db, roomId, request));
+    }
+
+    if (action === 'lower-peer-hand') {
+      if (!isOwnerRole(getGrantRole(db, roomId, caller))) {
+        return Response.json({ error: 'Forbidden' }, { status: 403 });
+      }
+
+      const target = resolveModerationTarget(db, roomId, {
+        accountId: bodyAccountId,
+        peerId,
+      });
+      if (!target.ok) {
+        return Response.json({ error: target.error }, { status: target.status });
+      }
+      db.prepare(
+        `UPDATE room_presence SET hand_raised = 0 WHERE room_id = ? AND account_id = ?`,
+      ).run(roomId, target.accountId);
+      return Response.json(presencePayload(db, roomId, request));
+    }
+
     if (action === 'kick' || action === 'suspend') {
       if (!isOwnerRole(getGrantRole(db, roomId, caller))) {
         return Response.json({ error: 'Forbidden' }, { status: 403 });
