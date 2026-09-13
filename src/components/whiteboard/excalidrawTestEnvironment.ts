@@ -162,8 +162,8 @@ export function setFetchHandler(handler: FetchHandler): void {
 
 export async function loadExcalidrawWrapper() {
   installExcalidrawTestEnvironment();
-  const module = await import('./ExcalidrawWrapper');
-  return module.default;
+  const wrapperModule = await import('./ExcalidrawWrapper');
+  return wrapperModule.default;
 }
 
 export async function loadExcalidrawPackage() {
