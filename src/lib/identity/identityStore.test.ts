@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   IdentityInputError,
+  TUTOR_ACCOUNT_CAP_DEFAULT,
   applyIdentitySchema,
+  isTutorCapReached,
   resolveAccountForSubject,
   readAccountAuthorizations,
   recordOwnedRoom,
@@ -13,6 +15,17 @@ import {
   createGuestAccount,
 } from './identityStore';
 import { applySchema as applyRoomSchema } from '../whiteboard/roomSchema';
+
+function resolveStoredAccount(
+  db: Database.Database,
+  input: { issuer: string; subject: string },
+) {
+  const outcome = resolveAccountForSubject(db, input);
+  if (isTutorCapReached(outcome)) {
+    throw new Error('unexpected tutor cap outcome');
+  }
+  return outcome;
+}
 
 describe('authoritative identity store', () => {
   let db: Database.Database;
@@ -37,11 +50,28 @@ describe('authoritative identity store', () => {
       'account_rooms',
       'accounts',
       'authorization_audit',
+      'billing_dispute_holds',
+      'billing_effects',
+      'billing_events',
+      'billing_operations',
+      'billing_payments',
+      'billing_subscriptions',
+      'billing_sweeps',
+      'companies',
+      'company_invites',
+      'company_members',
+      'company_subscriptions',
+      'entitlement_audit',
+      'entitlements',
       'pending_erasures',
+      'referral_codes',
+      'referral_events',
       'sessions',
     ]);
 
-    const identityTables = tables.filter((table) => table !== 'account_rooms');
+    const identityTables = tables.filter(
+      (table) => table !== 'account_rooms' && table !== 'companies',
+    );
     const columns = identityTables.flatMap((table) =>
       db
         .prepare(`PRAGMA table_info(${table})`)
@@ -80,11 +110,11 @@ describe('authoritative identity store', () => {
   });
 
   it('maps an exact issuer and subject to one opaque account', () => {
-    const first = resolveAccountForSubject(db, {
+    const first = resolveStoredAccount(db, {
       issuer: 'https://access.example.com',
       subject: 'google-subject-1',
     });
-    const second = resolveAccountForSubject(db, {
+    const second = resolveStoredAccount(db, {
       issuer: 'https://access.example.com',
       subject: 'google-subject-1',
     });
@@ -116,11 +146,11 @@ describe('authoritative identity store', () => {
   });
 
   it('does not link distinct subjects through email or provider labels', () => {
-    const first = resolveAccountForSubject(db, {
+    const first = resolveStoredAccount(db, {
       issuer: 'https://access.example.com',
       subject: 'google-subject',
     });
-    const second = resolveAccountForSubject(db, {
+    const second = resolveStoredAccount(db, {
       issuer: 'https://access.example.com',
       subject: 'facebook-subject',
     });
@@ -136,7 +166,7 @@ describe('authoritative identity store', () => {
   });
 
   it('stores account disablement and authorization epoch centrally', () => {
-    const resolved = resolveAccountForSubject(db, {
+    const resolved = resolveStoredAccount(db, {
       issuer: 'issuer',
       subject: 'subject',
     });
@@ -158,7 +188,7 @@ describe('authoritative identity store', () => {
   });
 
   it('stores only a hashed session identifier and cascades account deletion', () => {
-    const resolved = resolveAccountForSubject(db, {
+    const resolved = resolveStoredAccount(db, {
       issuer: 'issuer',
       subject: 'subject',
     });
@@ -212,7 +242,7 @@ describe('authoritative identity store', () => {
         .run('b'.repeat(64), 'missing', 0, 100, 100, 150, 200),
     ).toThrow(/FOREIGN KEY/);
 
-    const resolved = resolveAccountForSubject(db, {
+    const resolved = resolveStoredAccount(db, {
       issuer: 'issuer',
       subject: 'hash-check',
     });
@@ -271,7 +301,7 @@ describe('account authorization lookup for live connections', () => {
   });
 
   function account(issuer: string, subject: string) {
-    return resolveAccountForSubject(db, { issuer, subject }).account;
+    return resolveStoredAccount(db, { issuer, subject }).account;
   }
 
   it('reports current state and epoch for the requested accounts only', () => {
@@ -348,7 +378,7 @@ describe('account owned-room index', () => {
   });
 
   function account(subject: string) {
-    return resolveAccountForSubject(db, {
+    return resolveStoredAccount(db, {
       issuer: 'https://issuer',
       subject,
     }).account;
@@ -480,11 +510,11 @@ describe('account owned-room index', () => {
   });
 
   it('stores a preferred display name on the account without using it as a lookup key', () => {
-    const first = resolveAccountForSubject(db, {
+    const first = resolveStoredAccount(db, {
       issuer: 'https://access.example.com',
       subject: 'google-one',
     });
-    const second = resolveAccountForSubject(db, {
+    const second = resolveStoredAccount(db, {
       issuer: 'https://access.example.com',
       subject: 'google-two',
     });
@@ -496,7 +526,7 @@ describe('account owned-room index', () => {
     expect(readPreferredDisplayName(db, first.account.accountId)).toBe('Ada Lovelace');
     expect(readPreferredDisplayName(db, second.account.accountId)).toBeNull();
 
-    const sameNameOtherSubject = resolveAccountForSubject(db, {
+    const sameNameOtherSubject = resolveStoredAccount(db, {
       issuer: 'https://access.example.com',
       subject: 'google-three',
     });
@@ -548,6 +578,7 @@ describe('guest accounts', () => {
     `);
 
     // Drop the auto-created accounts table and rename legacy_accounts
+    db.exec(`DROP TABLE company_members`);
     db.exec(`DROP TABLE accounts`);
     db.exec(`ALTER TABLE legacy_accounts RENAME TO accounts`);
 
@@ -593,6 +624,7 @@ describe('guest accounts', () => {
           CHECK (updated_at >= created_at)
       )
     `);
+    db.exec(`DROP TABLE company_members`);
     db.exec(`DROP TABLE accounts`);
     db.exec(`ALTER TABLE legacy_accounts RENAME TO accounts`);
 
@@ -623,6 +655,7 @@ describe('guest accounts', () => {
           CHECK (updated_at >= created_at)
       )
     `);
+    db.exec(`DROP TABLE company_members`);
     db.exec(`DROP TABLE accounts`);
     db.exec(`ALTER TABLE legacy_accounts RENAME TO accounts`);
 
@@ -696,7 +729,7 @@ describe('guest accounts', () => {
 
   it('NEGATIVE: resolveAccountForSubject never returns a guest account', () => {
     // First create an access account through the normal path
-    const accessAccount = resolveAccountForSubject(db, {
+    const accessAccount = resolveStoredAccount(db, {
       issuer: 'https://access.example.com',
       subject: 'google-subject-1',
     });
@@ -710,7 +743,7 @@ describe('guest accounts', () => {
     ).run('guest-account-123', 'active', 0, 1000, 1000, 'guest', 'room-xyz');
 
     // Now call resolveAccountForSubject with arbitrary issuer/subject
-    const newAccount = resolveAccountForSubject(db, {
+    const newAccount = resolveStoredAccount(db, {
       issuer: 'https://access.example.com',
       subject: 'google-subject-2',
     });
@@ -748,5 +781,617 @@ describe('guest accounts', () => {
       .get('guest-account-456');
 
     expect(foundBySubject).toBeUndefined();
+  });
+});
+
+describe('Phase 1 identity schema', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    applyIdentitySchema(db);
+  });
+
+  function accessAccount(subject: string): string {
+    return resolveStoredAccount(db, {
+      issuer: 'https://issuer',
+      subject,
+    }).account.accountId;
+  }
+
+  function insertCompany(companyId: string): void {
+    db.prepare(
+      `INSERT INTO companies (company_id, name, created_at, updated_at)
+       VALUES (?, ?, 1, 1)`,
+    ).run(companyId, `Company ${companyId}`);
+  }
+
+  function insertEntitlement(input: {
+    accountId: string;
+    source: 'personal' | 'company';
+    planId: string;
+    status: string;
+    graceUntil?: number | null;
+    companyId?: string | null;
+  }): void {
+    db.prepare(
+      `INSERT INTO entitlements (
+         account_id, source, plan_id, status, grace_until, company_id, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, 1)`,
+    ).run(
+      input.accountId,
+      input.source,
+      input.planId,
+      input.status,
+      input.graceUntil ?? null,
+      input.companyId ?? null,
+    );
+  }
+
+  function insertMember(input: {
+    companyId: string;
+    accountId: string;
+    role: 'owner' | 'admin' | 'member';
+    state: 'active' | 'revoked';
+    createdAt?: number;
+    revokedAt?: number | null;
+  }): void {
+    db.prepare(
+      `INSERT INTO company_members (
+         company_id, account_id, role, state, created_at, revoked_at
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.companyId,
+      input.accountId,
+      input.role,
+      input.state,
+      input.createdAt ?? 1,
+      input.revokedAt ?? null,
+    );
+  }
+
+  function insertInvite(input: {
+    inviteHash: string;
+    companyId: string;
+    createdBy: string;
+    expiresAt: number;
+    role?: 'admin' | 'member';
+    redeemedBy?: string | null;
+    redeemedAt?: number | null;
+    revokedAt?: number | null;
+    createdAt?: number;
+  }): void {
+    db.prepare(
+      `INSERT INTO company_invites (
+         invite_hash, company_id, role, created_by, expires_at,
+         redeemed_by, redeemed_at, revoked_at, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.inviteHash,
+      input.companyId,
+      input.role ?? 'member',
+      input.createdBy,
+      input.expiresAt,
+      input.redeemedBy ?? null,
+      input.redeemedAt ?? null,
+      input.revokedAt ?? null,
+      input.createdAt ?? 1,
+    );
+  }
+
+  function insertEntitlementAudit(input: {
+    auditId: string;
+    subjectId: string;
+    causeKind: 'processor_event' | 'membership';
+    causeId: string;
+    processorEventId?: string | null;
+  }): void {
+    db.prepare(
+      `INSERT INTO entitlement_audit (
+         audit_id, subject_kind, subject_id, action, cause_kind, cause_id,
+         actor, reason, processor_event_id, created_at
+       ) VALUES (?, 'account', ?, 'grant', ?, ?, 'tester', 'phase 1 test', ?, 1)`,
+    ).run(
+      input.auditId,
+      input.subjectId,
+      input.causeKind,
+      input.causeId,
+      input.processorEventId ?? null,
+    );
+  }
+
+  it('creates every Phase 1 billing and membership table', () => {
+    const tables = db
+      .prepare(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
+      )
+      .all()
+      .map((row) => (row as { name: string }).name);
+
+    expect(tables).toEqual(
+      expect.arrayContaining([
+        'billing_dispute_holds',
+        'billing_effects',
+        'billing_events',
+        'billing_operations',
+        'billing_payments',
+        'billing_subscriptions',
+        'billing_sweeps',
+        'companies',
+        'company_invites',
+        'company_members',
+        'company_subscriptions',
+        'entitlement_audit',
+        'entitlements',
+        'referral_codes',
+        'referral_events',
+      ]),
+    );
+  });
+
+  it('keys entitlements by account and source', () => {
+    const accountId = accessAccount('entitlement-pk');
+    insertCompany('company-pk');
+    insertEntitlement({
+      accountId,
+      source: 'personal',
+      planId: 'free',
+      status: 'free',
+    });
+    insertEntitlement({
+      accountId,
+      source: 'company',
+      planId: 'corporate_seat',
+      status: 'active',
+      companyId: 'company-pk',
+    });
+    expect(
+      db
+        .prepare(`SELECT COUNT(*) AS count FROM entitlements WHERE account_id = ?`)
+        .get(accountId),
+    ).toEqual({ count: 2 });
+
+    expect(() =>
+      insertEntitlement({
+        accountId,
+        source: 'personal',
+        planId: 'free',
+        status: 'free',
+      }),
+    ).toThrow(/UNIQUE constraint/);
+  });
+
+  it('enforces entitlement status, plan, and company constraints', () => {
+    const accountId = accessAccount('entitlement-checks');
+    insertCompany('company-checks');
+
+    expect(() =>
+      insertEntitlement({
+        accountId,
+        source: 'personal',
+        planId: 'free',
+        status: 'past_due',
+      }),
+    ).toThrow(/CHECK constraint/);
+
+    expect(() =>
+      insertEntitlement({
+        accountId,
+        source: 'personal',
+        planId: 'free',
+        status: 'active',
+        graceUntil: 100,
+      }),
+    ).toThrow(/CHECK constraint/);
+
+    expect(() =>
+      insertEntitlement({
+        accountId,
+        source: 'personal',
+        planId: 'platinum',
+        status: 'active',
+      }),
+    ).toThrow(/CHECK constraint/);
+
+    expect(() =>
+      insertEntitlement({
+        accountId,
+        source: 'company',
+        planId: 'corporate_seat',
+        status: 'active',
+      }),
+    ).toThrow(/CHECK constraint/);
+
+    expect(() =>
+      insertEntitlement({
+        accountId,
+        source: 'company',
+        planId: 'corporate_seat',
+        status: 'active',
+        companyId: 'no-such-company',
+      }),
+    ).toThrow(/FOREIGN KEY/);
+  });
+
+  it('allows at most one active membership per account', () => {
+    const accountId = accessAccount('membership-active');
+    insertCompany('company-a');
+    insertCompany('company-b');
+    insertMember({
+      companyId: 'company-a',
+      accountId,
+      role: 'owner',
+      state: 'active',
+    });
+
+    expect(() =>
+      insertMember({
+        companyId: 'company-b',
+        accountId,
+        role: 'member',
+        state: 'active',
+      }),
+    ).toThrow(/UNIQUE constraint/);
+
+    insertMember({
+      companyId: 'company-b',
+      accountId,
+      role: 'member',
+      state: 'revoked',
+      revokedAt: 5,
+    });
+    expect(
+      db
+        .prepare(`SELECT COUNT(*) AS count FROM company_members WHERE account_id = ?`)
+        .get(accountId),
+    ).toEqual({ count: 2 });
+  });
+
+  it('allows at most one active owner per company', () => {
+    const firstOwner = accessAccount('owner-index-one');
+    const secondOwner = accessAccount('owner-index-two');
+    insertCompany('company-owner');
+    insertMember({
+      companyId: 'company-owner',
+      accountId: firstOwner,
+      role: 'owner',
+      state: 'active',
+    });
+
+    expect(() =>
+      insertMember({
+        companyId: 'company-owner',
+        accountId: secondOwner,
+        role: 'owner',
+        state: 'active',
+      }),
+    ).toThrow(/UNIQUE constraint/);
+  });
+
+  it('requires an access-provenance account for company membership', () => {
+    const guestId = createGuestAccount(db, { roomId: 'guest-room', now: 1 }).accountId;
+    const accessId = accessAccount('membership-provenance');
+    insertCompany('company-provenance');
+
+    expect(() =>
+      insertMember({
+        companyId: 'company-provenance',
+        accountId: guestId,
+        role: 'member',
+        state: 'active',
+      }),
+    ).toThrow(/provenance/);
+
+    insertMember({
+      companyId: 'company-provenance',
+      accountId: accessId,
+      role: 'member',
+      state: 'active',
+    });
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM company_members`).get()).toEqual({
+      count: 1,
+    });
+
+    db.prepare(
+      `UPDATE accounts SET provenance = 'guest', guest_room_id = ?
+       WHERE account_id = ?`,
+    ).run('guest-room', accessId);
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE company_members SET role = 'admin'
+           WHERE company_id = ? AND account_id = ?`,
+        )
+        .run('company-provenance', accessId),
+    ).toThrow(/provenance/);
+  });
+
+  it('guards invite hashes, redemption state, and expiry', () => {
+    const creatorId = accessAccount('invite-creator');
+    insertCompany('company-invites');
+    const base = {
+      companyId: 'company-invites',
+      createdBy: creatorId,
+      expiresAt: 100,
+    };
+
+    expect(() =>
+      insertInvite({ ...base, inviteHash: 'a'.repeat(63) }),
+    ).toThrow(/CHECK constraint/);
+    expect(() =>
+      insertInvite({ ...base, inviteHash: 'A'.repeat(64) }),
+    ).toThrow(/CHECK constraint/);
+    expect(() =>
+      insertInvite({ ...base, inviteHash: 'g'.repeat(64) }),
+    ).toThrow(/CHECK constraint/);
+
+    expect(() =>
+      insertInvite({
+        ...base,
+        inviteHash: 'b'.repeat(64),
+        redeemedBy: creatorId,
+        redeemedAt: null,
+      }),
+    ).toThrow(/CHECK constraint/);
+
+    expect(() =>
+      insertInvite({
+        ...base,
+        inviteHash: 'c'.repeat(64),
+        redeemedBy: creatorId,
+        redeemedAt: 50,
+        revokedAt: 60,
+      }),
+    ).toThrow(/CHECK constraint/);
+
+    expect(() =>
+      insertInvite({
+        ...base,
+        inviteHash: 'd'.repeat(64),
+        expiresAt: 1,
+        createdAt: 1,
+      }),
+    ).toThrow(/expires_at/);
+
+    insertInvite({
+      ...base,
+      inviteHash: 'e'.repeat(64),
+      redeemedBy: creatorId,
+      redeemedAt: 50,
+    });
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM company_invites`).get()).toEqual({
+      count: 1,
+    });
+  });
+
+  it('deduplicates entitlement audit causes and ties processor event ids', () => {
+    insertEntitlementAudit({
+      auditId: 'audit-1',
+      subjectId: 'subject-1',
+      causeKind: 'membership',
+      causeId: 'cause-1',
+    });
+    expect(() =>
+      insertEntitlementAudit({
+        auditId: 'audit-2',
+        subjectId: 'subject-1',
+        causeKind: 'membership',
+        causeId: 'cause-1',
+      }),
+    ).toThrow(/UNIQUE constraint/);
+
+    expect(() =>
+      insertEntitlementAudit({
+        auditId: 'audit-3',
+        subjectId: 'subject-2',
+        causeKind: 'processor_event',
+        causeId: 'event-1',
+        processorEventId: null,
+      }),
+    ).toThrow(/CHECK constraint/);
+
+    expect(() =>
+      insertEntitlementAudit({
+        auditId: 'audit-4',
+        subjectId: 'subject-2',
+        causeKind: 'membership',
+        causeId: 'cause-2',
+        processorEventId: 'event-2',
+      }),
+    ).toThrow(/CHECK constraint/);
+
+    expect(() =>
+      insertEntitlementAudit({
+        auditId: 'audit-5',
+        subjectId: 'subject-2',
+        causeKind: 'processor_event',
+        causeId: 'event-3',
+        processorEventId: 'event-other',
+      }),
+    ).toThrow(/CHECK constraint/);
+
+    insertEntitlementAudit({
+      auditId: 'audit-6',
+      subjectId: 'subject-2',
+      causeKind: 'processor_event',
+      causeId: 'event-4',
+      processorEventId: 'event-4',
+    });
+    expect(
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM entitlement_audit WHERE subject_id = ?`,
+        )
+        .get('subject-2'),
+    ).toEqual({ count: 1 });
+  });
+
+  it('allows one referral redemption per account and later renewals', () => {
+    const ownerId = accessAccount('referral-owner');
+    const referredId = accessAccount('referral-referred');
+    db.prepare(
+      `INSERT INTO referral_codes (code, owner_account_id, created_at)
+       VALUES ('ABC123', ?, 1)`,
+    ).run(ownerId);
+
+    function insertEvent(
+      recordId: string,
+      kind: 'redemption' | 'renewal' | 'reversal',
+      objectId: string,
+    ): void {
+      db.prepare(
+        `INSERT INTO referral_events (
+           record_id, code, kind, referred_account_id, object_id,
+           occurred_at, recorded_at
+         ) VALUES (?, 'ABC123', ?, ?, ?, 1, 1)`,
+      ).run(recordId, kind, referredId, objectId);
+    }
+
+    insertEvent('event-1', 'redemption', 'object-1');
+    expect(() => insertEvent('event-2', 'redemption', 'object-2')).toThrow(
+      /UNIQUE constraint/,
+    );
+    insertEvent('event-3', 'renewal', 'object-3');
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM referral_events`).get()).toEqual({
+      count: 2,
+    });
+  });
+
+  it('applies the Phase 1 schema idempotently', () => {
+    expect(() => {
+      applyIdentitySchema(db);
+      applyIdentitySchema(db);
+    }).not.toThrow();
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM billing_events`).get()).toEqual({
+      count: 0,
+    });
+  });
+});
+
+describe('tutor account cap', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    applyIdentitySchema(db);
+  });
+
+  function subject(subjectKey: string) {
+    return { issuer: 'https://access.example.com', subject: subjectKey };
+  }
+
+  function countActiveAccessAccounts(): number {
+    return (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM accounts
+           WHERE provenance = 'access' AND state = 'active'`,
+        )
+        .get() as { count: number }
+    ).count;
+  }
+
+  function countAccessSubjects(): number {
+    return (
+      db.prepare(`SELECT COUNT(*) AS count FROM access_subjects`).get() as {
+        count: number;
+      }
+    ).count;
+  }
+
+  function seedTutorAccounts(count: number): void {
+    for (let index = 0; index < count; index += 1) {
+      const outcome = resolveAccountForSubject(db, subject(`tutor-${index}`));
+      if (isTutorCapReached(outcome)) {
+        throw new Error(`seed tutor ${index} hit the cap unexpectedly`);
+      }
+    }
+  }
+
+  it('the 51st new Access subject is refused and creates no account', () => {
+    expect(TUTOR_ACCOUNT_CAP_DEFAULT).toBe(50);
+    seedTutorAccounts(TUTOR_ACCOUNT_CAP_DEFAULT);
+    expect(countActiveAccessAccounts()).toBe(TUTOR_ACCOUNT_CAP_DEFAULT);
+
+    const refused = resolveAccountForSubject(db, subject('tutor-overflow'));
+
+    expect(refused).toEqual({ tutorCapReached: true });
+    expect(countActiveAccessAccounts()).toBe(TUTOR_ACCOUNT_CAP_DEFAULT);
+    expect(countAccessSubjects()).toBe(TUTOR_ACCOUNT_CAP_DEFAULT);
+  });
+
+  it('an existing account still resolves at the cap', () => {
+    seedTutorAccounts(TUTOR_ACCOUNT_CAP_DEFAULT);
+
+    const outcome = resolveAccountForSubject(db, subject('tutor-7'));
+
+    if (isTutorCapReached(outcome)) {
+      throw new Error('an existing tutor must never be capped');
+    }
+    expect(outcome.created).toBe(false);
+    expect(outcome.account.accountId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+  });
+
+  it('guest accounts do not count toward the cap', () => {
+    createGuestAccount(db, { roomId: 'guest-room-cap-a', now: 1 });
+    createGuestAccount(db, { roomId: 'guest-room-cap-b', now: 2 });
+
+    const first = resolveAccountForSubject(db, subject('tutor-first'), {
+      tutorAccountCap: 2,
+    });
+    const second = resolveAccountForSubject(db, subject('tutor-second'), {
+      tutorAccountCap: 2,
+    });
+
+    expect(isTutorCapReached(first)).toBe(false);
+    expect(isTutorCapReached(second)).toBe(false);
+    expect(countActiveAccessAccounts()).toBe(2);
+  });
+
+  it('a disabled access account frees a slot', () => {
+    const first = resolveAccountForSubject(db, subject('tutor-enabled'), {
+      tutorAccountCap: 2,
+    });
+    resolveAccountForSubject(db, subject('tutor-other'), { tutorAccountCap: 2 });
+    if (isTutorCapReached(first)) throw new Error('first tutor was capped');
+
+    db.prepare(
+      `UPDATE accounts SET state = 'disabled', updated_at = updated_at + 1
+       WHERE account_id = ?`,
+    ).run(first.account.accountId);
+
+    const replacement = resolveAccountForSubject(db, subject('tutor-replacement'), {
+      tutorAccountCap: 2,
+    });
+
+    if (isTutorCapReached(replacement)) {
+      throw new Error('a disabled account must free a slot');
+    }
+    expect(replacement.created).toBe(true);
+  });
+
+  it('enforces a custom small cap exactly at the boundary', () => {
+    const cap = { tutorAccountCap: 2 };
+    const first = resolveAccountForSubject(db, subject('boundary-one'), cap);
+    const second = resolveAccountForSubject(db, subject('boundary-two'), cap);
+    if (isTutorCapReached(first) || isTutorCapReached(second)) {
+      throw new Error('accounts below the cap must resolve');
+    }
+
+    const refused = resolveAccountForSubject(db, subject('boundary-three'), cap);
+
+    expect(refused).toEqual({ tutorCapReached: true });
+    expect(countActiveAccessAccounts()).toBe(2);
+  });
+
+  it('falls back to the default cap for a non-positive option', () => {
+    const outcome = resolveAccountForSubject(db, subject('tutor-zero-cap'), {
+      tutorAccountCap: 0,
+    });
+
+    expect(isTutorCapReached(outcome)).toBe(false);
   });
 });

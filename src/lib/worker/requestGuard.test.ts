@@ -6,7 +6,10 @@ import {
   withSecurityHeaders,
   withNonceHtmlSecurityHeaders,
   connectSrcForPageOrigin,
+  fontSrcForAssetOrigin,
   MAX_BODY_BYTES,
+  BILLING_WEBHOOK_MAX_BODY_BYTES,
+  BILLING_WEBHOOK_PATH,
   applyCspNonceToHtml,
   isPublicPath,
   MARKETING_PAGES,
@@ -121,6 +124,16 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
     it('/api/whiteboard/rooms (owned room list) is teacher-only', () => {
       expect(isRouteAllowedOnHost('/api/whiteboard/rooms', 'GET', 'teacher')).toBe(true);
       expect(isRouteAllowedOnHost('/api/whiteboard/rooms', 'GET', 'guest')).toBe(false);
+    });
+
+    it('/account/company (company admin page) is teacher-only GET/HEAD', () => {
+      expect(isRouteAllowedOnHost('/account/company', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/account/company', 'HEAD', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/account/company', 'GET', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/account/company', 'GET', 'marketing')).toBe(false);
+      expect(isRouteAllowedOnHost('/account/company', 'POST', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/account/company/', 'GET', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/account/company/extra', 'GET', 'teacher')).toBe(false);
     });
 
     // Guest-only paths
@@ -427,6 +440,28 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(wrapped.headers.get('X-Frame-Options')).toBe('DENY');
     });
 
+    it('forces HTTPS on every response, including API errors and HTML', async () => {
+      const hsts = 'max-age=31536000; includeSubDomains';
+      expect(
+        withSecurityHeaders(new Response('ok', { status: 200 }))
+          .headers.get('Strict-Transport-Security'),
+      ).toBe(hsts);
+      expect(
+        withSecurityHeaders(new Response('not found', { status: 404 }))
+          .headers.get('Strict-Transport-Security'),
+      ).toBe(hsts);
+      expect(
+        withSecurityHeaders(
+          new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
+        ).headers.get('Strict-Transport-Security'),
+      ).toBe(hsts);
+      expect(
+        (await withNonceHtmlSecurityHeaders(
+          new Response('<html></html>', { headers: { 'content-type': 'text/html; charset=utf-8' } }),
+        )).headers.get('Strict-Transport-Security'),
+      ).toBe(hsts);
+    });
+
     it('marks HTML responses noindex and sends an enforced CSP', () => {
       const wrapped = withSecurityHeaders(
         new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
@@ -450,6 +485,35 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(csp).toContain("style-src 'self' 'unsafe-inline'");
       expect(csp).toContain("script-src 'self'");
       expect(wrapped.headers.get('Content-Security-Policy-Report-Only')).toBeNull();
+    });
+
+    it('blocks form submissions to other origins in the CSP', () => {
+      const csp = withSecurityHeaders(
+        new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
+      ).headers.get('Content-Security-Policy') ?? '';
+      expect(csp).toContain("form-action 'self'");
+    });
+
+    it('severs the opener relationship across cross-origin navigations', () => {
+      const html = withSecurityHeaders(
+        new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
+      );
+      expect(html.headers.get('Cross-Origin-Opener-Policy')).toBe('same-origin');
+      const api = withSecurityHeaders(
+        new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } }),
+      );
+      expect(api.headers.get('Cross-Origin-Opener-Policy')).toBe('same-origin');
+    });
+
+    it('keeps cross-origin reads of this origin resources out of scope', () => {
+      const html = withSecurityHeaders(
+        new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
+      );
+      expect(html.headers.get('Cross-Origin-Resource-Policy')).toBe('same-origin');
+      const api = withSecurityHeaders(
+        new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } }),
+      );
+      expect(api.headers.get('Cross-Origin-Resource-Policy')).toBe('same-origin');
     });
 
     it('restricts connect-src to the page origin and matching websocket origin', () => {
@@ -669,11 +733,44 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
         headers: { 'content-type': 'text/html' },
       }),
       {
-        fontSrc: "font-src 'self' data: blob: https://excalidraw-assets.sen-tutor.co.uk",
+        fontSrc: fontSrcForAssetOrigin('https://excalidraw-assets.sen-tutor.co.uk'),
       },
     );
     expect(response.headers.get('Content-Security-Policy')).toContain(
       "font-src 'self' data: blob: https://excalidraw-assets.sen-tutor.co.uk",
+    );
+  });
+
+  describe('fontSrcForAssetOrigin', () => {
+    // The CDN origin used to be a literal in the module, so a second
+    // environment serving its assets from a different host could not have
+    // overridden it without a code change -- and the failure mode is silent:
+    // green tests and a board with no glyphs.
+    it('admits the configured origin and nothing else', () => {
+      expect(fontSrcForAssetOrigin('https://assets.example.com')).toBe(
+        "font-src 'self' data: blob: https://assets.example.com",
+      );
+    });
+
+    it('keeps only the origin when given a full release path', () => {
+      // The manifest also stores a base URL with a path on it. Anything past
+      // the origin is meaningless to CSP, and leaving it in would produce a
+      // source expression that matches nothing.
+      expect(fontSrcForAssetOrigin('https://assets.example.com/releases/1.2.3/dist/prod/')).toBe(
+        "font-src 'self' data: blob: https://assets.example.com",
+      );
+    });
+
+    it.each([undefined, null, '', 'not a url', 'http://assets.example.com'])(
+      'falls back to same-origin fonts for %s',
+      (value) => {
+        // Failing closed here would break every board, and the CDN origin
+        // carries no authority, so the safe direction is to drop it. An http
+        // origin is dropped too: it would be blocked as mixed content on the
+        // deployed page anyway, so admitting it widens the policy without ever
+        // serving a font.
+        expect(fontSrcForAssetOrigin(value)).toBe("font-src 'self' data: blob:");
+      },
     );
   });
 
@@ -855,6 +952,148 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
 
     it('rejects suffixed marketing paths', () => {
       expect(isPublicPath('/pricing/extra')).toBe(false);
+    });
+  });
+
+  describe('billing webhook boundary (spec §5.3, §6.3)', () => {
+    it('caps the webhook body at 1 MiB, separate from the 4 MiB scene cap', () => {
+      expect(BILLING_WEBHOOK_MAX_BODY_BYTES).toBe(1_048_576);
+      expect(BILLING_WEBHOOK_MAX_BODY_BYTES).toBeLessThan(MAX_BODY_BYTES);
+    });
+
+    it('allows only POST /api/billing/webhook on the teacher host', () => {
+      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'POST', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'POST', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'POST', 'marketing')).toBe(false);
+      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'POST', 'unknown')).toBe(false);
+      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'GET', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'HEAD', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost(BILLING_WEBHOOK_PATH, 'PUT', 'teacher')).toBe(false);
+    });
+
+    it('keeps suffix and prefix variants out of the webhook allowance', () => {
+      for (const pathname of [
+        '/api/billing/webhook/',
+        '/api/billing/webhook/extra',
+        '/api/billing/webhookX',
+        '/api/billing/webhooks',
+      ]) {
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'teacher'), pathname).toBe(false);
+      }
+    });
+
+    it('exempts the exact webhook path from the origin guard and nothing nearby', () => {
+      expect(isOriginGuardedPath(BILLING_WEBHOOK_PATH, 'POST')).toBe(false);
+      expect(isOriginGuardedPath('/api/billing/webhook/', 'POST')).toBe(true);
+      expect(isOriginGuardedPath('/api/billing/webhook/extra', 'POST')).toBe(true);
+      expect(isOriginGuardedPath('/api/billing/webhookX', 'POST')).toBe(true);
+      expect(isOriginGuardedPath('/api/billing/checkout', 'POST')).toBe(true);
+    });
+  });
+
+  describe('billing checkout and portal route boundary (spec §6.1)', () => {
+    it('allows only POST /api/billing/checkout and POST /api/billing/portal on the teacher host', () => {
+      for (const pathname of ['/api/billing/checkout', '/api/billing/portal']) {
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'teacher'), pathname).toBe(true);
+        expect(isRouteAllowedOnHost(pathname, 'GET', 'teacher'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'HEAD', 'teacher'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'PUT', 'teacher'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'DELETE', 'teacher'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'guest'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'marketing'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'unknown'), pathname).toBe(false);
+      }
+    });
+
+    it('keeps suffix and prefix variants of checkout and portal out of the allowance', () => {
+      for (const pathname of [
+        '/api/billing/checkout/',
+        '/api/billing/checkout/extra',
+        '/api/billing/checkoutX',
+        '/api/billing/checkouts',
+        '/api/billing/portal/',
+        '/api/billing/portal/extra',
+        '/api/billing/portals',
+        '/api/billing/portals/me',
+      ]) {
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'teacher'), pathname).toBe(false);
+      }
+    });
+  });
+
+  describe('company route boundary (spec §6.1)', () => {
+    it('allows /api/company and its subpaths on the teacher host only', () => {
+      for (const pathname of [
+        '/api/company',
+        '/api/company/invites',
+        '/api/company/invites/redeem',
+        '/api/company/seats',
+        '/api/company/members/revoke',
+        '/api/company/owner',
+      ]) {
+        for (const method of ['GET', 'POST', 'PATCH', 'DELETE']) {
+          expect(isRouteAllowedOnHost(pathname, method, 'teacher'), `${method} ${pathname}`).toBe(true);
+        }
+        expect(isRouteAllowedOnHost(pathname, 'GET', 'guest'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'guest'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'marketing'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'unknown'), pathname).toBe(false);
+      }
+    });
+
+    it('keeps bare-prefix variants of /api/company out of the allowance', () => {
+      for (const pathname of ['/api/companyevil', '/api/companies', '/api/company2']) {
+        expect(isRouteAllowedOnHost(pathname, 'GET', 'teacher'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'teacher'), pathname).toBe(false);
+      }
+    });
+
+    it('origin-guards every company mutation but not the read-only summary', () => {
+      expect(isOriginGuardedPath('/api/company', 'GET')).toBe(false);
+      expect(isOriginGuardedPath('/api/company', 'HEAD')).toBe(false);
+      for (const [pathname, method] of [
+        ['/api/company', 'POST'],
+        ['/api/company', 'PATCH'],
+        ['/api/company', 'DELETE'],
+        ['/api/company/invites', 'POST'],
+        ['/api/company/invites', 'DELETE'],
+        ['/api/company/invites/redeem', 'POST'],
+        ['/api/company/seats', 'POST'],
+        ['/api/company/members/revoke', 'POST'],
+        ['/api/company/owner', 'POST'],
+      ] as const) {
+        expect(isOriginGuardedPath(pathname, method), `${method} ${pathname}`).toBe(true);
+      }
+    });
+  });
+
+  describe('referral route boundary (spec §6.1)', () => {
+    it('allows /api/referrals/me on the teacher host only', () => {
+      expect(isRouteAllowedOnHost('/api/referrals/me', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/referrals/me', 'HEAD', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/referrals/me', 'GET', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/api/referrals/me', 'POST', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/api/referrals/me', 'GET', 'marketing')).toBe(false);
+      expect(isRouteAllowedOnHost('/api/referrals/me', 'GET', 'unknown')).toBe(false);
+    });
+
+    it('keeps suffix and prefix variants of /api/referrals/me out of the allowance', () => {
+      for (const pathname of [
+        '/api/referrals/me/',
+        '/api/referrals/me/extra',
+        '/api/referrals/meX',
+        '/api/referrals/me2',
+        '/api/referrals',
+        '/api/referrals/mine',
+      ]) {
+        expect(isRouteAllowedOnHost(pathname, 'GET', 'teacher'), pathname).toBe(false);
+        expect(isRouteAllowedOnHost(pathname, 'POST', 'teacher'), pathname).toBe(false);
+      }
+    });
+
+    it('leaves the caller-scoped referral read unguarded by Origin like every other GET', () => {
+      expect(isOriginGuardedPath('/api/referrals/me', 'GET')).toBe(false);
+      expect(isOriginGuardedPath('/api/referrals/me', 'HEAD')).toBe(false);
     });
   });
 });

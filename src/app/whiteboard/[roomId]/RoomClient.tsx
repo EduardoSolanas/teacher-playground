@@ -41,6 +41,51 @@ import { shouldClearUsernameOnEviction } from '@/lib/whiteboard/evictionUi';
 import type { ParticipantState } from '@/lib/av/avSession';
 import type { WhiteboardUser } from '@/types/whiteboard';
 import type { CallState } from '@/lib/whiteboard/callMessage';
+import type { UserProfileCompany, UserProfilePlan } from '@/components/whiteboard/UserProfileMenu';
+import type { PlanId } from '@/lib/plan/catalog';
+import type { EntitlementStatus } from '@/lib/plan/effectivePlan';
+import type { AjaxFetch } from '@/lib/whiteboard/teacherRooms';
+
+const PLAN_IDS: readonly PlanId[] = [
+  'free',
+  'tutor_pro_monthly',
+  'tutor_pro_annual',
+  'corporate_seat',
+];
+const PLAN_STATUSES: readonly EntitlementStatus[] = [
+  'free',
+  'trialing',
+  'active',
+  'past_due',
+  'canceled',
+];
+
+function readPlan(session: unknown): UserProfilePlan | null {
+  if (!session || typeof session !== 'object') return null;
+  const plan = (session as { plan?: unknown }).plan;
+  if (!plan || typeof plan !== 'object') return null;
+  const { planId, status, graceUntil, collectionPaused } = plan as Record<string, unknown>;
+  if (typeof planId !== 'string' || !PLAN_IDS.includes(planId as PlanId)) return null;
+  if (typeof status !== 'string' || !PLAN_STATUSES.includes(status as EntitlementStatus)) {
+    return null;
+  }
+  return {
+    planId: planId as PlanId,
+    status: status as EntitlementStatus,
+    graceUntil: typeof graceUntil === 'number' ? graceUntil : null,
+    collectionPaused: collectionPaused === true,
+  };
+}
+
+function readCompany(session: unknown): UserProfileCompany | null {
+  if (!session || typeof session !== 'object') return null;
+  const company = (session as { company?: unknown }).company;
+  if (!company || typeof company !== 'object') return null;
+  const { id, name, role } = company as Record<string, unknown>;
+  if (typeof id !== 'string' || typeof name !== 'string') return null;
+  if (role !== 'owner' && role !== 'admin' && role !== 'member') return null;
+  return { id, name, role };
+}
 
 /**
  * The placeholder while the editor chunk loads.
@@ -309,9 +354,11 @@ export function shouldShowSyncDegradedNotice({
   return syncDegraded && !connectionLost;
 }
 
-function RoomContent({ roomId }: { roomId: string }) {
+export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; request?: AjaxFetch }) {
   const router = useRouter();
   const [userName, setUserName] = useState<string | null>(null);
+  const [hostPlan, setHostPlan] = useState<UserProfilePlan | null>(null);
+  const [hostCompany, setHostCompany] = useState<UserProfileCompany | null>(null);
   const [guestHost, setGuestHost] = useState(false);
   const [guestHostReady, setGuestHostReady] = useState(false);
   const [clearModalOpen, setClearModalOpen] = useState(false);
@@ -571,13 +618,16 @@ function RoomContent({ roomId }: { roomId: string }) {
       let accessDisplayName: string | null = null;
       if (!storedName) {
         try {
-          const response = await ajaxFetch('/auth/session/current');
+          const response = await request('/auth/session/current');
           if (response.ok) {
             const session: unknown = await response.json();
+            if (cancelled) return;
             const displayName = session && typeof session === 'object'
               ? (session as { displayName?: unknown }).displayName
               : undefined;
             accessDisplayName = typeof displayName === 'string' ? displayName : null;
+            setHostPlan(readPlan(session));
+            setHostCompany(readCompany(session));
           }
         } catch {
           // Fall through to the join prompt.
@@ -597,7 +647,7 @@ function RoomContent({ roomId }: { roomId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [syncUserName, userName, wasKicked, wasRejected]);
+  }, [request, syncUserName, userName, wasKicked, wasRejected]);
 
   useEffect(() => {
     if (!shouldClearUsernameOnEviction({ wasKicked, wasRejected, wasSuspended })) return;
@@ -834,6 +884,8 @@ function RoomContent({ roomId }: { roomId: string }) {
             onDisplayNameChange={handleJoin}
             onNavigate={handleBackToRooms}
             rosterExpanded={false}
+            plan={hostPlan}
+            company={hostCompany}
           />
           <GuestJoinPrompt
             roomId={roomId}
@@ -853,6 +905,8 @@ function RoomContent({ roomId }: { roomId: string }) {
           onDisplayNameChange={handleJoin}
           onNavigate={handleBackToRooms}
           rosterExpanded={false}
+          plan={hostPlan}
+          company={hostCompany}
         />
         {/*
           * The prompt names no room id: a thirty-two character hexadecimal
@@ -873,6 +927,8 @@ function RoomContent({ roomId }: { roomId: string }) {
           onDisplayNameChange={handleJoin}
           onNavigate={handleBackToRooms}
           rosterExpanded={false}
+          plan={hostPlan}
+          company={hostCompany}
         />
         <WaitingRoom
           userName={userName}
@@ -902,6 +958,8 @@ function RoomContent({ roomId }: { roomId: string }) {
           onDisplayNameChange={handleJoin}
           onNavigate={handleBackToRooms}
           rosterExpanded={false}
+          plan={hostPlan}
+          company={hostCompany}
         />
         <LoadingScreen error={error} />
       </>
@@ -915,6 +973,8 @@ function RoomContent({ roomId }: { roomId: string }) {
         onDisplayNameChange={handleJoin}
         onNavigate={handleBackToRooms}
         rosterExpanded={!presenceCollapsed}
+        plan={hostPlan}
+        company={hostCompany}
         people={
           <PeopleButton
             users={users}

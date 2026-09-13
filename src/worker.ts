@@ -11,7 +11,12 @@ import {
   clearCfAuthorizationSetCookie,
   safeRedirectPath,
 } from './lib/access/accessLogoutUrl';
-import { IdentityDO, getIdentityObject } from './do/IdentityDO';
+import {
+  IDENTITY_OUTCOME_HEADER,
+  IdentityDO,
+  TUTOR_CAP_REACHED_OUTCOME,
+  getIdentityObject,
+} from './do/IdentityDO';
 import { createRateLimiter } from './lib/http/rateLimit';
 import {
   parseGuestSessionCookie,
@@ -36,9 +41,15 @@ import {
   isPublicPath,
   isValidRoomId,
   MARKETING_PAGES,
+  BILLING_WEBHOOK_PATH,
+  BILLING_WEBHOOK_MAX_BODY_BYTES,
+  BILLING_CHECKOUT_PATH,
+  BILLING_PORTAL_PATH,
+  REFERRAL_ME_PATH,
   routeHostKind,
   stripForwardedIdentityHeaders,
   connectSrcForPageOrigin,
+  fontSrcForAssetOrigin,
   withSecurityHeaders,
   withNonceHtmlSecurityHeaders,
 } from './lib/worker/requestGuard';
@@ -49,6 +60,33 @@ import {
   isAllowedMimeType,
   buildR2ObjectKey,
 } from './lib/whiteboard/boardFileRoutes';
+import { applyPlanMaxUsersParam } from './lib/whiteboard/planMaxUsers';
+import { PLAN_CATALOG, type PlanId } from './lib/plan/catalog';
+import { readBillingEnv, type BillingEnv } from './lib/billing/stripeConfig';
+import { verifyStripeSignature } from './lib/billing/stripeSignature';
+import {
+  checkoutSessionRequest,
+  eventsFetchMapRequest,
+  portalSessionRequest,
+} from './lib/billing/stripeRequest';
+import { executeStripeRequest } from './lib/billing/stripeClient';
+import {
+  companyCustomerRequest,
+  executeCollectionClaim,
+  parseCollectionSubject,
+  retryOutboundOperation,
+  runCollectionExecutor,
+  seatItemUpdateRequest,
+  stripeSubscriptionItemId,
+} from './lib/billing/executor';
+import {
+  actualCollectionOf,
+  corporateSeatBandMismatch,
+  parseReconcileResult,
+  type CollectionObservation,
+  type FetchedReconcileSubscription,
+  type ReconcileDispute,
+} from './lib/billing/reconcile';
 
 export interface Env {
   ROOMS: DurableObjectNamespace;
@@ -58,6 +96,8 @@ export interface Env {
   ACCESS_ISSUER?: string;
   ACCESS_AUDIENCE?: string;
   ACCESS_JWKS_URL?: string;
+  /** Cloudflare Access free-plan seat budget for brand-new tutor accounts. */
+  TUTOR_ACCOUNT_CAP?: string;
   ENVIRONMENT?: string;
   LIVEKIT_URL?: string;
   LIVEKIT_API_KEY?: string;
@@ -72,6 +112,19 @@ export interface Env {
    * pages cannot be public on the app hostname. Unset disables the surface.
    */
   MARKETING_HOSTNAME?: string;
+  /**
+   * Origin serving the pinned Excalidraw release. Feeds the CSP `font-src`.
+   *
+   * Unset means same-origin fonts only: the board still renders, with
+   * Excalidraw's bundled faces, and no third-party origin is advertised. That
+   * is the correct default for a build whose assets are not on a CDN, and it
+   * keeps the CDN hostname out of the Worker source, where a second
+   * environment had no way to override it.
+   */
+  EXCALIDRAW_ASSET_ORIGIN?: string;
+  STRIPE_API_BASE?: string;
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
 }
 
 // Room ids cannot be enumerated at build time, so the static export contains a
@@ -108,9 +161,59 @@ const ACCOUNT_EXPORT = '/auth/account/export';
 const ACCOUNT_ERASE = '/auth/account';
 const ACCOUNT_PROFILE = '/auth/account/profile';
 const ACCOUNT_ROOMS = '/api/whiteboard/rooms';
+const COMPANY_API = '/api/company';
+const COMPANY_INVITES_API = '/api/company/invites';
+const COMPANY_INVITE_REDEEM_API = '/api/company/invites/redeem';
+const COMPANY_SEATS_API = '/api/company/seats';
+const COMPANY_MEMBER_REVOKE_API = '/api/company/members/revoke';
+const COMPANY_OWNER_API = '/api/company/owner';
 const AUTH_GUEST = '/auth/guest';
 const IDENTITY_ACCOUNT_ROOMS = 'https://identity/accounts/rooms';
 const IDENTITY_GUESTS_PURGE = 'https://identity/guests/purge';
+const IDENTITY_ACCOUNT_PLAN = 'https://identity/accounts/plan';
+const IDENTITY_COMPANIES = 'https://identity/companies';
+const IDENTITY_COMPANY_MEMBERSHIP = 'https://identity/companies/membership';
+const IDENTITY_COMPANY_CUSTOMER = 'https://identity/companies/customer';
+const IDENTITY_COMPANY_SEATS = 'https://identity/companies/seats';
+const IDENTITY_COMPANY_SEAT_SETTLE = 'https://identity/companies/seats/settle';
+const IDENTITY_COMPANY_MEMBERS_REVOKE = 'https://identity/companies/members/revoke';
+const IDENTITY_COMPANY_OWNER = 'https://identity/companies/owner';
+const IDENTITY_COMPANY_INVITES = 'https://identity/companies/invites';
+const IDENTITY_COMPANY_INVITE_REDEEM = 'https://identity/companies/invites/redeem';
+const IDENTITY_BILLING_OPERATIONS = 'https://identity/billing/operations';
+const IDENTITY_BILLING_RATE_LIMIT = 'https://identity/billing/rate-limit';
+const IDENTITY_BILLING_CUSTOMER = 'https://identity/billing/customer';
+const IDENTITY_BILLING_RECONCILE = 'https://identity/billing/reconcile';
+const IDENTITY_REFERRALS_ME = 'https://identity/referrals/me';
+const IDENTITY_REFERRAL_VALIDATE = 'https://identity/referrals/validate';
+
+const PERSONAL_PAID_PLANS: ReadonlySet<string> = new Set([
+  'tutor_pro_monthly',
+  'tutor_pro_annual',
+]);
+const BILLING_OPERATION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const BILLING_REFERRAL_CODE_RE = /^[A-Za-z0-9-]{6,32}$/;
+
+/**
+ * Served when the identity store refuses a brand-new tutor account at the
+ * configured cap. Static: the refused browser has no session and no app
+ * assets are needed to read it.
+ */
+const TUTOR_CAP_PAUSED_HTML = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Tutor sign-ups are paused</title>
+  </head>
+  <body>
+    <main>
+      <h1>Tutor sign-ups are paused</h1>
+      <p>New tutor sign-ups are paused while the account limit is reviewed.
+      Existing tutors can still sign in.</p>
+    </main>
+  </body>
+</html>`;
 
 /** Room-creation POSTs per verified account within a one-minute window (SEC-005). */
 const ROOM_CREATE_RATE_WINDOW_MS = RATE_WINDOW_MS;
@@ -439,7 +542,48 @@ async function issueSession(
   const result = await identity.fetch(
     new Request('https://identity/sessions/issue', internalJson(accessAccountKey(principal))),
   );
+  if (result.headers.get(IDENTITY_OUTCOME_HEADER) === TUTOR_CAP_REACHED_OUTCOME) {
+    // The DO outcome marker is routing information for this Worker only: the
+    // browser gets a fresh page carrying no marker, no DO credentials and no
+    // cookie from the refused mint.
+    return withSecurityHeaders(new Response(TUTOR_CAP_PAUSED_HTML, {
+      status: 403,
+      headers: {
+        'content-type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+      },
+    }));
+  }
   return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
+}
+
+async function resolveSessionPlan(env: Env, accountId: string): Promise<unknown | null> {
+  try {
+    const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+    const response = await identity.fetch(new Request(
+      `${IDENTITY_ACCOUNT_PLAN}?accountId=${encodeURIComponent(accountId)}`,
+    ));
+    if (!response.ok) return null;
+    const body: unknown = await response.json();
+    return body !== null && typeof body === 'object' ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveSessionCompany(env: Env, request: Request): Promise<unknown | null> {
+  try {
+    const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+    const response = await identity.fetch(new Request('https://identity/companies/membership', {
+      headers: { cookie: request.headers.get('cookie') ?? '' },
+    }));
+    if (!response.ok) return null;
+    const body: unknown = await response.json();
+    if (body === null || typeof body !== 'object') return null;
+    return (body as { company?: unknown }).company ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function sessionCurrent(
@@ -463,8 +607,11 @@ async function sessionCurrent(
   };
   const { preferredDisplayName, ...publicSession } = session;
   const displayName = preferredDisplayName || principal.displayName;
+  const plan = await resolveSessionPlan(env, session.accountId);
+  const company = await resolveSessionCompany(env, request);
+  const payload = { ...publicSession, plan, company };
   return withSecurityHeaders(Response.json(
-    displayName ? { ...publicSession, displayName } : publicSession,
+    displayName ? { ...payload, displayName } : payload,
     { status: 200, headers: result.headers },
   ));
 }
@@ -535,6 +682,535 @@ async function accountProfile(
     body: request.body,
   }));
   return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
+}
+
+function isCompanyCreateApiBody(value: unknown): value is {
+  name: string;
+  operationId: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 2 &&
+    typeof body.name === 'string' &&
+    body.name.trim().length >= 1 &&
+    body.name.length <= 100 &&
+    typeof body.operationId === 'string' &&
+    BILLING_OPERATION_ID_RE.test(body.operationId)
+  );
+}
+
+async function identityCompanyFetch(
+  env: Env,
+  request: Request,
+  path: string,
+  init: { method: string; body?: string },
+): Promise<Response> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  return identity.fetch(new Request(`https://identity${path}`, {
+    method: init.method,
+    headers: {
+      'content-type': 'application/json',
+      cookie: request.headers.get('cookie') ?? '',
+    },
+    ...(init.body === undefined ? {} : { body: init.body }),
+  }));
+}
+
+async function companyProxyResponse(env: Env, result: Response): Promise<Response> {
+  if (result.status === 429) {
+    let retryAfterMs = 0;
+    try {
+      const body = (await result.clone().json()) as { retryAfterMs?: unknown };
+      if (typeof body.retryAfterMs === 'number' && Number.isFinite(body.retryAfterMs)) {
+        retryAfterMs = body.retryAfterMs;
+      }
+    } catch {
+      retryAfterMs = 0;
+    }
+    return rateLimited(env, retryAfterMs);
+  }
+  return withSecurityHeaders(new Response(result.body, {
+    status: result.status,
+    headers: result.headers,
+  }));
+}
+
+interface CompanyApiRecord {
+  id: string;
+  name: string;
+  role: string;
+  processorCustomerId: string | null;
+}
+
+async function createCompanyCustomer(
+  env: Env,
+  accountId: string,
+  cookie: string,
+  company: CompanyApiRecord,
+  operationId: string,
+): Promise<{ customerReady: boolean; company: CompanyApiRecord }> {
+  const billing = billingEnvFor(env);
+  if (!billing.apiBaseAllowed || billing.secretKey === null) {
+    return { customerReady: false, company };
+  }
+  const stripeRequest = companyCustomerRequest(billing.apiBaseUrl, billing.secretKey, {
+    companyId: company.id,
+    operationId,
+    name: company.name,
+    accountId,
+  });
+  let result;
+  try {
+    result = await executeStripeRequest(stripeRequest, billing.secretKey);
+  } catch {
+    return { customerReady: false, company };
+  }
+  if (!result.ok) return { customerReady: false, company };
+  const customerId = recordOf(result.json)?.id;
+  if (typeof customerId !== 'string' || !customerId.startsWith('cus_')) {
+    return { customerReady: false, company };
+  }
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const writeback = await identity.fetch(new Request(IDENTITY_COMPANY_CUSTOMER, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({
+      companyId: company.id,
+      operationId,
+      processorCustomerId: customerId,
+    }),
+  }));
+  if (!writeback.ok) return { customerReady: false, company };
+  const updated = (await writeback.json()) as { company?: CompanyApiRecord };
+  return { customerReady: true, company: updated.company ?? company };
+}
+
+function isCompanyNameApiBody(value: unknown): value is { name: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    typeof body.name === 'string' &&
+    body.name.trim().length >= 1 &&
+    body.name.length <= 100
+  );
+}
+
+async function companyRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (
+    request.method !== 'GET' &&
+    request.method !== 'POST' &&
+    request.method !== 'PATCH' &&
+    request.method !== 'DELETE'
+  ) {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'GET, POST, PATCH, DELETE' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+
+  if (request.method === 'GET') {
+    return companyProxyResponse(env, await identityCompanyFetch(
+      env,
+      request,
+      '/companies',
+      { method: 'GET' },
+    ));
+  }
+
+  if (request.method === 'DELETE') {
+    return companyProxyResponse(env, await identityCompanyFetch(
+      env,
+      request,
+      '/companies',
+      { method: 'DELETE' },
+    ));
+  }
+
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+
+  if (request.method === 'PATCH') {
+    if (!isCompanyNameApiBody(read.body)) {
+      return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+    }
+    return companyProxyResponse(env, await identityCompanyFetch(
+      env,
+      request,
+      '/companies',
+      { method: 'PATCH', body: JSON.stringify({ name: read.body.name }) },
+    ));
+  }
+
+  if (!isCompanyCreateApiBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  const canonicalBody = JSON.stringify({
+    name: read.body.name,
+    operationId: read.body.operationId,
+  });
+  const result = await identityCompanyFetch(env, request, '/companies', {
+    method: 'POST',
+    body: canonicalBody,
+  });
+  if (!result.ok) return companyProxyResponse(env, result);
+  const created = (await result.json()) as {
+    company: CompanyApiRecord;
+    membership: unknown;
+    operation: { id: string; status: string } | null;
+  };
+  let company = created.company;
+  let customerReady = company?.processorCustomerId !== null;
+  if (!customerReady && created.operation?.status === 'pending') {
+    const attempt = await createCompanyCustomer(
+      env,
+      outcome.session.accountId,
+      request.headers.get('cookie') ?? '',
+      company,
+      created.operation.id,
+    );
+    customerReady = attempt.customerReady;
+    company = attempt.company;
+  }
+  return withSecurityHeaders(Response.json(
+    { company, membership: created.membership, customerReady },
+    { status: result.status, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+function isCompanyInviteApiBody(value: unknown): value is { role: 'admin' | 'member' } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    (body.role === 'admin' || body.role === 'member')
+  );
+}
+
+function isCompanyInviteRevokeApiBody(value: unknown): value is { inviteHash: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    typeof body.inviteHash === 'string' &&
+    /^[0-9a-f]{64}$/.test(body.inviteHash)
+  );
+}
+
+function isCompanyInviteRedeemApiBody(value: unknown): value is { token: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    typeof body.token === 'string' &&
+    body.token.length >= 1 &&
+    body.token.length <= 512
+  );
+}
+
+async function companyInvitesRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST' && request.method !== 'DELETE') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST, DELETE' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+
+  let canonicalBody: string;
+  if (request.method === 'POST') {
+    if (!isCompanyInviteApiBody(read.body)) {
+      return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+    }
+    canonicalBody = JSON.stringify({ role: read.body.role });
+  } else {
+    if (!isCompanyInviteRevokeApiBody(read.body)) {
+      return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+    }
+    canonicalBody = JSON.stringify({ inviteHash: read.body.inviteHash });
+  }
+
+  return companyProxyResponse(env, await identityCompanyFetch(
+    env,
+    request,
+    '/companies/invites',
+    { method: request.method, body: canonicalBody },
+  ));
+}
+
+async function companyInviteRedeemRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+  if (!isCompanyInviteRedeemApiBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  return companyProxyResponse(env, await identityCompanyFetch(
+    env,
+    request,
+    '/companies/invites/redeem',
+    { method: 'POST', body: JSON.stringify({ token: read.body.token }) },
+  ));
+}
+
+function isCompanySeatApiBody(value: unknown): value is {
+  quantity: number;
+  operationId: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 2 &&
+    typeof body.quantity === 'number' &&
+    Number.isInteger(body.quantity) &&
+    body.quantity >= 1 &&
+    body.quantity <= 10_000 &&
+    typeof body.operationId === 'string' &&
+    BILLING_OPERATION_ID_RE.test(body.operationId)
+  );
+}
+
+async function settleSeatChangeViaDo(
+  env: Env,
+  cookie: string,
+  operationId: string,
+  outcome: 'success' | 'failure' | 'unknown',
+): Promise<void> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  await identity.fetch(new Request(IDENTITY_COMPANY_SEAT_SETTLE, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ operationId, outcome }),
+  }));
+}
+
+function seatPending(operationId: string): Response {
+  return withSecurityHeaders(Response.json(
+    { status: 'pending', operationId },
+    { status: 202, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+function seatSettled(): Response {
+  return withSecurityHeaders(Response.json(
+    { status: 'settled' },
+    { status: 200, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+async function applySeatChange(
+  env: Env,
+  cookie: string,
+  reservation: {
+    companyId: string;
+    operationId: string;
+    targetQuantity: number;
+    prorationBehavior: string;
+    processorSubscriptionId: string;
+  },
+): Promise<Response> {
+  const billing = billingEnvFor(env);
+  if (!billing.apiBaseAllowed || billing.secretKey === null) {
+    await settleSeatChangeViaDo(env, cookie, reservation.operationId, 'failure');
+    return billingUnavailable();
+  }
+
+  let subscriptionResult;
+  try {
+    subscriptionResult = await executeStripeRequest(
+      new Request(`${billing.apiBaseUrl}/v1/subscriptions/${reservation.processorSubscriptionId}`, {
+        method: 'GET',
+      }),
+      billing.secretKey,
+    );
+  } catch {
+    subscriptionResult = null;
+  }
+  if (!subscriptionResult || !subscriptionResult.ok) {
+    await settleSeatChangeViaDo(env, cookie, reservation.operationId, 'unknown');
+    return seatPending(reservation.operationId);
+  }
+  const itemId = stripeSubscriptionItemId(subscriptionResult.json);
+  if (itemId === null) {
+    await settleSeatChangeViaDo(env, cookie, reservation.operationId, 'failure');
+    return stripeRequestFailed();
+  }
+
+  let updateResult;
+  try {
+    updateResult = await executeStripeRequest(
+      seatItemUpdateRequest(billing.apiBaseUrl, billing.secretKey, {
+        companyId: reservation.companyId,
+        operationId: reservation.operationId,
+        processorSubscriptionId: reservation.processorSubscriptionId,
+        itemId,
+        targetQuantity: reservation.targetQuantity,
+        prorationBehavior:
+          reservation.prorationBehavior === 'create_prorations'
+            ? 'create_prorations'
+            : 'none',
+      }),
+      billing.secretKey,
+    );
+  } catch {
+    updateResult = null;
+  }
+  if (!updateResult) {
+    await settleSeatChangeViaDo(env, cookie, reservation.operationId, 'unknown');
+    return seatPending(reservation.operationId);
+  }
+  if (updateResult.ok) {
+    await settleSeatChangeViaDo(env, cookie, reservation.operationId, 'success');
+    return seatSettled();
+  }
+  if (updateResult.status >= 400 && updateResult.status < 500) {
+    await settleSeatChangeViaDo(env, cookie, reservation.operationId, 'failure');
+    return stripeRequestFailed();
+  }
+  await settleSeatChangeViaDo(env, cookie, reservation.operationId, 'unknown');
+  return seatPending(reservation.operationId);
+}
+
+async function companySeatsRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+  if (!isCompanySeatApiBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  const cookie = request.headers.get('cookie') ?? '';
+  const canonicalBody = JSON.stringify({
+    quantity: read.body.quantity,
+    operationId: read.body.operationId,
+  });
+  const result = await identityCompanyFetch(env, request, '/companies/seats', {
+    method: 'POST',
+    body: canonicalBody,
+  });
+  if (!result.ok) return companyProxyResponse(env, result);
+  const reservation = (await result.json()) as {
+    status: string;
+    companyId: string;
+    operationId: string;
+    targetQuantity: number;
+    direction: string;
+    prorationBehavior: string;
+    processorSubscriptionId: string;
+  };
+  return applySeatChange(env, cookie, reservation);
+}
+
+function isCompanyMemberApiBody(value: unknown): value is { accountId: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    typeof body.accountId === 'string' &&
+    body.accountId.length >= 1 &&
+    body.accountId.length <= 128
+  );
+}
+
+async function companyMemberRevokeRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+  if (!isCompanyMemberApiBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  return companyProxyResponse(env, await identityCompanyFetch(
+    env,
+    request,
+    '/companies/members/revoke',
+    { method: 'POST', body: JSON.stringify({ accountId: read.body.accountId }) },
+  ));
+}
+
+async function companyOwnerRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+  if (!isCompanyMemberApiBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  return companyProxyResponse(env, await identityCompanyFetch(
+    env,
+    request,
+    '/companies/owner',
+    { method: 'POST', body: JSON.stringify({ accountId: read.body.accountId }) },
+  ));
 }
 
 async function accountExport(
@@ -673,6 +1349,21 @@ async function listAccountRooms(
   return withSecurityHeaders(new Response(result.body, { status: result.status, headers: result.headers }));
 }
 
+async function resolvePlanMaxUsers(env: Env, accountId: string): Promise<number | null> {
+  try {
+    const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+    const response = await identity.fetch(new Request(
+      `${IDENTITY_ACCOUNT_PLAN}?accountId=${encodeURIComponent(accountId)}`,
+    ));
+    if (!response.ok) return null;
+    const body = await response.json() as { limits?: { maxUsersPerRoom?: unknown } };
+    const cap = body.limits?.maxUsersPerRoom;
+    return typeof cap === 'number' && Number.isInteger(cap) && cap > 0 ? cap : null;
+  } catch {
+    return null;
+  }
+}
+
 function syncOwnedRoom(
   env: Env,
   cookie: string,
@@ -782,6 +1473,7 @@ function forward(
   url: URL,
   session: ValidatedSession | null = null,
   guest = false,
+  planMaxUsers: number | null = null,
 ): Promise<Response> {
   const target = new URL(`https://room${path}`);
   url.searchParams.forEach((value, key) => target.searchParams.set(key, value));
@@ -798,6 +1490,7 @@ function forward(
     target.searchParams.delete('sessionId');
   }
   target.searchParams.set('guest', guest ? '1' : '0');
+  applyPlanMaxUsersParam(target, planMaxUsers);
 
   const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
   const forwarded = new Request(target, request);
@@ -864,6 +1557,1093 @@ async function probeRoomAccessStatus(
   } catch {
     return null;
   }
+}
+
+interface StripeWebhookEvent {
+  id: string;
+  type: string;
+  livemode: boolean;
+  created: number;
+  objectId: string;
+}
+
+function parseStripeEvent(value: unknown): StripeWebhookEvent | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.id !== 'string' || record.id.length === 0) return null;
+  if (typeof record.type !== 'string' || record.type.length === 0) return null;
+  if (typeof record.livemode !== 'boolean') return null;
+  if (typeof record.created !== 'number' || !Number.isFinite(record.created)) return null;
+  const data = record.data;
+  const object = typeof data === 'object' && data !== null
+    ? (data as Record<string, unknown>).object
+    : undefined;
+  const objectId = typeof object === 'object' && object !== null
+    ? (object as Record<string, unknown>).id
+    : undefined;
+  if (typeof objectId !== 'string' || objectId.length === 0) return null;
+  return {
+    id: record.id,
+    type: record.type,
+    livemode: record.livemode,
+    created: record.created * 1000,
+    objectId,
+  };
+}
+
+function webhookApplyBody(
+  event: StripeWebhookEvent,
+  payloadHash: string,
+  objects?: Record<string, unknown>,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    signatureVerified: true,
+    payloadHash,
+    event: {
+      id: event.id,
+      type: event.type,
+      livemode: event.livemode,
+      created: event.created,
+    },
+  };
+  if (objects !== undefined) body.objects = objects;
+  return body;
+}
+
+async function forwardWebhookEvent(
+  env: Env,
+  event: StripeWebhookEvent,
+  payloadHash: string,
+  objects?: Record<string, unknown>,
+): Promise<Response> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const verdict = await identity.fetch(new Request(
+    'https://identity/billing/events/apply',
+    internalJson(webhookApplyBody(event, payloadHash, objects)),
+  ));
+  return withSecurityHeaders(verdict);
+}
+
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function idValue(value: unknown): string | null {
+  if (typeof value === 'string' && value.length > 0) return value;
+  const record = recordOf(value);
+  if (record === null) return null;
+  const id = record.id;
+  return typeof id === 'string' && id.length > 0 ? id : null;
+}
+
+function secondsToMs(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value * 1000 : null;
+}
+
+interface NormalizedSubscription {
+  id: string;
+  customer: string | null;
+  status: string;
+  canceledAt: number | null;
+  currentPeriodEnd: number | null;
+  pauseCollection: { behavior: string } | null;
+  quantity: number | null;
+  unitAmount: number | null;
+}
+
+function normalizeSubscription(value: unknown): NormalizedSubscription | null {
+  const record = recordOf(value);
+  if (record === null) return null;
+  const id = idValue(record.id);
+  if (id === null) return null;
+  const items = recordOf(record.items);
+  const firstItem = Array.isArray(items?.data) ? recordOf(items.data[0]) : null;
+  const price = recordOf(firstItem?.price);
+  const pauseCollection = recordOf(record.pause_collection);
+  return {
+    id,
+    customer: idValue(record.customer),
+    status: typeof record.status === 'string' ? record.status : 'unknown',
+    canceledAt: secondsToMs(record.canceled_at),
+    currentPeriodEnd: secondsToMs(firstItem?.current_period_end ?? record.current_period_end),
+    pauseCollection: pauseCollection === null
+      ? null
+      : {
+          behavior: typeof pauseCollection.behavior === 'string'
+            ? pauseCollection.behavior
+            : 'void',
+        },
+    quantity:
+      typeof firstItem?.quantity === 'number' && Number.isInteger(firstItem.quantity)
+        ? firstItem.quantity
+        : null,
+    unitAmount:
+      typeof price?.unit_amount === 'number' && Number.isFinite(price.unit_amount)
+        ? price.unit_amount
+        : null,
+  };
+}
+
+export interface FetchedSubscriptionPricing {
+  subscription: FetchedReconcileSubscription;
+  quantity: number | null;
+  unitAmount: number | null;
+}
+
+export function parseFetchedSubscriptionPricing(
+  value: unknown,
+): FetchedSubscriptionPricing | null {
+  const subscription = normalizeSubscription(value);
+  if (subscription === null) return null;
+  return {
+    subscription: {
+      status: subscription.status,
+      customer: subscription.customer,
+      currentPeriodEnd: subscription.currentPeriodEnd,
+      canceledAt: subscription.canceledAt,
+      pauseCollection: subscription.pauseCollection !== null,
+    },
+    quantity: subscription.quantity,
+    unitAmount: subscription.unitAmount,
+  };
+}
+
+function normalizeCheckoutSession(value: unknown): Record<string, unknown> | null {
+  const record = recordOf(value);
+  if (record === null) return null;
+  const id = idValue(record.id);
+  if (id === null) return null;
+  const metadata = recordOf(record.metadata);
+  return {
+    id,
+    clientReferenceId: idValue(record.client_reference_id),
+    customer: idValue(record.customer),
+    referrerCode: idValue(metadata?.referrer_code),
+  };
+}
+
+function normalizeInvoicePayment(value: unknown): { id: string; amount: number } | null {
+  const record = recordOf(value);
+  if (record === null) return null;
+  const payment = recordOf(record.payment);
+  const id = idValue(payment?.charge)
+    ?? idValue(record.charge)
+    ?? idValue(payment?.payment_intent)
+    ?? idValue(record.payment_intent)
+    ?? idValue(record.id);
+  if (id === null) return null;
+  return { id, amount: typeof record.amount === 'number' ? record.amount : 0 };
+}
+
+function normalizeInvoice(value: unknown): Record<string, unknown> | null {
+  const record = recordOf(value);
+  if (record === null) return null;
+  const id = idValue(record.id);
+  if (id === null) return null;
+  const parent = recordOf(record.parent);
+  const subscriptionDetails = recordOf(parent?.subscription_details);
+  const paymentsList = recordOf(record.payments);
+  const paymentEntries = Array.isArray(paymentsList?.data) ? paymentsList.data : [];
+  const payments = paymentEntries
+    .map(normalizeInvoicePayment)
+    .filter((payment): payment is { id: string; amount: number } => payment !== null);
+  const firstPayment = recordOf(paymentEntries[0]);
+  const firstPaymentDetails = recordOf(firstPayment?.payment);
+  return {
+    id,
+    customer: idValue(record.customer),
+    status: typeof record.status === 'string' ? record.status : undefined,
+    amountPaid: typeof record.amount_paid === 'number' ? record.amount_paid : 0,
+    currency: typeof record.currency === 'string' ? record.currency : undefined,
+    paymentIntent: idValue(record.payment_intent)
+      ?? idValue(firstPaymentDetails?.payment_intent),
+    subscription: idValue(subscriptionDetails?.subscription)
+      ?? idValue(record.subscription),
+    payments,
+  };
+}
+
+function normalizeDispute(
+  disputeValue: unknown,
+  chargeValue: unknown,
+): Record<string, unknown> | null {
+  const dispute = recordOf(disputeValue);
+  if (dispute === null) return null;
+  const id = idValue(dispute.id);
+  if (id === null) return null;
+  const charge = recordOf(chargeValue) ?? recordOf(dispute.charge);
+  const chargeId = idValue(dispute.charge) ?? idValue(chargeValue);
+  return {
+    id,
+    status: typeof dispute.status === 'string' ? dispute.status : undefined,
+    charge: chargeId === null
+      ? undefined
+      : { id: chargeId, customer: idValue(charge?.customer) },
+  };
+}
+
+type WebhookFetchResult = { ok: true; json: unknown } | { ok: false };
+
+async function executeWebhookFetch(
+  billing: BillingEnv,
+  request: Request,
+): Promise<WebhookFetchResult> {
+  if (billing.secretKey === null) return { ok: false };
+  try {
+    const result = await executeStripeRequest(request, billing.secretKey);
+    return result.ok ? { ok: true, json: result.json } : { ok: false };
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function fetchWebhookObjects(
+  billing: BillingEnv,
+  event: StripeWebhookEvent,
+): Promise<Record<string, unknown> | null> {
+  if (!billing.apiBaseAllowed) return null;
+  const request = eventsFetchMapRequest(
+    billing.apiBaseUrl,
+    billing.secretKey ?? '',
+    event.type,
+    event.objectId,
+  );
+  if (request === null) return {};
+
+  const fetched = await executeWebhookFetch(billing, request);
+  if (!fetched.ok) return null;
+  const json = fetched.json;
+
+  if (event.type.startsWith('customer.subscription.')) {
+    const subscription = normalizeSubscription(json);
+    return subscription === null ? null : { subscription };
+  }
+
+  if (event.type.startsWith('invoice.')) {
+    const invoice = normalizeInvoice(json);
+    if (invoice === null) return null;
+    const objects: Record<string, unknown> = { invoice };
+    const record = recordOf(json);
+    const parent = recordOf(record?.parent);
+    const subscriptionDetails = recordOf(parent?.subscription_details);
+    const subscription = normalizeSubscription(subscriptionDetails?.subscription);
+    if (subscription !== null) objects.subscription = subscription;
+    return objects;
+  }
+
+  if (event.type === 'charge.refunded') {
+    const charge = recordOf(json);
+    const id = idValue(charge?.id);
+    return id === null
+      ? null
+      : { charge: { id, customer: idValue(charge?.customer) } };
+  }
+
+  if (event.type.startsWith('charge.dispute.')) {
+    const disputeRecord = recordOf(json);
+    const disputeId = idValue(disputeRecord?.id);
+    if (disputeId === null) return null;
+    let chargeValue = disputeRecord?.charge;
+    if (recordOf(chargeValue) === null) {
+      const chargeId = idValue(chargeValue);
+      if (chargeId === null) return null;
+      const chargeRequest = eventsFetchMapRequest(
+        billing.apiBaseUrl,
+        billing.secretKey ?? '',
+        'charge.refunded',
+        chargeId,
+      );
+      if (chargeRequest === null) return null;
+      const fetchedCharge = await executeWebhookFetch(billing, chargeRequest);
+      if (!fetchedCharge.ok) return null;
+      chargeValue = fetchedCharge.json;
+    }
+    const dispute = normalizeDispute(json, chargeValue);
+    return dispute === null ? null : { dispute };
+  }
+
+  if (event.type.startsWith('checkout.session.')) {
+    const session = normalizeCheckoutSession(json);
+    const objects: Record<string, unknown> = session === null ? {} : { checkout: session };
+    const subscriptionRef = recordOf(json)?.subscription;
+    if (recordOf(subscriptionRef) !== null) {
+      const subscription = normalizeSubscription(subscriptionRef);
+      return subscription === null ? null : { ...objects, subscription };
+    }
+    const subscriptionId = idValue(subscriptionRef);
+    if (subscriptionId === null) return objects;
+    const subscriptionRequest = eventsFetchMapRequest(
+      billing.apiBaseUrl,
+      billing.secretKey ?? '',
+      'customer.subscription.updated',
+      subscriptionId,
+    );
+    if (subscriptionRequest === null) return null;
+    const fetchedSubscription = await executeWebhookFetch(billing, subscriptionRequest);
+    if (!fetchedSubscription.ok) return null;
+    const subscription = normalizeSubscription(fetchedSubscription.json);
+    return subscription === null ? null : { ...objects, subscription };
+  }
+
+  return {};
+}
+
+async function handleStripeWebhook(
+  env: Env,
+  request: Request,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const declaredLength = request.headers.get('content-length');
+  if (declaredLength !== null && Number(declaredLength) > BILLING_WEBHOOK_MAX_BODY_BYTES) {
+    return withSecurityHeaders(new Response('Body too large', { status: 413 }));
+  }
+  const rawBody = await request.text();
+  if (new TextEncoder().encode(rawBody).byteLength > BILLING_WEBHOOK_MAX_BODY_BYTES) {
+    return withSecurityHeaders(new Response('Body too large', { status: 413 }));
+  }
+
+  const billing = readBillingEnv({
+    STRIPE_API_BASE: env.STRIPE_API_BASE,
+    STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
+    STRIPE_WEBHOOK_SECRET: env.STRIPE_WEBHOOK_SECRET,
+  });
+  const verification = await verifyStripeSignature(
+    rawBody,
+    request.headers.get('stripe-signature'),
+    billing.webhookSecret === null ? [] : [billing.webhookSecret],
+    Date.now(),
+  );
+  if (!verification.valid) {
+    return withSecurityHeaders(new Response(null, { status: 400 }));
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawBody);
+  } catch {
+    return withSecurityHeaders(new Response(null, { status: 400 }));
+  }
+  const event = parseStripeEvent(parsed);
+  if (event === null) {
+    return withSecurityHeaders(new Response(null, { status: 400 }));
+  }
+
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const existing = await identity.fetch(
+    `https://identity/billing/events/status?id=${encodeURIComponent(event.id)}`,
+  );
+  if (existing.ok) {
+    return withSecurityHeaders(existing);
+  }
+  if (existing.status !== 404) {
+    return withSecurityHeaders(new Response(null, { status: 500 }));
+  }
+
+  if (!event.livemode) {
+    return forwardWebhookEvent(env, event, verification.payloadHash);
+  }
+
+  const objects = await fetchWebhookObjects(billing, event);
+  if (objects === null) {
+    return withSecurityHeaders(new Response(null, { status: 500 }));
+  }
+  const verdict = await forwardWebhookEvent(
+    env,
+    event,
+    verification.payloadHash,
+    Object.keys(objects).length > 0 ? objects : undefined,
+  );
+  const verdictBody = await verdict.clone().json().catch(() => null);
+  scheduleCollectionExecutor(env, ctx, verdictBody, billing);
+  return verdict;
+}
+
+/**
+ * D-6 step 1: an applied event whose ordering row is still missing its
+ * collection state comes back naming the subject to run. Claim, Stripe, and
+ * settle then run after the webhook response (`waitUntil`, spec §7.5); a
+ * missed schedule only defers convergence to R-1. The executor re-checks the
+ * claim inside the IdentityDO, so a stale handoff sends nothing.
+ */
+function scheduleCollectionExecutor(
+  env: Env,
+  ctx: ExecutionContext,
+  verdictBody: unknown,
+  billing: BillingEnv,
+): void {
+  if (!billing.apiBaseAllowed || billing.secretKey === null) return;
+  const subject = parseCollectionSubject(verdictBody);
+  if (subject === null) return;
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  ctx.waitUntil(
+    runCollectionExecutor(
+      { identityFetch: (request) => identity.fetch(request), billing },
+      subject,
+    ).catch((error) => {
+      console.error(
+        '[billing:executor]',
+        JSON.stringify({
+          subjectKind: subject.subjectKind,
+          subjectId: subject.subjectId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }),
+  );
+}
+
+function billingEnvFor(env: Env): BillingEnv {
+  return readBillingEnv({
+    STRIPE_API_BASE: env.STRIPE_API_BASE,
+    STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
+    STRIPE_WEBHOOK_SECRET: env.STRIPE_WEBHOOK_SECRET,
+  });
+}
+
+export interface BillingReconcileRunSummary {
+  runId: string;
+  subscriptions: number;
+  subscriptionReads: number;
+  subscriptionReadsFailed: number;
+  disputeReadsFailed: number;
+  observations: number;
+  disputes: number;
+  appliedSubscriptions: number;
+  disputesApplied: number;
+  collections: number;
+  outboundRetries: number;
+  outboundSettled: number;
+}
+
+async function readReconcileSubscription(
+  billing: BillingEnv,
+  processorSubscriptionId: string,
+): Promise<{
+  observation: CollectionObservation;
+  quantity: number | null;
+  unitAmount: number | null;
+} | null> {
+  const secretKey = billing.secretKey;
+  if (secretKey === null) return null;
+  const request = eventsFetchMapRequest(
+    billing.apiBaseUrl,
+    secretKey,
+    'customer.subscription.updated',
+    processorSubscriptionId,
+  );
+  if (request === null) return null;
+  let result;
+  try {
+    result = await executeStripeRequest(request, secretKey);
+  } catch {
+    return null;
+  }
+  if (!result.ok) return null;
+  const pricing = parseFetchedSubscriptionPricing(result.json);
+  if (pricing === null) return null;
+  return {
+    observation: {
+      processorSubscriptionId,
+      actualCollection: actualCollectionOf(pricing.subscription),
+      subscription: pricing.subscription,
+    },
+    quantity: pricing.quantity,
+    unitAmount: pricing.unitAmount,
+  };
+}
+
+function disputesWindowRequest(apiBaseUrl: string, sweptAtMs: number): Request {
+  const url = new URL('/v1/disputes', apiBaseUrl);
+  url.searchParams.set('created[gt]', String(Math.floor(sweptAtMs / 1000)));
+  url.searchParams.set('limit', '100');
+  url.searchParams.append('expand[]', 'data.charge');
+  return new Request(url.toString(), { method: 'GET' });
+}
+
+function normalizeDisputeListEntry(value: unknown): ReconcileDispute | null {
+  const record = recordOf(value);
+  if (record === null) return null;
+  const id = idValue(record.id);
+  const created = secondsToMs(record.created);
+  if (id === null || created === null) return null;
+  const charge = recordOf(record.charge);
+  return {
+    id,
+    status: typeof record.status === 'string' ? record.status : 'unknown',
+    created,
+    customer: idValue(charge?.customer),
+  };
+}
+
+async function fetchReconcileDisputes(
+  billing: BillingEnv,
+  sweptAtMs: number,
+): Promise<{ disputes: ReconcileDispute[]; failed: boolean; truncated: boolean }> {
+  const secretKey = billing.secretKey;
+  if (secretKey === null) return { disputes: [], failed: true, truncated: false };
+  let result;
+  try {
+    result = await executeStripeRequest(disputesWindowRequest(billing.apiBaseUrl, sweptAtMs), secretKey);
+  } catch {
+    return { disputes: [], failed: true, truncated: false };
+  }
+  if (!result.ok) return { disputes: [], failed: true, truncated: false };
+  const list = recordOf(result.json);
+  if (list === null || !Array.isArray(list.data)) {
+    return { disputes: [], failed: true, truncated: false };
+  }
+  const disputes: ReconcileDispute[] = [];
+  for (const entry of list.data) {
+    const dispute = normalizeDisputeListEntry(entry);
+    if (dispute !== null) disputes.push(dispute);
+  }
+  return { disputes, failed: false, truncated: list.has_more === true };
+}
+
+export async function runBillingReconcile(
+  env: Env,
+  scheduledTime: number,
+): Promise<BillingReconcileRunSummary | null> {
+  const runId = `reconcile:${scheduledTime}`;
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  let response: Response;
+  try {
+    response = await identity.fetch(IDENTITY_BILLING_RECONCILE);
+  } catch {
+    console.error('[billing]', JSON.stringify({
+      alert: 'reconcile_unreachable',
+      outcome: 'failed',
+    }));
+    return null;
+  }
+  if (!response.ok) {
+    console.error('[billing]', JSON.stringify({
+      alert: 'reconcile_failed',
+      status: response.status,
+      outcome: 'failed',
+    }));
+    return null;
+  }
+  const initial = parseReconcileResult(await response.json().catch(() => null));
+  if (initial === null) {
+    console.error('[billing]', JSON.stringify({
+      alert: 'reconcile_invalid_response',
+      outcome: 'failed',
+    }));
+    return null;
+  }
+  const billing = billingEnvFor(env);
+  if (!billing.apiBaseAllowed || billing.secretKey === null) return null;
+  const deps = { identityFetch: (request: Request) => identity.fetch(request), billing };
+
+  let collections = 0;
+  for (const collection of initial.collections) {
+    collections += 1;
+    await executeCollectionClaim(
+      deps,
+      { subjectKind: collection.subjectKind, subjectId: collection.subjectId },
+      {
+        processorSubscriptionId: collection.processorSubscriptionId,
+        version: collection.version,
+        state: collection.state,
+      },
+    ).catch((error) => {
+      console.error('[billing:reconcile]', JSON.stringify({
+        subjectKind: collection.subjectKind,
+        subjectId: collection.subjectId,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    });
+  }
+
+  let outboundRetries = 0;
+  let outboundSettled = 0;
+  for (const operation of initial.outboundOperations) {
+    outboundRetries += 1;
+    const outcome = await retryOutboundOperation(deps, operation).catch((error) => {
+      console.error('[billing:reconcile]', JSON.stringify({
+        kind: operation.kind,
+        companyId: operation.companyId,
+        operationId: operation.operationId,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+      return 'pending' as const;
+    });
+    if (outcome === 'settled') outboundSettled += 1;
+  }
+
+  const observations: CollectionObservation[] = [];
+  let subscriptionReads = 0;
+  let subscriptionReadsFailed = 0;
+  for (const subscription of initial.subscriptions) {
+    subscriptionReads += 1;
+    const read = await readReconcileSubscription(
+      billing,
+      subscription.processorSubscriptionId,
+    );
+    if (read === null) {
+      subscriptionReadsFailed += 1;
+      console.error('[billing]', JSON.stringify({
+        alert: 'reconcile_subscription_fetch_failed',
+        processorSubscriptionId: subscription.processorSubscriptionId,
+        outcome: 'failed',
+      }));
+      continue;
+    }
+    if (
+      subscription.subjectKind === 'company' &&
+      read.quantity !== null &&
+      read.unitAmount !== null &&
+      corporateSeatBandMismatch(read.quantity, read.unitAmount)
+    ) {
+      console.error('[billing]', JSON.stringify({
+        alert: 'corporate_price_tier_mismatch',
+        processorSubscriptionId: subscription.processorSubscriptionId,
+        quantity: read.quantity,
+        unitAmount: read.unitAmount,
+        outcome: 'alerted',
+      }));
+    }
+    observations.push(read.observation);
+  }
+
+  const disputeRead = await fetchReconcileDisputes(billing, initial.disputesSweptAt);
+  if (disputeRead.failed) {
+    console.error('[billing]', JSON.stringify({
+      alert: 'reconcile_dispute_fetch_failed',
+      outcome: 'failed',
+    }));
+  }
+  if (disputeRead.truncated) {
+    console.error('[billing]', JSON.stringify({
+      alert: 'reconcile_disputes_truncated',
+      outcome: 'truncated',
+    }));
+  }
+
+  let appliedSubscriptions = 0;
+  let disputesApplied = 0;
+  if (observations.length > 0 || disputeRead.disputes.length > 0) {
+    let appliedResponse: Response | null = null;
+    try {
+      appliedResponse = await identity.fetch(new Request(IDENTITY_BILLING_RECONCILE, internalJson({
+        runId,
+        observations,
+        disputes: disputeRead.disputes,
+      })));
+    } catch {
+      appliedResponse = null;
+    }
+    if (appliedResponse === null || !appliedResponse.ok) {
+      console.error('[billing]', JSON.stringify({
+        alert: 'reconcile_apply_failed',
+        status: appliedResponse?.status ?? 0,
+        outcome: 'failed',
+      }));
+    } else {
+      const applied = parseReconcileResult(await appliedResponse.json().catch(() => null));
+      if (applied === null) {
+        console.error('[billing]', JSON.stringify({
+          alert: 'reconcile_invalid_response',
+          outcome: 'failed',
+        }));
+      } else {
+        appliedSubscriptions = applied.appliedSubscriptions;
+        disputesApplied = applied.disputesApplied;
+        for (const collection of applied.collections) {
+          collections += 1;
+          await executeCollectionClaim(
+            deps,
+            { subjectKind: collection.subjectKind, subjectId: collection.subjectId },
+            {
+              processorSubscriptionId: collection.processorSubscriptionId,
+              version: collection.version,
+              state: collection.state,
+            },
+          ).catch((error) => {
+            console.error('[billing:reconcile]', JSON.stringify({
+              subjectKind: collection.subjectKind,
+              subjectId: collection.subjectId,
+              error: error instanceof Error ? error.message : String(error),
+            }));
+          });
+        }
+      }
+    }
+  }
+
+  return {
+    runId,
+    subscriptions: initial.subscriptions.length,
+    subscriptionReads,
+    subscriptionReadsFailed,
+    disputeReadsFailed: disputeRead.failed ? 1 : 0,
+    observations: observations.length,
+    disputes: disputeRead.disputes.length,
+    appliedSubscriptions,
+    disputesApplied,
+    collections,
+    outboundRetries,
+    outboundSettled,
+  };
+}
+
+function billingPriceId(env: Env, planId: PlanId): string | null {
+  const priceEnv = PLAN_CATALOG[planId].priceEnv;
+  if (priceEnv === null) return null;
+  const value = (env as unknown as Record<string, unknown>)[priceEnv];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function isBillingCheckoutBody(value: unknown): value is {
+  planId: PlanId;
+  operationId: string;
+  referralCode?: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  if (typeof body.planId !== 'string' || !PERSONAL_PAID_PLANS.has(body.planId)) return false;
+  if (typeof body.operationId !== 'string' || !BILLING_OPERATION_ID_RE.test(body.operationId)) {
+    return false;
+  }
+  if (body.referralCode !== undefined) {
+    if (
+      typeof body.referralCode !== 'string'
+      || !BILLING_REFERRAL_CODE_RE.test(body.referralCode)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isBillingPortalBody(value: unknown): value is { operationId: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  return typeof body.operationId === 'string' && BILLING_OPERATION_ID_RE.test(body.operationId);
+}
+
+async function readBillingJsonBody(
+  request: Request,
+): Promise<{ ok: true; body: unknown } | { ok: false; response: Response }> {
+  if (bodyTooLarge(request.headers.get('content-length'))) {
+    return {
+      ok: false,
+      response: withSecurityHeaders(new Response('Body too large', { status: 413 })),
+    };
+  }
+  if (!isJsonContentType(request.headers.get('content-type'))) {
+    return {
+      ok: false,
+      response: withSecurityHeaders(
+        new Response('Content type must be application/json', { status: 415 }),
+      ),
+    };
+  }
+  const bounded = await readBoundedJsonBody(request);
+  if (!bounded.ok) {
+    return {
+      ok: false,
+      response: withSecurityHeaders(new Response('Body too large', { status: 413 })),
+    };
+  }
+  try {
+    return { ok: true, body: JSON.parse(new TextDecoder().decode(bounded.buffer)) };
+  } catch {
+    return {
+      ok: false,
+      response: withSecurityHeaders(Response.json({ error: 'Invalid JSON body' }, { status: 400 })),
+    };
+  }
+}
+
+function billingUnavailable(): Response {
+  return withSecurityHeaders(Response.json(
+    { error: 'Billing unavailable' },
+    { status: 503, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+function stripeRequestFailed(): Response {
+  return withSecurityHeaders(Response.json(
+    { error: 'Stripe request failed' },
+    { status: 502, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+function billingNoSubscription(): Response {
+  return withSecurityHeaders(Response.json(
+    { error: 'No subscription' },
+    { status: 409, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+function billingConflict(): Response {
+  return withSecurityHeaders(Response.json(
+    { error: 'Conflict' },
+    { status: 409, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+async function billingRateLimit(env: Env, request: Request): Promise<Response | null> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const result = await identity.fetch(new Request(IDENTITY_BILLING_RATE_LIMIT, {
+    method: 'POST',
+    headers: { cookie: request.headers.get('cookie') ?? '' },
+  }));
+  if (!result.ok) {
+    return withSecurityHeaders(new Response(result.body, {
+      status: result.status,
+      headers: result.headers,
+    }));
+  }
+  const body = (await result.json()) as { allowed?: unknown; retryAfterMs?: unknown };
+  if (body.allowed === true) return null;
+  const retryAfterMs = typeof body.retryAfterMs === 'number' && Number.isFinite(body.retryAfterMs)
+    ? body.retryAfterMs
+    : 0;
+  return rateLimited(env, retryAfterMs);
+}
+
+async function validateReferralCode(
+  env: Env,
+  request: Request,
+  referralCode: string,
+): Promise<{ response: Response } | { referralCode: string | null }> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const result = await identity.fetch(new Request(IDENTITY_REFERRAL_VALIDATE, {
+    ...internalJson({ referralCode }),
+    headers: {
+      'content-type': 'application/json',
+      cookie: request.headers.get('cookie') ?? '',
+    },
+  }));
+  if (!result.ok) {
+    return {
+      response: withSecurityHeaders(new Response(result.body, {
+        status: result.status,
+        headers: result.headers,
+      })),
+    };
+  }
+  const body = (await result.json()) as { referralCode?: unknown };
+  return {
+    referralCode: typeof body.referralCode === 'string' ? body.referralCode : null,
+  };
+}
+
+async function recordBillingOperation(
+  env: Env,
+  session: ValidatedSession,
+  operationId: string,
+  kind: 'checkout' | 'portal',
+  details?: {
+    planId?: PlanId;
+    referralCode?: string;
+    successUrl?: string;
+    cancelUrl?: string;
+    returnUrl?: string;
+  },
+): Promise<Response | null> {
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const result = await identity.fetch(new Request(IDENTITY_BILLING_OPERATIONS, internalJson({
+    subjectKind: 'account',
+    subjectId: session.accountId,
+    operationId,
+    kind,
+    ...details,
+  })));
+  if (result.status === 409) return billingConflict();
+  if (!result.ok) {
+    return withSecurityHeaders(new Response(result.body, {
+      status: result.status,
+      headers: result.headers,
+    }));
+  }
+  return null;
+}
+
+function stripeSessionUrl(json: unknown): string | null {
+  const record = recordOf(json);
+  const url = record?.url;
+  if (typeof url !== 'string' || url.length === 0) return null;
+  try {
+    return new URL(url).protocol === 'https:' ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+async function executeBillingSession(
+  billing: BillingEnv,
+  request: Request,
+): Promise<Response> {
+  const secretKey = billing.secretKey;
+  if (secretKey === null) return billingUnavailable();
+  let result;
+  try {
+    result = await executeStripeRequest(request, secretKey);
+  } catch {
+    return stripeRequestFailed();
+  }
+  if (!result.ok) return stripeRequestFailed();
+  const url = stripeSessionUrl(result.json);
+  if (url === null) return stripeRequestFailed();
+  return withSecurityHeaders(Response.json(
+    { url },
+    { status: 200, headers: { 'Cache-Control': 'no-store' } },
+  ));
+}
+
+async function billingCheckout(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const limited = await billingRateLimit(env, request);
+  if (limited) return limited;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+  if (!isBillingCheckoutBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  const { planId, operationId, referralCode } = read.body;
+  const billing = billingEnvFor(env);
+  const priceId = billingPriceId(env, planId);
+  if (!billing.apiBaseAllowed || billing.secretKey === null || priceId === null) {
+    return billingUnavailable();
+  }
+  let validatedReferralCode: string | undefined;
+  if (referralCode !== undefined) {
+    const validation = await validateReferralCode(env, request, referralCode);
+    if ('response' in validation) return validation.response;
+    validatedReferralCode = validation.referralCode ?? undefined;
+  }
+  const origin = new URL(request.url).origin;
+  const successUrl = `${origin}/whiteboard?billing=success`;
+  const cancelUrl = `${origin}/pricing?billing=cancelled`;
+  const recorded = await recordBillingOperation(env, outcome.session, operationId, 'checkout', {
+    planId,
+    referralCode: validatedReferralCode,
+    successUrl,
+    cancelUrl,
+  });
+  if (recorded) return recorded;
+
+  const stripeRequest = checkoutSessionRequest(billing.apiBaseUrl, billing.secretKey, {
+    accountId: outcome.session.accountId,
+    planId,
+    priceId,
+    operationId,
+    successUrl,
+    cancelUrl,
+    referralCode: validatedReferralCode,
+  });
+  return executeBillingSession(billing, stripeRequest);
+}
+
+async function billingPortal(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'POST' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const limited = await billingRateLimit(env, request);
+  if (limited) return limited;
+  const read = await readBillingJsonBody(request);
+  if (!read.ok) return read.response;
+  if (!isBillingPortalBody(read.body)) {
+    return withSecurityHeaders(Response.json({ error: 'Invalid body' }, { status: 400 }));
+  }
+  const { operationId } = read.body;
+  const billing = billingEnvFor(env);
+  if (!billing.apiBaseAllowed || billing.secretKey === null) {
+    return billingUnavailable();
+  }
+
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const customerResponse = await identity.fetch(new Request(IDENTITY_BILLING_CUSTOMER, {
+    method: 'GET',
+    headers: { cookie: request.headers.get('cookie') ?? '' },
+  }));
+  if (!customerResponse.ok) {
+    return withSecurityHeaders(new Response(customerResponse.body, {
+      status: customerResponse.status,
+      headers: customerResponse.headers,
+    }));
+  }
+  const customer = (await customerResponse.json()) as { processorCustomerId?: unknown };
+  const processorCustomerId = customer.processorCustomerId;
+  if (typeof processorCustomerId !== 'string' || processorCustomerId.length === 0) {
+    return billingNoSubscription();
+  }
+
+  const origin = new URL(request.url).origin;
+  const returnUrl = `${origin}/whiteboard?billing=portal`;
+  const recorded = await recordBillingOperation(env, outcome.session, operationId, 'portal', {
+    returnUrl,
+  });
+  if (recorded) return recorded;
+
+  const stripeRequest = portalSessionRequest(billing.apiBaseUrl, billing.secretKey, {
+    accountId: outcome.session.accountId,
+    processorCustomerId,
+    operationId,
+    returnUrl,
+  });
+  return executeBillingSession(billing, stripeRequest);
+}
+
+async function referralsMe(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'GET') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'GET' } },
+    ));
+  }
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const baseUrl = new URL(request.url).origin;
+  const result = await identity.fetch(new Request(
+    `${IDENTITY_REFERRALS_ME}?baseUrl=${encodeURIComponent(baseUrl)}`,
+    { headers: { cookie: request.headers.get('cookie') ?? '' } },
+  ));
+  if (result.status === 429) {
+    const body = (await result.json().catch(() => null)) as
+      | { retryAfterMs?: unknown }
+      | null;
+    const retryAfterMs =
+      typeof body?.retryAfterMs === 'number' && Number.isFinite(body.retryAfterMs)
+        ? body.retryAfterMs
+        : 0;
+    return rateLimited(env, retryAfterMs);
+  }
+  return withSecurityHeaders(new Response(result.body, {
+    status: result.status,
+    headers: result.headers,
+  }));
 }
 
 function hostNotFound(): Response {
@@ -943,6 +2723,7 @@ const worker = {
       return withNonceHtmlSecurityHeaders(asset, {
         indexable: (MARKETING_PAGES as readonly string[]).includes(url.pathname),
         connectSrc: connectSrcForPageOrigin(url.origin, env.LIVEKIT_URL),
+        fontSrc: fontSrcForAssetOrigin(env.EXCALIDRAW_ASSET_ORIGIN),
       });
     }
     if (
@@ -963,8 +2744,22 @@ const worker = {
         { status: 405, headers: { Allow: 'POST' } },
       ));
     }
+    if (
+      hostKind === 'teacher'
+      && url.pathname === BILLING_WEBHOOK_PATH
+      && request.method !== 'POST'
+    ) {
+      return withSecurityHeaders(Response.json(
+        { error: 'Method not allowed' },
+        { status: 405, headers: { Allow: 'POST' } },
+      ));
+    }
     if (!isRouteAllowedOnHost(url.pathname, request.method, hostKind)) return hostNotFound();
     const isGuestHost = hostKind === 'guest';
+
+    if (hostKind === 'teacher' && url.pathname === BILLING_WEBHOOK_PATH) {
+      return handleStripeWebhook(env, request, ctx);
+    }
 
     // SEC-015 sales-surface exemption: marketing pages must be reachable and
     // indexable by search engines without a Cf-Access-Jwt-Assertion, or the
@@ -981,6 +2776,7 @@ const worker = {
       return withNonceHtmlSecurityHeaders(response, {
         indexable: (MARKETING_PAGES as readonly string[]).includes(url.pathname),
         connectSrc: connectSrcForPageOrigin(url.origin, env.LIVEKIT_URL),
+        fontSrc: fontSrcForAssetOrigin(env.EXCALIDRAW_ASSET_ORIGIN),
       });
     }
 
@@ -1028,6 +2824,33 @@ const worker = {
       }
       if (url.pathname === ACCOUNT_ROOMS) {
         return listAccountRooms(env, request, principal);
+      }
+      if (url.pathname === COMPANY_API) {
+        return companyRoute(env, request, principal);
+      }
+      if (url.pathname === COMPANY_INVITES_API) {
+        return companyInvitesRoute(env, request, principal);
+      }
+      if (url.pathname === COMPANY_INVITE_REDEEM_API) {
+        return companyInviteRedeemRoute(env, request, principal);
+      }
+      if (url.pathname === COMPANY_SEATS_API) {
+        return companySeatsRoute(env, request, principal);
+      }
+      if (url.pathname === COMPANY_MEMBER_REVOKE_API) {
+        return companyMemberRevokeRoute(env, request, principal);
+      }
+      if (url.pathname === COMPANY_OWNER_API) {
+        return companyOwnerRoute(env, request, principal);
+      }
+      if (url.pathname === BILLING_CHECKOUT_PATH) {
+        return billingCheckout(env, request, principal);
+      }
+      if (url.pathname === BILLING_PORTAL_PATH) {
+        return billingPortal(env, request, principal);
+      }
+      if (url.pathname === REFERRAL_ME_PATH) {
+        return referralsMe(env, request, principal);
       }
     }
 
@@ -1355,7 +3178,26 @@ const worker = {
         && (request.method === 'POST' || request.method === 'PATCH')
         ? request.clone()
         : null;
-      const response = await forward(env, roomId, `/room${subpath}`, request, url, session, guestCaller);
+      let planMaxUsers: number | null = null;
+      if (
+        session
+        && (
+          (request.method === 'POST' && subpath === '')
+          || ((request.method === 'POST' || request.method === 'PATCH') && subpath === '/settings')
+        )
+      ) {
+        planMaxUsers = await resolvePlanMaxUsers(env, session.accountId);
+      }
+      const response = await forward(
+        env,
+        roomId,
+        `/room${subpath}`,
+        request,
+        url,
+        session,
+        guestCaller,
+        planMaxUsers,
+      );
       if (session && subpath === '') {
         const cookie = request.headers.get('cookie') ?? '';
         if (request.method === 'POST' && response.ok) {
@@ -1415,12 +3257,22 @@ const worker = {
       rewritten.pathname = ROOM_PLACEHOLDER;
       return withNonceHtmlSecurityHeaders(await env.ASSETS.fetch(new Request(rewritten, request)), {
         connectSrc: connectSrcForPageOrigin(url.origin, env.LIVEKIT_URL),
+        fontSrc: fontSrcForAssetOrigin(env.EXCALIDRAW_ASSET_ORIGIN),
       });
     }
 
     return withNonceHtmlSecurityHeaders(await env.ASSETS.fetch(request), {
       connectSrc: connectSrcForPageOrigin(url.origin, env.LIVEKIT_URL),
+      fontSrc: fontSrcForAssetOrigin(env.EXCALIDRAW_ASSET_ORIGIN),
     });
+  },
+
+  async scheduled(
+    controller: ScheduledController,
+    env: Env,
+    _ctx: ExecutionContext,
+  ): Promise<void> {
+    await runBillingReconcile(env, controller.scheduledTime);
   },
 };
 

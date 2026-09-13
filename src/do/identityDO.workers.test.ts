@@ -15,12 +15,16 @@ import {
   listPendingErasures,
   clearErasureTarget,
 } from '../lib/identity/sessionStore';
-import { readAuthorizationAudit } from '../lib/identity/identityStore';
+import { applyIdentitySchema, readAuthorizationAudit } from '../lib/identity/identityStore';
+import { writeEntitlement } from '../lib/identity/entitlementWriter';
+import { PLAN_CATALOG } from '../lib/plan/catalog';
+import type { EffectivePlan } from '../lib/plan/effectivePlan';
 
 declare global {
   namespace Cloudflare {
     interface Env {
       IDENTITY: DurableObjectNamespace<IdentityDO>;
+      TUTOR_ACCOUNT_CAP: string;
     }
   }
 }
@@ -65,6 +69,12 @@ function sessionRequest(
     method,
     headers: { cookie },
   });
+}
+
+function planRequest(accountId: string): Promise<Response> {
+  return identityStub().fetch(
+    `https://identity/accounts/plan?accountId=${encodeURIComponent(accountId)}`,
+  );
 }
 
 /**
@@ -981,6 +991,118 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     expect(body.rooms.map((room) => room.roomId)).toEqual(['room-free-one']);
   });
 
+  it('lets a Tutor Pro owner reserve a second owned room from the effective plan', async () => {
+    const issued = await issueSession('do-rooms-tutor-pro');
+    const cookie = cookiePair(issued);
+    const { accountId } = await issued.json() as { accountId: string };
+
+    await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+      writeEntitlement(
+        instance.db,
+        {
+          accountId,
+          source: 'personal',
+          state: {
+            planId: 'tutor_pro_monthly',
+            status: 'active',
+            graceUntil: null,
+            collectionPaused: false,
+            companyId: null,
+            currentPeriodEnd: null,
+            processorCustomerId: 'cus_rooms',
+            processorSubscriptionId: 'sub_rooms',
+          },
+          now: Date.now(),
+        },
+        {
+          kind: 'operator',
+          id: `seed-rooms-${crypto.randomUUID()}`,
+          actor: 'test-operator',
+          reason: 'seed paid state',
+        },
+      );
+    });
+
+    const first = await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-paid-one' }),
+    });
+    expect(first.status).toBe(200);
+
+    const second = await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-paid-two' }),
+    });
+    expect(second.status).toBe(200);
+
+    const listed = await sessionRequest('/accounts/rooms', cookie);
+    const body = await listed.json() as { rooms: Array<{ roomId: string }> };
+    expect(body.rooms.map((room) => room.roomId).sort()).toEqual([
+      'room-paid-one',
+      'room-paid-two',
+    ]);
+  });
+
+  it('falls back to the Free cap when the entitlements read throws', async () => {
+    const issued = await issueSession('do-rooms-entitlement-fault');
+    const cookie = cookiePair(issued);
+    const { accountId } = await issued.json() as { accountId: string };
+
+    await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+      writeEntitlement(
+        instance.db,
+        {
+          accountId,
+          source: 'personal',
+          state: {
+            planId: 'tutor_pro_monthly',
+            status: 'active',
+            graceUntil: null,
+            collectionPaused: false,
+            companyId: null,
+            currentPeriodEnd: null,
+            processorCustomerId: 'cus_rooms_fault',
+            processorSubscriptionId: 'sub_rooms_fault',
+          },
+          now: Date.now(),
+        },
+        {
+          kind: 'operator',
+          id: `seed-rooms-fault-${crypto.randomUUID()}`,
+          actor: 'test-operator',
+          reason: 'seed paid state',
+        },
+      );
+    });
+
+    const first = await identityStub().fetch('https://identity/accounts/rooms', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ roomId: 'room-fault-one' }),
+    });
+    expect(first.status).toBe(200);
+
+    await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+      instance.db.exec('DROP TABLE entitlements');
+    });
+
+    try {
+      const second = await identityStub().fetch('https://identity/accounts/rooms', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({ roomId: 'room-fault-two' }),
+      });
+      expect(second.status).toBe(402);
+      expect(await second.json()).toEqual({ error: 'Plan limit reached' });
+    } finally {
+      await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+        applyIdentitySchema(instance.db);
+      });
+    }
+  });
+
   it('allows another owned room after the first is deleted', async () => {
     const issued = await issueSession('do-rooms-replace');
     const cookie = cookiePair(issued);
@@ -1521,5 +1643,331 @@ describe('singleton IdentityDO on real Durable Object SQLite', () => {
     });
 
     expect(finalState).toEqual([]);
+  });
+
+  it('answers GET /accounts/plan with Free for an account without entitlements', async () => {
+    const resolved = await resolveSubject('https://access.example.com', 'plan-no-rows');
+    const { account } = await resolved.json() as { account: { accountId: string } };
+
+    const known = await planRequest(account.accountId);
+    expect(known.status).toBe(200);
+    expect(known.headers.get('cache-control')).toBe('no-store');
+    expect(await known.json()).toEqual({
+      planId: 'free',
+      source: null,
+      companyId: null,
+      status: 'free',
+      limits: PLAN_CATALOG.free.limits,
+      graceUntil: null,
+      collectionPaused: false,
+    });
+
+    const unknown = await planRequest('account-that-does-not-exist');
+    expect(unknown.status).toBe(200);
+    expect(await unknown.json()).toEqual({
+      planId: 'free',
+      source: null,
+      companyId: null,
+      status: 'free',
+      limits: PLAN_CATALOG.free.limits,
+      graceUntil: null,
+      collectionPaused: false,
+    });
+  });
+
+  it('answers GET /accounts/plan with the seeded personal plan and its limits', async () => {
+    const response = await resolveSubject('https://access.example.com', 'plan-active-personal');
+    const { account } = await response.json() as { account: { accountId: string } };
+
+    await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+      writeEntitlement(
+        instance.db,
+        {
+          accountId: account.accountId,
+          source: 'personal',
+          state: {
+            planId: 'tutor_pro_monthly',
+            status: 'active',
+            graceUntil: null,
+            collectionPaused: false,
+            companyId: null,
+            currentPeriodEnd: null,
+            processorCustomerId: 'cus_plan',
+            processorSubscriptionId: 'sub_plan',
+          },
+          now: Date.now(),
+        },
+        {
+          kind: 'operator',
+          id: 'seed-active-personal',
+          actor: 'test-operator',
+          reason: 'seed paid state',
+        },
+      );
+    });
+
+    const plan = await planRequest(account.accountId);
+    expect(plan.status).toBe(200);
+    expect(await plan.json()).toEqual({
+      planId: 'tutor_pro_monthly',
+      source: 'personal',
+      companyId: null,
+      status: 'active',
+      limits: PLAN_CATALOG.tutor_pro_monthly.limits,
+      graceUntil: null,
+      collectionPaused: false,
+    });
+  });
+
+  it('entitles a past_due row only while now is before grace_until', async () => {
+    const response = await resolveSubject('https://access.example.com', 'plan-grace');
+    const { account } = await response.json() as { account: { accountId: string } };
+    const graceUntil = Date.now() + 60_000;
+
+    await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+      writeEntitlement(
+        instance.db,
+        {
+          accountId: account.accountId,
+          source: 'personal',
+          state: {
+            planId: 'tutor_pro_annual',
+            status: 'past_due',
+            graceUntil,
+            collectionPaused: false,
+            companyId: null,
+            currentPeriodEnd: null,
+            processorCustomerId: null,
+            processorSubscriptionId: 'sub_grace',
+          },
+          now: Date.now(),
+        },
+        {
+          kind: 'processor_event',
+          id: 'evt-grace-open',
+          actor: 'stripe',
+          reason: 'invoice.payment_failed',
+        },
+      );
+    });
+
+    const entitled = await (await planRequest(account.accountId)).json() as EffectivePlan;
+    expect(entitled.planId).toBe('tutor_pro_annual');
+    expect(entitled.graceUntil).toBe(graceUntil);
+    expect(entitled.collectionPaused).toBe(false);
+
+    await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+      writeEntitlement(
+        instance.db,
+        {
+          accountId: account.accountId,
+          source: 'personal',
+          state: {
+            planId: 'tutor_pro_annual',
+            status: 'past_due',
+            graceUntil: Date.now() - 1,
+            collectionPaused: false,
+            companyId: null,
+            currentPeriodEnd: null,
+            processorCustomerId: null,
+            processorSubscriptionId: 'sub_grace',
+          },
+          now: Date.now(),
+        },
+        {
+          kind: 'grace_expiry',
+          id: 'sub_grace:expired',
+          actor: 'system:grace',
+          reason: 'grace period ended',
+        },
+      );
+    });
+
+    const expired = await (await planRequest(account.accountId)).json() as EffectivePlan;
+    expect(expired.planId).toBe('free');
+    expect(expired.status).toBe('free');
+    expect(expired.graceUntil).toBeNull();
+    expect(expired.collectionPaused).toBe(false);
+  });
+
+  it('reports a paused collection on a plan that stopped entitling', async () => {
+    const response = await resolveSubject('https://access.example.com', 'plan-paused');
+    const { account } = await response.json() as { account: { accountId: string } };
+
+    await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+      writeEntitlement(
+        instance.db,
+        {
+          accountId: account.accountId,
+          source: 'personal',
+          state: {
+            planId: 'tutor_pro_monthly',
+            status: 'active',
+            graceUntil: null,
+            collectionPaused: true,
+            companyId: null,
+            currentPeriodEnd: null,
+            processorCustomerId: null,
+            processorSubscriptionId: 'sub_paused',
+          },
+          now: Date.now(),
+        },
+        {
+          kind: 'processor_event',
+          id: 'evt-paused',
+          actor: 'stripe',
+          reason: 'dispute.created',
+        },
+      );
+    });
+
+    const plan = await planRequest(account.accountId);
+    expect(plan.status).toBe(200);
+    expect(await plan.json()).toEqual({
+      planId: 'free',
+      source: null,
+      companyId: null,
+      status: 'free',
+      limits: PLAN_CATALOG.free.limits,
+      graceUntil: null,
+      collectionPaused: true,
+    });
+  });
+
+  it('prefers an entitling company row over an entitling personal row', async () => {
+    const response = await resolveSubject('https://access.example.com', 'plan-company');
+    const { account } = await response.json() as { account: { accountId: string } };
+
+    await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+      instance.db
+        .prepare(
+          `INSERT INTO companies (company_id, name, created_at, updated_at)
+           VALUES (?, ?, 1, 1)`,
+        )
+        .run('plan-company-row', 'Plan Company');
+      writeEntitlement(
+        instance.db,
+        {
+          accountId: account.accountId,
+          source: 'personal',
+          state: {
+            planId: 'tutor_pro_monthly',
+            status: 'active',
+            graceUntil: null,
+            collectionPaused: false,
+            companyId: null,
+            currentPeriodEnd: null,
+            processorCustomerId: 'cus_plan',
+            processorSubscriptionId: 'sub_personal',
+          },
+          now: Date.now(),
+        },
+        { kind: 'operator', id: 'seed-personal', actor: 'test-operator', reason: 'seed' },
+      );
+      writeEntitlement(
+        instance.db,
+        {
+          accountId: account.accountId,
+          source: 'company',
+          state: {
+            planId: 'corporate_seat',
+            status: 'active',
+            graceUntil: null,
+            collectionPaused: false,
+            companyId: 'plan-company-row',
+            currentPeriodEnd: null,
+            processorCustomerId: 'cus_company',
+            processorSubscriptionId: 'sub_company',
+          },
+          now: Date.now(),
+        },
+        { kind: 'seat_operation', id: 'seed-company', actor: 'test-operator', reason: 'seed' },
+      );
+    });
+
+    const plan = await planRequest(account.accountId);
+    expect(plan.status).toBe(200);
+    expect(await plan.json()).toEqual({
+      planId: 'corporate_seat',
+      source: 'company',
+      companyId: 'plan-company-row',
+      status: 'active',
+      limits: PLAN_CATALOG.corporate_seat.limits,
+      graceUntil: null,
+      collectionPaused: false,
+    });
+  });
+
+  it('rejects non-GET methods and malformed accountId on /accounts/plan', async () => {
+    const [post, missing, blank, oversized] = await Promise.all([
+      identityStub().fetch('https://identity/accounts/plan?accountId=x', { method: 'POST' }),
+      identityStub().fetch('https://identity/accounts/plan'),
+      identityStub().fetch('https://identity/accounts/plan?accountId='),
+      identityStub().fetch(`https://identity/accounts/plan?accountId=${'a'.repeat(129)}`),
+    ]);
+
+    expect(post.status).toBe(405);
+    expect(post.headers.get('allow')).toBe('GET');
+    expect(missing.status).toBe(400);
+    expect(blank.status).toBe(400);
+    expect(oversized.status).toBe(400);
+  });
+
+  it('refuses a new subject at the configured cap and creates no account', async () => {
+    /*
+     * The worker test harness raises TUTOR_ACCOUNT_CAP because storage is
+     * shared per file; the exact boundary is proven in identityStore unit
+     * tests, and this proves the DO reads the configured cap and passes it to
+     * subject resolution. Seed the difference, then a brand-new subject is
+     * refused and leaves no account or access_subjects row behind.
+     */
+    const cap = Number(env.TUTOR_ACCOUNT_CAP);
+    expect(Number.isInteger(cap) && cap > 0, 'TUTOR_ACCOUNT_CAP must be configured').toBe(true);
+    const subject = `tutor-cap-${crypto.randomUUID()}`;
+    const prefix = `cap-seed-${crypto.randomUUID()}-`;
+    const before = await runInDurableObject(identityStub(), (instance: IdentityDO) => (
+      instance.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM accounts
+           WHERE provenance = 'access' AND state = 'active'`,
+        )
+        .get() as { count: number }
+    ).count);
+    expect(
+      before,
+      `identity test file already has ${before} active access accounts; the cap is ${cap}`,
+    ).toBeLessThan(cap);
+    try {
+      await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+        instance.db
+          .prepare(
+            `WITH RECURSIVE seed(n) AS (
+               SELECT 1 UNION ALL SELECT n + 1 FROM seed WHERE n < ?
+             )
+             INSERT INTO accounts (
+               account_id, state, authorization_epoch, created_at, updated_at, provenance
+             )
+             SELECT ? || n, 'active', 0, 1, 1, 'access' FROM seed`,
+          )
+          .run(cap - before, prefix);
+      });
+
+      const response = await resolveSubject('https://access.example.com', subject);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: 'Tutor account cap reached' });
+      expect(
+        await runInDurableObject(identityStub(), (instance: IdentityDO) => (
+          instance.db
+            .prepare(`SELECT COUNT(*) AS count FROM access_subjects WHERE subject = ?`)
+            .get(subject) as { count: number }
+        ).count),
+      ).toBe(0);
+    } finally {
+      await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+        instance.db
+          .prepare(`DELETE FROM accounts WHERE account_id LIKE ? || '%'`)
+          .run(prefix);
+      });
+    }
   });
 });

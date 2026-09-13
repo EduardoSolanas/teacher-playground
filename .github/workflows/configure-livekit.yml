@@ -55,7 +55,7 @@ jobs:
           LIVEKIT_API_SECRET: ${{ secrets.LIVEKIT_API_SECRET }}
         run: |
           set -euo pipefail
-          node <<'NODE' | npx wrangler secret bulk --config wrangler.toml
+          node <<'NODE' | npx wrangler secret bulk --config wrangler.toml --env prod
           const names = ['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET'];
           process.stdout.write(JSON.stringify(Object.fromEntries(
             names.map((name) => [name, process.env[name]]),
@@ -68,7 +68,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          npx wrangler secret list --config wrangler.toml --format json | node -e '
+          npx wrangler secret list --config wrangler.toml --format json --env prod | node -e '
             const required = new Set(["LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"]);
             let input = "";
             process.stdin.on("data", (chunk) => { input += chunk; });

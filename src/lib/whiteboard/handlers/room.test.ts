@@ -9,7 +9,7 @@ import {
 } from './room';
 import { getRoomDb } from '../roomDb';
 import { getRoomAllowFirstUserHost, getRoomHostPeerId, deleteRoomScopedData } from '../roomSchema';
-import { approveAccount, getGrantRole, requestAccess } from '../membership';
+import { accessQueueCap, approveAccount, getGrantRole, requestAccess } from '../membership';
 import { GUEST_PIN_VALIDITY_DURATION_MS, verifyGuestPin } from '../guestPin';
 
 const ROOM_SCOPED_TABLES = [
@@ -57,9 +57,15 @@ function seedEveryRoomScopedTable(
   ).run(roomId, `kick-${roomId}`, now);
 }
 
-function postRequest(path: string, body: Record<string, unknown>, accountId?: string) {
+function postRequest(
+  path: string,
+  body: Record<string, unknown>,
+  accountId?: string,
+  planMaxUsers?: number,
+) {
   const url = new URL(`http://localhost/api/whiteboard/room/test${path}`);
   if (accountId) url.searchParams.set('accountId', accountId);
+  if (planMaxUsers !== undefined) url.searchParams.set('planMaxUsers', String(planMaxUsers));
   return new Request(url, {
     method: 'POST',
     body: JSON.stringify(body),
@@ -919,6 +925,59 @@ describe('account erasure handler', () => {
       waiting_peers: 1,
       kicked_peers: 1,
     });
+  });
+});
+
+describe('effective-plan occupancy', () => {
+  it('accepts occupancy up to the caller plan cap on create and settings', async () => {
+    const db = getRoomDb();
+    const roomId = `room-paid-cap-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    const created = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [], maxUsers: 10 }, owner, 10),
+    );
+    expect(created.status).toBe(200);
+    expect(await created.json()).toMatchObject({ maxUsers: 10 });
+
+    const updated = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { maxUsers: 10 }, owner, 10),
+    );
+    expect(updated.status).toBe(200);
+    expect(await updated.json()).toMatchObject({ maxUsers: 10 });
+  });
+
+  it('clamps a downgraded room to the effective plan and shrinks the waiting queue', async () => {
+    const db = getRoomDb();
+    const roomId = `room-plan-downgrade-${crypto.randomUUID()}`;
+    const owner = `acc-owner-${crypto.randomUUID()}`;
+
+    const created = await handleRoomPost(
+      db,
+      roomId,
+      postRequest('', { elements: [], maxUsers: 10 }, owner, 10),
+    );
+    expect(created.status).toBe(200);
+
+    const downgraded = await handleRoomSettings(
+      db,
+      roomId,
+      postRequest('/settings', { name: 'After downgrade' }, owner, 2),
+    );
+    expect(downgraded.status).toBe(200);
+    expect(await downgraded.json()).toMatchObject({ maxUsers: 2, name: 'After downgrade' });
+    expect(accessQueueCap(db, roomId)).toBe(2);
+
+    expect(requestAccess(db, { roomId, accountId: 'queue-student-a', userName: 'A' }))
+      .toMatchObject({ ok: true, status: 'pending' });
+    expect(requestAccess(db, { roomId, accountId: 'queue-student-b', userName: 'B' }))
+      .toMatchObject({ ok: true, status: 'pending' });
+    expect(requestAccess(db, { roomId, accountId: 'queue-student-c', userName: 'C' }))
+      .toEqual({ ok: false, reason: 'queue_full' });
   });
 });
 

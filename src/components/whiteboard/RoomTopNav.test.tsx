@@ -102,4 +102,20 @@ describe('RoomTopNav', () => {
     const nav = screen.getByTestId('whiteboard-room-top-nav');
     expect(nav.className).toContain('z-[1300]');
   });
+
+  it('passes a session plan and company through to the profile menu', () => {
+    render(
+      <RoomTopNav
+        displayName="eduardo"
+        onDisplayNameChange={() => undefined}
+        rosterExpanded={false}
+        plan={{ planId: 'tutor_pro_monthly', status: 'active', graceUntil: null, collectionPaused: false }}
+        company={{ id: 'acme', name: 'Acme Tutoring', role: 'owner' }}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('whiteboard-profile-btn'));
+    expect(screen.getByTestId('whiteboard-profile-plan').textContent).toBe('Tutor Pro');
+    expect(screen.getByTestId('whiteboard-profile-company').textContent).toContain('Acme Tutoring');
+  });
 });

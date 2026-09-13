@@ -20,6 +20,15 @@ export default defineConfig({
             TEACHER_HOSTNAME: 'example.com',
             GUEST_HOSTNAME: 'join.example.com',
             MARKETING_HOSTNAME: 'www.example.com',
+            // Worker test storage is shared per file, so a production-sized cap
+            // would starve later tests in a file; the cap itself is proven at
+            // the exact boundary in unit tests and here by seeding the
+            // configured cap.
+            TUTOR_ACCOUNT_CAP: '10000',
+            STRIPE_API_BASE: 'https://stripe.invalid',
+            STRIPE_SECRET_KEY: 'sk_test_worker_binding',
+            STRIPE_WEBHOOK_SECRET: 'whsec_worker_binding',
+            STRIPE_PRICE_TUTOR_PRO_MONTHLY: 'price_test_tutor_pro_monthly',
             // Keep unrelated sockets from creating recurring alarms during the
             // worker suite. Tests that exercise revocation set their own
             // deadline; the self-scheduling test configures a short alarm.

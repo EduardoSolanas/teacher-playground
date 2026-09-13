@@ -1,0 +1,149 @@
+{
+  "$comment": [
+    "Single source of truth for every per-environment value in this deployment.",
+    "",
+    "Three consumers read this file, and a test (src/infra/environments.test.ts)",
+    "fails when any of them drifts from it:",
+    "",
+    "  1. Terraform (infra/cloudflare) provisions the Cloudflare resources.",
+    "  2. wrangler.toml declares the Worker that runs inside them.",
+    "  3. scripts/cloudflare-access.mjs and scripts/cloudflare-r2.mjs verify the",
+    "     invariants that live in Cloudflare rather than in code.",
+    "",
+    "Nothing secret belongs here. It is tracked, and the secret scan in CI reads",
+    "every tracked file. Credentials reach Terraform through the environment and",
+    "reach the Worker through `wrangler secret`.",
+    "",
+    "To add an environment: add an entry below, add",
+    "infra/cloudflare/environments/<env>.tfvars and <env>.backend.hcl, and add the",
+    "matching [env.<wranglerEnv>] section to wrangler.toml. The drift test iterates",
+    "this file, so a new entry immediately requires the rest to exist."
+  ],
+
+  "environments": {
+    "prod": {
+      "$comment": [
+        "The [env.<name>] block in wrangler.toml that configures this",
+        "environment, and the value every wrangler invocation passes as --env.",
+        "There is no implicit default: wrangler.toml sets no top-level `main`,",
+        "so a deploy that forgets --env fails rather than publishing this Worker",
+        "with no routes, no vars and no bindings over the live script.",
+        "",
+        "That block MUST set `name` explicitly. Wrangler otherwise appends the",
+        "environment to the Worker name and publishes a NEW Worker, with new",
+        "Durable Objects -- so every room and every account is simply not there."
+      ],
+      "wranglerEnv": "prod",
+      "workerName": "teacher-playground",
+      "githubEnvironment": "prod",
+
+      "accountId": "365b447990677931f6b7876de299f62f",
+      "zone": "sen-tutor.co.uk",
+
+      "$comment_hostnames": [
+        "Single-label subdomains are deliberate: Cloudflare Universal SSL covers",
+        "the apex and *.<zone> only, so app.playground.<zone> would get no",
+        "certificate. The teacher host is the ONLY one an Access application may",
+        "cover; see access.applicationDomain."
+      ],
+      "hostnames": {
+        "teacher": "app-playground.sen-tutor.co.uk",
+        "guest": "join-playground.sen-tutor.co.uk",
+        "marketing": "playground.sen-tutor.co.uk"
+      },
+
+      "access": {
+        "$comment": [
+          "audience is the application AUD Cloudflare generates. It is an output of",
+          "the Terraform stack, not an input: apply the stack, read",
+          "`terraform output access_application_aud`, and write it here. The Worker",
+          "rejects every token when it disagrees, and `npm run access:check` compares",
+          "this value against the live application."
+        ],
+        "applicationName": "Teacher Playground",
+        "$comment_allowedIdpIds": [
+          "Identity providers this application accepts, pinned to what production",
+          "already has. An EMPTY list would mean 'every provider the organization",
+          "has configured', which sounds equivalent while only Google exists and",
+          "stops being equivalent the moment a second one is added -- combined with",
+          "an `everyone` policy, that would make any future provider a teacher door",
+          "without anyone editing this repository. These are identifiers, not",
+          "secrets."
+        ],
+        "allowedIdpIds": ["a1802da8-c22f-494f-84e3-07db8a797f64"],
+        "$comment_organizationName": [
+          "The Zero Trust team name, as the dashboard shows it. Null until an",
+          "owner reads the real value: cloudflare_zero_trust_organization requires",
+          "it, and guessing would rename the account-wide organization as a side",
+          "effect of a branding change. manage_login_branding stays false in",
+          "prod.tfvars until this is filled in."
+        ],
+        "organizationName": null,
+        "sessionDuration": "24h",
+        "issuer": "https://ha-smart-home.cloudflareaccess.com",
+        "audience": "2dabab17621803a68a8a67a0db2dfe0133d29e73a448618c1743945743847621",
+        "jwksUrl": "https://ha-smart-home.cloudflareaccess.com/cdn-cgi/access/certs"
+      },
+
+      "r2": {
+        "$comment": [
+          "One bucket for the whole environment. The isolation primitive is the room",
+          "grant, not the bucket; the one axis that does deserve separate buckets is",
+          "the environment, so staging cannot read or overwrite production's images.",
+          "locationHint is uppercase for the Terraform provider; the Cloudflare REST",
+          "API used by scripts/cloudflare-r2.mjs takes the lowercase form."
+        ],
+        "boardFilesBucket": "teacher-playground-board-files",
+        "locationHint": "WEUR"
+      },
+
+      "limits": {
+        "$comment": [
+          "Cloudflare Access free-plan seat budget. A brand-new tutor account is",
+          "refused at this count; an existing tutor is never refused."
+        ],
+        "tutorAccountCap": 50
+      },
+
+      "guestRateLimit": {
+        "$comment": [
+          "Edge rate limit on POST /auth/guest, on the guest hostname only. This is",
+          "the outer bound that sheds volumetric abuse before a Worker invocation is",
+          "billed. It is deliberately far looser than GUEST_AUTH_RATE_MAX (5/min per",
+          "IP, src/lib/worker/rateLimits.ts), which stays the real product limit --",
+          "so the edge rule never trips before the in-Worker limiter does for a",
+          "legitimate client, and a legitimate client's refusal is always the",
+          "Worker's considered 429 rather than an opaque edge block.",
+          "",
+          "The zone's free plan allows exactly one rate-limit rule. This is it.",
+          "",
+          "periodSeconds is 10 because it is the ONLY period this plan entitles.",
+          "The API refuses anything else: 'not entitled to use the period 60, can",
+          "only use a period among [10]'. 20 per 10s is 120/min, still far looser",
+          "than the Worker's 5/min, which keeps the product limit the deciding one.",
+          "",
+          "mitigationTimeoutSeconds is 10 for the same reason: the API says 'not",
+          "entitled to use a mitigation timeout different from 10'. Both numbers are",
+          "the plan's, not a choice this repository gets to make."
+        ],
+        "path": "/auth/guest",
+        "method": "POST",
+        "requestsPerPeriod": 20,
+        "periodSeconds": 10,
+        "mitigationTimeoutSeconds": 10
+      },
+
+      "excalidraw": {
+        "$comment": [
+          "Owned and published by the fork repository, which is the sole owner of the",
+          "bucket, custom domain, and release objects. This repository only consumes",
+          "the pinned immutable base URL, so no Terraform resource here manages it.",
+          "assetOrigin feeds the Worker's CSP font-src; assetBaseUrl is inlined into",
+          "the static export at build time."
+        ],
+        "assetBaseUrl": "https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.11/dist/prod/",
+        "assetOrigin": "https://excalidraw-assets.sen-tutor.co.uk"
+      }
+    }
+  }
+}

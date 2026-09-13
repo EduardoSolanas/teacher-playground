@@ -66,6 +66,21 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      # The Excalidraw asset base is inlined into the export, so it is chosen
+      # here rather than bound on the Worker. Reading it from the manifest is
+      # what keeps it equal to EXCALIDRAW_ASSET_ORIGIN in wrangler.toml, which
+      # the Worker puts in the CSP: fonts fetched from one host and refused by
+      # another produce a green build and a board with no glyphs.
+      - name: Resolve the environment's asset base
+        id: assets
+        run: |
+          set -euo pipefail
+          base="$(node -e 'import("./scripts/lib/environments.mjs").then((m) => {
+            const name = m.resolveEnvironmentName();
+            process.stdout.write(m.readEnvironment(name).excalidraw.assetBaseUrl);
+          })')"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+
       - name: Build static export
         # Inlined at build time, so it has to be present here rather than set
         # on the Worker. Not a secret -- it is printed to every teacher who
@@ -73,6 +88,7 @@ jobs:
         # refuses those in tracked files for good reason.
         env:
           NEXT_PUBLIC_SUPPORT_EMAIL: ${{ secrets.SUPPORT_EMAIL }}
+          NEXT_PUBLIC_EXCALIDRAW_ASSET_PATH: ${{ steps.assets.outputs.base }}
         run: npm run build
 
       - name: Worker tests (real workerd)
@@ -84,7 +100,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          secret_names="$(npx wrangler secret list --config wrangler.toml --format json | jq -r '.[].name')"
+          secret_names="$(npx wrangler secret list --config wrangler.toml --format json --env prod | jq -r '.[].name')"
           for required in LIVEKIT_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
             if ! grep -Fxq "$required" <<<"$secret_names"; then
               echo "Missing required LiveKit secret: $required" >&2
@@ -97,6 +113,11 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # --env is required, not stylistic. wrangler.toml holds no top-level
+          # entry point precisely so that a deploy without it fails rather than
+          # publishing this Worker with no routes, no vars and no bindings over
+          # the live script.
+          command: deploy --env prod
 
       # Deploy is gated on CI success for this exact commit via the
       # workflow_run trigger above. CI's e2e job (.github/workflows/ci.yml)

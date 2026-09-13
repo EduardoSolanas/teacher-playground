@@ -417,4 +417,39 @@ describe('WhiteboardRoute room list', () => {
     expect(screen.getByTestId('whiteboard-create-room-btn')).toHaveProperty('disabled', true);
     expect(screen.getByTestId('whiteboard-create-room-error').textContent).toMatch(/one room/i);
   });
+
+  it('renders the session plan and company in the profile menu', async () => {
+    ajaxFetch.mockImplementation((url: string) => {
+      if (url === '/api/whiteboard/rooms') {
+        return Promise.resolve(jsonResponse({ rooms: [] }));
+      }
+      if (url === '/auth/session/current') {
+        return Promise.resolve(
+          jsonResponse({
+            accountId: 'acct-1',
+            displayName: 'Ada Lovelace',
+            plan: {
+              planId: 'tutor_pro_monthly',
+              status: 'active',
+              graceUntil: null,
+              collectionPaused: false,
+            },
+            company: { id: 'acme', name: 'Acme Tutoring', role: 'owner' },
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse({}, false));
+    });
+
+    render(<WhiteboardRoute />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('whiteboard-profile-btn').getAttribute('aria-label'))
+        .toBe('Open profile for Ada Lovelace');
+    });
+
+    fireEvent.click(screen.getByTestId('whiteboard-profile-btn'));
+    expect(screen.getByTestId('whiteboard-profile-plan').textContent).toBe('Tutor Pro');
+    expect(screen.getByTestId('whiteboard-profile-company').textContent).toContain('Acme Tutoring');
+  });
 });

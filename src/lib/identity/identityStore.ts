@@ -29,6 +29,21 @@ export interface ResolvedAccount {
   created: boolean;
 }
 
+/** Cloudflare Access free-plan seat budget (D10, §3.9). */
+export const TUTOR_ACCOUNT_CAP_DEFAULT = 50;
+
+export interface TutorCapReached {
+  tutorCapReached: true;
+}
+
+export type ResolveAccountOutcome = ResolvedAccount | TutorCapReached;
+
+export function isTutorCapReached(
+  outcome: ResolveAccountOutcome,
+): outcome is TutorCapReached {
+  return 'tutorCapReached' in outcome;
+}
+
 export class IdentityInputError extends Error {
   constructor(message: string) {
     super(message);
@@ -225,6 +240,305 @@ export function applyIdentitySchema(db: RoomDatabase): void {
          )`,
     );
   }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS companies (
+      company_id TEXT PRIMARY KEY CHECK (length(company_id) BETWEEN 1 AND 128),
+      processor_customer_id TEXT UNIQUE,
+      name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 100),
+      state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','disabled')),
+      invoice_approved INTEGER NOT NULL DEFAULT 0 CHECK (invoice_approved IN (0,1)),
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL CHECK (updated_at >= created_at)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS entitlements (
+      account_id TEXT NOT NULL,
+      source TEXT NOT NULL CHECK (source IN ('personal','company')),
+      plan_id TEXT NOT NULL CHECK (plan_id IN ('free','tutor_pro_monthly','tutor_pro_annual','corporate_seat')),
+      status TEXT NOT NULL CHECK (status IN ('free','trialing','active','past_due','canceled')),
+      grace_until INTEGER,
+      collection_paused INTEGER NOT NULL DEFAULT 0 CHECK (collection_paused IN (0,1)),
+      company_id TEXT,
+      current_period_end INTEGER,
+      processor_customer_id TEXT,
+      processor_subscription_id TEXT,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (account_id, source),
+      FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE,
+      FOREIGN KEY (company_id) REFERENCES companies(company_id) ON DELETE RESTRICT,
+      CHECK (source = 'personal' OR company_id IS NOT NULL),
+      CHECK ((status = 'past_due') = (grace_until IS NOT NULL))
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS company_members (
+      company_id TEXT NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+      account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+      role TEXT NOT NULL CHECK (role IN ('owner','admin','member')),
+      state TEXT NOT NULL CHECK (state IN ('active','revoked')),
+      created_at INTEGER NOT NULL,
+      revoked_at INTEGER CHECK (revoked_at IS NULL OR revoked_at >= created_at),
+      PRIMARY KEY (company_id, account_id)
+    )
+  `);
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS company_members_one_active
+      ON company_members(account_id) WHERE state = 'active'
+  `);
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS company_members_one_owner
+      ON company_members(company_id) WHERE role = 'owner' AND state = 'active'
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS company_invites (
+      invite_hash TEXT PRIMARY KEY
+        CHECK (length(invite_hash) = 64 AND invite_hash NOT GLOB '*[^0-9a-f]*'),
+      company_id TEXT NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+      role TEXT NOT NULL CHECK (role IN ('admin','member')),
+      created_by TEXT NOT NULL REFERENCES accounts(account_id),
+      expires_at INTEGER NOT NULL,
+      redeemed_by TEXT REFERENCES accounts(account_id),
+      redeemed_at INTEGER,
+      revoked_at INTEGER,
+      created_at INTEGER NOT NULL,
+      CHECK (redeemed_by IS NULL OR redeemed_at IS NOT NULL),
+      CHECK (redeemed_at IS NULL OR revoked_at IS NULL)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS company_subscriptions (
+      company_id TEXT PRIMARY KEY REFERENCES companies(company_id) ON DELETE CASCADE,
+      processor_subscription_id TEXT NOT NULL UNIQUE,
+      quantity INTEGER NOT NULL CHECK (quantity >= 1),
+      pending_quantity INTEGER CHECK (pending_quantity IS NULL OR pending_quantity >= 1),
+      pending_operation_id TEXT,
+      status TEXT NOT NULL CHECK (status IN ('trialing','active','past_due','canceled','unpaid','paused','incomplete','incomplete_expired')),
+      grace_until INTEGER,
+      collection_paused INTEGER NOT NULL DEFAULT 0 CHECK (collection_paused IN (0,1)),
+      collection_method TEXT NOT NULL
+        CHECK (collection_method IN ('charge_automatically','send_invoice')),
+      current_period_end INTEGER,
+      first_paid_at INTEGER,
+      hosted_invoice_url TEXT,
+      updated_at INTEGER NOT NULL,
+      CHECK ((pending_quantity IS NULL) = (pending_operation_id IS NULL)),
+      CHECK ((status = 'past_due') = (grace_until IS NOT NULL))
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS billing_events (
+      event_id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      livemode INTEGER NOT NULL CHECK (livemode IN (0,1)),
+      event_created INTEGER NOT NULL,
+      payload_hash TEXT NOT NULL,
+      outcome TEXT NOT NULL CHECK (outcome IN ('applied','ignored')),
+      outcome_detail TEXT,
+      applied_at INTEGER NOT NULL
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS billing_subscriptions (
+      processor_subscription_id TEXT PRIMARY KEY,
+      subject_kind TEXT NOT NULL CHECK (subject_kind IN ('account','company')),
+      subject_id TEXT NOT NULL CHECK (length(subject_id) BETWEEN 1 AND 128),
+      last_state_event_created INTEGER NOT NULL DEFAULT 0,
+      processor_canceled_at INTEGER,
+      desired_collection TEXT NOT NULL DEFAULT 'active'
+        CHECK (desired_collection IN ('active','paused','canceled')),
+      desired_version INTEGER NOT NULL DEFAULT 0 CHECK (desired_version >= 0),
+      applied_version INTEGER NOT NULL DEFAULT 0
+        CHECK (applied_version BETWEEN 0 AND desired_version),
+      in_flight_version INTEGER
+        CHECK (in_flight_version IS NULL OR in_flight_version BETWEEN 1 AND desired_version),
+      in_flight_state TEXT
+        CHECK (in_flight_state IS NULL OR in_flight_state IN ('active','paused','canceled')),
+      in_flight_since INTEGER,
+      updated_at INTEGER NOT NULL,
+      CHECK ((in_flight_version IS NULL) = (in_flight_since IS NULL)),
+      CHECK ((in_flight_version IS NULL) = (in_flight_state IS NULL))
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS billing_dispute_holds (
+      dispute_id TEXT PRIMARY KEY,
+      processor_subscription_id TEXT NOT NULL
+        REFERENCES billing_subscriptions(processor_subscription_id),
+      state TEXT NOT NULL CHECK (state IN ('open','review','won','lost')),
+      first_seen_at INTEGER NOT NULL,
+      closed_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      CHECK ((state = 'open') = (closed_at IS NULL))
+    )
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_dispute_holds_subscription
+      ON billing_dispute_holds(processor_subscription_id, state)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS billing_effects (
+      effect_kind TEXT NOT NULL CHECK (effect_kind IN (
+        'checkout_completed','invoice_paid','invoice_payment_failed','refund')),
+      object_id TEXT NOT NULL,
+      processor_event_id TEXT NOT NULL,
+      applied_at INTEGER NOT NULL,
+      PRIMARY KEY (effect_kind, object_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS billing_sweeps (
+      kind TEXT PRIMARY KEY CHECK (kind IN ('disputes')),
+      last_swept_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS billing_operations (
+      subject_kind TEXT NOT NULL CHECK (subject_kind IN ('account','company')),
+      subject_id TEXT NOT NULL,
+      operation_id TEXT NOT NULL CHECK (length(operation_id) BETWEEN 1 AND 128),
+      kind TEXT NOT NULL CHECK (kind IN (
+        'checkout','portal','company-create','seat-change','invoice-approve',
+        'referral-credit','subscription-collection')),
+      request_hash TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending','succeeded','failed')),
+      stripe_object_id TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (subject_kind, subject_id, operation_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS billing_payments (
+      payment_intent_id TEXT PRIMARY KEY,
+      charge_id TEXT,
+      invoice_id TEXT,
+      subject_kind TEXT NOT NULL CHECK (subject_kind IN ('account','company')),
+      subject_id TEXT NOT NULL,
+      amount_cents INTEGER NOT NULL,
+      currency TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_billing_payments_charge ON billing_payments(charge_id)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS entitlement_audit (
+      audit_id TEXT PRIMARY KEY,
+      subject_kind TEXT NOT NULL CHECK (subject_kind IN ('account','company')),
+      subject_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      cause_kind TEXT NOT NULL CHECK (cause_kind IN (
+        'processor_event','membership','seat_operation','reconcile',
+        'grace_expiry','operator','erasure')),
+      cause_id TEXT NOT NULL CHECK (length(cause_id) BETWEEN 1 AND 256),
+      actor TEXT NOT NULL CHECK (length(trim(actor)) > 0 AND length(actor) <= 256),
+      reason TEXT NOT NULL CHECK (length(trim(reason)) > 0 AND length(reason) <= 1024),
+      previous_plan TEXT, next_plan TEXT,
+      previous_status TEXT, next_status TEXT,
+      processor_event_id TEXT,
+      created_at INTEGER NOT NULL,
+      CHECK ((cause_kind = 'processor_event') = (processor_event_id IS NOT NULL)),
+      CHECK (processor_event_id IS NULL OR processor_event_id = cause_id)
+    )
+  `);
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS entitlement_audit_once_per_cause
+      ON entitlement_audit(subject_kind, subject_id, cause_kind, cause_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_entitlement_audit_subject
+      ON entitlement_audit(subject_kind, subject_id, created_at)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS referral_codes (
+      code TEXT PRIMARY KEY COLLATE NOCASE
+        CHECK (length(code) BETWEEN 6 AND 32 AND code NOT GLOB '*[^A-Za-z0-9-]*'),
+      owner_account_id TEXT NOT NULL UNIQUE
+        REFERENCES accounts(account_id) ON DELETE CASCADE,
+      promotion_code_id TEXT UNIQUE,
+      active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+      expires_at INTEGER,
+      max_redemptions INTEGER CHECK (max_redemptions IS NULL OR max_redemptions > 0),
+      created_at INTEGER NOT NULL
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS referral_events (
+      record_id TEXT PRIMARY KEY,
+      processor_event_id TEXT UNIQUE,
+      code TEXT NOT NULL REFERENCES referral_codes(code) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (kind IN ('redemption','renewal','reversal')),
+      referred_account_id TEXT NOT NULL
+        REFERENCES accounts(account_id) ON DELETE CASCADE,
+      referred_customer_id TEXT,
+      object_id TEXT NOT NULL,
+      amount_cents INTEGER NOT NULL DEFAULT 0,
+      currency TEXT,
+      reward_status TEXT NOT NULL DEFAULT 'none'
+        CHECK (reward_status IN ('none','pending','earned','voided')),
+      confirmed_at INTEGER,
+      occurred_at INTEGER NOT NULL,
+      recorded_at INTEGER NOT NULL
+    )
+  `);
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS referral_events_one_referrer_per_account
+      ON referral_events(referred_account_id) WHERE kind = 'redemption'
+  `);
+
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS company_members_provenance_insert
+    BEFORE INSERT ON company_members
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+      SELECT 1 FROM accounts
+      WHERE account_id = NEW.account_id AND provenance = 'access'
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'company_members: account provenance must be access');
+    END
+  `);
+
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS company_members_provenance_update
+    BEFORE UPDATE ON company_members
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+      SELECT 1 FROM accounts
+      WHERE account_id = NEW.account_id AND provenance = 'access'
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'company_members: account provenance must be access');
+    END
+  `);
+
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS company_invites_expiry_insert
+    BEFORE INSERT ON company_invites
+    FOR EACH ROW
+    WHEN NOT (NEW.expires_at > NEW.created_at)
+    BEGIN
+      SELECT RAISE(ABORT, 'company_invites: expires_at must be after created_at');
+    END
+  `);
 }
 
 export interface AuditContext {
@@ -340,24 +654,56 @@ function findBySubject(
   return row ?? null;
 }
 
+function effectiveTutorAccountCap(
+  options: { tutorAccountCap?: number },
+): number {
+  const candidate = options.tutorAccountCap;
+  return typeof candidate === 'number'
+    && Number.isInteger(candidate)
+    && candidate > 0
+    ? candidate
+    : TUTOR_ACCOUNT_CAP_DEFAULT;
+}
+
+function countActiveAccessAccounts(db: RoomDatabase): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS count FROM accounts
+       WHERE provenance = 'access' AND state = 'active'`,
+    )
+    .get() as { count: number };
+  return Number(row.count);
+}
+
 /**
  * Resolves an exact Access issuer/subject pair atomically. Account ids are
  * random and opaque; email and provider labels intentionally never participate.
+ *
+ * The tutor cap (D10, §3.9) refuses a brand-new Access account once active
+ * Access accounts reach the cap. It never refuses an existing account, and it
+ * reports refusal as an outcome rather than an error because the surrounding
+ * catch treats errors as lost insert races.
  */
 export function resolveAccountForSubject(
   db: RoomDatabase,
   input: SubjectKey,
-): ResolvedAccount {
+  options: { tutorAccountCap?: number } = {},
+): ResolveAccountOutcome {
   validateSubjectKey(input);
+  const tutorAccountCap = effectiveTutorAccountCap(options);
 
   const existing = findBySubject(db, input);
   if (existing) return { account: existing, created: false };
 
   try {
-    return db.transaction(() => {
+    return db.transaction((): ResolveAccountOutcome => {
       const foundInsideTransaction = findBySubject(db, input);
       if (foundInsideTransaction) {
         return { account: foundInsideTransaction, created: false };
+      }
+
+      if (countActiveAccessAccounts(db) >= tutorAccountCap) {
+        return { tutorCapReached: true };
       }
 
       const now = Date.now();

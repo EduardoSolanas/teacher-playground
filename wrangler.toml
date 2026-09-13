@@ -1,9 +1,24 @@
+# Worker configuration.
+#
+# Every environment-specific value lives in an [env.<name>] block below and is a
+# copy of one entry in infra/environments.json, which is the single source of
+# truth for this deployment. src/infra/environments.test.ts fails when the two
+# disagree, so edit the manifest and let the test tell you what here must follow.
+#
+# The top level holds ONLY what every environment shares. Nothing here names a
+# hostname, a bucket, or an audience -- put one at the top level and a second
+# environment would inherit production's copy of it silently.
+#
+# Consequently `wrangler deploy` with no --env is not a supported command, and
+# `main` is deliberately NOT set here so that it cannot be one. Wrangler only
+# warns about a missing --env, and the deploy it would then go on to make
+# publishes this Worker with no routes, no vars and no bindings -- over the live
+# script, because the name matches. Withholding the entry point turns that
+# silent catastrophe into an immediate "Missing entry-point" error.
+#
+# Every invocation in package.json and in .github/workflows passes --env, and
+# src/infra/environments.test.ts asserts that they all do.
 name = "teacher-playground"
-main = "src/worker.ts"
-# Pinned because this login can see more than one account: without it wrangler
-# refuses to deploy non-interactively, and a wrong guess would publish the
-# Worker (and its Access-protected hostnames) into the wrong account.
-account_id = "365b447990677931f6b7876de299f62f"
 # Kept current so the Worker gets runtime fixes and performance work rather
 # than being pinned to ~20-month-old behaviour. Bumping this can change runtime
 # semantics, so it is its own change, verified against all three suites.
@@ -14,38 +29,48 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = false
 preview_urls = false
 
-# All three hostnames below route to this same Worker. The Worker decides which
-# surface a request gets from the Host header (guest_implementation.md §5.2), so
-# the split is enforced in code, not by three deployments.
-#
-# The Cloudflare Access application must cover app-playground.sen-tutor.co.uk
-# ONLY — the TEACHER_HOSTNAME in [vars] — as an exact hostname. A
-# *.sen-tutor.co.uk wildcard application would also cover
-# join-playground.sen-tutor.co.uk and break guest join entirely, and would put
-# a login in front of the public landing page (see below).
-# Single-label subdomains are deliberate: Cloudflare Universal SSL covers
-# sen-tutor.co.uk and *.sen-tutor.co.uk only. A second-level name such as
-# app.playground.sen-tutor.co.uk gets no certificate and fails the TLS
-# handshake outright. Deeper names would need Advanced Certificate Manager.
-[[routes]]
-pattern = "app-playground.sen-tutor.co.uk"
-custom_domain = true
-
-[[routes]]
-pattern = "join-playground.sen-tutor.co.uk"
-custom_domain = true
-
-# Public landing page. No Access application may cover this hostname — see the
-# MARKETING_HOSTNAME comment in src/worker.ts for why marketing cannot live on
-# the Access-protected app hostname.
-[[routes]]
-pattern = "playground.sen-tutor.co.uk"
-custom_domain = true
-
 [observability]
 enabled = true
 
-[assets]
+# new_sqlite_classes (not new_classes) gives the Durable Object a
+# SQLite-backed storage backend, which is what DODatabase requires.
+#
+# Top level, because migrations are inheritable and are keyed by tag against the
+# Worker script. Every environment runs the same class definitions, so every
+# environment wants the same two tags; a per-environment copy would be the same
+# list with one more place to forget.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoomDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["IdentityDO"]
+
+# ---------------------------------------------------------------------------
+# Production.  `wrangler deploy --env prod`
+#
+# vars, routes, r2_buckets, durable_objects and assets are NOT inherited from
+# the top level by a named environment, so each is declared here in full. That
+# is the point rather than a chore: an environment's bindings are the whole of
+# what it is, and reading them means looking in exactly one place.
+# ---------------------------------------------------------------------------
+[env.prod]
+# Explicit, and it must stay explicit. Left unset, Wrangler appends the
+# environment name and publishes `teacher-playground-prod` -- a DIFFERENT
+# Worker, with different Durable Objects, so every room and every account is
+# simply not there. The deployed Worker keeps the name it has always had.
+name = "teacher-playground"
+main = "src/worker.ts"
+# Pinned because this login can see more than one account: without it wrangler
+# refuses to deploy non-interactively, and a wrong guess would publish the
+# Worker (and its Access-protected hostnames) into the wrong account. Declared
+# per environment rather than shared: an environment is free to live in its own
+# Cloudflare account, and staging in production's account is not a default worth
+# inheriting silently.
+account_id = "365b447990677931f6b7876de299f62f"
+
+[env.prod.assets]
 directory = "./out"
 binding = "ASSETS"
 # The Worker must run first for anything that carries a security decision:
@@ -58,31 +83,49 @@ binding = "ASSETS"
 # latency and Worker CPU on the hot path. Negative patterns take precedence.
 run_worker_first = ["/*", "!/_next/static/*", "!/fonts/*", "!/data/*"]
 
-[[durable_objects.bindings]]
+# All three hostnames below route to this same Worker. The Worker decides which
+# surface a request gets from the Host header (guest_implementation.md §5.2), so
+# the split is enforced in code, not by three deployments.
+#
+# The Cloudflare Access application must cover app-playground.sen-tutor.co.uk
+# ONLY — the TEACHER_HOSTNAME in [env.prod.vars] — as an exact hostname. A
+# *.sen-tutor.co.uk wildcard application would also cover
+# join-playground.sen-tutor.co.uk and break guest join entirely, and would put
+# a login in front of the public landing page (see below).
+# Single-label subdomains are deliberate: Cloudflare Universal SSL covers
+# sen-tutor.co.uk and *.sen-tutor.co.uk only. A second-level name such as
+# app.playground.sen-tutor.co.uk gets no certificate and fails the TLS
+# handshake outright. Deeper names would need Advanced Certificate Manager.
+[[env.prod.routes]]
+pattern = "app-playground.sen-tutor.co.uk"
+custom_domain = true
+
+[[env.prod.routes]]
+pattern = "join-playground.sen-tutor.co.uk"
+custom_domain = true
+
+# Public landing page. No Access application may cover this hostname — see the
+# MARKETING_HOSTNAME comment in src/worker.ts for why marketing cannot live on
+# the Access-protected app hostname.
+[[env.prod.routes]]
+pattern = "playground.sen-tutor.co.uk"
+custom_domain = true
+
+[[env.prod.durable_objects.bindings]]
 name = "ROOMS"
 class_name = "RoomDO"
 
-[[durable_objects.bindings]]
+[[env.prod.durable_objects.bindings]]
 name = "IDENTITY"
 class_name = "IdentityDO"
 
-# Board files (images pasted into whiteboards). Buckets are provisioned
-# manually in the Cloudflare dashboard; this binding names it.
-[[r2_buckets]]
+# Board files (images pasted into whiteboards). The bucket is provisioned by
+# Terraform (infra/cloudflare/r2.tf); this binding names it.
+[[env.prod.r2_buckets]]
 bucket_name = "teacher-playground-board-files"
 binding = "BOARD_FILES"
 
-# new_sqlite_classes (not new_classes) gives the Durable Object a
-# SQLite-backed storage backend, which is what DODatabase requires.
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["RoomDO"]
-
-[[migrations]]
-tag = "v2"
-new_sqlite_classes = ["IdentityDO"]
-
-[vars]
+[env.prod.vars]
 ACCESS_ISSUER = "https://ha-smart-home.cloudflareaccess.com"
 ACCESS_AUDIENCE = "2dabab17621803a68a8a67a0db2dfe0133d29e73a448618c1743945743847621"
 ACCESS_JWKS_URL = "https://ha-smart-home.cloudflareaccess.com/cdn-cgi/access/certs"
@@ -92,6 +135,15 @@ ACCESS_JWKS_URL = "https://ha-smart-home.cloudflareaccess.com/cdn-cgi/access/cer
 TEACHER_HOSTNAME = "app-playground.sen-tutor.co.uk"
 MARKETING_HOSTNAME = "playground.sen-tutor.co.uk"
 GUEST_HOSTNAME = "join-playground.sen-tutor.co.uk"
+# Cloudflare Access free-plan seat budget. A brand-new tutor account is
+# refused at this count; an existing tutor is never refused.
+TUTOR_ACCOUNT_CAP = "50"
+# Origin serving the pinned Excalidraw release, for the CSP `font-src`. It is a
+# binding rather than a constant in the Worker because a second environment may
+# serve its assets from a different host, and the failure mode of getting it
+# wrong is silent: green tests and a board with no glyphs, the only symptom
+# being a console violation in a browser nobody opened.
+EXCALIDRAW_ASSET_ORIGIN = "https://excalidraw-assets.sen-tutor.co.uk"
 # LiveKit A/V (optional). Prefer `wrangler secret put LIVEKIT_*` in production.
 # When unset, POST /api/av/token returns 503 and the UI degrades gracefully.
 # LIVEKIT_URL = "wss://your-project.livekit.cloud"

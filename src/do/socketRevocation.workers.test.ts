@@ -4,6 +4,7 @@ import { runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
 import * as Y from 'yjs';
 import { getIdentityObject, type IdentityDO } from './IdentityDO';
 import { RoomDO, SOCKET_REVOKED_CLOSE_CODE } from './RoomDO';
+import { writeEntitlement } from '../lib/identity/entitlementWriter';
 import { banAccount } from '../lib/whiteboard/membership';
 import { encodeUpdateFrame } from '../lib/whiteboard/serverSync';
 import {
@@ -20,6 +21,35 @@ function roomStub(roomId: string) {
 
 function identityStub() {
   return getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+}
+
+async function seedActivePlan(accountId: string): Promise<void> {
+  await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+    writeEntitlement(
+      instance.db,
+      {
+        accountId,
+        source: 'personal',
+        state: {
+          planId: 'tutor_pro_monthly',
+          status: 'active',
+          graceUntil: null,
+          collectionPaused: false,
+          companyId: null,
+          currentPeriodEnd: null,
+          processorCustomerId: null,
+          processorSubscriptionId: `sub-socket-revocation-${accountId}`,
+        },
+        now: Date.now(),
+      },
+      {
+        kind: 'operator',
+        id: `socket-revocation-seed-${accountId}`,
+        actor: 'test-operator',
+        reason: 'seed paid state',
+      },
+    );
+  });
 }
 
 async function writeRoom(roomId: string, who: LocalAuthSession): Promise<Response> {
@@ -254,6 +284,7 @@ describe('banned sockets stop receiving room broadcasts', () => {
     const owner = await bootstrapLocalSession('banned-relay-sync-owner');
     const witness = await bootstrapLocalSession('banned-relay-sync-witness');
     const banned = await bootstrapLocalSession('banned-relay-sync-banned');
+    await seedActivePlan(owner.accountId);
     expect((await writeRoom(roomId, owner)).status).toBe(200);
     await requestAndApprove(owner, witness, roomId);
     await requestAndApprove(owner, banned, roomId);
@@ -287,6 +318,7 @@ describe('banned sockets stop receiving room broadcasts', () => {
     const owner = await bootstrapLocalSession('banned-relay-awareness-owner');
     const witness = await bootstrapLocalSession('banned-relay-awareness-witness');
     const banned = await bootstrapLocalSession('banned-relay-awareness-banned');
+    await seedActivePlan(owner.accountId);
     expect((await writeRoom(roomId, owner)).status).toBe(200);
     await requestAndApprove(owner, witness, roomId);
     await requestAndApprove(owner, banned, roomId);
@@ -350,6 +382,7 @@ describe('banned sockets stop receiving room broadcasts', () => {
     const viewer = await bootstrapLocalSession('banned-clear-viewer');
     const banned = await bootstrapLocalSession('banned-clear-banned');
     // A seeded element is what makes the clear produce an update at all.
+    await seedActivePlan(owner.accountId);
     expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

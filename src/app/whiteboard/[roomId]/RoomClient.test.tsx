@@ -1,10 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ replace: () => {}, push: () => {} }),
+}));
 
 import type { WhiteboardUser } from '@/types/whiteboard';
+import type { AjaxFetch } from '@/lib/whiteboard/teacherRooms';
 
 import {
   ROOM_CANVAS_CLASS,
   EXCALIDRAW_LOADING_CLASS,
+  RoomContent,
   roomCanvasRightClass,
   roomCanvasRailStyle,
   mapAvPeerIds,
@@ -31,6 +38,45 @@ function makeUser(overrides: Partial<WhiteboardUser> = {}): WhiteboardUser {
     ...overrides,
   };
 }
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+describe('RoomContent session profile', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it('passes the session plan and company through to the room profile menu', async () => {
+    const request: AjaxFetch = async (input) => {
+      if (String(input) === '/auth/session/current') {
+        return jsonResponse({
+          accountId: 'acct-1',
+          plan: {
+            planId: 'tutor_pro_monthly',
+            status: 'active',
+            graceUntil: null,
+            collectionPaused: false,
+          },
+          company: { id: 'acme', name: 'Acme Tutoring', role: 'owner' },
+        });
+      }
+      return jsonResponse({});
+    };
+
+    render(<RoomContent roomId="room-alpha" request={request} />);
+
+    const profileButton = await screen.findByTestId('whiteboard-profile-btn');
+    fireEvent.click(profileButton);
+
+    expect((await screen.findByTestId('whiteboard-profile-plan')).textContent).toBe('Tutor Pro');
+    expect(screen.getByTestId('whiteboard-profile-company').textContent).toContain('Acme Tutoring');
+  });
+});
 
 describe('room canvas responsive top offset', () => {
   it('keeps the guest canvas at the viewport top while retaining the desktop nav offset', () => {

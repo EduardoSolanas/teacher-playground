@@ -1,13 +1,23 @@
 import type { RoomDatabase } from '../whiteboard/db';
 import {
+  disableCompany,
+  readActiveMembership,
+  transferOwnershipForErasure,
+} from '../company/membership';
+import {
   type AccountState,
   type AuditContext,
   IdentityInputError,
   MAX_AUTHORIZATION_BATCH,
+  isTutorCapReached,
   listOwnedRooms,
   recordAuthorizationAudit,
   resolveAccountForSubject,
 } from './identityStore';
+import {
+  deleteCompanyEntitlement,
+  pseudonymizeEntitlementAuditSubject,
+} from './entitlementWriter';
 
 export const SESSION_COOKIE_NAME = '__Host-teacher-session';
 // Fixed local policy: 30-minute inactivity, 12-hour maximum lifetime, and at
@@ -78,6 +88,13 @@ export class SessionUnauthorizedError extends Error {
   constructor() {
     super('Unauthorized');
     this.name = 'SessionUnauthorizedError';
+  }
+}
+
+export class TutorCapReachedError extends Error {
+  constructor() {
+    super('Tutor account cap reached');
+    this.name = 'TutorCapReachedError';
   }
 }
 
@@ -243,8 +260,10 @@ export async function issueSessionForVerifiedPrincipal(
   db: RoomDatabase,
   principal: VerifiedAccessPrincipal,
   now = Date.now(),
+  options: { tutorAccountCap?: number } = {},
 ): Promise<IssuedSession> {
-  const resolved = resolveAccountForSubject(db, principal);
+  const resolved = resolveAccountForSubject(db, principal, options);
+  if (isTutorCapReached(resolved)) throw new TutorCapReachedError();
 
   for (let attempt = 0; attempt < MAX_INSERT_ATTEMPTS; attempt += 1) {
     const token = generateSessionToken();
@@ -594,9 +613,12 @@ export function clearErasureTarget(
 
 /**
  * Verified self-erasure: the caller is identified only by a valid session
- * token. Sessions are revoked, Access subject bindings are dropped, the
+ * token. Company ownership transfers or the company is disabled (E-1); the
+ * membership and company entitlement are removed, consumed invites stay
+ * consumed, unredeemed invites are revoked, the account's referral rows are
+ * deleted, sessions are revoked, Access subject bindings are dropped, the
  * account is disabled, and remaining audit identifiers are replaced with a
- * stable pseudonym.
+ * stable pseudonym (E-2).
  */
 export async function eraseOwnAccount(
   db: RoomDatabase,
@@ -613,6 +635,55 @@ export async function eraseOwnAccount(
     persistErasureTargets(db, accountId, roomIds, now);
     db.prepare(`DELETE FROM account_rooms WHERE account_id = ?`).run(accountId);
 
+    const membership = readActiveMembership(db, accountId);
+    if (membership?.role === 'owner') {
+      const transfer = transferOwnershipForErasure(db, {
+        companyId: membership.companyId,
+        erasingAccountId: accountId,
+        now,
+      });
+      if (transfer.outcome === 'sole_member') {
+        const disabledCompany = disableCompany(db, {
+          companyId: membership.companyId,
+          actorAccountId: accountId,
+          now,
+        });
+        if (disabledCompany.outcome === 'disabled') {
+          for (const revokedAccountId of disabledCompany.revokedAccountIds) {
+            deleteCompanyEntitlement(db, {
+              companyId: membership.companyId,
+              accountId: revokedAccountId,
+              cause: {
+                kind: 'erasure',
+                id: crypto.randomUUID(),
+                actor: pseudonym,
+                reason: 'account erasure',
+              },
+              now,
+            });
+          }
+        }
+      }
+    }
+    const remainingMembership = readActiveMembership(db, accountId);
+    if (remainingMembership) {
+      db.prepare(
+        `UPDATE company_members SET state = 'revoked', revoked_at = ?
+         WHERE account_id = ? AND state = 'active'`,
+      ).run(now, accountId);
+      deleteCompanyEntitlement(db, {
+        companyId: remainingMembership.companyId,
+        accountId,
+        cause: {
+          kind: 'erasure',
+          id: crypto.randomUUID(),
+          actor: pseudonym,
+          reason: 'account erasure',
+        },
+        now,
+      });
+    }
+
     const disabled = disableAccount(
       db,
       accountId,
@@ -622,6 +693,14 @@ export async function eraseOwnAccount(
     if (!disabled) return null;
 
     db.prepare(`DELETE FROM access_subjects WHERE account_id = ?`).run(accountId);
+    db.prepare(`UPDATE company_invites SET redeemed_by = NULL WHERE redeemed_by = ?`).run(
+      accountId,
+    );
+    db.prepare(
+      `UPDATE company_invites SET revoked_at = ?
+       WHERE created_by = ? AND redeemed_at IS NULL AND revoked_at IS NULL`,
+    ).run(now, accountId);
+    db.prepare(`DELETE FROM referral_events WHERE referred_account_id = ?`).run(accountId);
 
     if (tableExists(db, 'authorization_audit')) {
       db.prepare(
@@ -629,6 +708,10 @@ export async function eraseOwnAccount(
          SET account_id = ?, actor = ?
          WHERE account_id = ?`,
       ).run(pseudonym, pseudonym, accountId);
+    }
+
+    if (tableExists(db, 'entitlement_audit')) {
+      pseudonymizeEntitlementAuditSubject(db, { accountId, pseudonym });
     }
 
     return { ...disabled, roomIds };

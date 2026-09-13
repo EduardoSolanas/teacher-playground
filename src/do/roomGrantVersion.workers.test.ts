@@ -5,6 +5,8 @@ import * as Y from 'yjs';
 import { ROOM_SETTINGS_KEYS } from '../lib/whiteboard/requestSchemas';
 import { encodeUpdateFrame } from '../lib/whiteboard/serverSync';
 import { RoomDO } from './RoomDO';
+import { getIdentityObject, type IdentityDO } from './IdentityDO';
+import { writeEntitlement } from '../lib/identity/entitlementWriter';
 import { authenticatedFetch, bootstrapLocalSession, type LocalAuthSession } from '../test/workerAuth';
 
 const SOCKET_EVENT_DEADLINE_MS = 15_000;
@@ -73,6 +75,35 @@ async function writeRoom(
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(settings),
+  });
+}
+
+async function seedActivePlan(accountId: string): Promise<void> {
+  await runInDurableObject(getIdentityObject(env.IDENTITY), (instance: IdentityDO) => {
+    writeEntitlement(
+      instance.db,
+      {
+        accountId,
+        source: 'personal',
+        state: {
+          planId: 'tutor_pro_monthly',
+          status: 'active',
+          graceUntil: null,
+          collectionPaused: false,
+          companyId: null,
+          currentPeriodEnd: null,
+          processorCustomerId: null,
+          processorSubscriptionId: `sub-room-grant-${accountId}`,
+        },
+        now: Date.now(),
+      },
+      {
+        kind: 'operator',
+        id: `room-grant-seed-${accountId}`,
+        actor: 'test-operator',
+        reason: 'seed paid state',
+      },
+    );
   });
 }
 
@@ -154,6 +185,7 @@ describe('kick increments room grant version', () => {
     const roomId = 'grant-survives-room';
 
     expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await seedActivePlan(owner.accountId);
     await grantEditor(owner, kicked, roomId);
     await grantEditor(owner, bystander, roomId);
 

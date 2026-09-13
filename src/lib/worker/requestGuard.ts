@@ -76,6 +76,18 @@ export function isRouteAllowedOnHost(
     return false;
   }
 
+  if (pathname === BILLING_WEBHOOK_PATH) {
+    return hostKind === 'teacher' && method === 'POST';
+  }
+
+  if (pathname === BILLING_CHECKOUT_PATH || pathname === BILLING_PORTAL_PATH) {
+    return hostKind === 'teacher' && method === 'POST';
+  }
+
+  if (pathname === '/account/company') {
+    return hostKind === 'teacher' && (method === 'GET' || method === 'HEAD');
+  }
+
   // Teacher-only paths: allow on teacher host, deny on guest host
   const isTeacherOnlyPath =
     pathname === '/' ||
@@ -91,6 +103,9 @@ export function isRouteAllowedOnHost(
     pathname.startsWith('/auth/session/') ||
     pathname === '/auth/account' ||
     pathname.startsWith('/auth/account/') ||
+    pathname === '/api/company' ||
+    pathname.startsWith('/api/company/') ||
+    pathname === REFERRAL_ME_PATH ||
     pathname === '/api/whiteboard/rooms';
 
   // The marketing hostname serves the public pages and nothing else. Everything
@@ -211,6 +226,7 @@ export function isRouteAllowedOnHost(
  */
 export function isOriginGuardedPath(pathname: string, method: string): boolean {
   if (pathname === '/signaling') return true;
+  if (pathname === BILLING_WEBHOOK_PATH) return false;
   if (method === 'GET' || method === 'HEAD') return false;
 
   return pathname === '/auth/session'
@@ -236,6 +252,16 @@ export const ROOM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
  * a Durable Object.
  */
 export const MAX_BODY_BYTES = 4 * 1024 * 1024;
+
+export const BILLING_WEBHOOK_PATH = '/api/billing/webhook';
+
+export const BILLING_CHECKOUT_PATH = '/api/billing/checkout';
+
+export const BILLING_PORTAL_PATH = '/api/billing/portal';
+
+export const REFERRAL_ME_PATH = '/api/referrals/me';
+
+export const BILLING_WEBHOOK_MAX_BODY_BYTES = 1024 * 1024;
 
 /**
  * Max bytes in one signaling WebSocket frame.
@@ -391,6 +417,45 @@ export function isPublicPath(pathname: string): boolean {
 const EXCALIDRAW_LIBRARY_HOST = 'libraries.excalidraw.com';
 
 /**
+ * `font-src` when no asset origin is configured.
+ *
+ * Excalidraw registers its bundled fonts through blob: URLs built at runtime,
+ * so 'self' and data: alone are not enough — the browser reported the block
+ * hundreds of times on a single board. No third-party origin is included here:
+ * the CDN that serves a given environment's fonts is an input, not a constant,
+ * and a build that has no CDN must not advertise someone else's.
+ */
+const DEFAULT_FONT_SRC = "font-src 'self' data: blob:";
+
+/**
+ * `font-src` for a deployment whose Excalidraw assets come from a CDN.
+ *
+ * The origin is a deployment input (`EXCALIDRAW_ASSET_ORIGIN`), not a literal,
+ * because a second environment serving its assets from a different host would
+ * otherwise need a code change to get its own fonts — and the failure mode is
+ * silent: the tests stay green and the board renders with no glyphs, because
+ * the only symptom is a console violation in a browser nobody opened.
+ *
+ * A missing or unparseable origin yields the default rather than an empty
+ * allowlist or a thrown error. Failing closed here would break every board;
+ * the CDN origin carries no authority, so the safe direction is to drop it.
+ */
+export function fontSrcForAssetOrigin(assetOrigin?: string | null): string {
+  if (!assetOrigin) return DEFAULT_FONT_SRC;
+  let origin: string;
+  try {
+    origin = new URL(assetOrigin).origin;
+  } catch {
+    return DEFAULT_FONT_SRC;
+  }
+  // Only an https origin is worth adding. An http one would be blocked as mixed
+  // content on the deployed page anyway, so admitting it to the policy would
+  // widen the allowlist without ever serving a font.
+  if (!origin.startsWith('https://')) return DEFAULT_FONT_SRC;
+  return `${DEFAULT_FONT_SRC} ${origin}`;
+}
+
+/**
  * Same-origin HTTP and WebSocket only, plus the two hosts the room genuinely
  * reaches: the media server and the shape library. Never a wildcard scheme.
  */
@@ -484,6 +549,9 @@ export function withSecurityHeaders(
   headers.set('X-Content-Type-Options', 'nosniff');
   headers.set('Referrer-Policy', 'no-referrer');
   headers.set('X-Frame-Options', 'DENY');
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+  headers.set('Cross-Origin-Resource-Policy', 'same-origin');
+  headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   // Everything unused is denied outright rather than left to whatever the
   // browser defaults to.
   //
@@ -509,13 +577,13 @@ export function withSecurityHeaders(
         "frame-ancestors 'none'",
         "object-src 'none'",
         "base-uri 'self'",
+        "form-action 'self'",
         options?.connectSrc ?? "connect-src 'self'",
         "img-src 'self' data: blob:",
-        // Excalidraw registers its bundled fonts through blob: URLs built at
-        // runtime, so 'self' and data: alone are not enough — the browser
-        // reported the block hundreds of times on a single board.
-        options?.fontSrc
-          ?? "font-src 'self' data: blob: https://excalidraw-assets.sen-tutor.co.uk",
+        // Callers pass the environment's asset origin through
+        // `fontSrcForAssetOrigin`. Without one, no third-party font host is
+        // advertised at all.
+        options?.fontSrc ?? DEFAULT_FONT_SRC,
         "style-src 'self' 'unsafe-inline'",
         options?.scriptNonce
           ? `script-src 'self' 'nonce-${options.scriptNonce}' 'strict-dynamic'`

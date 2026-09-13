@@ -7,6 +7,7 @@ import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
 import { getElementsFromArray, replaceSharedElements } from '../lib/whiteboard/yjsDoc';
 import { getIdentityObject, type IdentityDO } from './IdentityDO';
+import { writeEntitlement } from '../lib/identity/entitlementWriter';
 import { RoomDO } from './RoomDO';
 import { ROOM_SETTINGS_KEYS } from '../lib/whiteboard/requestSchemas';
 import { MAX_BODY_BYTES } from '../lib/worker/requestGuard';
@@ -96,6 +97,35 @@ async function writeRoom(
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(settings),
+  });
+}
+
+async function seedActivePlan(accountId: string): Promise<void> {
+  await runInDurableObject(getIdentityObject(env.IDENTITY), (instance: IdentityDO) => {
+    writeEntitlement(
+      instance.db,
+      {
+        accountId,
+        source: 'personal',
+        state: {
+          planId: 'tutor_pro_monthly',
+          status: 'active',
+          graceUntil: null,
+          collectionPaused: false,
+          companyId: null,
+          currentPeriodEnd: null,
+          processorCustomerId: null,
+          processorSubscriptionId: `sub-room-do-${accountId}`,
+        },
+        now: Date.now(),
+      },
+      {
+        kind: 'operator',
+        id: `room-do-seed-${accountId}`,
+        actor: 'test-operator',
+        reason: 'seed paid state',
+      },
+    );
   });
 }
 
@@ -819,6 +849,34 @@ describe('signaling message rate limit', () => {
     });
   }
 
+  /*
+   * Deliver a 361-message burst through the DO's own message handler. A loaded
+   * suite can stretch 361 `ws.send`s past the 1000 ms sliding window, after
+   * which no single window reaches the ceiling and the burst tests fail for
+   * reasons the limiter does not have. The handler is the real code path; only
+   * transport timing is removed.
+   */
+  function sendBurstInProcess(roomId: string, accountId: string): Promise<void> {
+    return runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      async (instance: RoomDO) => {
+        const server = (instance as unknown as { ctx: DurableObjectState }).ctx
+          .getWebSockets()
+          .find((socket) => {
+            const attachment = socket.deserializeAttachment() as { accountId?: string } | null;
+            return attachment?.accountId === accountId;
+          });
+        if (!server) throw new Error('no server-side socket for the account');
+        for (let i = 0; i < 361; i += 1) {
+          await instance.webSocketMessage(
+            server,
+            JSON.stringify({ type: 'subscribe', topics: ['room'] }),
+          );
+        }
+      },
+    );
+  }
+
   function awarenessFrame(peerId: string): Uint8Array {
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, 1);
@@ -835,21 +893,17 @@ describe('signaling message rate limit', () => {
     const ws = await connectGranted(owner, roomId);
     const closed = closeSignal(ws);
 
-    // Send 361 messages in window 1 (exceeds ceiling of 360, breach 1)
-    for (let i = 0; i < 361; i += 1) {
-      ws.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
-    }
+    // Burst 1 exceeds the ceiling of 360 (breach 1)
+    await sendBurstInProcess(roomId, owner.accountId);
 
     // Wait for window 1 to pass
     await new Promise((r) => setTimeout(r, 1100));
 
-    // Send 361 messages in window 2 (consecutive ceiling breach 2 -> close)
-    for (let i = 0; i < 361; i += 1) {
-      ws.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
-    }
+    // Burst 2 breaches the next window -> close
+    await sendBurstInProcess(roomId, owner.accountId);
 
     expect(await closed).toBe(1008);
-  });
+  }, 60_000);
 
   it('keeps a flood episode across a reconnect and closes the second burst (SEC-A12)', async () => {
     const owner = await bootstrapLocalSession('breach-episode-owner');
@@ -863,9 +917,7 @@ describe('signaling message rate limit', () => {
       const firstClosed = closeSignal(first);
 
       // One window over the ceiling is a breach, but not yet a close.
-      for (let i = 0; i < 361; i += 1) {
-        first.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
-      }
+      await sendBurstInProcess(roomId, owner.accountId);
       await new Promise((r) => setTimeout(r, 1100));
 
       /*
@@ -903,9 +955,7 @@ describe('signaling message rate limit', () => {
         secondState.code = event.code;
       }, { once: true });
       await new Promise((r) => setTimeout(r, 1100));
-      for (let i = 0; i < 361; i += 1) {
-        second.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
-      }
+      await sendBurstInProcess(roomId, owner.accountId);
       await vi.waitFor(() => {
         expect(secondState.closed).toBe(true);
       }, { timeout: 5000, interval: 20 });
@@ -917,7 +967,7 @@ describe('signaling message rate limit', () => {
         // Already closed by the server, or never opened.
       }
     }
-  });
+  }, 60_000);
 
   it('prunes abuse episodes after several quiet episode gaps, keeping recent ones (SEC-A12)', async () => {
     const owner = await bootstrapLocalSession('breach-prune-owner');
@@ -1056,21 +1106,17 @@ describe('signaling message rate limit', () => {
 
     const abuserClosed = closeSignal(abuser);
     // Send 361 messages in window 1
-    for (let i = 0; i < 361; i += 1) {
-      abuser.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
-    }
+    await sendBurstInProcess(roomId, owner.accountId);
     await new Promise((r) => setTimeout(r, 1100));
     // Send 361 messages in window 2 -> closes
-    for (let i = 0; i < 361; i += 1) {
-      abuser.send(JSON.stringify({ type: 'subscribe', topics: ['room'] }));
-    }
+    await sendBurstInProcess(roomId, owner.accountId);
     expect(await abuserClosed).toBe(1008);
 
     const received = nextMessage(survivor);
     survivor.send(JSON.stringify({ type: 'publish', topic: 'room', data: 'ok' }));
     expect(JSON.parse(await received)).toMatchObject({ type: 'publish', topic: 'room', data: 'ok' });
     expect(survivor.readyState).toBe(WebSocket.OPEN);
-  });
+  }, 60_000);
 
   it('keeps socket open when a peer exceeds budget but stays under abuse ceiling', async () => {
     const owner = await bootstrapLocalSession('shed-on-breach-owner');
@@ -2152,6 +2198,7 @@ describe('kick increments room grant version', () => {
     const roomId = 'grant-survivor-room';
 
     expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await seedActivePlan(owner.accountId);
     await grantEditor(owner, kicked, roomId);
     await grantEditor(owner, survivor, roomId);
 
@@ -3515,6 +3562,7 @@ describe('room authorization matrix', () => {
 
     await createRoomAs(owner, roomId, { name: secret.boardName });
     await createRoomAs(foreign, otherRoom, { name: 'Elsewhere' });
+    await seedActivePlan(owner.accountId);
     await grantPublicRole(owner, viewer, roomId, 'viewer');
     await grantPublicRole(owner, editor, roomId, 'peer');
     await joinAs(owner, roomId, 'host-peer');

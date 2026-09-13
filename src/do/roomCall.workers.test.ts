@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { runInDurableObject } from 'cloudflare:test';
+import { getIdentityObject, type IdentityDO } from './IdentityDO';
 import type { RoomDO } from './RoomDO';
 import { encodeCallMessage, decodeCallMessage, type CallState } from '../lib/whiteboard/callMessage';
+import { writeEntitlement } from '../lib/identity/entitlementWriter';
 import {
   authenticatedFetch,
   bootstrapLocalSession,
@@ -38,6 +40,35 @@ async function writeRoom(
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(scene),
+  });
+}
+
+async function seedActivePlan(accountId: string): Promise<void> {
+  await runInDurableObject(getIdentityObject(env.IDENTITY), (instance: IdentityDO) => {
+    writeEntitlement(
+      instance.db,
+      {
+        accountId,
+        source: 'personal',
+        state: {
+          planId: 'tutor_pro_monthly',
+          status: 'active',
+          graceUntil: null,
+          collectionPaused: false,
+          companyId: null,
+          currentPeriodEnd: null,
+          processorCustomerId: null,
+          processorSubscriptionId: `sub-room-call-${accountId}`,
+        },
+        now: Date.now(),
+      },
+      {
+        kind: 'operator',
+        id: `room-call-seed-${accountId}`,
+        actor: 'test-operator',
+        reason: 'seed paid state',
+      },
+    );
   });
 }
 
@@ -98,6 +129,7 @@ describe('room call lifecycle', () => {
     const peer = await bootstrapLocalSession('call-host-drop-peer');
     const roomId = 'call-host-drop-room';
     expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await seedActivePlan(owner.accountId);
     await grantEditor(owner, peer, roomId);
 
     const hostWs = await connectGranted(owner, roomId);
@@ -182,6 +214,7 @@ describe('room call lifecycle', () => {
     const other = await bootstrapLocalSession('call-editor-other');
     const roomId = 'call-editor-room';
     expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await seedActivePlan(owner.accountId);
     await grantEditor(owner, editor, roomId);
     await grantEditor(owner, other, roomId);
 

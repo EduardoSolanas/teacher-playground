@@ -1,4 +1,6 @@
 import { describe, expect, it, afterEach } from 'vitest';
+import { env } from 'cloudflare:workers';
+import { runInDurableObject } from 'cloudflare:test';
 import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
@@ -11,6 +13,8 @@ import {
 import { SIGNALING_MAX_SOCKETS_PER_ACCOUNT } from '../lib/worker/requestGuard';
 import { encodeUpdateFrame, MESSAGE_SYNC } from '../lib/whiteboard/serverSync';
 import { RoomDO } from './RoomDO';
+import { getIdentityObject, type IdentityDO } from './IdentityDO';
+import { writeEntitlement } from '../lib/identity/entitlementWriter';
 
 /*
  * How long a socket event may take before the test gives up. Matched to the
@@ -24,6 +28,35 @@ async function writeRoom(roomId: string, who: LocalAuthSession, body: Record<str
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+  });
+}
+
+async function seedActivePlan(accountId: string): Promise<void> {
+  await runInDurableObject(getIdentityObject(env.IDENTITY), (instance: IdentityDO) => {
+    writeEntitlement(
+      instance.db,
+      {
+        accountId,
+        source: 'personal',
+        state: {
+          planId: 'tutor_pro_monthly',
+          status: 'active',
+          graceUntil: null,
+          collectionPaused: false,
+          companyId: null,
+          currentPeriodEnd: null,
+          processorCustomerId: null,
+          processorSubscriptionId: `sub-signaling-robustness-${accountId}`,
+        },
+        now: Date.now(),
+      },
+      {
+        kind: 'operator',
+        id: `signaling-robustness-seed-${accountId}`,
+        actor: 'test-operator',
+        reason: 'seed paid state',
+      },
+    );
   });
 }
 
@@ -168,6 +201,7 @@ describe('signaling robustness: per-account socket cap', () => {
     const roomId = 'rob-peraccount-room2';
 
     expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await seedActivePlan(owner.accountId);
     await grantEditor(owner, peer1, roomId);
     await grantEditor(owner, peer2, roomId);
 
@@ -227,6 +261,7 @@ describe('signaling robustness: per-room socket cap', () => {
 
     // Create multiple different accounts to open sockets
     const maxPerRoom = 5; // Use a small test value
+    await seedActivePlan(owner.accountId);
     for (let i = 0; i < maxPerRoom + 1; i++) {
       peers.push(await bootstrapLocalSession(`rob-perroom-peer${i}`));
       await grantEditor(owner, peers[i], roomId);

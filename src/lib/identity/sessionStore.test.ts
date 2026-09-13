@@ -13,6 +13,7 @@ import {
   eraseOwnAccount,
   exportOwnAccountData,
   issueSessionForVerifiedPrincipal,
+  TutorCapReachedError,
   logoutSession,
   parseSessionCookie,
   purgeExpiredGuestAccounts,
@@ -41,6 +42,19 @@ import {
   recordOwnedRoom,
   validateAuditContext,
 } from './identityStore';
+import {
+  assertOneActiveOwner,
+  createCompany,
+  readActiveMembership,
+  readCompany,
+  readMember,
+} from '../company/membership';
+import { materializeCompanyMemberEntitlement } from '../company/companyEntitlements';
+import { mintInvite, readInvite, redeemInvite } from '../company/invites';
+import { ensureReferralCode } from '../referrals/codes';
+import { recordReferralRedemption } from '../referrals/ledger';
+import { readReferralSummary } from '../referrals/summary';
+import { ensureBillingSubscription, writeEntitlement } from './entitlementWriter';
 
 const PRINCIPAL = {
   issuer: 'https://access.example.com',
@@ -863,6 +877,51 @@ describe('purgeExpiredGuestAccounts', () => {
   });
 });
 
+describe('tutor account cap sessions', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    applyIdentitySchema(db);
+  });
+
+  it('throws TutorCapReachedError at the cap and inserts no session row', async () => {
+    await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0, {
+      tutorAccountCap: 1,
+    });
+
+    await expect(
+      issueSessionForVerifiedPrincipal(
+        db,
+        { issuer: PRINCIPAL.issuer, subject: 'second-tutor' },
+        T0 + 1,
+        { tutorAccountCap: 1 },
+      ),
+    ).rejects.toThrow(TutorCapReachedError);
+
+    expect(
+      db.prepare(`SELECT COUNT(*) AS count FROM sessions`).get(),
+    ).toEqual({ count: 1 });
+    expect(
+      db.prepare(`SELECT COUNT(*) AS count FROM access_subjects`).get(),
+    ).toEqual({ count: 1 });
+  });
+
+  it('an existing account still gets a session at the cap', async () => {
+    const first = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0, {
+      tutorAccountCap: 1,
+    });
+    const second = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0 + 1, {
+      tutorAccountCap: 1,
+    });
+
+    expect(second.accountId).toBe(first.accountId);
+    expect(
+      db.prepare(`SELECT COUNT(*) AS count FROM sessions`).get(),
+    ).toEqual({ count: 2 });
+  });
+});
+
 describe('durable erasure progress tracking', () => {
   let db: Database.Database;
 
@@ -966,5 +1025,463 @@ describe('durable erasure progress tracking', () => {
     clearErasureTarget(db, accountId, 'room-z');
 
     expect(listPendingErasures(db, accountId)).toEqual([]);
+  });
+});
+
+describe('account erasure membership and referrals (E-1/E-2)', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    applyIdentitySchema(db);
+  });
+
+  it('owner erasure transfers ownership in the same transaction', async () => {
+    const owner = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0);
+    const successor = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'erasure-successor' },
+      T0 + 1,
+    );
+    const created = createCompany(db, {
+      name: 'Transfer Co',
+      ownerAccountId: owner.accountId,
+      now: T0,
+    });
+    if (created.outcome !== 'created') throw new Error('expected a company');
+    db.prepare(
+      `INSERT INTO company_members (company_id, account_id, role, state, created_at)
+       VALUES (?, ?, 'admin', 'active', ?)`,
+    ).run(created.company.companyId, successor.accountId, T0 + 1);
+
+    const erased = await eraseOwnAccount(db, owner.token, T0 + 2);
+
+    expect(erased).toMatchObject({
+      accountId: owner.accountId,
+      state: 'disabled',
+    });
+    expect(
+      readMember(db, created.company.companyId, owner.accountId),
+    ).toMatchObject({ state: 'revoked' });
+    expect(
+      readMember(db, created.company.companyId, successor.accountId),
+    ).toMatchObject({ role: 'owner', state: 'active' });
+    expect(() => assertOneActiveOwner(db, created.company.companyId)).not.toThrow();
+    expect(readCompany(db, created.company.companyId)).toMatchObject({
+      state: 'active',
+    });
+  });
+
+  it('owner erasure as the sole member disables the company and cancels collection', async () => {
+    const owner = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0 + 10);
+    const created = createCompany(db, {
+      name: 'Sole Co',
+      ownerAccountId: owner.accountId,
+      now: T0 + 10,
+    });
+    if (created.outcome !== 'created') throw new Error('expected a company');
+    db.prepare(
+      `INSERT INTO company_subscriptions (
+         company_id, processor_subscription_id, quantity, status,
+         collection_method, first_paid_at, updated_at
+       ) VALUES (?, 'sub_erasure_sole', 1, 'active', 'charge_automatically', ?, ?)`,
+    ).run(created.company.companyId, T0 + 10, T0 + 10);
+    ensureBillingSubscription(db, {
+      processorSubscriptionId: 'sub_erasure_sole',
+      subjectKind: 'company',
+      subjectId: created.company.companyId,
+      now: T0 + 10,
+    });
+    materializeCompanyMemberEntitlement(db, {
+      companyId: created.company.companyId,
+      accountId: owner.accountId,
+      cause: {
+        kind: 'membership',
+        id: 'erasure-sole-seed',
+        actor: owner.accountId,
+        reason: 'seed sole company entitlement',
+      },
+      now: T0 + 10,
+    });
+
+    await eraseOwnAccount(db, owner.token, T0 + 11);
+
+    expect(readCompany(db, created.company.companyId)).toMatchObject({
+      state: 'disabled',
+    });
+    expect(readActiveMembership(db, owner.accountId)).toBeNull();
+    expect(
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM entitlements
+           WHERE account_id = ? AND source = 'company'`,
+        )
+        .get(owner.accountId),
+    ).toEqual({ count: 0 });
+    expect(
+      db
+        .prepare(
+          `SELECT desired_collection AS desiredCollection
+           FROM billing_subscriptions
+           WHERE processor_subscription_id = 'sub_erasure_sole'`,
+        )
+        .get(),
+    ).toEqual({ desiredCollection: 'canceled' });
+  });
+
+  it('erasure revokes the membership and deletes the company entitlement row', async () => {
+    const owner = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0 + 20);
+    const member = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'erasure-member' },
+      T0 + 21,
+    );
+    const created = createCompany(db, {
+      name: 'Member Co',
+      ownerAccountId: owner.accountId,
+      now: T0 + 20,
+    });
+    if (created.outcome !== 'created') throw new Error('expected a company');
+    db.prepare(
+      `INSERT INTO company_members (company_id, account_id, role, state, created_at)
+       VALUES (?, ?, 'member', 'active', ?)`,
+    ).run(created.company.companyId, member.accountId, T0 + 21);
+    db.prepare(
+      `INSERT INTO company_subscriptions (
+         company_id, processor_subscription_id, quantity, status,
+         collection_method, first_paid_at, updated_at
+       ) VALUES (?, 'sub_erasure_member', 2, 'active', 'charge_automatically', ?, ?)`,
+    ).run(created.company.companyId, T0 + 21, T0 + 21);
+    materializeCompanyMemberEntitlement(db, {
+      companyId: created.company.companyId,
+      accountId: member.accountId,
+      cause: {
+        kind: 'membership',
+        id: 'erasure-member-seed',
+        actor: owner.accountId,
+        reason: 'seed company entitlement',
+      },
+      now: T0 + 21,
+    });
+
+    await eraseOwnAccount(db, member.token, T0 + 22);
+
+    expect(
+      readMember(db, created.company.companyId, member.accountId),
+    ).toMatchObject({ state: 'revoked' });
+    expect(
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM entitlements
+           WHERE account_id = ? AND source = 'company'`,
+        )
+        .get(member.accountId),
+    ).toEqual({ count: 0 });
+    expect(
+      readMember(db, created.company.companyId, owner.accountId),
+    ).toMatchObject({ role: 'owner', state: 'active' });
+    expect(() => assertOneActiveOwner(db, created.company.companyId)).not.toThrow();
+  });
+
+  it('erasure keeps a redeemed invite consumed and its token still returns 404', async () => {
+    const owner = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0 + 30);
+    const redeemer = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'erasure-redeemer' },
+      T0 + 31,
+    );
+    const other = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'erasure-invite-other' },
+      T0 + 31,
+    );
+    const created = createCompany(db, {
+      name: 'Invite Co',
+      ownerAccountId: owner.accountId,
+      now: T0 + 30,
+    });
+    if (created.outcome !== 'created') throw new Error('expected a company');
+    db.prepare(
+      `INSERT INTO company_subscriptions (
+         company_id, processor_subscription_id, quantity, status,
+         collection_method, updated_at
+       ) VALUES (?, 'sub_erasure_invite', 3, 'active', 'charge_automatically', ?)`,
+    ).run(created.company.companyId, T0 + 30);
+    const minted = await mintInvite(db, {
+      companyId: created.company.companyId,
+      role: 'admin',
+      createdBy: owner.accountId,
+      now: T0 + 31,
+    });
+    if (minted.outcome !== 'minted') throw new Error('expected a minted invite');
+    expect(
+      await redeemInvite(db, {
+        token: minted.invite.token,
+        accountId: redeemer.accountId,
+        now: T0 + 32,
+      }),
+    ).toEqual({
+      outcome: 'redeemed',
+      companyId: created.company.companyId,
+      role: 'admin',
+    });
+
+    await eraseOwnAccount(db, redeemer.token, T0 + 33);
+
+    expect(readInvite(db, minted.invite.inviteHash)).toMatchObject({
+      redeemedBy: null,
+      redeemedAt: T0 + 32,
+    });
+    expect(
+      await redeemInvite(db, {
+        token: minted.invite.token,
+        accountId: other.accountId,
+        now: T0 + 34,
+      }),
+    ).toEqual({ outcome: 'not_found' });
+  });
+
+  it('erasure revokes the unredeemed invites the account created', async () => {
+    const owner = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0 + 40);
+    const admin = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'erasure-invite-admin' },
+      T0 + 41,
+    );
+    const other = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'erasure-invite-redeemer' },
+      T0 + 41,
+    );
+    const created = createCompany(db, {
+      name: 'Invites Co',
+      ownerAccountId: owner.accountId,
+      now: T0 + 40,
+    });
+    if (created.outcome !== 'created') throw new Error('expected a company');
+    db.prepare(
+      `INSERT INTO company_members (company_id, account_id, role, state, created_at)
+       VALUES (?, ?, 'admin', 'active', ?)`,
+    ).run(created.company.companyId, admin.accountId, T0 + 41);
+    db.prepare(
+      `INSERT INTO company_subscriptions (
+         company_id, processor_subscription_id, quantity, status,
+         collection_method, updated_at
+       ) VALUES (?, 'sub_erasure_creator', 3, 'active', 'charge_automatically', ?)`,
+    ).run(created.company.companyId, T0 + 40);
+    const unredeemed = await mintInvite(db, {
+      companyId: created.company.companyId,
+      role: 'member',
+      createdBy: admin.accountId,
+      now: T0 + 42,
+    });
+    const redeemable = await mintInvite(db, {
+      companyId: created.company.companyId,
+      role: 'member',
+      createdBy: admin.accountId,
+      now: T0 + 42,
+    });
+    if (unredeemed.outcome !== 'minted' || redeemable.outcome !== 'minted') {
+      throw new Error('expected minted invites');
+    }
+    expect(
+      await redeemInvite(db, {
+        token: redeemable.invite.token,
+        accountId: other.accountId,
+        now: T0 + 43,
+      }),
+    ).toEqual({
+      outcome: 'redeemed',
+      companyId: created.company.companyId,
+      role: 'member',
+    });
+
+    await eraseOwnAccount(db, admin.token, T0 + 44);
+
+    expect(readInvite(db, unredeemed.invite.inviteHash)).toMatchObject({
+      revokedAt: T0 + 44,
+      redeemedAt: null,
+    });
+    expect(readInvite(db, redeemable.invite.inviteHash)).toMatchObject({
+      revokedAt: null,
+      redeemedAt: T0 + 43,
+      redeemedBy: other.accountId,
+    });
+  });
+
+  it('erasure deletes referral rows where the account was referred and the referrer tally drops', async () => {
+    const referrer = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0 + 50);
+    const referred = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'erasure-referred' },
+      T0 + 51,
+    );
+    const { code } = ensureReferralCode(db, {
+      accountId: referrer.accountId,
+      now: T0 + 50,
+    });
+    recordReferralRedemption(db, {
+      code,
+      referredAccountId: referred.accountId,
+      referredCustomerId: 'cus_erasure_referred',
+      objectId: 'cs_erasure_referred',
+      occurredAt: T0 + 51,
+      recordedAt: T0 + 51,
+    });
+    expect(
+      readReferralSummary(db, {
+        accountId: referrer.accountId,
+        baseUrl: 'https://teacher.example.com',
+      }),
+    ).toMatchObject({ pendingCount: 1, confirmedCount: 0, redemptionCount: 1 });
+
+    await eraseOwnAccount(db, referred.token, T0 + 52);
+
+    expect(
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM referral_events
+           WHERE referred_account_id = ?`,
+        )
+        .get(referred.accountId),
+    ).toEqual({ count: 0 });
+    expect(
+      readReferralSummary(db, {
+        accountId: referrer.accountId,
+        baseUrl: 'https://teacher.example.com',
+      }),
+    ).toMatchObject({ pendingCount: 0, confirmedCount: 0, redemptionCount: 0 });
+  });
+
+  it('erasure pseudonymizes entitlement_audit subject ids', async () => {
+    const account = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0 + 60);
+    const other = await issueSessionForVerifiedPrincipal(
+      db,
+      { issuer: PRINCIPAL.issuer, subject: 'erasure-audit-other' },
+      T0 + 60,
+    );
+    const auditSeed = (accountId: string, causeId: string): void => {
+      writeEntitlement(
+        db,
+        {
+          accountId,
+          source: 'personal',
+          state: {
+            planId: 'free',
+            status: 'free',
+            graceUntil: null,
+            collectionPaused: false,
+            companyId: null,
+            currentPeriodEnd: null,
+            processorCustomerId: null,
+            processorSubscriptionId: null,
+          },
+          now: T0 + 60,
+        },
+        {
+          kind: 'membership',
+          id: causeId,
+          actor: 'operator@example.com',
+          reason: 'seed entitlement audit',
+        },
+      );
+    };
+    auditSeed(account.accountId, 'erasure-audit-seed');
+    auditSeed(other.accountId, 'erasure-audit-other-seed');
+    db.prepare(
+      `INSERT INTO entitlement_audit (
+         audit_id, subject_kind, subject_id, action, cause_kind, cause_id,
+         actor, reason, created_at
+       ) VALUES ('audit-erasure-company-keep', 'company', 'company-erasure-keep',
+                 'entitlement_change', 'operator', 'operator-erasure-keep',
+                 'operator@example.com', 'company audit stays', ?)`,
+    ).run(T0 + 60);
+
+    await eraseOwnAccount(db, account.token, T0 + 61);
+
+    expect(
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM entitlement_audit WHERE subject_id = ?`,
+        )
+        .get(account.accountId),
+    ).toEqual({ count: 0 });
+    const auditRows = db
+      .prepare(
+        `SELECT subject_kind AS subjectKind, subject_id AS subjectId
+         FROM entitlement_audit`,
+      )
+      .all() as Array<{ subjectKind: string; subjectId: string }>;
+    expect(auditRows.length).toBeGreaterThan(0);
+    expect(
+      auditRows.filter((row) => row.subjectId.startsWith('erased:')),
+    ).toHaveLength(1);
+    expect(auditRows).toContainEqual({
+      subjectKind: 'account',
+      subjectId: other.accountId,
+    });
+    expect(auditRows).toContainEqual({
+      subjectKind: 'company',
+      subjectId: 'company-erasure-keep',
+    });
+    expect(JSON.stringify(auditRows)).not.toContain(account.accountId);
+  });
+
+  it('erasure retains billing processor ids and payments for the legal retention period', async () => {
+    const account = await issueSessionForVerifiedPrincipal(db, PRINCIPAL, T0 + 70);
+    writeEntitlement(
+      db,
+      {
+        accountId: account.accountId,
+        source: 'personal',
+        state: {
+          planId: 'tutor_pro_monthly',
+          status: 'active',
+          graceUntil: null,
+          collectionPaused: false,
+          companyId: null,
+          currentPeriodEnd: T0 + 70 + 30 * 24 * 60 * 60 * 1_000,
+          processorCustomerId: 'cus_retained_erasure',
+          processorSubscriptionId: 'sub_retained_erasure',
+        },
+        now: T0 + 70,
+      },
+      {
+        kind: 'processor_event',
+        id: 'evt_retained_erasure',
+        actor: 'stripe',
+        reason: 'seed retained billing row',
+      },
+    );
+    db.prepare(
+      `INSERT INTO billing_payments (
+         payment_intent_id, charge_id, invoice_id, subject_kind, subject_id,
+         amount_cents, currency, created_at
+       ) VALUES ('pi_retained_erasure', 'ch_retained_erasure', 'in_retained_erasure',
+               'account', ?, 1200, 'gbp', ?)`,
+    ).run(account.accountId, T0 + 70);
+
+    await eraseOwnAccount(db, account.token, T0 + 71);
+
+    expect(
+      db
+        .prepare(
+          `SELECT processor_customer_id AS processorCustomerId,
+                  processor_subscription_id AS processorSubscriptionId
+           FROM entitlements WHERE account_id = ? AND source = 'personal'`,
+        )
+        .get(account.accountId),
+    ).toEqual({
+      processorCustomerId: 'cus_retained_erasure',
+      processorSubscriptionId: 'sub_retained_erasure',
+    });
+    expect(
+      db
+        .prepare(
+          `SELECT charge_id AS chargeId FROM billing_payments
+           WHERE payment_intent_id = 'pi_retained_erasure'`,
+        )
+        .get(),
+    ).toEqual({ chargeId: 'ch_retained_erasure' });
   });
 });
