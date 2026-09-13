@@ -283,8 +283,10 @@ textarea {
    Excalidraw drops it below the trigger, which was right when the toolbar was
    along the top and puts it off the bottom of the screen from here -- the
    panel started at 710px in a 720px viewport, so the shapes inside it could
-   not be reached at all. Two classes for the specificity, as elsewhere. */
-.excalidraw .dropdown-menu.App-toolbar__extra-tools-dropdown {
+   not be reached at all. Two classes for the specificity, as elsewhere.
+   Not on the phone layout: its toolbar is still along the top, so opening
+   upward put Frame, Web Embed, Laser and Mermaid above the screen. */
+.excalidraw:not(.excalidraw--mobile) .dropdown-menu.App-toolbar__extra-tools-dropdown {
   top: auto;
   bottom: 100%;
   margin-top: 0;
