@@ -98,6 +98,12 @@ import {
   snapshotChunkKey,
   snapshotMetaKey,
 } from '../lib/whiteboard/snapshotChunks';
+import {
+  SNAPSHOT_WRITE_FORMAT,
+  SnapshotFormatUnknownError,
+  applyStoredSnapshot,
+  snapshotFormatKey,
+} from '../lib/whiteboard/snapshotFormat';
 import { libraryFileIds, libraryStorageKey, storedLibraryItems } from '../lib/whiteboard/roomLibrary';
 import {
   FOLLOW_MESSAGE_TYPE,
@@ -181,6 +187,7 @@ function logBoardSnapshot(entry: {
   bytes: number;
   outcome: string;
   reason?: string;
+  format?: number;
 }): void {
   try {
     console.warn(JSON.stringify({ event: 'board_snapshot', ...entry }));
@@ -397,6 +404,8 @@ export class RoomDO extends DurableObject {
   static maxElementsForTests: number | null = null;
   /** Test-only override for {@link SNAPSHOT_CHUNK_BYTES}; production uses the constant. */
   static snapshotChunkBytesForTests: number | null = null;
+  /** Test-only override for {@link SNAPSHOT_WRITE_FORMAT}; production uses the constant. */
+  static snapshotWriteFormatForTests: number | null = null;
 
   /** Server-side Yjs documents per room, created lazily. */
   private readonly docs = new Map<string, Y.Doc>();
@@ -426,6 +435,19 @@ export class RoomDO extends DurableObject {
 
   /** Rooms whose durable Yjs snapshot still needs to be projected into SQL. */
   private readonly projectionDirtyRooms = new Set<string>();
+
+  /**
+   * The chunk count `writeSnapshot` last wrote, or `readSnapshot` last
+   * confirmed by successfully rejoining every chunk metadata named -- per
+   * room, for this object instance's lifetime only.
+   *
+   * `writeSnapshot`'s cleanup only needs a `storage.list` when the new
+   * snapshot could have fewer chunks than before; when this count is known
+   * and the new one is at least as large, nothing past the new count could
+   * exist to clean up. Unset (an eviction, a first write, or a chunk-missing
+   * read) means unknown, and the list runs to be sure.
+   */
+  private readonly lastKnownChunkCount = new Map<string, number>();
 
   /** Last live-account check; earlier board alarms must not multiply identity traffic. */
   private lastRevocationCheckAt = 0;
@@ -1350,10 +1372,12 @@ export class RoomDO extends DurableObject {
    * board written before chunking opens exactly once from the old shape and is
    * written back in the new one.
    */
-  private async readSnapshot(roomId: string): Promise<Uint8Array | undefined> {
+  private async readSnapshot(roomId: string): Promise<{ bytes: Uint8Array; format: number | undefined } | undefined> {
     const chunkCount = await this.ctx.storage.get(snapshotMetaKey(roomId)) as number | undefined;
     if (typeof chunkCount !== 'number' || chunkCount < 1) {
-      return await this.ctx.storage.get(legacySnapshotKey(roomId)) as Uint8Array | undefined;
+      const legacy = await this.ctx.storage.get(legacySnapshotKey(roomId)) as Uint8Array | undefined;
+      // The legacy pre-chunking key is always V1 -- it predates the format key.
+      return legacy ? { bytes: legacy, format: 1 } : undefined;
     }
 
     const keys = Array.from({ length: chunkCount }, (_, index) => snapshotChunkKey(roomId, index));
@@ -1371,15 +1395,26 @@ export class RoomDO extends DurableObject {
       logBoardSnapshot({ roomId, bytes: 0, outcome: 'chunks_missing' });
       return undefined;
     }
-    return joined;
+    // Every chunk metadata named was present, so this room's chunk count is
+    // confirmed as of right now -- a write that grows or holds it steady
+    // cannot leave anything stale behind it.
+    this.lastKnownChunkCount.set(roomId, chunkCount);
+    const format = await this.ctx.storage.get(snapshotFormatKey(roomId)) as number | undefined;
+    return { bytes: joined, format };
   }
 
-  /** Writes a board snapshot across as many values as it needs. */
-  private async writeSnapshot(roomId: string, snapshot: Uint8Array): Promise<void> {
+  /** Writes a board snapshot, in the given format, across as many values as it needs. */
+  private async writeSnapshot(roomId: string, snapshot: Uint8Array, format: number): Promise<void> {
     const chunkBytes = RoomDO.snapshotChunkBytesForTests ?? SNAPSHOT_CHUNK_BYTES;
     const chunks = chunkSnapshot(snapshot, chunkBytes);
 
-    const entries: Record<string, unknown> = { [snapshotMetaKey(roomId)]: chunks.length };
+    // The format is always written explicitly, including `1`: that is what
+    // makes a rollback from a later phase safe, since a build that only
+    // writes `1` clears a stored `2` in this same atomic put.
+    const entries: Record<string, unknown> = {
+      [snapshotMetaKey(roomId)]: chunks.length,
+      [snapshotFormatKey(roomId)]: format,
+    };
     chunks.forEach((chunk, index) => {
       entries[snapshotChunkKey(roomId, index)] = chunk;
     });
@@ -1390,8 +1425,17 @@ export class RoomDO extends DurableObject {
      * key. Both are dead the moment the metadata above lands, and a stale
      * chunk left under a shorter snapshot would be read back as part of the
      * board the next time it grew past this length.
+     *
+     * The list this cleanup needs is skipped when the previous chunk count is
+     * known and the new count did not shrink below it: nothing past the new
+     * count could exist in that case. Unknown (an eviction, or this room's
+     * first write) or a shrink still lists, exactly as before.
      */
-    await this.deleteSnapshotChunks(roomId, chunks.length);
+    const previousCount = this.lastKnownChunkCount.get(roomId);
+    if (previousCount === undefined || chunks.length < previousCount) {
+      await this.deleteSnapshotChunks(roomId, chunks.length);
+    }
+    this.lastKnownChunkCount.set(roomId, chunks.length);
     await this.ctx.storage.delete(legacySnapshotKey(roomId));
   }
 
@@ -1415,7 +1459,21 @@ export class RoomDO extends DurableObject {
     doc = new Y.Doc();
     const storedSnapshot = await this.readSnapshot(roomId);
     if (storedSnapshot) {
-      Y.applyUpdate(doc, storedSnapshot);
+      try {
+        applyStoredSnapshot(doc, storedSnapshot.bytes, storedSnapshot.format);
+      } catch (error) {
+        /*
+         * Fail closed. A format value this build does not know, or bytes that
+         * do not decode under the format they claim, must not fall through to
+         * the seed path the way a missing chunk does: the next flush would
+         * then overwrite a snapshot this build simply cannot read. Refusing to
+         * cache a document for this room means no later flush -- from this
+         * request, the alarm, or the projection loop -- can write over it.
+         */
+        const outcome = error instanceof SnapshotFormatUnknownError ? 'format_unknown' : 'decode_failed';
+        logBoardSnapshot({ roomId, bytes: storedSnapshot.bytes.byteLength, outcome });
+        throw error;
+      }
     }
 
     /*
@@ -1646,6 +1704,7 @@ export class RoomDO extends DurableObject {
     this.docs.delete(roomId);
     this.dirtyRooms.delete(roomId);
     this.projectionDirtyRooms.delete(roomId);
+    this.lastKnownChunkCount.delete(roomId);
     /*
      * The library goes with the room.
      *
@@ -1658,9 +1717,12 @@ export class RoomDO extends DurableObject {
     await this.ctx.storage.delete([
       legacySnapshotKey(roomId),
       snapshotMetaKey(roomId),
+      snapshotFormatKey(roomId),
       `ydoc-projection:${roomId}`,
       libraryStorageKey(roomId),
     ]);
+    // Always lists: a deleted room must leave nothing behind, no matter what
+    // this instance thinks the previous chunk count was.
     await this.deleteSnapshotChunks(roomId);
   }
 
@@ -1813,16 +1875,17 @@ export class RoomDO extends DurableObject {
         pruneTombstonedElements(doc);
       }
 
-      const snapshot = Y.encodeStateAsUpdate(doc);
+      const writeFormat = RoomDO.snapshotWriteFormatForTests ?? SNAPSHOT_WRITE_FORMAT;
+      const snapshot = writeFormat === 2 ? Y.encodeStateAsUpdateV2(doc) : Y.encodeStateAsUpdate(doc);
       const budget = snapshotBudgetState(snapshot.byteLength);
       if (budget !== 'fine') {
         // Said out loud on purpose: an unwritable board is indistinguishable
         // from a safe one from the outside, because the retry below is silent.
-        logBoardSnapshot({ roomId, bytes: snapshot.byteLength, outcome: budget });
+        logBoardSnapshot({ roomId, bytes: snapshot.byteLength, outcome: budget, format: writeFormat });
       }
 
       try {
-        await this.writeSnapshot(roomId, snapshot);
+        await this.writeSnapshot(roomId, snapshot, writeFormat);
         await this.ctx.storage.put({
           [`ydoc-projection:${roomId}`]: true,
         });
@@ -1868,7 +1931,24 @@ export class RoomDO extends DurableObject {
         await this.deleteBoardState(roomId);
         continue;
       }
-      const doc = this.docs.get(roomId) ?? await this.getRoomDoc(roomId);
+
+      let doc: Y.Doc;
+      try {
+        doc = this.docs.get(roomId) ?? await this.getRoomDoc(roomId);
+      } catch (error) {
+        /*
+         * `getRoomDoc` throws when a stored snapshot cannot be read (an
+         * unknown format, or bytes that fail to decode) rather than falling
+         * through to the seed path -- exactly so nothing here rewrites a
+         * snapshot this build cannot read. Logging and leaving the retry
+         * marker in place is the whole point: retrying would just call
+         * `getRoomDoc` again next time, and anything else would either lose
+         * the unread bytes or throw out of the alarm and stall every other
+         * room this object holds.
+         */
+        logInternalRoomError('flushProjectionGetRoomDoc', error, roomId);
+        continue;
+      }
 
       try {
         /*

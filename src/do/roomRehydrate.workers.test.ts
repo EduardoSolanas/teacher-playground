@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { env, runInDurableObject } from 'cloudflare:test';
+import { afterEach, describe, expect, it } from 'vitest';
+import { env, evictDurableObject, runInDurableObject } from 'cloudflare:test';
 import * as Y from 'yjs';
-import type { RoomDO } from './RoomDO';
-import { getElementsFromArray } from '../lib/whiteboard/yjsDoc';
+import { RoomDO } from './RoomDO';
+import { getElementsFromArray, replaceSharedElements } from '../lib/whiteboard/yjsDoc';
 import { snapshotChunkKey, snapshotMetaKey } from '../lib/whiteboard/snapshotChunks';
+import { snapshotFormatKey } from '../lib/whiteboard/snapshotFormat';
 
 /*
  * A board that was saved must come back.
@@ -37,8 +38,7 @@ async function seedRow(roomId: string, elements: unknown[]) {
   });
 }
 
-/** Writes a snapshot of a document holding exactly `elements`. */
-async function seedSnapshot(roomId: string, elements: unknown[]) {
+function docWithElements(elements: unknown[]): Y.Doc {
   const doc = new Y.Doc();
   const array = doc.getArray<Y.Map<unknown>>('elements');
   doc.transact(() => {
@@ -50,10 +50,48 @@ async function seedSnapshot(roomId: string, elements: unknown[]) {
       array.push([map]);
     }
   });
-  const snapshot = Y.encodeStateAsUpdate(doc);
+  return doc;
+}
+
+/** Writes a V1 snapshot of a document holding exactly `elements`. */
+async function seedSnapshot(roomId: string, elements: unknown[]) {
+  const snapshot = Y.encodeStateAsUpdate(docWithElements(elements));
   await runInDurableObject(roomStub(roomId), async (_instance, state) => {
     await state.storage.put(snapshotMetaKey(roomId), 1);
     await state.storage.put(snapshotChunkKey(roomId, 0), snapshot);
+  });
+}
+
+/** Writes a V2 snapshot of a document holding exactly `elements`, with the format key set. */
+async function seedSnapshotV2(roomId: string, elements: unknown[]) {
+  const snapshot = Y.encodeStateAsUpdateV2(docWithElements(elements));
+  await runInDurableObject(roomStub(roomId), async (_instance, state) => {
+    await state.storage.put(snapshotMetaKey(roomId), 1);
+    await state.storage.put(snapshotChunkKey(roomId, 0), snapshot);
+    await state.storage.put(snapshotFormatKey(roomId), 2);
+  });
+}
+
+/** Writes raw bytes as a room's single chunk under the given format value. */
+async function seedRawSnapshot(roomId: string, bytes: Uint8Array, format: number) {
+  await runInDurableObject(roomStub(roomId), async (_instance, state) => {
+    await state.storage.put(snapshotMetaKey(roomId), 1);
+    await state.storage.put(snapshotChunkKey(roomId, 0), bytes);
+    await state.storage.put(snapshotFormatKey(roomId), format);
+  });
+}
+
+/** Snapshot of every storage key a room's board occupies, for byte-identity checks. */
+async function boardStorageSnapshot(roomId: string): Promise<Record<string, unknown>> {
+  return runInDurableObject(roomStub(roomId), async (_instance, state) => {
+    const out: Record<string, unknown> = {};
+    out[snapshotMetaKey(roomId)] = await state.storage.get(snapshotMetaKey(roomId));
+    out[snapshotFormatKey(roomId)] = await state.storage.get(snapshotFormatKey(roomId));
+    const chunks = await state.storage.list({ prefix: snapshotChunkKey(roomId, 0).slice(0, -1) });
+    out.chunks = Object.fromEntries(
+      Array.from(chunks.entries(), ([key, value]) => [key, Array.from(value as Uint8Array)]),
+    );
+    return out;
   });
 }
 
@@ -63,6 +101,58 @@ async function docElements(roomId: string): Promise<unknown[]> {
       getRoomDoc: (roomId: string) => Promise<Y.Doc>;
     }).getRoomDoc(roomId);
     return getElementsFromArray(doc.getArray('elements')) as unknown[];
+  });
+}
+
+/** Loads a room's document, mutates it so it is dirty, and flushes it. */
+async function editAndFlush(roomId: string, elementId: string): Promise<void> {
+  await runInDurableObject(roomStub(roomId), async (instance) => {
+    const boxed = instance as unknown as {
+      getRoomDoc: (roomId: string) => Promise<Y.Doc>;
+      flushDirtyDocs: () => Promise<void>;
+    };
+    const doc = await boxed.getRoomDoc(roomId);
+    doc.transact(() => {
+      const map = new Y.Map<unknown>();
+      map.set('id', elementId);
+      map.set('type', 'rectangle');
+      doc.getArray<Y.Map<unknown>>('elements').push([map]);
+    });
+    await boxed.flushDirtyDocs();
+  });
+}
+
+async function storedFormat(roomId: string): Promise<number | undefined> {
+  return runInDurableObject(roomStub(roomId), async (_instance, state) => (
+    state.storage.get(snapshotFormatKey(roomId)) as Promise<number | undefined>
+  ));
+}
+
+async function storedChunkCount(roomId: string): Promise<number | undefined> {
+  return runInDurableObject(roomStub(roomId), async (_instance, state) => (
+    state.storage.get(snapshotMetaKey(roomId)) as Promise<number | undefined>
+  ));
+}
+
+async function storedChunkKeyCount(roomId: string): Promise<number> {
+  return runInDurableObject(roomStub(roomId), async (_instance, state) => (
+    (await state.storage.list({ prefix: snapshotChunkKey(roomId, 0).slice(0, -1) })).size
+  ));
+}
+
+/** Loads a room's document, replaces its elements wholesale, and flushes it. */
+async function replaceElementsAndFlush(
+  roomId: string,
+  elements: ReadonlyArray<Record<string, unknown>>,
+): Promise<void> {
+  await runInDurableObject(roomStub(roomId), async (instance) => {
+    const boxed = instance as unknown as {
+      getRoomDoc: (roomId: string) => Promise<Y.Doc>;
+      flushDirtyDocs: () => Promise<void>;
+    };
+    const doc = await boxed.getRoomDoc(roomId);
+    replaceSharedElements(doc, doc.getArray('elements'), elements, 'test-replace');
+    await boxed.flushDirtyDocs();
   });
 }
 
@@ -106,5 +196,145 @@ describe('rehydrating a room document', () => {
     await seedSnapshot(roomId, []);
 
     expect(await docElements(roomId)).toHaveLength(0);
+  });
+
+  it('still opens a legacy room with no format key at all (V1 pin)', async () => {
+    const roomId = 'rehydrate-legacy-no-format';
+    await seedRow(roomId, []);
+    await seedSnapshot(roomId, [{ id: 'legacy-el', type: 'rectangle' }]);
+
+    const elements = await docElements(roomId);
+    expect(elements).toHaveLength(1);
+    expect((elements[0] as { id: string }).id).toBe('legacy-el');
+  });
+
+  it('still opens a room written under the pre-chunking single key (legacy pin)', async () => {
+    const roomId = 'rehydrate-legacy-single-key';
+    await seedRow(roomId, []);
+    const snapshot = Y.encodeStateAsUpdate(docWithElements([{ id: 'single-key-el', type: 'diamond' }]));
+    await runInDurableObject(roomStub(roomId), async (_instance, state) => {
+      await state.storage.put(`ydoc:${roomId}`, snapshot);
+    });
+
+    const elements = await docElements(roomId);
+    expect(elements).toHaveLength(1);
+    expect((elements[0] as { id: string }).id).toBe('single-key-el');
+  });
+});
+
+describe('snapshot format dispatch', () => {
+  it('opens a V2-formatted room and returns exactly that board', async () => {
+    const roomId = 'format-v2-room';
+    await seedRow(roomId, []);
+    await seedSnapshotV2(roomId, [{ id: 'v2-el', type: 'ellipse' }]);
+
+    const elements = await docElements(roomId);
+    expect(elements).toHaveLength(1);
+    expect((elements[0] as { id: string }).id).toBe('v2-el');
+  });
+
+  it('refuses to open a room whose format value this build does not know, and does not overwrite it', async () => {
+    const roomId = 'format-unknown-room';
+    await seedRow(roomId, []);
+    const snapshot = Y.encodeStateAsUpdate(docWithElements([{ id: 'unknown-format-el', type: 'rectangle' }]));
+    await seedRawSnapshot(roomId, snapshot, 3);
+
+    const before = await boardStorageSnapshot(roomId);
+
+    await expect(docElements(roomId)).rejects.toThrow();
+
+    // A flush (via the alarm) must not overwrite bytes it could not read: a
+    // seeded projection retry marker forces the flush's projection loop to
+    // attempt to open this room, exactly like a stale marker surviving an
+    // eviction would.
+    await runInDurableObject(roomStub(roomId), async (_instance, state) => {
+      await state.storage.put(`ydoc-projection:${roomId}`, true);
+    });
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => instance.alarm());
+
+    const after = await boardStorageSnapshot(roomId);
+    expect(after).toEqual(before);
+  });
+
+  it('refuses to open a room whose bytes fail to decode under their stated format, and does not overwrite it', async () => {
+    const roomId = 'format-decode-failed-room';
+    await seedRow(roomId, []);
+    // Format 2 (V2) claimed, but the bytes are V1 -- garbage under V2 decoding.
+    const v1Bytes = Y.encodeStateAsUpdate(docWithElements([{ id: 'wrong-format-el', type: 'rectangle' }]));
+    await seedRawSnapshot(roomId, v1Bytes, 2);
+
+    const before = await boardStorageSnapshot(roomId);
+
+    await expect(docElements(roomId)).rejects.toThrow();
+
+    await runInDurableObject(roomStub(roomId), async (_instance, state) => {
+      await state.storage.put(`ydoc-projection:${roomId}`, true);
+    });
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => instance.alarm());
+
+    const after = await boardStorageSnapshot(roomId);
+    expect(after).toEqual(before);
+  });
+});
+
+describe('snapshot format writer', () => {
+  afterEach(() => {
+    RoomDO.snapshotWriteFormatForTests = null;
+  });
+
+  it('writes the format explicitly, including the default of 1', async () => {
+    const roomId = 'format-writer-default';
+    await seedRow(roomId, []);
+
+    await editAndFlush(roomId, 'default-format-el');
+
+    expect(await storedFormat(roomId)).toBe(1);
+  });
+
+  it('writes the overridden format when the test hook is set', async () => {
+    const roomId = 'format-writer-override';
+    await seedRow(roomId, []);
+    RoomDO.snapshotWriteFormatForTests = 2;
+
+    await editAndFlush(roomId, 'override-format-el');
+
+    expect(await storedFormat(roomId)).toBe(2);
+    // And the board itself still round-trips through the dispatching reader.
+    expect(await docElements(roomId)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'override-format-el' })]),
+    );
+  });
+});
+
+describe('snapshot chunk list-skip correctness', () => {
+  afterEach(() => {
+    RoomDO.snapshotChunkBytesForTests = null;
+  });
+
+  it('leaves no stale trailing chunk behind when a board shrinks after eviction lost the in-memory count', async () => {
+    const roomId = 'chunk-list-skip-room';
+    RoomDO.snapshotChunkBytesForTests = 64;
+    await seedRow(roomId, []);
+
+    // Many elements, chunked small: several chunk keys.
+    const bigBoard = Array.from({ length: 30 }, (_, i) => ({ id: `big-${i}`, type: 'rectangle' }));
+    await replaceElementsAndFlush(roomId, bigBoard);
+    const before = await storedChunkCount(roomId);
+    expect(before).toBeGreaterThan(1);
+    expect(await storedChunkKeyCount(roomId)).toBe(before);
+
+    // A real eviction: a fresh RoomDO instance holds none of this object's
+    // in-memory bookkeeping, including the last-known chunk count.
+    await evictDurableObject(roomStub(roomId));
+
+    // Shrink drastically and flush again from the fresh instance.
+    await replaceElementsAndFlush(roomId, [{ id: 'small-1', type: 'rectangle' }]);
+    const after = await storedChunkCount(roomId);
+    expect(after).toBeLessThan(before!);
+
+    // No chunk key beyond the new count may survive: a stale one would be
+    // read back as part of the board the next time it grew to that length.
+    expect(await storedChunkKeyCount(roomId)).toBe(after);
+    expect(await docElements(roomId)).toEqual([{ id: 'small-1', type: 'rectangle' }]);
   });
 });

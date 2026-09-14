@@ -14,6 +14,7 @@ import {
 import { DESTRUCTIVE_FRESH_MS } from '../lib/identity/sessionStore';
 import { replaceSharedElements } from '../lib/whiteboard/yjsDoc';
 import { ROOM_IDLE_TTL_MS } from '../lib/whiteboard/roomSchema';
+import { snapshotFormatKey } from '../lib/whiteboard/snapshotFormat';
 
 const SOCKET_EVENT_DEADLINE_MS = 15_000;
 
@@ -127,6 +128,7 @@ async function assertBoardStateDeleted(roomId: string): Promise<void> {
     // left behind is a fragment of a deleted lesson's board.
     expect(await storage.get(`ydoc:${roomId}`)).toBeUndefined();
     expect(await storage.get(`ydoc-meta:${roomId}`)).toBeUndefined();
+    expect(await storage.get(snapshotFormatKey(roomId))).toBeUndefined();
     expect((await storage.list({ prefix: `ydoc-chunk:${roomId}:` })).size).toBe(0);
     expect(await storage.get(`ydoc-projection:${roomId}`)).toBeUndefined();
   });
