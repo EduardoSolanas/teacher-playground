@@ -195,9 +195,10 @@ Room snapshots are stored in Yjs V2 encoding since S7b
 (`STORAGE_OPTIMISATIONS.md`), with the format recorded per room in
 `ydoc-format:<roomId>` and the reader dispatching V1/V2. **Never roll the
 Worker back to a build older than S7a** (the commit that introduced the format
-key and the dispatching reader): a pre-S7a build feeds V2 bytes to the V1
-decoder and, finding them unreadable, fails the room closed — by design, so it
-cannot overwrite a board it cannot read. Any build from S7a onward reads both
+key and the dispatching reader): a pre-S7a build has no format key and no fail-closed
+read, so it feeds V2 bytes to the V1 decoder: the room either fails to open or,
+if the bytes happen to decode, opens wrong and can be overwritten by its next
+flush. Any build from S7a onward reads both
 formats and is safe to roll back to.
 
 ### Excalidraw release CDN

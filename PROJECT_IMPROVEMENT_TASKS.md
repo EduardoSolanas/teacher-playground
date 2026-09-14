@@ -59,11 +59,10 @@ This is the sole assignment/status index for the findings in `SYNC_STORAGE_REVIE
 
 ## Storage optimisation queue — 2026-09-14
 
-Assignment and status index for `STORAGE_OPTIMISATIONS.md`, which is the evidence appendix. S7a, S5 and S6 part 1 are done; see that file's status block for commits and verifier verdicts.
+Assignment and status index for `STORAGE_OPTIMISATIONS.md`, which is the evidence appendix. S7a, S7b (`46ea993`, V2 is the only written format), S5 and S6 part 1 are done; see that file's status block for commits and verifier verdicts.
 
 | Slice | State / decision | Gate before starting |
 |---|---|---|
-| S7b | Pending. Flip `SNAPSHOT_WRITE_FORMAT` to `2`; add the rollback rule to `DEPLOY.md`; update `SERVER_SIDE_BOARD_PLAN.md`'s storage table; move tests that decode stored bytes with bare `Y.applyUpdate` onto `applyStoredSnapshot`. | S7a (`cfe4a2d`) deployed to production and is the rollback target. |
 | S6b | Parked. Skip the success-path projection marker only once the snapshot and row writes are explicitly atomic (`ctx.storage.transactionSync`). | A restart test that observes the difference; the first attempt (`7b4c8bd`) was reverted because nothing could. |
 | STORE-MEASURE | Pending, needs production access. Record `snapshotBytes` vs `rowBytes` from the room stats route for several long-lived rooms, plus the V1/V2 bytes S7b logs. | None. |
 | S1 | Not started. Stale-peer guard (coordinate with SYNC-01 generation work) before or with empty-room compaction. | STORE-MEASURE sets whether to build it and its thresholds. |

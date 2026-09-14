@@ -48,7 +48,9 @@ take this file as authorization to build them all at once.
   through `applyStoredSnapshot`. The rollback floor (never below S7a) is in
   `DEPLOY.md`, and `SERVER_SIDE_BOARD_PLAN.md`'s storage table names the
   chunked keys plus the format key.
-- **S1 not started** — gated on the real-room measurement (execution note 5). Like `SYNC_STORAGE_REVIEW.md`, this is an evidence appendix: assignment
+- **S1 not started** — gated on the real-room measurement (execution note 5).
+
+Like `SYNC_STORAGE_REVIEW.md`, this is an evidence appendix: assignment
 and status live in `PROJECT_IMPROVEMENT_TASKS.md`.
 
 ## Summary
