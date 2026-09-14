@@ -275,6 +275,37 @@ describe('getElementsFromArray point recovery', () => {
   });
 });
 
+describe('getElementsFromArray hostile keys', () => {
+  /**
+   * An admitted editor controls every key of an element's shared map. The
+   * conversion assigns each entry onto a plain object, and a key named
+   * `__proto__` with an object value would rebind that object's prototype
+   * instead of becoming data. The converted element must stay a plain object
+   * carrying only real properties.
+   */
+  it('never lets a hostile key rebind the converted element prototype', () => {
+    const { doc } = createWhiteboardDoc('hostile-keys-room');
+    const array = doc.getArray<Y.Map<unknown>>('elements');
+    const map = new Y.Map<unknown>();
+    map.set('id', 'hostile-1');
+    map.set('type', 'rectangle');
+    map.set('__proto__', { isDeleted: false, hijacked: 'yes' });
+    map.set('constructor', 'spoofed');
+    map.set('prototype', { hijacked: 'also' });
+    array.push([map]);
+
+    const [element] = getElementsFromArray(array);
+    const record = element as unknown as Record<string, unknown>;
+
+    expect(Object.getPrototypeOf(record)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(record, '__proto__')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(record, 'constructor')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(record, 'prototype')).toBe(false);
+    expect(record.id).toBe('hostile-1');
+    expect(record.type).toBe('rectangle');
+  });
+});
+
 describe('pruneTombstonedElements', () => {
   /**
    * Creates a freedraw element with a given number of points.

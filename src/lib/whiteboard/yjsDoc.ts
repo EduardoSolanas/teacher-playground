@@ -185,6 +185,15 @@ export function getElementsFromArray(
   return elementsArray.toArray().map((yMap) => {
     const element: Record<string, unknown> = {};
     yMap.forEach((value: unknown, key: string) => {
+      /*
+       * An admitted editor controls every key of this map, and a key named
+       * `__proto__` carrying an object would rebind the converted element's
+       * prototype through the assignment below instead of becoming data.
+       * `constructor` and `prototype` are skipped for the same reason. The
+       * server prunes floods and unknown types, but element property shapes
+       * are still editor-chosen, so the reader refuses the dangerous names.
+       */
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') return;
       element[key] = value;
     });
     // Use decodePoints to handle all four forms: binary Uint8Array, JSON string, plain array, or already-decoded
