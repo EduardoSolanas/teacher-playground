@@ -933,6 +933,95 @@ describe('server-side y-websocket sync', () => {
       expect(room?.updatedAt).toBe(AGED_AT);
       viewer.close();
     });
+
+    /*
+     * S5 (STORAGE_OPTIMISATIONS.md): the IdentityDO touch used to run on every
+     * flush -- ~600 cross-object calls per room-lesson while a board is being
+     * drawn on. These drive the throttle through the same socket -> flush ->
+     * identity-object path the freshness tests above use, observing the
+     * effect through the real owned-room row rather than a mock.
+     */
+    describe('S5: per-room owner touch throttle', () => {
+      it('does not move the owned-room stamp again for a second flush inside the throttle window', async () => {
+        const roomId = `s5-throttle-window-${crypto.randomUUID()}`;
+        const peer = await connect(roomId);
+        await ageOwnedRoom(roomId, session.accountId);
+
+        peer.send(boardUpdateFrame([{ id: 's5-edit-1', type: 'rectangle', x: 1, y: 2 }]));
+        await settle();
+        await runDurableObjectAlarm(roomStub(roomId));
+        const afterFirst = await waitForOwnedRoomUpdatedAfter(session, roomId, AGED_AT);
+        expect(afterFirst?.updatedAt).toBeGreaterThan(AGED_AT);
+
+        // Real time must pass so a second touch -- if the throttle failed to
+        // suppress it -- would produce a strictly later stamp, not one that
+        // merely ties by millisecond coincidence.
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        peer.send(boardUpdateFrame([{ id: 's5-edit-2', type: 'rectangle', x: 3, y: 4 }]));
+        await settle();
+        await runDurableObjectAlarm(roomStub(roomId));
+        // Give a wrongly-unthrottled touch time to land before asserting it did not.
+        await settle();
+
+        const afterSecond = await ownedRoomRow(session, roomId);
+        expect(afterSecond?.updatedAt).toBe(afterFirst?.updatedAt);
+        peer.close();
+      });
+
+      it('moves the owned-room stamp again once the throttle window has passed', async () => {
+        RoomDO.ownerTouchIntervalMsForTests = 50;
+        try {
+          const roomId = `s5-throttle-elapsed-${crypto.randomUUID()}`;
+          const peer = await connect(roomId);
+          await ageOwnedRoom(roomId, session.accountId);
+
+          peer.send(boardUpdateFrame([{ id: 's5-elapsed-1', type: 'rectangle', x: 1, y: 2 }]));
+          await settle();
+          await runDurableObjectAlarm(roomStub(roomId));
+          const afterFirst = await waitForOwnedRoomUpdatedAfter(session, roomId, AGED_AT);
+          expect(afterFirst?.updatedAt).toBeGreaterThan(AGED_AT);
+
+          // Cross the (shrunk) throttle window with real elapsed time.
+          await new Promise((resolve) => setTimeout(resolve, 100));
+
+          peer.send(boardUpdateFrame([{ id: 's5-elapsed-2', type: 'rectangle', x: 5, y: 6 }]));
+          await settle();
+          await runDurableObjectAlarm(roomStub(roomId));
+          const afterSecond = await waitForOwnedRoomUpdatedAfter(session, roomId, afterFirst!.updatedAt);
+
+          expect(afterSecond?.updatedAt).toBeGreaterThan(afterFirst!.updatedAt);
+          peer.close();
+        } finally {
+          RoomDO.ownerTouchIntervalMsForTests = null;
+        }
+      });
+
+      it('always touches on the flush triggered by the last socket closing, even inside the window', async () => {
+        const roomId = `s5-throttle-lastclose-${crypto.randomUUID()}`;
+        const peer = await connect(roomId);
+        await ageOwnedRoom(roomId, session.accountId);
+
+        peer.send(boardUpdateFrame([{ id: 's5-close-1', type: 'rectangle', x: 1, y: 2 }]));
+        await settle();
+        await runDurableObjectAlarm(roomStub(roomId));
+        const afterFirst = await waitForOwnedRoomUpdatedAfter(session, roomId, AGED_AT);
+        expect(afterFirst?.updatedAt).toBeGreaterThan(AGED_AT);
+
+        // Real time so a genuine second touch reads as strictly later, well
+        // inside the default (unshrunk) throttle window used by this test.
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        peer.send(boardUpdateFrame([{ id: 's5-close-2', type: 'rectangle', x: 7, y: 8 }]));
+        await settle();
+        // Closing the room's only socket must flush and touch despite being
+        // well inside OWNER_TOUCH_INTERVAL_MS, so the final stamp is accurate.
+        peer.close();
+
+        const afterClose = await waitForOwnedRoomUpdatedAfter(session, roomId, afterFirst!.updatedAt);
+        expect(afterClose?.updatedAt).toBeGreaterThan(afterFirst!.updatedAt);
+      });
+    });
   });
 });
 

@@ -406,6 +406,8 @@ export class RoomDO extends DurableObject {
   static snapshotChunkBytesForTests: number | null = null;
   /** Test-only override for {@link SNAPSHOT_WRITE_FORMAT}; production uses the constant. */
   static snapshotWriteFormatForTests: number | null = null;
+  /** Test-only override for {@link RoomDO.OWNER_TOUCH_INTERVAL_MS}; production uses the constant. */
+  static ownerTouchIntervalMsForTests: number | null = null;
 
   /** Server-side Yjs documents per room, created lazily. */
   private readonly docs = new Map<string, Y.Doc>();
@@ -448,6 +450,15 @@ export class RoomDO extends DurableObject {
    * read) means unknown, and the list runs to be sure.
    */
   private readonly lastKnownChunkCount = new Map<string, number>();
+
+  /**
+   * Per-room throttle for {@link touchOwnerRoomActivity} (S5,
+   * STORAGE_OPTIMISATIONS.md): when each room last moved its owner's IdentityDO
+   * "last used" stamp in this object instance. Absent means "touch on the next
+   * flush" -- both for a room this instance has never flushed and for one
+   * whose entry was cleared by eviction, which is the conservative direction.
+   */
+  private readonly lastOwnerTouchAt = new Map<string, number>();
 
   /** Last live-account check; earlier board alarms must not multiply identity traffic. */
   private lastRevocationCheckAt = 0;
@@ -1531,6 +1542,15 @@ export class RoomDO extends DurableObject {
    */
   private static readonly FLUSH_INTERVAL_MS = 3_000;
 
+  /**
+   * How often {@link touchOwnerRoomActivity} may move the owner's IdentityDO
+   * "last used" stamp for one room (S5, STORAGE_OPTIMISATIONS.md). The owned-room
+   * list displays this at list granularity, far coarser than the 3 s flush
+   * cadence, so a minute bound loses nothing a user would notice while cutting
+   * a drawing lesson's ~600 per-flush touches down to a handful.
+   */
+  private static readonly OWNER_TOUCH_INTERVAL_MS = 60_000;
+
   /** When the last flush ran, so drawing cannot turn every frame into a write. */
   private lastFlushAt = 0;
 
@@ -1705,6 +1725,7 @@ export class RoomDO extends DurableObject {
     this.dirtyRooms.delete(roomId);
     this.projectionDirtyRooms.delete(roomId);
     this.lastKnownChunkCount.delete(roomId);
+    this.lastOwnerTouchAt.delete(roomId);
     /*
      * The library goes with the room.
      *
@@ -1739,16 +1760,38 @@ export class RoomDO extends DurableObject {
    *
    * The list reads this timestamp, and board edits reach storage through this
    * object rather than the Worker's scene route, so without this the list
-   * would only ever see create and rename. One ping per snapshot flush keeps
-   * it bounded by {@link RoomDO.FLUSH_INTERVAL_MS} rather than by strokes.
+   * would only ever see create and rename. "Last used" is displayed at list
+   * granularity, so this is throttled per room (S5, STORAGE_OPTIMISATIONS.md)
+   * rather than bounded only by {@link RoomDO.FLUSH_INTERVAL_MS}: it fires on
+   * the first flush after the room's doc is loaded in this instance, then at
+   * most once per {@link RoomDO.OWNER_TOUCH_INTERVAL_MS}, and always when
+   * `force` is set -- the flush driven by the room's last socket closing,
+   * so the final stamp for the lesson is accurate.
    */
-  private async touchOwnerRoomActivity(roomId: string): Promise<void> {
+  private async touchOwnerRoomActivity(
+    roomId: string,
+    opts: { force?: boolean } = {},
+  ): Promise<void> {
+    const now = Date.now();
+    const lastTouchAt = this.lastOwnerTouchAt.get(roomId);
+    const interval = RoomDO.ownerTouchIntervalMsForTests ?? RoomDO.OWNER_TOUCH_INTERVAL_MS;
+    if (!opts.force && lastTouchAt !== undefined && now - lastTouchAt < interval) {
+      return;
+    }
+
     try {
       const owner = this.db.prepare(
         `SELECT account_id AS accountId FROM room_members
          WHERE room_id = ? AND role = 'owner'`,
       ).get(roomId) as { accountId: string } | undefined;
       if (!owner) return;
+
+      // Recorded for the attempt, not for a confirmed success: the point of
+      // the throttle is to bound subrequest volume and write load on the one
+      // shared IdentityDO, and a failing identity object retried every flush
+      // would defeat that. Best-effort stays best-effort either way -- a
+      // stale stamp is a display detail, never a reason to fail the flush.
+      this.lastOwnerTouchAt.set(roomId, now);
 
       const identity = this.roomEnv.IDENTITY.get(
         this.roomEnv.IDENTITY.idFromName(GLOBAL_IDENTITY_OBJECT_NAME),
@@ -1845,7 +1888,7 @@ export class RoomDO extends DurableObject {
   }
 
   /** Writes every document that has changed since the last flush. */
-  private async flushDirtyDocs(): Promise<void> {
+  private async flushDirtyDocs(opts: { isLastSocketClose?: boolean } = {}): Promise<void> {
     for (const roomId of this.dirtyRooms) {
       if (!roomExists(this.db, roomId)) {
         await this.deleteBoardState(roomId);
@@ -1904,10 +1947,12 @@ export class RoomDO extends DurableObject {
         this.db.prepare(`UPDATE rooms SET updated_at = ? WHERE room_id = ?`)
           .run(Date.now(), roomId);
 
-        // The board changed, so the owner's "last used" moves too. Bounded by
-        // this flush, not by strokes, and best-effort: a stored board must not
-        // be reported as failed because the list's timestamp was not synced.
-        await this.touchOwnerRoomActivity(roomId);
+        // The board changed, so the owner's "last used" moves too. Throttled
+        // per room (S5) rather than bounded only by this flush, except on the
+        // last-socket-close flush, which always touches so the final stamp
+        // for the lesson is accurate. Best-effort either way: a stored board
+        // must not be reported as failed because the list's timestamp was not synced.
+        await this.touchOwnerRoomActivity(roomId, { force: opts.isLastSocketClose === true });
 
         this.dirtyRooms.delete(roomId);
         this.projectionDirtyRooms.add(roomId);
@@ -2914,7 +2959,7 @@ export class RoomDO extends DurableObject {
     // one: the object is about to go quiet and the board must be on disk.
     if (this.ctx.getWebSockets().length <= 1) {
       try {
-        await this.flushDirtyDocs();
+        await this.flushDirtyDocs({ isLastSocketClose: true });
       } catch (err) {
         logInternalRoomError('socketGoneFlush', err);
         // A failed flush must not throw out of handleSocketGone.
