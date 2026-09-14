@@ -460,6 +460,17 @@ export class RoomDO extends DurableObject {
    */
   private readonly lastOwnerTouchAt = new Map<string, number>();
 
+  /**
+   * Rooms whose owner touch was skipped by the throttle above and is still
+   * owed. A room can quiesce -- flush cleanly, then draw no further edits --
+   * entirely inside the throttle window, in which case it is not in
+   * {@link dirtyRooms} by the time its last socket closes and the
+   * force-touch there would otherwise never run. Set when a flush's touch is
+   * throttled away; cleared whenever a touch is actually attempted (forced or
+   * not) and by {@link deleteBoardState}.
+   */
+  private readonly ownerTouchPending = new Set<string>();
+
   /** Last live-account check; earlier board alarms must not multiply identity traffic. */
   private lastRevocationCheckAt = 0;
 
@@ -1726,6 +1737,7 @@ export class RoomDO extends DurableObject {
     this.projectionDirtyRooms.delete(roomId);
     this.lastKnownChunkCount.delete(roomId);
     this.lastOwnerTouchAt.delete(roomId);
+    this.ownerTouchPending.delete(roomId);
     /*
      * The library goes with the room.
      *
@@ -1766,7 +1778,11 @@ export class RoomDO extends DurableObject {
    * the first flush after the room's doc is loaded in this instance, then at
    * most once per {@link RoomDO.OWNER_TOUCH_INTERVAL_MS}, and always when
    * `force` is set -- the flush driven by the room's last socket closing,
-   * so the final stamp for the lesson is accurate.
+   * so the final stamp for the lesson is accurate. A room can quiesce inside
+   * the throttle window (flush cleanly, then draw nothing further), so a
+   * skip here marks {@link ownerTouchPending}; `flushDirtyDocs` forces a
+   * touch for any still-pending room on last-socket-close even when it is
+   * not dirty, since a plain dirty-room force would otherwise never run.
    */
   private async touchOwnerRoomActivity(
     roomId: string,
@@ -1776,8 +1792,10 @@ export class RoomDO extends DurableObject {
     const lastTouchAt = this.lastOwnerTouchAt.get(roomId);
     const interval = RoomDO.ownerTouchIntervalMsForTests ?? RoomDO.OWNER_TOUCH_INTERVAL_MS;
     if (!opts.force && lastTouchAt !== undefined && now - lastTouchAt < interval) {
+      this.ownerTouchPending.add(roomId);
       return;
     }
+    this.ownerTouchPending.delete(roomId);
 
     try {
       const owner = this.db.prepare(
@@ -1969,6 +1987,21 @@ export class RoomDO extends DurableObject {
         continue;
       }
 
+    }
+
+    // A room can quiesce entirely inside the throttle window: the flush
+    // above skips its touch (not dirty enough time has passed), then no
+    // further edit ever makes it dirty again before the last socket closes.
+    // The force-on-dirty touch inside the loop above never runs for a room
+    // that is not in dirtyRooms, so a still-pending room is forced here too.
+    if (opts.isLastSocketClose) {
+      for (const roomId of Array.from(this.ownerTouchPending)) {
+        if (!roomExists(this.db, roomId)) {
+          this.ownerTouchPending.delete(roomId);
+          continue;
+        }
+        await this.touchOwnerRoomActivity(roomId, { force: true });
+      }
     }
 
     for (const roomId of this.projectionDirtyRooms) {

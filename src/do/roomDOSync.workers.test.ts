@@ -1021,6 +1021,48 @@ describe('server-side y-websocket sync', () => {
         const afterClose = await waitForOwnedRoomUpdatedAfter(session, roomId, afterFirst!.updatedAt);
         expect(afterClose?.updatedAt).toBeGreaterThan(afterFirst!.updatedAt);
       });
+
+      /*
+       * A flush that lands inside the throttle window writes the snapshot but
+       * skips the touch, so nothing is left dirty by the time the room's last
+       * socket closes: the force-on-dirty path in flushDirtyDocs never runs
+       * because the loop it lives in has nothing to iterate. The last change
+       * must still reach the owner's stamp.
+       */
+      it('forces a touch on last-socket-close for a change flushed but throttled earlier, even once the room is no longer dirty', async () => {
+        const roomId = `s5-throttle-pending-${crypto.randomUUID()}`;
+        const peer = await connect(roomId);
+        await ageOwnedRoom(roomId, session.accountId);
+
+        peer.send(boardUpdateFrame([{ id: 's5-pending-1', type: 'rectangle', x: 1, y: 2 }]));
+        await settle();
+        await runDurableObjectAlarm(roomStub(roomId));
+        const afterFirst = await waitForOwnedRoomUpdatedAfter(session, roomId, AGED_AT);
+        expect(afterFirst?.updatedAt).toBeGreaterThan(AGED_AT);
+
+        // Real time so, if the bug were fixed by coincidence, a moved stamp
+        // would read strictly later rather than tie by millisecond luck.
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        // This flush writes the snapshot but, still inside the throttle
+        // window, skips the touch -- and, run via the alarm rather than at
+        // close, leaves the room clean (not dirty) afterwards.
+        peer.send(boardUpdateFrame([{ id: 's5-pending-2', type: 'rectangle', x: 9, y: 10 }]));
+        await settle();
+        await runDurableObjectAlarm(roomStub(roomId));
+        // Confirms the throttle actually suppressed the touch here, i.e. this
+        // scenario is exercising the skip, not a slow poll below.
+        expect(await ownedRoomRow(session, roomId)).toEqual(afterFirst);
+
+        // Nothing left dirty: the flush above already wrote and cleared it.
+        // Closing now drives flushDirtyDocs({ isLastSocketClose: true }) with
+        // an empty dirtyRooms, so only a pending-touch mechanism can move the
+        // stamp for the second edit.
+        peer.close();
+
+        const afterClose = await waitForOwnedRoomUpdatedAfter(session, roomId, afterFirst!.updatedAt);
+        expect(afterClose?.updatedAt).toBeGreaterThan(afterFirst!.updatedAt);
+      });
     });
   });
 });
