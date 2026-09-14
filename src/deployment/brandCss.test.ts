@@ -183,4 +183,20 @@ describe('src/app/globals.css contract', () => {
     expect(css).toMatch(/\.room-share\{flex-direction:row;flex-wrap:wrap;align-items:center/);
     expect(ruleFor(css, '.room-share')).toMatch(/flex-direction:column/);
   });
+
+  it('lets the app shell widen on large screens so the room list is not a 42rem strip', () => {
+    const css = readRepositoryFile(brandCssPath);
+
+    // The default column stays for phones and tablets; a desktop monitor gets
+    // the same width the marketing pages already use.
+    expect(css).toContain('@media(min-width:1024px){.app-main{max-width:66rem}}');
+  });
+
+  it('lets a room row use the width a wide shell provides', () => {
+    const css = readRepositoryFile(brandCssPath);
+
+    // The name/code column grows and can shrink, so the row's actions stay on
+    // the right instead of being pushed off by a long room name.
+    expect(css).toMatch(/@media\(min-width:640px\)\{[^@]*\.row-stack\{flex:1 1 auto;min-width:0\}/);
+  });
 });

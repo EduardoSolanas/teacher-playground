@@ -246,6 +246,7 @@ padding:0 1rem 1.5rem}
 max-width:42rem;margin:0 auto;width:100%;padding:1rem 0}
 .app-main{display:flex;flex-direction:column;flex:1;max-width:42rem;margin:0 auto;width:100%}
 @media(min-width:640px){.app-main{justify-content:center}}
+@media(min-width:1024px){.app-main{max-width:66rem}}
 .app-title{font-family:Georgia,'Iowan Old Style','Times New Roman',serif;font-weight:400;
 font-size:1.6rem;line-height:1.2;letter-spacing:-.01em;text-align:center;color:var(--ink);margin:0}
 @media(min-width:640px){.app-title{font-size:2.25rem}}
@@ -325,7 +326,7 @@ font-size:1.35rem;color:var(--ink);margin:0}
 .room-row{position:relative;border-bottom:1px solid var(--line);padding:.5rem .25rem;transition:background .15s}
 .room-row:hover{background:rgba(243,238,226,.6)}
 .row-flex{display:flex;flex-direction:column;gap:.5rem;padding:.25rem}
-@media(min-width:640px){.row-flex{flex-direction:row;align-items:center}}
+@media(min-width:640px){.row-flex{flex-direction:row;align-items:center}.row-stack{flex:1 1 auto;min-width:0}}
 .row-stack{display:flex;flex-direction:column;gap:.5rem;padding:.25rem}
 .btn-gap{display:flex;gap:.5rem}
 .room-link{display:flex;flex-direction:column;justify-content:center;gap:.125rem;min-width:0;flex:1;
