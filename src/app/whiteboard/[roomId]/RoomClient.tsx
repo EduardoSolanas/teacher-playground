@@ -822,16 +822,20 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
   const handleBackToRooms = useCallback(() => {
     clearSession();
     av.leave();
-    if (isLocalHost && yDoc) {
-      yDoc.getMap('call').set('active', false);
-    }
+    /*
+     * Call state is not written here. It moved to the owner-gated binary
+     * control message (R04), and a direct Yjs map write is a channel no client
+     * may use: the server prunes the call map on every applied update, so a
+     * write here would be dead on arrival. Leaving ends the local session; the
+     * room's call state is the server's to hold.
+     */
     if (isWaiting) {
       void leaveWaitingRoom();
     } else if (userName) {
       void leaveRoom();
     }
     router.push('/whiteboard');
-  }, [av, clearSession, isLocalHost, isWaiting, leaveRoom, leaveWaitingRoom, router, userName, yDoc]);
+  }, [av, clearSession, isWaiting, leaveRoom, leaveWaitingRoom, router, userName]);
 
 
   // Calculate this user's position in the waiting queue

@@ -83,8 +83,10 @@ import { createRateLimiter } from '../lib/http/rateLimit';
 import { logSocketClose } from '../lib/security/authEvents';
 import * as Y from 'yjs';
 import * as decoding from 'lib0/decoding';
+import * as encoding from 'lib0/encoding';
+import * as syncProtocol from 'y-protocols/sync';
 import { encodeUpdateFrame, handleSyncFrame, MESSAGE_SYNC } from '../lib/whiteboard/serverSync';
-import { sanitizeSceneDoc } from '../lib/whiteboard/sceneGuard';
+import { buildCleanDoc, sanitizeSceneDoc, sanitizeSharedDoc } from '../lib/whiteboard/sceneGuard';
 import { replaceSharedElements, getElementsFromArray, pruneTombstonedElements } from '../lib/whiteboard/yjsDoc';
 import { snapshotElements } from '../lib/whiteboard/sceneSnapshot';
 import { snapshotBudgetState, SNAPSHOT_WARN_BYTES } from '../lib/whiteboard/snapshotBudget';
@@ -1486,6 +1488,51 @@ export class RoomDO extends DurableObject {
     await this.flushDirtyDocs();
   }
 
+  /**
+   * Prunes a sync frame's update in a staging document before it may reach the
+   * room's authoritative one.
+   *
+   * Pruning after `applyUpdate` is not enough on its own: Yjs keeps a
+   * tombstone record for every deleted key, so a flooded frame that is applied
+   * and then scrubbed still leaves one record per junk entry in the persisted
+   * snapshot, frame after frame. Staging applies the update to a throwaway
+   * document, sanitizes it there, and rebuilds only the surviving state
+   * structurally — the flood never enters the real document's item store.
+   *
+   * Handshake frames carry no content and pass through untouched; a frame whose
+   * content survives staging unchanged takes the fast path unchanged too. A
+   * frame that cannot be staged at all fails closed: the caller applies an
+   * empty update in its place.
+   */
+  private stageSyncUpdate(roomId: string, bytes: Uint8Array): Uint8Array {
+    try {
+      const decoder = decoding.createDecoder(bytes);
+      if (decoding.readVarUint(decoder) !== 0) return bytes;
+      const syncType = decoding.readVarUint(decoder);
+      if (syncType !== 1 && syncType !== 2) return bytes;
+      const update = decoding.readVarUint8Array(decoder);
+
+      const staged = new Y.Doc();
+      Y.applyUpdate(staged, update);
+      sanitizeSceneDoc(staged, { maxElements: RoomDO.maxElementsForTests ?? undefined });
+      const shared = sanitizeSharedDoc(staged);
+      if (!shared.changed) return bytes;
+
+      const cleaned = Y.encodeStateAsUpdate(buildCleanDoc(staged));
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, 0);
+      syncProtocol.writeUpdate(encoder, cleaned);
+      return encoding.toUint8Array(encoder);
+    } catch (error) {
+      logInternalRoomError('stageSyncUpdate', error, roomId);
+      const empty = Y.encodeStateAsUpdate(new Y.Doc());
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, 0);
+      syncProtocol.writeUpdate(encoder, empty);
+      return encoding.toUint8Array(encoder);
+    }
+  }
+
   /** Sends one frame to every granted socket this object holds for a room. */
   private broadcastToRoom(roomId: string, frame: Uint8Array): void {
     for (const socket of this.ctx.getWebSockets()) {
@@ -2609,7 +2656,7 @@ export class RoomDO extends DurableObject {
           const doc = await this.getRoomDoc(attachment.roomId);
           const before = Y.encodeStateVector(doc);
 
-          const replies = handleSyncFrame(doc, bytes, ws);
+          const replies = handleSyncFrame(doc, this.stageSyncUpdate(attachment.roomId, bytes), ws);
           for (const reply of replies) {
             try {
               ws.send(reply);
@@ -2623,6 +2670,7 @@ export class RoomDO extends DurableObject {
           }
 
           sanitizeSceneDoc(doc, { maxElements: RoomDO.maxElementsForTests ?? undefined });
+          sanitizeSharedDoc(doc);
 
           const diff = Y.encodeStateAsUpdate(doc, before);
           if (!isEmptyUpdate(diff)) {
