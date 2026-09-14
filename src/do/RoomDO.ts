@@ -408,6 +408,15 @@ export class RoomDO extends DurableObject {
   static snapshotWriteFormatForTests: number | null = null;
   /** Test-only override for {@link RoomDO.OWNER_TOUCH_INTERVAL_MS}; production uses the constant. */
   static ownerTouchIntervalMsForTests: number | null = null;
+  /**
+   * Test-only, one-shot fault injection: a room id named here makes the next
+   * SQL projection write for that room throw instead of succeeding, then
+   * removes itself -- exercising the projection-retry marker's write-on-
+   * failure path (S6) for a genuinely fresh room with a real throw through
+   * the real catch, without a mock standing in for any object. Production
+   * never sets this.
+   */
+  static forceProjectionFailureForTests: Set<string> | null = null;
 
   /** Server-side Yjs documents per room, created lazily. */
   private readonly docs = new Map<string, Y.Doc>();
@@ -437,6 +446,26 @@ export class RoomDO extends DurableObject {
 
   /** Rooms whose durable Yjs snapshot still needs to be projected into SQL. */
   private readonly projectionDirtyRooms = new Set<string>();
+
+  /**
+   * Rooms for which a `ydoc-projection:<room>` retry marker could exist in
+   * storage right now (S6, STORAGE_OPTIMISATIONS.md).
+   *
+   * The marker exists purely for crash recovery: if this object dies after a
+   * snapshot write lands durably but before the matching SQL row update
+   * does, {@link restoreProjectionRetries} needs to know to retry the
+   * projection on the next instance. A successful flush used to put the
+   * marker and then delete it a few lines later in the same call -- two
+   * writes to protect a window that closes before either write's caller
+   * returns. Tracked here instead: the marker is only put when a projection
+   * is genuinely left pending at the end of a flush (the projection threw,
+   * or `getRoomDoc` failed), and only deleted when this set says one could
+   * exist -- from a put earlier in this instance's life, or from
+   * {@link restoreProjectionRetries} finding one that survived an eviction --
+   * so a successful projection's common case, no failure ever happened,
+   * costs no delete at all.
+   */
+  private readonly projectionMarkerRooms = new Set<string>();
 
   /**
    * The chunk count `writeSnapshot` last wrote, or `readSnapshot` last
@@ -1763,6 +1792,7 @@ export class RoomDO extends DurableObject {
     this.lastOwnerTouchAt.delete(roomId);
     this.ownerTouchPending.delete(roomId);
     this.legacyKeyRoomsToClear.delete(roomId);
+    this.projectionMarkerRooms.delete(roomId);
     /*
      * The library goes with the room.
      *
@@ -1788,8 +1818,37 @@ export class RoomDO extends DurableObject {
   private async restoreProjectionRetries(): Promise<void> {
     const stored = await this.ctx.storage.list({ prefix: 'ydoc-projection:' });
     for (const key of stored.keys()) {
-      this.projectionDirtyRooms.add(key.slice('ydoc-projection:'.length));
+      const roomId = key.slice('ydoc-projection:'.length);
+      this.projectionDirtyRooms.add(roomId);
+      // A marker physically exists in storage for this room (S6): later
+      // clearing it must actually delete, not skip on the mistaken belief
+      // that this instance never wrote one.
+      this.projectionMarkerRooms.add(roomId);
     }
+  }
+
+  /**
+   * Marks a room's projection retry marker durable (S6), unless one is
+   * already tracked as present -- writing it again would be exactly the
+   * no-op this slice removes elsewhere.
+   */
+  private async markProjectionPending(roomId: string): Promise<void> {
+    if (this.projectionMarkerRooms.has(roomId)) return;
+    await this.ctx.storage.put({ [`ydoc-projection:${roomId}`]: true });
+    this.projectionMarkerRooms.add(roomId);
+  }
+
+  /**
+   * Clears a room's projection retry marker (S6), but only when one could
+   * exist: from this instance having written it above, or from
+   * {@link restoreProjectionRetries} finding one left by an earlier
+   * instance. The common case -- a flush whose projection never failed --
+   * never wrote one, so this is a no-op with no delete call at all.
+   */
+  private async clearProjectionMarker(roomId: string): Promise<void> {
+    if (!this.projectionMarkerRooms.has(roomId)) return;
+    await this.ctx.storage.delete(`ydoc-projection:${roomId}`);
+    this.projectionMarkerRooms.delete(roomId);
   }
 
   /**
@@ -1932,6 +1991,24 @@ export class RoomDO extends DurableObject {
 
   /** Writes every document that has changed since the last flush. */
   private async flushDirtyDocs(opts: { isLastSocketClose?: boolean } = {}): Promise<void> {
+    /*
+     * Rooms whose snapshot write just succeeded, still needing their owner's
+     * IdentityDO touch (S5). The touch is a `fetch` -- non-storage I/O -- and
+     * it used to run right here, interleaved between this loop's storage
+     * writes and the projection loop's below (S6). A Durable Object backed
+     * by SQLite coalesces every storage write, `ctx.storage` KV calls and
+     * `ctx.storage.sql` alike (a SQLite-backed object stores its KV data in a
+     * hidden table of that same database), into one atomic implicit
+     * transaction for as long as nothing awaits non-storage I/O in between;
+     * awaiting a `fetch` opens that window early. Deferring every touch until
+     * after the projection loop keeps this method's entire run of storage
+     * writes -- every room's snapshot here, every room's SQL row below --
+     * free of any such gap, so a crash between a room's snapshot write and
+     * its own row write is exactly the durable-marker case, never a
+     * half-written pair torn apart by an owner touch in between.
+     */
+    const roomsToTouch: string[] = [];
+
     for (const roomId of this.dirtyRooms) {
       if (!roomExists(this.db, roomId)) {
         await this.deleteBoardState(roomId);
@@ -1972,9 +2049,6 @@ export class RoomDO extends DurableObject {
 
       try {
         await this.writeSnapshot(roomId, snapshot, writeFormat);
-        await this.ctx.storage.put({
-          [`ydoc-projection:${roomId}`]: true,
-        });
         if (!roomExists(this.db, roomId)) {
           await this.deleteBoardState(roomId);
           continue;
@@ -1990,12 +2064,10 @@ export class RoomDO extends DurableObject {
         this.db.prepare(`UPDATE rooms SET updated_at = ? WHERE room_id = ?`)
           .run(Date.now(), roomId);
 
-        // The board changed, so the owner's "last used" moves too. Throttled
-        // per room (S5) rather than bounded only by this flush, except on the
-        // last-socket-close flush, which always touches so the final stamp
-        // for the lesson is accurate. Best-effort either way: a stored board
-        // must not be reported as failed because the list's timestamp was not synced.
-        await this.touchOwnerRoomActivity(roomId, { force: opts.isLastSocketClose === true });
+        // The board changed, so the owner's "last used" moves too (S5). The
+        // touch itself -- a fetch to IdentityDO -- is deferred until after
+        // the projection loop below; see the comment on `roomsToTouch` above.
+        roomsToTouch.push(roomId);
 
         this.dirtyRooms.delete(roomId);
         this.projectionDirtyRooms.add(roomId);
@@ -2012,21 +2084,6 @@ export class RoomDO extends DurableObject {
         continue;
       }
 
-    }
-
-    // A room can quiesce entirely inside the throttle window: the flush
-    // above skips its touch (not dirty enough time has passed), then no
-    // further edit ever makes it dirty again before the last socket closes.
-    // The force-on-dirty touch inside the loop above never runs for a room
-    // that is not in dirtyRooms, so a still-pending room is forced here too.
-    if (opts.isLastSocketClose) {
-      for (const roomId of Array.from(this.ownerTouchPending)) {
-        if (!roomExists(this.db, roomId)) {
-          this.ownerTouchPending.delete(roomId);
-          continue;
-        }
-        await this.touchOwnerRoomActivity(roomId, { force: true });
-      }
     }
 
     for (const roomId of this.projectionDirtyRooms) {
@@ -2050,6 +2107,7 @@ export class RoomDO extends DurableObject {
          * room this object holds.
          */
         logInternalRoomError('flushProjectionGetRoomDoc', error, roomId);
+        await this.markProjectionPending(roomId);
         continue;
       }
 
@@ -2076,20 +2134,52 @@ export class RoomDO extends DurableObject {
             bytes: elementsBytes,
             outcome: 'projection_oversized',
           });
-          await this.ctx.storage.delete(`ydoc-projection:${roomId}`);
+          await this.clearProjectionMarker(roomId);
           this.projectionDirtyRooms.delete(roomId);
           continue;
+        }
+
+        if (RoomDO.forceProjectionFailureForTests?.has(roomId)) {
+          RoomDO.forceProjectionFailureForTests.delete(roomId);
+          throw new Error('forced projection failure (test)');
         }
 
         this.db.prepare(
           `UPDATE rooms SET elements = ?, updated_at = ? WHERE room_id = ?`,
         ).run(elementsJson, Date.now(), roomId);
-        await this.ctx.storage.delete(`ydoc-projection:${roomId}`);
+        await this.clearProjectionMarker(roomId);
         this.projectionDirtyRooms.delete(roomId);
       } catch (err) {
         logInternalRoomError('flushProjection', err, roomId);
-        // The Yjs snapshot above is the durable copy and it is already written;
-        // the row is a convenience for the read path, not the record.
+        // The Yjs snapshot above is the durable copy and it is already
+        // written; the row is a convenience for the read path, not the
+        // record. The projection is left pending, so a marker has to be
+        // durable for a later instance to retry it (S6).
+        await this.markProjectionPending(roomId);
+      }
+    }
+
+    // Every owner touch is deferred to here (S5, S6): a fetch to IdentityDO
+    // is non-storage I/O, and running it earlier would open a window between
+    // some room's snapshot write above and its own SQL row write, right in
+    // the middle of the very stretch the projection marker exists to cover.
+    for (const roomId of roomsToTouch) {
+      if (!roomExists(this.db, roomId)) continue;
+      await this.touchOwnerRoomActivity(roomId, { force: opts.isLastSocketClose === true });
+    }
+
+    // A room can quiesce entirely inside the throttle window: the loop above
+    // skips its touch (not enough time has passed), then no further edit
+    // ever makes it dirty again before the last socket closes. The
+    // force-on-dirty touch above never runs for a room that is not in
+    // `roomsToTouch`, so a still-pending room is forced here too.
+    if (opts.isLastSocketClose) {
+      for (const roomId of Array.from(this.ownerTouchPending)) {
+        if (!roomExists(this.db, roomId)) {
+          this.ownerTouchPending.delete(roomId);
+          continue;
+        }
+        await this.touchOwnerRoomActivity(roomId, { force: true });
       }
     }
 

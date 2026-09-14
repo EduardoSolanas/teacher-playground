@@ -1,11 +1,14 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
-import { runDurableObjectAlarm } from 'cloudflare:test';
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
 import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
+import { RoomDO } from './RoomDO';
 import { getElementsFromArray, replaceSharedElements } from '../lib/whiteboard/yjsDoc';
+import { snapshotChunkKey, snapshotMetaKey } from '../lib/whiteboard/snapshotChunks';
+import { snapshotFormatKey } from '../lib/whiteboard/snapshotFormat';
 import { authenticatedFetch, bootstrapLocalSession, type LocalAuthSession } from '../test/workerAuth';
 
 const SOCKET_EVENT_DEADLINE_MS = 15_000;
@@ -80,6 +83,33 @@ function boardFromReply(reply: ArrayBuffer): unknown[] {
   const doc = new Y.Doc();
   syncProtocol.readSyncMessage(decoder, encoding.createEncoder(), doc, undefined);
   return getElementsFromArray(doc.getArray('elements'));
+}
+
+/** A Yjs document holding exactly `elements`, for building raw snapshot bytes. */
+function docWithBoard(elements: BoardElement[]): Y.Doc {
+  const doc = new Y.Doc();
+  replaceSharedElements(doc, doc.getArray('elements'), elements);
+  return doc;
+}
+
+function projectionMarkerKey(roomId: string): string {
+  return `ydoc-projection:${roomId}`;
+}
+
+async function storedProjectionMarker(roomId: string): Promise<unknown> {
+  return runInDurableObject(roomStub(roomId), (_instance, state) => (
+    state.storage.get(projectionMarkerKey(roomId))
+  ));
+}
+
+/** Plants a real, decodable V1 snapshot directly into a room's storage. */
+async function seedSnapshot(roomId: string, elements: BoardElement[]): Promise<void> {
+  const snapshot = Y.encodeStateAsUpdate(docWithBoard(elements));
+  await runInDurableObject(roomStub(roomId), async (_instance, state) => {
+    await state.storage.put(snapshotMetaKey(roomId), 1);
+    await state.storage.put(snapshotChunkKey(roomId, 0), snapshot);
+    await state.storage.put(snapshotFormatKey(roomId), 1);
+  });
 }
 
 describe('server-owned SQL scene projection', () => {
@@ -276,5 +306,105 @@ describe('server-owned SQL scene projection', () => {
     expect((await response.json() as { elements: unknown[] }).elements).toEqual(board);
 
     sender.close();
+  });
+});
+
+describe('projection retry marker (S6)', () => {
+  afterEach(() => {
+    RoomDO.forceProjectionFailureForTests = null;
+  });
+
+  it('leaves no retry marker behind after a normal flush, and the row matches the board', async () => {
+    const roomId = 'projection-marker-normal-room';
+    await createRoom(roomId);
+    const board: BoardElement[] = [{ id: 'normal-el', type: 'rectangle', x: 1, y: 2 }];
+
+    const sender = await openSocket(roomId);
+    const receiver = await openSocket(roomId);
+    const relayed = nextBinaryMessage(receiver);
+    sender.send(boardUpdateFrame(board));
+    expect(boardFromReply(await relayed)).toEqual(board);
+
+    await runDurableObjectAlarm(roomStub(roomId));
+
+    expect(await storedProjectionMarker(roomId)).toBeUndefined();
+    const response = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session);
+    expect(response.status).toBe(200);
+    expect((await response.json() as { elements: unknown[] }).elements).toEqual(board);
+
+    sender.close();
+    receiver.close();
+  });
+
+  it('keeps the retry marker durable after a projection failure, and converges once eviction and a real restart retry it', async () => {
+    const roomId = 'projection-marker-restart-room';
+    await createRoom(roomId);
+    const board: BoardElement[] = [{ id: 'marker-el', type: 'rectangle', x: 5, y: 6 }];
+
+    // A fresh room, never previously marked: its snapshot write below has to
+    // land durably on its own, with no marker seeded ahead of time. The
+    // projection write is then made to throw through a real, one-shot fault
+    // injected in the object's actual code path (RoomDO.forceProjectionFailureForTests,
+    // the same test-only-static-field pattern already used by
+    // snapshotWriteFormatForTests and ownerTouchIntervalMsForTests elsewhere
+    // in this class) rather than a mock or stub standing in for any object --
+    // this exercises a transient failure between a durable snapshot and its
+    // SQL row, which is exactly what the marker exists to survive.
+    const sender = await openSocket(roomId);
+    const receiver = await openSocket(roomId);
+    const relayed = nextBinaryMessage(receiver);
+    // Set before the send: a socket message flushes inline (`flushIfDue`) the
+    // moment it is processed, so the fault has to already be armed by then --
+    // and, being one-shot, it is already consumed by that inline flush, so a
+    // *second* attempt (an explicit alarm call here) would just retry and
+    // succeed before this test ever observes the pending marker.
+    RoomDO.forceProjectionFailureForTests = new Set([roomId]);
+    sender.send(boardUpdateFrame(board));
+    expect(boardFromReply(await relayed)).toEqual(board);
+
+    // The inline flush's projection failed -- so the marker must be durable
+    // for a later restart to find, even though nothing seeded one ahead of
+    // time.
+    expect(await storedProjectionMarker(roomId)).toBe(true);
+
+    // A real eviction: a fresh instance holds none of this object's
+    // in-memory bookkeeping, so recovery has to come from storage alone. The
+    // one-shot fault already consumed itself, so the retry below is a real,
+    // ordinary flush -- exactly like a transient failure that resolved
+    // itself by the next beat.
+    await evictDurableObject(roomStub(roomId));
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => instance.alarm());
+
+    // The row converges to the snapshot's board, and the marker is gone.
+    const response = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session);
+    expect(response.status).toBe(200);
+    expect((await response.json() as { elements: unknown[] }).elements).toEqual(board);
+    expect(await storedProjectionMarker(roomId)).toBeUndefined();
+
+    sender.close();
+    receiver.close();
+  });
+
+  it('deletes a marker restored from a previous instance once the projection succeeds', async () => {
+    const roomId = 'projection-marker-restored-room';
+    await createRoom(roomId);
+    const board: BoardElement[] = [{ id: 'restored-el', type: 'rectangle', x: 3, y: 4 }];
+
+    // A valid, decodable snapshot already on disk, as if an earlier instance
+    // wrote it, plus a marker as if that instance died before the row caught
+    // up -- exactly what `restoreProjectionRetries` exists to pick back up.
+    await seedSnapshot(roomId, board);
+    await runInDurableObject(roomStub(roomId), async (_instance, state) => {
+      await state.storage.put(projectionMarkerKey(roomId), true);
+    });
+
+    // Direct invocation, not `runDurableObjectAlarm`: nothing here went
+    // through a code path that scheduled an alarm.
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => instance.alarm());
+
+    expect(await storedProjectionMarker(roomId)).toBeUndefined();
+    const response = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, session);
+    expect(response.status).toBe(200);
+    expect((await response.json() as { elements: unknown[] }).elements).toEqual(board);
   });
 });
