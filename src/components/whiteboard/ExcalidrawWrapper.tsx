@@ -139,6 +139,12 @@ type ExcalidrawWrapperProps = {
   localPeerId: string;
   yDoc: Y.Doc | null;
   yElementsArray: Y.Array<Y.Map<unknown>> | null;
+  /**
+   * Which board of the room this editor is showing. Every element this client
+   * publishes is stamped with it, every element rendered is filtered to it,
+   * and the room's other boards are untouched by anything drawn here.
+   */
+  activeBoardId: string;
   users: WhiteboardUser[];
   cursors: RemoteCursor[];
   activeTool: string;
@@ -180,6 +186,7 @@ export default function ExcalidrawWrapper({
   localPeerId,
   yDoc,
   yElementsArray,
+  activeBoardId = 'main',
   users,
   cursors,
   activeTool,
@@ -204,6 +211,17 @@ export default function ExcalidrawWrapper({
   const activeToolRef = useRef(activeTool);
   const lastSyncedElementsRef = useRef<SharedSceneElement[]>([]);
   const lastPublishedIdsRef = useRef<string[]>([]);
+  /**
+   * The board this editor is showing, readable from the stable publish path.
+   *
+   * The prop changes when the room switches boards, but publishScene and the
+   * remote handler are stable callbacks that would otherwise close over a
+   * stale board.
+   */
+  const activeBoardIdRef = useRef(activeBoardId);
+  useEffect(() => {
+    activeBoardIdRef.current = activeBoardId;
+  }, [activeBoardId]);
   /** id -> Excalidraw `version` at the last publish, for O(changed) diffing. */
   const publishedVersionsRef = useRef<Map<string, number>>(new Map());
   const latestViewportRef = useRef({ x: 0, y: 0, zoom: 1 });
@@ -824,7 +842,9 @@ export default function ExcalidrawWrapper({
       pendingLocalPublishRef.current = null;
       const existing = getElementsFromArray(elementsArray);
       const merged = mergeApiSnapshotElements(pendingLocal, existing);
-      replaceSharedElements(yDoc, elementsArray, merged, 'local');
+      replaceSharedElements(yDoc, elementsArray, merged, 'local', {
+        boardId: activeBoardIdRef.current,
+      });
       lastSyncedElementsRef.current = merged;
       lastPublishedIdsRef.current = merged
         .map((element) => (element as { id?: unknown })?.id)
@@ -844,7 +864,11 @@ export default function ExcalidrawWrapper({
        * canvas was handed a Uint8Array it cannot draw, and a peer's strokes
        * simply never appeared. getElementsFromArray decodes every stored form.
        */
-      const remoteElements = toSharedSceneElements(getElementsFromArray(elementsArray));
+      const remoteElements = toSharedSceneElements(getElementsFromArray(elementsArray))
+        .filter((element) => {
+          const stamp = (element as { boardId?: unknown }).boardId;
+          return (typeof stamp === 'string' && stamp.length > 0 ? stamp : 'main') === activeBoardIdRef.current;
+        });
 
       const same = excalidrawElementsEqual(remoteElements, lastSyncedElementsRef.current);
       if (same) return;
@@ -886,12 +910,48 @@ export default function ExcalidrawWrapper({
     };
   }, [yDoc, yElementsArray, roomId, applyRemoteElements, adoptVersionBaseline, fetchMissingBoardFiles]);
 
+  // A board swap is a scene swap: the shared document does not change, so the
+  // observer above stays quiet and the editor has to be handed the new board's
+  // elements explicitly. The publish bookkeeping resets with it, because the
+  // ids the old board published mean nothing on the new one.
+  //
+  // Skipped on mount deliberately: the api-ready restore below loads the
+  // active board through the same filtered reader, and queueing an empty
+  // scene here would race that restore and wipe the editor before anyone
+  // draws.
+  const previousBoardRef = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = previousBoardRef.current;
+    previousBoardRef.current = activeBoardId;
+    if (previous === null || previous === activeBoardId) return;
+    if (!yElementsArray) return;
+    const remoteElements = toSharedSceneElements(getElementsFromArray(yElementsArray))
+      .filter((element) => {
+        const stamp = (element as { boardId?: unknown }).boardId;
+        return (typeof stamp === 'string' && stamp.length > 0 ? stamp : 'main') === activeBoardId;
+      });
+    lastSyncedElementsRef.current = remoteElements;
+    lastPublishedIdsRef.current = remoteElements
+      .map((element) => element.id)
+      .filter((id): id is string => typeof id === 'string');
+    applyRemoteElements(remoteElements);
+  }, [activeBoardId, yElementsArray, applyRemoteElements]);
+
   /** Snapshot of the shared document as plain Excalidraw elements. */
   const readSharedElements = useCallback((): SharedSceneElement[] => {
     if (!yElementsArray) return [];
     // Through the shared reader, never by copying the map directly: `points`
     // is stored encoded and has to be decoded before it reaches the canvas.
-    return toSharedSceneElements(getElementsFromArray(yElementsArray));
+    //
+    // Scoped to the board this editor is showing: every consumer of this
+    // reader — the mount restore, the snapshot, the export — wants the active
+    // board, and an element without a stamp belongs to the main one.
+    const stamp = (element: { boardId?: unknown }): boolean => {
+      const boardId = element.boardId;
+      return (typeof boardId === 'string' && boardId.length > 0 ? boardId : 'main') === activeBoardIdRef.current;
+    };
+    return toSharedSceneElements(getElementsFromArray(yElementsArray))
+      .filter((element) => stamp(element as { boardId?: unknown }));
   }, [yElementsArray]);
 
   /*
@@ -1151,13 +1211,16 @@ export default function ExcalidrawWrapper({
       try {
         if (candidate.wholeScene) {
           // An element disappeared, so the stale sweep has to run and needs
-          // the whole scene to know what survived.
+          // the whole scene to know what survived. The sweep is scoped to the
+          // active board: other boards are never swept by this publish.
           replaceSharedElements(yDoc, yElementsArray, serializedElements, 'local', {
             previousIds,
+            boardId: activeBoardIdRef.current,
           });
         } else if (payload.length > 0) {
           replaceSharedElements(yDoc, yElementsArray, payload, 'local', {
             deleteMissing: false,
+            boardId: activeBoardIdRef.current,
           });
         }
 

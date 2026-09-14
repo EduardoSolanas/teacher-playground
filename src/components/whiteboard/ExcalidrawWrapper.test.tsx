@@ -3,7 +3,7 @@ import { act, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 
-import { replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
+import { getElementsFromArray, replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
 import {
   clearWhiteboardLatencyEvents,
   readWhiteboardLatencyEvents,
@@ -27,6 +27,7 @@ function createProps(): WrapperProps {
   const { doc, array } = createYjsBoard();
   return {
     roomId: 'room-1',
+    activeBoardId: 'main',
     userName: 'Alice',
     localPeerId: 'peer-1',
     yDoc: doc,
@@ -1902,5 +1903,91 @@ describe('ExcalidrawWrapper remote image and library races', () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 1100));
     });
+  });
+});
+
+describe('multiple boards', () => {
+  function seedTwoBoards(doc: Y.Doc, array: Y.Array<Y.Map<unknown>>): void {
+    replaceSharedElements(doc, array, [
+      { id: 'main-1', type: 'rectangle', boardId: 'main' },
+      { id: 'b2-1', type: 'rectangle', boardId: 'board-2' },
+    ] as never, 'seed');
+  }
+
+  function sceneIds(api: { getSceneElements: () => readonly unknown[] }): string[] {
+    return (api.getSceneElements() as readonly { id: string }[]).map((element) => element.id);
+  }
+
+  it('stamps elements drawn on the active board with its id', async () => {
+    setFetchHandler(() => new Response(null, { status: 404 }));
+    const { props, api } = await renderWrapper({ activeBoardId: 'board-2' });
+    const { CaptureUpdateAction } = await loadExcalidrawPackage();
+    const [el] = await rectangleElements(['board2-el']);
+    await act(async () => {
+      api.updateScene({ elements: [el], captureUpdate: CaptureUpdateAction.NEVER });
+    });
+
+    const stored = getElementsFromArray(props.yElementsArray!);
+    expect(stored.find((element) => element.id === 'board2-el')?.boardId).toBe('board-2');
+  });
+
+  it('renders only the elements of the active board', async () => {
+    setFetchHandler(() => new Response(null, { status: 404 }));
+    const { doc, array } = createYjsBoard();
+    seedTwoBoards(doc, array);
+    const { api } = await renderWrapper({ yDoc: doc, yElementsArray: array, activeBoardId: 'board-2' });
+
+    await waitFor(() => {
+      expect(sceneIds(api)).toEqual(['b2-1']);
+    });
+  });
+
+  it('switching boards swaps the scene and keeps the other board in the document', async () => {
+    setFetchHandler(() => new Response(null, { status: 404 }));
+    const { doc, array } = createYjsBoard();
+    seedTwoBoards(doc, array);
+    const { view, props, api, ExcalidrawWrapper: Wrapper } = await renderWrapper({ yDoc: doc, yElementsArray: array, activeBoardId: 'main' });
+    await waitFor(() => {
+      expect(sceneIds(api)).toEqual(['main-1']);
+    });
+
+    await act(async () => {
+      view.rerender(<Wrapper {...props} activeBoardId="board-2" />);
+    });
+
+    await waitFor(() => {
+      expect(sceneIds(api)).toEqual(['b2-1']);
+    });
+    // The board that was left is still in the shared document.
+    expect(getElementsFromArray(array).map((element) => element.id)).toEqual(['main-1', 'b2-1']);
+  });
+
+  it('erasing on the active board tombstones locally and leaves other boards untouched', async () => {
+    setFetchHandler(() => new Response(null, { status: 404 }));
+    const { doc, array } = createYjsBoard();
+    seedTwoBoards(doc, array);
+    const { api } = await renderWrapper({ yDoc: doc, yElementsArray: array, activeBoardId: 'board-2' });
+    await waitFor(() => {
+      expect(sceneIds(api)).toEqual(['b2-1']);
+    });
+
+    // Erase the way Excalidraw reports it: the element stays in the scene as
+    // a version-bumped tombstone rather than vanishing from it.
+    const { CaptureUpdateAction } = await loadExcalidrawPackage();
+    const [erased] = await rectangleElements(['b2-1']);
+    await act(async () => {
+      api.updateScene({
+        elements: [{ ...erased, isDeleted: true, version: 5 }],
+        captureUpdate: CaptureUpdateAction.NEVER,
+      });
+    });
+
+    await waitFor(() => {
+      expect(sceneIds(api)).toEqual([]);
+    });
+    const stored = getElementsFromArray(array);
+    expect(stored.find((element) => element.id === 'b2-1')?.isDeleted).toBe(true);
+    // The main board's element is untouched by board 2's erase.
+    expect(stored.find((element) => element.id === 'main-1')?.isDeleted).toBeFalsy();
   });
 });
