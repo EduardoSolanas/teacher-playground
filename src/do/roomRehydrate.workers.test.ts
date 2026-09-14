@@ -338,3 +338,60 @@ describe('snapshot chunk list-skip correctness', () => {
     expect(await docElements(roomId)).toEqual([{ id: 'small-1', type: 'rectangle' }]);
   });
 });
+
+describe('legacy snapshot key cleanup (S6)', () => {
+  it('deletes the legacy key only once a room loaded from it flushes, and chunks keep the board across eviction', async () => {
+    const roomId = 'legacy-cleanup-room';
+    await seedRow(roomId, []);
+    const snapshot = Y.encodeStateAsUpdate(docWithElements([{ id: 'legacy-cleanup-el', type: 'rectangle' }]));
+    await runInDurableObject(roomStub(roomId), async (_instance, state) => {
+      await state.storage.put(`ydoc:${roomId}`, snapshot);
+    });
+
+    // Opening the room reads the legacy key but must not delete it yet --
+    // nothing has replaced it in storage, so a crash right now must still
+    // find the board there.
+    await docElements(roomId);
+    expect(await runInDurableObject(roomStub(roomId), (_instance, state) => (
+      state.storage.get(`ydoc:${roomId}`)
+    ))).toBeDefined();
+
+    // The room's first post-chunking flush is what retires the legacy key.
+    await editAndFlush(roomId, 'legacy-cleanup-el2');
+    expect(await runInDurableObject(roomStub(roomId), (_instance, state) => (
+      state.storage.get(`ydoc:${roomId}`)
+    ))).toBeUndefined();
+
+    // A real eviction: a fresh instance holds none of this object's in-memory
+    // bookkeeping and must read the board from chunks alone, with no legacy
+    // key left to fall back on.
+    await evictDurableObject(roomStub(roomId));
+    const elements = await docElements(roomId);
+    expect(elements.map((element) => (element as { id: string }).id).sort()).toEqual(
+      ['legacy-cleanup-el', 'legacy-cleanup-el2'].sort(),
+    );
+    expect(await runInDurableObject(roomStub(roomId), (_instance, state) => (
+      state.storage.get(`ydoc:${roomId}`)
+    ))).toBeUndefined();
+  });
+
+  it('leaves a legacy key alone on flush when the room never actually loaded from it', async () => {
+    const roomId = 'legacy-untouched-room';
+    await seedRow(roomId, []);
+    // A normal chunk-based snapshot: this room's readSnapshot never takes the
+    // legacy branch at all.
+    await seedSnapshot(roomId, [{ id: 'chunked-el', type: 'rectangle' }]);
+    // A stray value sitting under the legacy key regardless -- a restore, a
+    // hand-edit, whatever -- that this room never read as its board.
+    await runInDurableObject(roomStub(roomId), async (_instance, state) => {
+      await state.storage.put(`ydoc:${roomId}`, new Uint8Array([1, 2, 3]));
+    });
+
+    await editAndFlush(roomId, 'chunked-el2');
+
+    // The flush never loaded from the legacy key, so it must not delete it.
+    expect(await runInDurableObject(roomStub(roomId), (_instance, state) => (
+      state.storage.get(`ydoc:${roomId}`)
+    ))).toBeDefined();
+  });
+});

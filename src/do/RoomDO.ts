@@ -452,6 +452,20 @@ export class RoomDO extends DurableObject {
   private readonly lastKnownChunkCount = new Map<string, number>();
 
   /**
+   * Rooms whose document was rehydrated from the pre-chunking legacy key
+   * (S6, STORAGE_OPTIMISATIONS.md) and so still need that key cleared once
+   * their next flush lands.
+   *
+   * The legacy key is gone for every room after its first post-chunking
+   * flush, so deleting it on every later flush, forever, is a write that is
+   * almost always a no-op. Tracked per instance only: an eviction before the
+   * first flush loses this, but the legacy key is then still physically
+   * present in storage, so the next `readSnapshot` call finds it again and
+   * re-adds the room here -- the conservative direction.
+   */
+  private readonly legacyKeyRoomsToClear = new Set<string>();
+
+  /**
    * Per-room throttle for {@link touchOwnerRoomActivity} (S5,
    * STORAGE_OPTIMISATIONS.md): when each room last moved its owner's IdentityDO
    * "last used" stamp in this object instance. Absent means "touch on the next
@@ -1398,6 +1412,9 @@ export class RoomDO extends DurableObject {
     const chunkCount = await this.ctx.storage.get(snapshotMetaKey(roomId)) as number | undefined;
     if (typeof chunkCount !== 'number' || chunkCount < 1) {
       const legacy = await this.ctx.storage.get(legacySnapshotKey(roomId)) as Uint8Array | undefined;
+      // Remembered so `writeSnapshot` knows this room's legacy key still
+      // needs clearing (S6) -- only a room that actually loaded from it does.
+      if (legacy) this.legacyKeyRoomsToClear.add(roomId);
       // The legacy pre-chunking key is always V1 -- it predates the format key.
       return legacy ? { bytes: legacy, format: 1 } : undefined;
     }
@@ -1458,7 +1475,14 @@ export class RoomDO extends DurableObject {
       await this.deleteSnapshotChunks(roomId, chunks.length);
     }
     this.lastKnownChunkCount.set(roomId, chunks.length);
-    await this.ctx.storage.delete(legacySnapshotKey(roomId));
+
+    // Only a room that actually loaded from the legacy key still needs it
+    // cleared (S6) -- for every other room this delete would be a pure
+    // no-op write, every flush, forever.
+    if (this.legacyKeyRoomsToClear.has(roomId)) {
+      await this.ctx.storage.delete(legacySnapshotKey(roomId));
+      this.legacyKeyRoomsToClear.delete(roomId);
+    }
   }
 
   /** Deletes a room's snapshot chunks, optionally keeping the first `keep` of them. */
@@ -1738,6 +1762,7 @@ export class RoomDO extends DurableObject {
     this.lastKnownChunkCount.delete(roomId);
     this.lastOwnerTouchAt.delete(roomId);
     this.ownerTouchPending.delete(roomId);
+    this.legacyKeyRoomsToClear.delete(roomId);
     /*
      * The library goes with the room.
      *
