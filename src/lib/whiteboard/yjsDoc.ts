@@ -98,6 +98,13 @@ type ReplaceSharedOptions = {
    * the caller did not resend as deleted and wipe the board.
    */
   deleteMissing?: boolean;
+  /**
+   * The board this scene belongs to. Set, the published elements are stamped
+   * with it and the stale sweep is scoped to it: elements on other boards are
+   * never swept by a publish from this one, which is what lets an editor
+   * switch boards without erasing the board it left.
+   */
+  boardId?: string;
 };
 
 /**
@@ -118,6 +125,7 @@ export function replaceSharedElements(
   origin: unknown = 'local',
   options?: ReplaceSharedOptions,
 ): void {
+  const scopeBoardId = options?.boardId;
   doc.transact(() => {
     const byId = new Map<string, Y.Map<any>>();
     for (const map of elementsArray.toArray()) {
@@ -131,6 +139,12 @@ export function replaceSharedElements(
       if (typeof id !== 'string' || id.length === 0) continue;
       seen.add(id);
 
+      // The scope stamps every published element with the board it came from;
+      // the scope wins over anything the scene itself carried.
+      const scoped = scopeBoardId !== undefined
+        ? { ...element, boardId: scopeBoardId }
+        : element;
+
       let map = byId.get(id);
       if (!map) {
         map = new Y.Map();
@@ -138,7 +152,7 @@ export function replaceSharedElements(
         byId.set(id, map);
       }
 
-      for (const [key, value] of Object.entries(element)) {
+      for (const [key, value] of Object.entries(scoped)) {
         /*
          * Strokes are the reason the codec exists, and this is the path they
          * take: every pointer sample reaches the document through here, not
@@ -157,7 +171,7 @@ export function replaceSharedElements(
         }
       }
       for (const key of Array.from(map.keys())) {
-        if (!Object.prototype.hasOwnProperty.call(element, key)) {
+        if (!Object.prototype.hasOwnProperty.call(scoped, key)) {
           map.delete(key);
         }
       }
@@ -165,11 +179,20 @@ export function replaceSharedElements(
 
     if (options?.deleteMissing === false) return;
 
+    // The sweep is scoped to the published board: an element belongs to the
+    // board its stamp names, and an element without a stamp belongs to the
+    // main board. Publishing one board never sweeps another.
+    const sweptBoardId = scopeBoardId ?? 'main';
+    const onSweptBoard = (map: Y.Map<any>): boolean => {
+      const stamp = map.get('boardId');
+      return (typeof stamp === 'string' && stamp.length > 0 ? stamp : 'main') === sweptBoardId;
+    };
     const removable = options?.previousIds ? new Set(options.previousIds) : null;
     const staleIndexes: number[] = [];
     elementsArray.toArray().forEach((map, index) => {
       const id = map.get('id');
       if (typeof id !== 'string' || seen.has(id)) return;
+      if (!onSweptBoard(map)) return;
       if (removable && !removable.has(id)) return;
       staleIndexes.push(index);
     });

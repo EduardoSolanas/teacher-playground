@@ -125,12 +125,13 @@ function isFiniteNumber(value: unknown): boolean {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-function isSmallPlainValue(value: unknown): boolean {
+function isSmallPlainValue(value: unknown, maxChars = 2048): boolean {
   if (value instanceof Y.AbstractType) return false;
   if (value === null) return true;
   if (typeof value === 'object') {
     try {
-      return JSON.stringify(value) !== undefined && JSON.stringify(value).length <= 2048;
+      const json = JSON.stringify(value);
+      return json !== undefined && json.length <= maxChars;
     } catch {
       return false;
     }
@@ -164,14 +165,22 @@ const SHARED_MAP_RULES: Record<string, SharedMapRule> = {
     keyPattern: /^[\s\S]{1,128}$/,
     allowedValue: () => false,
   },
+  // The room's board tabs: key is a board id, value one small definition.
+  // Capped well above any lesson; the entry cap is what bounds a hostile
+  // editor inventing boards.
+  boardsMeta: {
+    maxEntries: 50,
+    keyPattern: /^[A-Za-z0-9_-]{1,64}$/,
+    allowedValue: (value) => isSmallPlainValue(value, 256),
+  },
 };
 
 /**
  * Bounds every shared type outside the elements array.
  *
  * Runs after {@link sanitizeSceneDoc} on the same applied sync update. A root
- * type that only arrived remotely is registered as a bare `AbstractType` —
- * this build's base class carries none of the map or list interface — so the
+ * type that only arrived remotely is registered as a bare `AbstractType` â€”
+ * this build's base class carries none of the map or list interface â€” so the
  * dispatcher reads where the content actually lives (`_map` for keyed
  * entries, `_length` for list items) and normalizes through the matching
  * accessor before pruning. Entries that break their map's rule are deleted,
@@ -193,8 +202,8 @@ export type SanitizeSharedResult = {
  * Bounds every shared type outside the elements array.
  *
  * Runs on a document that just received a client update. A root type that only
- * arrived remotely is registered as a bare `AbstractType` — this build's base
- * class carries none of the map or list interface — so the dispatcher reads
+ * arrived remotely is registered as a bare `AbstractType` â€” this build's base
+ * class carries none of the map or list interface â€” so the dispatcher reads
  * where the content actually lives (`_map` for keyed entries, `_length` for
  * list items) and normalizes through the matching accessor before pruning.
  * Entries that break their map's rule are deleted and unknown top-level types
@@ -205,7 +214,7 @@ export type SanitizeSharedResult = {
  * persisted snapshot by roughly one record per junk entry, frame after frame.
  * That is why the sync path runs this on a throwaway staging document and
  * applies only the structurally rebuilt survivor state (see
- * {@link buildCleanDoc}) — the flood never enters the real document's item
+ * {@link buildCleanDoc}) â€” the flood never enters the real document's item
  * store at all. Run directly, the prune is the containment backstop for every
  * other path that applies updates.
  */
@@ -297,7 +306,7 @@ export function buildCleanDoc(staged: Y.Doc): Y.Doc {
   }
   if (surviving.length > 0) cleanElements.push(surviving);
 
-  for (const name of ['fileReady', 'viewport', 'cursors'] as const) {
+  for (const name of ['fileReady', 'viewport', 'cursors', 'boardsMeta'] as const) {
     const source = staged.getMap(name);
     const target = clean.getMap(name);
     for (const [key, value] of source.entries()) {

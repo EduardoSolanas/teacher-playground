@@ -816,3 +816,74 @@ describe('replaceSharedElements field transport', () => {
     expect(origins).toEqual(['prune']);
   });
 });
+
+describe('replaceSharedElements board scoping', () => {
+  function seededDoc(): { doc: Y.Doc; array: Y.Array<Y.Map<unknown>> } {
+    const doc = new Y.Doc();
+    return { doc, array: doc.getArray<Y.Map<unknown>>('elements') };
+  }
+
+  it('stamps published elements with the scoped board id', () => {
+    const { doc, array } = seededDoc();
+    replaceSharedElements(doc, array, [{ id: 'b1', type: 'rectangle' }] as never, 'local', {
+      boardId: 'board-2',
+    });
+
+    const [element] = getElementsFromArray(array);
+    expect(element.boardId).toBe('board-2');
+  });
+
+  it('leaves elements on other boards alone when the scoped scene sweeps', () => {
+    const { doc, array } = seededDoc();
+    replaceSharedElements(doc, array, [
+      { id: 'a1', type: 'rectangle', boardId: 'main' },
+      { id: 'b1', type: 'rectangle', boardId: 'board-2' },
+    ] as never);
+    expect(array.length).toBe(2);
+
+    // Board 2's editor publishes its one-element scene as a whole-scene sweep.
+    // previousIds carries both boards: this client was on the main board
+    // before switching. The scope is what stops the sweep eating a1.
+    replaceSharedElements(doc, array, [{ id: 'b1', type: 'rectangle', boardId: 'board-2' }] as never, 'local', {
+      boardId: 'board-2',
+      previousIds: ['a1', 'b1'],
+    });
+
+    expect(array.length).toBe(2);
+    expect(getElementsFromArray(array).map((e) => e.id)).toEqual(['a1', 'b1']);
+  });
+
+  it('still sweeps same-board elements missing from the scoped scene', () => {
+    const { doc, array } = seededDoc();
+    replaceSharedElements(doc, array, [
+      { id: 'b1', type: 'rectangle', boardId: 'board-2' },
+      { id: 'b2', type: 'rectangle', boardId: 'board-2' },
+    ] as never, 'local', { boardId: 'board-2' });
+    expect(array.length).toBe(2);
+
+    // b2 was erased on board 2: the scoped sweep removes it and only it.
+    replaceSharedElements(doc, array, [{ id: 'b1', type: 'rectangle', boardId: 'board-2' }] as never, 'local', {
+      boardId: 'board-2',
+      previousIds: ['b1', 'b2'],
+    });
+
+    expect(getElementsFromArray(array).map((e) => e.id)).toEqual(['b1']);
+  });
+
+  it('treats an element without a board id as the main board', () => {
+    const { doc, array } = seededDoc();
+    replaceSharedElements(doc, array, [
+      { id: 'legacy', type: 'rectangle' },
+      { id: 'b1', type: 'rectangle', boardId: 'board-2' },
+    ] as never);
+    expect(array.length).toBe(2);
+
+    // The main board's editor sweeps its scene. It was on board 2 before
+    // switching, so its previousIds carry b1 — the scope keeps b1 alive.
+    replaceSharedElements(doc, array, [{ id: 'legacy', type: 'rectangle' }] as never, 'local', {
+      previousIds: ['legacy', 'b1'],
+    });
+
+    expect(getElementsFromArray(array).map((e) => e.id)).toEqual(['legacy', 'b1']);
+  });
+});
