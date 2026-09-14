@@ -4,7 +4,7 @@ import * as Y from 'yjs';
 import { RoomDO } from './RoomDO';
 import { getElementsFromArray, replaceSharedElements } from '../lib/whiteboard/yjsDoc';
 import { snapshotChunkKey, snapshotMetaKey } from '../lib/whiteboard/snapshotChunks';
-import { snapshotFormatKey } from '../lib/whiteboard/snapshotFormat';
+import { applyStoredSnapshot, snapshotFormatKey } from '../lib/whiteboard/snapshotFormat';
 
 /*
  * A board that was saved must come back.
@@ -277,32 +277,89 @@ describe('snapshot format dispatch', () => {
   });
 });
 
-describe('snapshot format writer', () => {
-  afterEach(() => {
-    RoomDO.snapshotWriteFormatForTests = null;
-  });
+describe('snapshot format writer (V2 only)', () => {
+  async function storedSnapshotBytes(roomId: string): Promise<Uint8Array> {
+    return runInDurableObject(roomStub(roomId), async (_instance, state) => {
+      const count = await state.storage.get(snapshotMetaKey(roomId)) as number;
+      const keys = Array.from({ length: count }, (_, index) => snapshotChunkKey(roomId, index));
+      const chunks = await state.storage.get(keys) as Map<string, Uint8Array>;
+      const parts = keys.map((key) => {
+        const chunk = chunks.get(key);
+        if (!chunk) throw new Error(`missing chunk ${key}`);
+        return chunk;
+      });
+      const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+      const joined = new Uint8Array(total);
+      let offset = 0;
+      for (const part of parts) {
+        joined.set(part, offset);
+        offset += part.byteLength;
+      }
+      return joined;
+    });
+  }
 
-  it('writes the format explicitly, including the default of 1', async () => {
-    const roomId = 'format-writer-default';
+  it('stores V2 bytes and records format 2', async () => {
+    const roomId = 'format-writer-v2';
     await seedRow(roomId, []);
-
-    await editAndFlush(roomId, 'default-format-el');
-
-    expect(await storedFormat(roomId)).toBe(1);
-  });
-
-  it('writes the overridden format when the test hook is set', async () => {
-    const roomId = 'format-writer-override';
-    await seedRow(roomId, []);
-    RoomDO.snapshotWriteFormatForTests = 2;
-
-    await editAndFlush(roomId, 'override-format-el');
+    await editAndFlush(roomId, 'v2-el');
 
     expect(await storedFormat(roomId)).toBe(2);
-    // And the board itself still round-trips through the dispatching reader.
-    expect(await docElements(roomId)).toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: 'override-format-el' })]),
-    );
+
+    const stored = await storedSnapshotBytes(roomId);
+    const round = new Y.Doc();
+    applyStoredSnapshot(round, stored, 2);
+    expect(getElementsFromArray(round.getArray('elements'))).toEqual([
+      expect.objectContaining({ id: 'v2-el' }),
+    ]);
+  });
+
+  it('stores a history-heavy board smaller than its V1 encoding, and it survives eviction', async () => {
+    const roomId = 'format-writer-history';
+    await seedRow(roomId, []);
+    await runInDurableObject(roomStub(roomId), async (instance) => {
+      const boxed = instance as unknown as {
+        getRoomDoc: (roomId: string) => Promise<Y.Doc>;
+        flushDirtyDocs: () => Promise<void>;
+      };
+      const doc = await boxed.getRoomDoc(roomId);
+      doc.transact(() => {
+        const arr = doc.getArray<Y.Map<unknown>>('elements');
+        for (let i = 0; i < 10; i++) {
+          const m = new Y.Map<unknown>();
+          m.set('id', `hist-${i}`);
+          m.set('type', 'rectangle');
+          m.set('x', i * 10);
+          arr.push([m]);
+        }
+      });
+      // Forty rounds of moves with no flush in between: the item store
+      // accumulates exactly the history the V2 encoder collapses.
+      for (let round = 1; round <= 40; round++) {
+        doc.transact(() => {
+          const arr = doc.getArray<Y.Map<unknown>>('elements');
+          for (let i = 0; i < arr.length; i++) {
+            const m = arr.get(i);
+            m.set('x', (m.get('x') as number) + 3);
+            m.set('version', round + 1);
+          }
+        });
+      }
+      await boxed.flushDirtyDocs();
+    });
+
+    const stored = await storedSnapshotBytes(roomId);
+    const decoded = new Y.Doc();
+    applyStoredSnapshot(decoded, stored, 2);
+    const v1 = Y.encodeStateAsUpdate(decoded);
+    expect(stored.byteLength).toBeLessThan(v1.byteLength);
+
+    await evictDurableObject(roomStub(roomId));
+    const elements = await docElements(roomId) as Array<{ id: string; x: number }>;
+    expect(elements).toHaveLength(10);
+    expect(elements.map((e) => e.id)).toEqual(Array.from({ length: 10 }, (_, i) => `hist-${i}`));
+    // Every round's move landed: the last writer's x wins, per element.
+    expect(new Set(elements.map((e) => e.x))).toEqual(new Set(Array.from({ length: 10 }, (_, i) => i * 10 + 120)));
   });
 });
 

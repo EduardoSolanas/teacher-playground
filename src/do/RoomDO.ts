@@ -99,7 +99,7 @@ import {
   snapshotMetaKey,
 } from '../lib/whiteboard/snapshotChunks';
 import {
-  SNAPSHOT_WRITE_FORMAT,
+  SNAPSHOT_STORED_FORMAT,
   SnapshotFormatUnknownError,
   applyStoredSnapshot,
   snapshotFormatKey,
@@ -404,8 +404,6 @@ export class RoomDO extends DurableObject {
   static maxElementsForTests: number | null = null;
   /** Test-only override for {@link SNAPSHOT_CHUNK_BYTES}; production uses the constant. */
   static snapshotChunkBytesForTests: number | null = null;
-  /** Test-only override for {@link SNAPSHOT_WRITE_FORMAT}; production uses the constant. */
-  static snapshotWriteFormatForTests: number | null = null;
   /** Test-only override for {@link RoomDO.OWNER_TOUCH_INTERVAL_MS}; production uses the constant. */
   static ownerTouchIntervalMsForTests: number | null = null;
 
@@ -1443,16 +1441,16 @@ export class RoomDO extends DurableObject {
   }
 
   /** Writes a board snapshot, in the given format, across as many values as it needs. */
-  private async writeSnapshot(roomId: string, snapshot: Uint8Array, format: number): Promise<void> {
+  private async writeSnapshot(roomId: string, snapshot: Uint8Array): Promise<void> {
     const chunkBytes = RoomDO.snapshotChunkBytesForTests ?? SNAPSHOT_CHUNK_BYTES;
     const chunks = chunkSnapshot(snapshot, chunkBytes);
 
-    // The format is always written explicitly, including `1`: that is what
-    // makes a rollback from a later phase safe, since a build that only
-    // writes `1` clears a stored `2` in this same atomic put.
+    // The format is always written explicitly, and this build writes only
+    // V2: the key exists so the reader can dispatch, and so a room stored by
+    // an older build keeps reading as V1 until its next flush.
     const entries: Record<string, unknown> = {
       [snapshotMetaKey(roomId)]: chunks.length,
-      [snapshotFormatKey(roomId)]: format,
+      [snapshotFormatKey(roomId)]: SNAPSHOT_STORED_FORMAT,
     };
     chunks.forEach((chunk, index) => {
       entries[snapshotChunkKey(roomId, index)] = chunk;
@@ -1961,17 +1959,17 @@ export class RoomDO extends DurableObject {
         pruneTombstonedElements(doc);
       }
 
-      const writeFormat = RoomDO.snapshotWriteFormatForTests ?? SNAPSHOT_WRITE_FORMAT;
-      const snapshot = writeFormat === 2 ? Y.encodeStateAsUpdateV2(doc) : Y.encodeStateAsUpdate(doc);
+      // V2 is the only format this build writes (STORAGE_OPTIMISATIONS.md, S7).
+      const snapshot = Y.encodeStateAsUpdateV2(doc);
       const budget = snapshotBudgetState(snapshot.byteLength);
       if (budget !== 'fine') {
         // Said out loud on purpose: an unwritable board is indistinguishable
         // from a safe one from the outside, because the retry below is silent.
-        logBoardSnapshot({ roomId, bytes: snapshot.byteLength, outcome: budget, format: writeFormat });
+        logBoardSnapshot({ roomId, bytes: snapshot.byteLength, outcome: budget, format: SNAPSHOT_STORED_FORMAT });
       }
 
       try {
-        await this.writeSnapshot(roomId, snapshot, writeFormat);
+        await this.writeSnapshot(roomId, snapshot);
         await this.ctx.storage.put({
           [`ydoc-projection:${roomId}`]: true,
         });

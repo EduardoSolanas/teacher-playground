@@ -38,7 +38,16 @@ take this file as authorization to build them all at once.
   coalescing"; each SQL method is its own transaction), and no test could
   observe it. Revisit only with the two writes made atomic explicitly
   (`transactionSync`) and a restart test that can see the difference.
-- **S7b not started** — gated on S7a being the production rollback target.
+- **S7b done** — the writer always produces V2 and records format `2` in the
+  same atomic put. One deliberate departure from the design below: the
+  `SNAPSHOT_WRITE_FORMAT` toggle and its test override were **removed rather
+  than flipped** — there is no format switch, V2 is the only written format,
+  and the dispatching reader keeps every pre-V2 room loading until its next
+  flush. The phase-2 round-trip and size reds are pinned in
+  `roomRehydrate.workers.test.ts`; `storedBoard` in the sync tests now reads
+  through `applyStoredSnapshot`. The rollback floor (never below S7a) is in
+  `DEPLOY.md`, and `SERVER_SIDE_BOARD_PLAN.md`'s storage table names the
+  chunked keys plus the format key.
 - **S1 not started** — gated on the real-room measurement (execution note 5). Like `SYNC_STORAGE_REVIEW.md`, this is an evidence appendix: assignment
 and status live in `PROJECT_IMPROVEMENT_TASKS.md`.
 
@@ -161,14 +170,14 @@ snapshot", which would silently seed from a possibly stale row and overwrite
 the snapshot on the next flush. Do not prefix a byte onto chunk 0 either: that
 makes the joined bytes something older builds apply as a corrupt update.
 
-**Writer.** `writeSnapshot` takes the format and puts `ydoc-format`,
-`ydoc-meta` and the chunks in the **same** `storage.put(entries)` call (a
-multi-key put is atomic), and always writes the format value explicitly —
-including `1`. Writing `1` explicitly is what makes rolling back from phase 2
-to phase 1 safe: a phase-1 build rewriting a room clears the `2` in the same
-atomic put. The format to write comes from one constant,
-`SNAPSHOT_WRITE_FORMAT`, with a `RoomDO.snapshotWriteFormatForTests` override
-beside the existing `snapshotChunkBytesForTests`.
+**Writer.** `writeSnapshot` puts `ydoc-format`, `ydoc-meta` and the chunks in
+the **same** `storage.put(entries)` call (a multi-key put is atomic), and
+always writes the format value explicitly. The original design kept a
+`SNAPSHOT_WRITE_FORMAT` constant with a test override so phase 1 could write
+`1` first; as implemented, the toggle was removed and the writer produces
+**V2 only** (`SNAPSHOT_STORED_FORMAT = 2`). The atomic explicit write keeps
+the property that matters: whatever a build writes, it names, so the reader
+never guesses.
 
 **Reader.** `readSnapshot` returns `{ bytes, format }`. A pure helper
 `applyStoredSnapshot(doc, bytes, format)` (in `snapshotChunks.ts` or a new
@@ -213,19 +222,17 @@ and keep loading. PITR restores (`SECURITY_BACKUP_RESTORE.md`) restore the
 format key together with the chunks it describes, since they share one atomic
 put.
 
-### Rollout — two deploys, in this order
+### Rollout — as built
 
-1. **Phase 1 (S7a) — reader + explicit `1`.** Ship the format key, the
-   dispatching reader, fail-closed handling, delete-path cleanup, and a writer
-   that writes V1 with `ydoc-format = 1`. Behaviour is otherwise unchanged.
-2. **Phase 2 (S7b) — flip the writer.** Only after phase 1 is deployed to
-   production and is the rollback target, change `SNAPSHOT_WRITE_FORMAT` to
-   `2`.
+1. **Phase 1 (S7a) — done.** Format key, dispatching reader, fail-closed
+   handling, delete-path cleanup, explicit V1 writer.
+2. **Phase 2 (S7b) — done.** The writer produces V2; the toggle was removed
+   rather than flipped (see the status note above), so there is no format
+   switch left in the code.
 
-Rollback rule, to record in `DEPLOY.md` with phase 2: once phase 2 has run,
-never roll back to a build older than phase 1 — such a build would feed V2
-bytes to `Y.applyUpdate`. Rolling back between phase 1 and phase 2 is safe in
-both directions.
+Rollback rule, recorded in `DEPLOY.md`: once phase 2 has run, never roll back
+to a build older than phase 1 — such a build would feed V2 bytes to
+`Y.applyUpdate`. Any build from S7a onward reads both formats and is safe.
 
 ### First reds
 
@@ -246,18 +253,26 @@ storage):
 5. In `src/do/roomDelete.workers.test.ts`: deleting a room removes
    `ydoc-format:<roomId>`.
 
-Phase 2, in `src/do/roomDOSync.workers.test.ts`:
+Phase 2, as built in `src/do/roomRehydrate.workers.test.ts` (the storage
+contract lives at the writer, and the helpers there are the honest way to
+drive it):
 
-6. **Round trip across eviction.** With the write format at 2, build a
-   history-heavy board through a socket (many moves of the same elements),
-   flush, construct a fresh object instance, and assert identical elements;
-   assert stored bytes are below the V1 encoding of the same document.
-7. **Rollback between phases.** Flush at format 2, set the test override to 1,
-   change the board, flush, reopen: correct board, `ydoc-format = 1`.
+6. **Round trip across eviction.** With the writer at V2, build a
+   history-heavy board (forty unflushed rounds of moves over ten elements),
+   flush, evict the object, and assert identical elements; assert the stored
+   bytes are below the V1 encoding of the same document.
+7. **V2-only writer.** A flush records `ydoc-format = 2`, and the stored
+   bytes decode under `applyStoredSnapshot` with that format. The designed
+   "rollback between phases" red depended on the format toggle; with the
+   toggle removed that test is replaced by the rollback floor in `DEPLOY.md`
+   (never below S7a), since every S7a-or-later build reads both formats.
 
 Mutation evidence: removing the `2` branch from the reader turns (1) and (6)
 red; dropping the format key from the atomic put turns (3) and (7) red;
-letting unknown formats fall through to the seed path turns (2) red.
+letting unknown formats fall through to the seed path turns (2) red. For
+phase 2 as built: silently reverting the writer to V1 while still recording
+format `2` turns (6) and (7) red (measured: four failures in the writer
+suite), which is the guard mutation for the V2-only contract.
 
 ### Acceptance
 

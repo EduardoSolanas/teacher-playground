@@ -26,15 +26,16 @@ export function snapshotFormatKey(roomId: string): string {
 }
 
 /**
- * The format the writer produces, for this build.
+ * The only format this build writes.
  *
- * Phase 1 (S7a) ships the format key and a dispatching reader while still
- * writing V1 explicitly -- writing `1` rather than omitting the key is what
- * makes a rollback from phase 2 safe, since a phase-1 build rewriting a room
- * clears a stored `2` in the same atomic put. Phase 2 (S7b) flips this to `2`
- * only once phase 1 is the production rollback target.
+ * V2 was chosen on measured grounds (STORAGE_OPTIMISATIONS.md, S7): on
+ * history-heavy boards the columnar encoding stores 4.5-9x less than V1 and
+ * encodes 1.5-2x faster, with no change to the document's items, client ids
+ * or clocks. There is deliberately no toggle: the reader still dispatches V1
+ * for every room stored by an older build, and a room written V1 is rewritten
+ * V2 by its first flush after opening.
  */
-export const SNAPSHOT_WRITE_FORMAT = 1;
+export const SNAPSHOT_STORED_FORMAT = 2;
 
 /** A stored snapshot names a format this build does not know how to decode. */
 export class SnapshotFormatUnknownError extends Error {

@@ -37,10 +37,15 @@ deploy.
 | Store | Written by | When | Role |
 | --- | --- | --- | --- |
 | `Y.Doc` in the object's memory | `RoomDO`, from client sync frames | every binary frame | live truth while the room is awake |
-| `ydoc:<roomId>` in DO storage | `RoomDO.flushDirtyDocs` | throttled, see below | **the durable record** |
+| `ydoc-chunk:<roomId>:<n>` + `ydoc-meta:<roomId>` in DO storage | `RoomDO.flushDirtyDocs` | throttled, see below | **the durable record**, chunked at 1MB |
+| `ydoc-format:<roomId>` in DO storage | same atomic put as the chunks | every flush | the snapshot's encoding — `2` (Yjs V2) for rooms written by the current build, `1` (V1) for rooms stored before it; the reader dispatches, so pre-V2 rooms keep loading until their next flush |
 | `rooms.elements` (SQL row) | `RoomDO.flushDirtyDocs` | same flush | projection, so the HTTP read path is not stale |
 | `rooms.viewport` (SQL row) | the host's browser, debounced 1s | on pan/zoom | the view a room reopens at |
 | `localStorage` | `usePersistence` | opt-in per room | offline cache, unrelated to durability |
+
+The pre-chunking `ydoc:<roomId>` key is gone after a room's first flush and is
+deleted by it (S6 keeps that delete only when a load actually came from the
+legacy key).
 
 No client uploads a board. `saveState`, `shouldPersistBoard` and their debounce
 are gone. `usePersistence.saveState` survives and is **not** the same thing —

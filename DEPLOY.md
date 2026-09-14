@@ -189,6 +189,17 @@ commit, and the deploy job itself runs no tests. The workflow uses the existing
 production `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable;
 the Excalidraw distribution is published separately by its fork repository.
 
+### Rollback floor for board snapshots
+
+Room snapshots are stored in Yjs V2 encoding since S7b
+(`STORAGE_OPTIMISATIONS.md`), with the format recorded per room in
+`ydoc-format:<roomId>` and the reader dispatching V1/V2. **Never roll the
+Worker back to a build older than S7a** (the commit that introduced the format
+key and the dispatching reader): a pre-S7a build feeds V2 bytes to the V1
+decoder and, finding them unreadable, fails the room closed — by design, so it
+cannot overwrite a board it cannot read. Any build from S7a onward reads both
+formats and is safe to roll back to.
+
 ### Excalidraw release CDN
 
 The production build points Excalidraw at the immutable release base:

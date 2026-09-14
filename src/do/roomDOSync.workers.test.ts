@@ -20,6 +20,7 @@ import {
   snapshotChunkKey,
   snapshotMetaKey,
 } from '../lib/whiteboard/snapshotChunks';
+import { applyStoredSnapshot, snapshotFormatKey } from '../lib/whiteboard/snapshotFormat';
 import {
   accessFetch,
   authenticatedFetch,
@@ -236,21 +237,25 @@ describe('server-side y-websocket sync', () => {
   /** The board as the DO wrote it into its own storage. */
   async function storedBoard(roomId: string): Promise<unknown[] | null> {
     // The board is stored across as many values as it needs; reading it back
-    // has to rejoin them, exactly as the object does.
+    // has to rejoin them, exactly as the object does, and decode in the
+    // format the object recorded -- the writer emits V2, older rooms are V1.
     const stored = await runInDurableObject(roomStub(roomId), async (instance: RoomDO) => {
       const storage = (instance as unknown as { ctx: DurableObjectState }).ctx.storage;
+      const format = await storage.get(snapshotFormatKey(roomId)) as number | undefined;
       const count = await storage.get(snapshotMetaKey(roomId)) as number | undefined;
       if (typeof count !== 'number' || count < 1) {
-        return await storage.get(legacySnapshotKey(roomId));
+        return { bytes: await storage.get(legacySnapshotKey(roomId)), format: undefined };
       }
       const keys = Array.from({ length: count }, (_, index) => snapshotChunkKey(roomId, index));
       const chunks = await storage.get(keys) as Map<string, Uint8Array>;
-      return joinSnapshotChunks(keys.map((key) => chunks.get(key))) ?? undefined;
+      return { bytes: joinSnapshotChunks(keys.map((key) => chunks.get(key))), format };
     });
-    if (!stored) return null;
-    const bytes = stored instanceof Uint8Array ? stored : new Uint8Array(stored as ArrayBuffer);
+    if (!stored?.bytes) return null;
+    const bytes = stored.bytes instanceof Uint8Array
+      ? stored.bytes
+      : new Uint8Array(stored.bytes as ArrayBuffer);
     const doc = new Y.Doc();
-    Y.applyUpdate(doc, bytes);
+    applyStoredSnapshot(doc, bytes, stored.format);
     return getElementsFromArray(doc.getArray('elements'));
   }
 

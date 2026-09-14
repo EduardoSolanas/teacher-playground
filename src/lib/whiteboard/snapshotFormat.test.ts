@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as Y from 'yjs';
 
 import {
-  SNAPSHOT_WRITE_FORMAT,
+  SNAPSHOT_STORED_FORMAT,
   SnapshotDecodeError,
   SnapshotFormatUnknownError,
   applyStoredSnapshot,
@@ -27,9 +27,9 @@ describe('snapshotFormatKey', () => {
   });
 });
 
-describe('SNAPSHOT_WRITE_FORMAT', () => {
-  it('is 1 for this phase', () => {
-    expect(SNAPSHOT_WRITE_FORMAT).toBe(1);
+describe('SNAPSHOT_STORED_FORMAT', () => {
+  it('is 2: this build writes only V2', () => {
+    expect(SNAPSHOT_STORED_FORMAT).toBe(2);
   });
 });
 
