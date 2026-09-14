@@ -31,6 +31,8 @@ export default function RoomTitleMenu({
   name,
   roomId,
   canManage,
+  seats,
+  onSeatsChanged,
   onRename,
   onSaveAs,
   onOpenLibrary,
@@ -39,6 +41,10 @@ export default function RoomTitleMenu({
   readonly name: string | null;
   readonly roomId: string;
   readonly canManage: boolean;
+  /** The room's current seat cap, shown as the starting draft. */
+  readonly seats: number;
+  /** Called after the settings route accepted a new cap. */
+  readonly onSeatsChanged: (next: number) => void;
   readonly onRename: (next: string) => void;
   readonly onSaveAs: () => void;
   readonly onOpenLibrary: () => void;
@@ -58,11 +64,23 @@ export default function RoomTitleMenu({
   const [shareSettings, setShareSettings] = useState<GuestSettings | null | undefined>(undefined);
   const [shareReadAt, setShareReadAt] = useState(0);
   const [shareCopied, setShareCopied] = useState(false);
+  /*
+   * Room seats: the same panel pattern the share flow uses. The draft starts
+   * from the cap the room currently holds and is clamped to what the server
+   * would accept in shape (1..999); the plan's own cap is enforced
+   * server-side, and a refusal surfaces as the upgrade message rather than a
+   * silent failure.
+   */
+  const [seatsPanel, setSeatsPanel] = useState(false);
+  const [seatsDraft, setSeatsDraft] = useState(seats);
+  const [seatsSaving, setSeatsSaving] = useState(false);
+  const [seatsOutcome, setSeatsOutcome] = useState<'plan_limit' | 'error' | null>(null);
+  const seatsRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const shareRef = useRef<HTMLDivElement>(null);
-  const showMenuItems = !editing && !sharing;
+  const showMenuItems = !editing && !sharing && !seatsPanel;
 
   /*
    * Follow a rename from anywhere else -- the room list, another tab -- but
@@ -103,14 +121,19 @@ export default function RoomTitleMenu({
       shareRef.current?.querySelector<HTMLElement>('button:not([disabled])')?.focus();
       return;
     }
+    if (seatsPanel) {
+      seatsRef.current?.querySelector<HTMLElement>('button:not([disabled])')?.focus();
+      return;
+    }
     menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
-  }, [open, sharing]);
+  }, [open, sharing, seatsPanel]);
 
   const onMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape') {
       event.preventDefault();
       setOpen(false);
       setSharing(false);
+      setSeatsPanel(false);
       triggerRef.current?.focus();
       return;
     }
@@ -164,6 +187,45 @@ export default function RoomTitleMenu({
     } catch {
       // The link is printed beside the button, so a refused clipboard still
       // leaves it selectable by hand.
+    }
+  };
+
+  const SEATS_MIN = 1;
+  const SEATS_MAX = 999;
+
+  const stepSeats = (delta: number) => {
+    setSeatsOutcome(null);
+    setSeatsDraft((current) => Math.max(SEATS_MIN, Math.min(SEATS_MAX, current + delta)));
+  };
+
+  /*
+   * The plan's real cap is stamped server-side from the caller's entitlements,
+   * so this only posts the number; a 402 is the plan refusing, anything else
+   * is a failure to retry. Success hands the accepted cap to the room before
+   * the panel closes, so the capacity shown beside the board is already the
+   * new one.
+   */
+  const saveSeats = async () => {
+    setSeatsSaving(true);
+    setSeatsOutcome(null);
+    try {
+      const response = await request(`/api/whiteboard/room/${roomId}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxUsers: seatsDraft }),
+      });
+      if (response.ok) {
+        onSeatsChanged(seatsDraft);
+        setOpen(false);
+        setSeatsPanel(false);
+        triggerRef.current?.focus();
+        return;
+      }
+      setSeatsOutcome(response.status === 402 ? 'plan_limit' : 'error');
+    } catch {
+      setSeatsOutcome('error');
+    } finally {
+      setSeatsSaving(false);
     }
   };
 
@@ -228,9 +290,13 @@ export default function RoomTitleMenu({
           if (open) {
             setOpen(false);
             setSharing(false);
+            setSeatsPanel(false);
             return;
           }
           setSharing(false);
+          setSeatsPanel(false);
+          setSeatsDraft(seats);
+          setSeatsOutcome(null);
           setOpen(true);
         }}
         className="flex min-w-0 items-center gap-1 rounded-md px-2 py-1 text-[0.8125rem] font-medium text-slate-200 transition-colors hover:bg-slate-700"
@@ -262,7 +328,85 @@ export default function RoomTitleMenu({
           onKeyDown={onMenuKeyDown}
           className="absolute left-1/2 top-full z-[1200] mt-1 w-48 -translate-x-1/2 overflow-hidden rounded-xl border border-slate-700 bg-slate-800 py-1 shadow-xl shadow-slate-950/40"
         >
-          {sharing ? (
+          {seatsPanel ? (
+            <div ref={seatsRef} data-testid="room-title-seats" className="px-3 py-2">
+              <p className="m-0 text-[0.6875rem] font-semibold uppercase tracking-wider text-slate-400">
+                Room seats
+              </p>
+              <p className="m-0 mt-1 text-[0.75rem] leading-relaxed text-slate-400">
+                How many people can be in the room at once.
+              </p>
+              <div className="mt-2 flex items-center justify-center gap-2">
+                <button
+                  type="button"
+                  data-testid="room-seats-down"
+                  aria-label="Fewer seats"
+                  disabled={seatsSaving || seatsDraft <= 1}
+                  onClick={() => stepSeats(-1)}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-600 bg-slate-800 text-slate-200 transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden>
+                    <path d="M5 12h14" />
+                  </svg>
+                </button>
+                <span
+                  data-testid="room-seats-value"
+                  aria-live="polite"
+                  className="min-w-[2.5rem] text-center font-semibold text-slate-100"
+                >
+                  {seatsDraft}
+                </span>
+                <button
+                  type="button"
+                  data-testid="room-seats-up"
+                  aria-label="More seats"
+                  disabled={seatsSaving || seatsDraft >= 999}
+                  onClick={() => stepSeats(1)}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-600 bg-slate-800 text-slate-200 transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden>
+                    <path d="M12 5v14" />
+                    <path d="M5 12h14" />
+                  </svg>
+                </button>
+              </div>
+              {seatsOutcome === 'plan_limit' && (
+                <p data-testid="room-seats-limit" className="m-0 mt-2 text-[0.75rem] leading-relaxed text-amber-300">
+                  Your plan does not allow that many seats. Raise the cap by upgrading, or pick a lower number.
+                </p>
+              )}
+              {seatsOutcome === 'error' && (
+                <p data-testid="room-seats-error" className="m-0 mt-2 text-[0.75rem] leading-relaxed text-amber-300">
+                  Couldn’t save the new seat count.{' '}
+                  <button
+                    type="button"
+                    data-testid="room-seats-retry"
+                    onClick={() => { void saveSeats(); }}
+                    className="underline"
+                  >
+                    Retry
+                  </button>
+                </p>
+              )}
+              <button
+                type="button"
+                data-testid="room-seats-save"
+                disabled={seatsSaving}
+                onClick={() => { void saveSeats(); }}
+                className="mt-2 w-full rounded-md bg-slate-700 px-2 py-1.5 text-[0.8125rem] font-medium text-slate-100 transition-colors hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {seatsSaving ? 'Saving…' : 'Save seat count'}
+              </button>
+              <button
+                type="button"
+                data-testid="room-seats-back"
+                onClick={() => setSeatsPanel(false)}
+                className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-[0.8125rem] text-slate-300 transition-colors hover:bg-slate-700"
+              >
+                Back
+              </button>
+            </div>
+          ) : sharing ? (
             <div ref={shareRef} data-testid="room-title-share" className="px-3 py-2">
               <p className="m-0 text-[0.6875rem] font-semibold uppercase tracking-wider text-slate-400">
                 Share this room
@@ -345,6 +489,7 @@ export default function RoomTitleMenu({
             </div>
           ) : (
             <>
+
               <button
                 type="button"
                 role="menuitem"
@@ -411,6 +556,25 @@ export default function RoomTitleMenu({
                   <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" />
                 </svg>
                 Manage library
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="room-menu-seats"
+                className={item}
+                onClick={() => {
+                  setSeatsDraft(seats);
+                  setSeatsOutcome(null);
+                  setSeatsPanel(true);
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="h-3.5 w-3.5 shrink-0">
+                  <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+                  <circle cx="9" cy="7" r="4" />
+                  <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                </svg>
+                Room seats
               </button>
             </>
           )}

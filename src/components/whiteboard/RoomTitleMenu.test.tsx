@@ -11,9 +11,11 @@ function make(overrides: Partial<Parameters<typeof RoomTitleMenu>[0]> = {}) {
     name: 'Year 4 Maths',
     roomId: 'room-alpha',
     canManage: true,
+    seats: 2,
     onRename: vi.fn(),
     onSaveAs: vi.fn(),
     onOpenLibrary: vi.fn(),
+    onSeatsChanged: vi.fn(),
     // A real async function returning real Response objects, the same seam the
     // room list uses; no test doubles.
     request: (async () => new Response(null, { status: 500 })) as AjaxFetch,
@@ -387,6 +389,7 @@ describe('RoomTitleMenu', () => {
     const save = screen.getByTestId('room-menu-save');
     const rename = screen.getByTestId('room-menu-rename');
     const library = screen.getByTestId('room-menu-library');
+    const seats = screen.getByTestId('room-menu-seats');
     expect(document.activeElement).toBe(share);
 
     await user.keyboard('{ArrowDown}');
@@ -395,16 +398,18 @@ describe('RoomTitleMenu', () => {
     expect(document.activeElement).toBe(rename);
     await user.keyboard('{ArrowDown}');
     expect(document.activeElement).toBe(library);
+    await user.keyboard('{ArrowDown}');
+    expect(document.activeElement).toBe(seats);
     // Wraps at the end rather than falling out of the menu.
     await user.keyboard('{ArrowDown}');
     expect(document.activeElement).toBe(share);
     await user.keyboard('{ArrowUp}');
-    expect(document.activeElement).toBe(library);
+    expect(document.activeElement).toBe(seats);
 
     await user.keyboard('{Home}');
     expect(document.activeElement).toBe(share);
     await user.keyboard('{End}');
-    expect(document.activeElement).toBe(library);
+    expect(document.activeElement).toBe(seats);
   });
 
   it('closes on Escape and gives focus back to the trigger (UX-A5)', async () => {
@@ -419,5 +424,108 @@ describe('RoomTitleMenu', () => {
 
     expect(screen.queryByTestId('room-title-menu')).toBeNull();
     expect(document.activeElement).toBe(trigger);
+  });
+});
+
+describe('room seats from the title menu', () => {
+  function openSeats() {
+    fireEvent.click(screen.getByTestId('room-title-trigger'));
+    fireEvent.click(screen.getByTestId('room-menu-seats'));
+  }
+
+  it('offers the seats editor to the owner with the room’s current cap', () => {
+    render(<RoomTitleMenu {...make({ seats: 2 })} />);
+    openSeats();
+    expect(screen.getByTestId('room-seats-value').textContent).toBe('2');
+  });
+
+  it('steps between one and the ceiling without losing the draft', () => {
+    render(<RoomTitleMenu {...make({ seats: 2 })} />);
+    openSeats();
+    fireEvent.click(screen.getByTestId('room-seats-up'));
+    fireEvent.click(screen.getByTestId('room-seats-up'));
+    expect(screen.getByTestId('room-seats-value').textContent).toBe('4');
+    fireEvent.click(screen.getByTestId('room-seats-down'));
+    fireEvent.click(screen.getByTestId('room-seats-down'));
+    fireEvent.click(screen.getByTestId('room-seats-down'));
+    expect(screen.getByTestId('room-seats-value').textContent).toBe('1');
+  });
+
+  it('saves through the settings route and hands the new cap to the room', async () => {
+    const onSeatsChanged = vi.fn();
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const request: AjaxFetch = async (input, init) => {
+      const url = String(input);
+      if (init?.method === 'POST' && url.endsWith('/settings')) {
+        posts.push({ url, body: JSON.parse(String(init.body)) });
+        return new Response(JSON.stringify({ success: true, maxUsers: 5 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(null, { status: 500 });
+    };
+    render(<RoomTitleMenu {...make({ seats: 2, onSeatsChanged, request })} />);
+    openSeats();
+    fireEvent.click(screen.getByTestId('room-seats-up'));
+    fireEvent.click(screen.getByTestId('room-seats-up'));
+    fireEvent.click(screen.getByTestId('room-seats-up'));
+    fireEvent.click(screen.getByTestId('room-seats-save'));
+
+    await waitFor(() => expect(onSeatsChanged).toHaveBeenCalledWith(5));
+    expect(posts).toEqual([
+      { url: '/api/whiteboard/room/room-alpha/settings', body: { maxUsers: 5 } },
+    ]);
+    // A saved cap closes the editor with the menu.
+    expect(screen.queryByTestId('room-seats-value')).toBeNull();
+    expect(screen.queryByTestId('room-title-menu')).toBeNull();
+  });
+
+  it('says when the plan does not allow that many seats, keeping the draft', async () => {
+    const request: AjaxFetch = async (input, init) => {
+      if (init?.method === 'POST' && String(input).endsWith('/settings')) {
+        return new Response(JSON.stringify({ error: 'Plan limit' }), {
+          status: 402,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(null, { status: 500 });
+    };
+    render(<RoomTitleMenu {...make({ seats: 2, request })} />);
+    openSeats();
+    fireEvent.click(screen.getByTestId('room-seats-up'));
+    fireEvent.click(screen.getByTestId('room-seats-save'));
+
+    await waitFor(() => expect(screen.getByTestId('room-seats-limit')).toBeTruthy());
+    expect(screen.getByTestId('room-seats-value').textContent).toBe('3');
+  });
+
+  it('offers a retry when the save fails', async () => {
+    let attempts = 0;
+    const onSeatsChanged = vi.fn();
+    const request: AjaxFetch = async (input, init) => {
+      if (init?.method === 'POST' && String(input).endsWith('/settings')) {
+        attempts += 1;
+        if (attempts === 1) return new Response(null, { status: 500 });
+        return new Response(JSON.stringify({ success: true, maxUsers: 3 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(null, { status: 500 });
+    };
+    render(<RoomTitleMenu {...make({ seats: 2, onSeatsChanged, request })} />);
+    openSeats();
+    fireEvent.click(screen.getByTestId('room-seats-up'));
+    fireEvent.click(screen.getByTestId('room-seats-save'));
+
+    await waitFor(() => expect(screen.getByTestId('room-seats-error')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('room-seats-retry'));
+    await waitFor(() => expect(onSeatsChanged).toHaveBeenCalledWith(3));
+  });
+
+  it('keeps the editor out of reach for somebody who cannot manage the room', () => {
+    render(<RoomTitleMenu {...make({ canManage: false })} />);
+    expect(screen.queryByTestId('room-title-trigger')).toBeNull();
   });
 });

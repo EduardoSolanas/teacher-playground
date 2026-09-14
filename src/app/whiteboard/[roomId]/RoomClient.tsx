@@ -417,6 +417,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
     syncDegraded,
     roomName,
     setRoomName,
+    setRoomCapacity,
     maxUsers,
     elements,
     localPeerId,
@@ -452,7 +453,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
     remoteCallActive,
     sendFollowMessage,
     sendCallMessage,
-  } = useCollaboration(roomId, callLiveRef);
+  } = useCollaboration(roomId, callLiveRef, undefined, request);
 
   const handleGuideViewport = useCallback((nextViewport: { x: number; y: number; zoom: number }) => {
     sendFollowMessage({ active: true, viewport: nextViewport });
@@ -998,6 +999,9 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
               name={roomName}
               roomId={roomId}
               canManage={isRoomOwner}
+              seats={maxUsers}
+              onSeatsChanged={setRoomCapacity}
+              request={request}
               onRename={handleRenameRoom}
               onSaveAs={handleSaveAs}
               onOpenLibrary={handleOpenLibrary}

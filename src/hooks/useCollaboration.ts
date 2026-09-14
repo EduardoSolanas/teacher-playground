@@ -72,6 +72,12 @@ export function useCollaboration(
    */
   callLiveRef?: { readonly current: boolean },
   onCall?: CallCallback,
+  /**
+   * The same request seam the rest of the room takes. Defaults to the real
+   * ajax transport; RoomContent passes its injected one down so tests drive
+   * every room call through real Response objects.
+   */
+  request: typeof ajaxFetch = ajaxFetch,
 ) {
   const [isConnected, setIsConnected] = useState(false);
   const [roomLoaded, setRoomLoaded] = useState(false);
@@ -123,8 +129,8 @@ export function useCollaboration(
    *
    * ensureCollaboration hands a presence handler to the provider while
    * applyPresencePayload is still further down the hook. Closing over it
-   * directly happens to work — the closure resolves when the frame arrives,
-   * long after declaration — but it reads as use-before-declare and lint
+   * directly happens to work Ã¢â‚¬â€ the closure resolves when the frame arrives,
+   * long after declaration Ã¢â‚¬â€ but it reads as use-before-declare and lint
    * refuses it. A ref makes the ordering explicit instead of incidental.
    */
   const applyPresenceRef = useRef<(data: unknown) => void>(() => {});
@@ -186,7 +192,7 @@ export function useCollaboration(
       setCollaborationEpoch((epoch) => epoch + 1);
     }
     return collaborationRef.current;
-  }, [roomId]);
+  }, [roomId, request]);
 
   const destroyCollaboration = useCallback(() => {
     if (!collaborationRef.current) return;
@@ -263,8 +269,8 @@ export function useCollaboration(
     async function loadRoom() {
       try {
         const [res, accessRes] = await Promise.all([
-          ajaxFetch(`/api/whiteboard/room/${roomId}`),
-          ajaxFetch(`/api/whiteboard/room/${roomId}/access`),
+          request(`/api/whiteboard/room/${roomId}`),
+          request(`/api/whiteboard/room/${roomId}/access`),
         ]);
         if (cancelled) return;
 
@@ -324,7 +330,7 @@ export function useCollaboration(
 
     loadRoom();
     return () => { cancelled = true; };
-  }, [roomId, roomReloadKey, applyElements, publishToSharedDoc, applyViewport]);
+  }, [roomId, roomReloadKey, applyElements, publishToSharedDoc, applyViewport, request]);
 
   // Set up collaboration only after admission; tear down on kick or waiting.
   useEffect(() => {
@@ -383,7 +389,7 @@ export function useCollaboration(
     };
   }, [mayStartCollaboration, ensureCollaboration, destroyCollaboration, applyElements, applyViewport]);
 
-  // Excalidraw is the source of truth for elements — no store-to-Yjs sync needed
+  // Excalidraw is the source of truth for elements Ã¢â‚¬â€ no store-to-Yjs sync needed
   // Yjs sync is handled entirely by ExcalidrawWrapper via onChange/onPointerUpdate
 
   useEffect(() => {
@@ -392,7 +398,7 @@ export function useCollaboration(
     let cancelled = false;
 
     async function pollRoomState(): Promise<boolean> {
-      // Skip polling when WebRTC is synced — it's the source of truth.
+      // Skip polling when WebRTC is synced Ã¢â‚¬â€ it's the source of truth.
       // Note: y-webrtc leaves `connected` set after disconnect(), so this also
       // suppresses the catch-up fallback. See the fixme'd
       // "disconnected peer catches up from API fallback" e2e test.
@@ -403,7 +409,7 @@ export function useCollaboration(
       if (!shouldPollRoomApiFallback(entry?.provider, roomGrantedRef.current)) return true;
 
       try {
-        const res = await ajaxFetch(`/api/whiteboard/room/${roomId}`);
+        const res = await request(`/api/whiteboard/room/${roomId}`);
         if (cancelled || !res.ok) return false;
 
         const data = await res.json();
@@ -498,7 +504,7 @@ export function useCollaboration(
       document.removeEventListener('visibilitychange', onRoomVisible);
       window.clearInterval(publishTimer);
     };
-  }, [roomId, applyElements, applyViewport, publishToSharedDoc]);
+  }, [roomId, applyElements, applyViewport, publishToSharedDoc, request]);
 
   // Broadcast local cursor
   const cursorSentAtRef = useRef<number | null>(null);
@@ -522,8 +528,8 @@ export function useCollaboration(
 
   /**
    * Every cursor write is one signaling message, so publishing per pointermove
-   * exceeded the Worker's 60/sec cap and had it close the socket — a moving
-   * pointer sat in a reconnect loop showing "Connecting to room…". The newest
+   * exceeded the Worker's 60/sec cap and had it close the socket Ã¢â‚¬â€ a moving
+   * pointer sat in a reconnect loop showing "Connecting to roomÃ¢â‚¬Â¦". The newest
    * position is kept and flushed when the window opens, so the cursor still
    * ends up where the pointer stopped.
    */
@@ -672,7 +678,7 @@ export function useCollaboration(
         }
         lastStoredViewportRef.current = view;
         try {
-          await ajaxFetch(`/api/whiteboard/room/${roomId}`, {
+          await request(`/api/whiteboard/room/${roomId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ viewport: view }),
@@ -683,7 +689,7 @@ export function useCollaboration(
         }
       }, VIEWPORT_SAVE_DEBOUNCE_MS);
     },
-    [roomId],
+    [roomId, request],
   );
 
   const sendFollowMessage = useCallback((message: FollowMessage) => (
@@ -702,7 +708,7 @@ export function useCollaboration(
     async function updatePresence() {
       try {
         const res = hasJoined
-          ? await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
+          ? await request(`/api/whiteboard/room/${roomId}/presence`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -711,7 +717,7 @@ export function useCollaboration(
                 color: localUserColorRef.current,
               }),
             })
-          : await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`);
+          : await request(`/api/whiteboard/room/${roomId}/presence`);
 
         const presenceAdmission = admissionFromPresenceStatus(res.status);
         if (!cancelled && presenceAdmission === 'rejected') {
@@ -864,8 +870,8 @@ export function useCollaboration(
      * Decide once up front, not only when the socket next changes state.
      *
      * This used to start the interval solely from a 'status' event, so a peer
-     * whose collaboration had not been created yet — or whose socket never
-     * connected and never announced it — attached no listener and started no
+     * whose collaboration had not been created yet Ã¢â‚¬â€ or whose socket never
+     * connected and never announced it Ã¢â‚¬â€ attached no listener and started no
      * poll. They fetched presence once and then heard nothing again: no push,
      * no poll, a room that silently stops updating.
      */
@@ -906,12 +912,12 @@ export function useCollaboration(
       }
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [roomLoaded, hasJoined, roomId, localUserName, isWaiting, applyPresencePayload, callLiveRef]);
+  }, [roomLoaded, hasJoined, roomId, localUserName, isWaiting, applyPresencePayload, callLiveRef, request]);
 
   /**
    * Releases the presence row only when this room is actually left. Doing it in
    * the heartbeat effect's cleanup dropped the row every time a dependency
-   * changed — admission and a rename both re-run it — and because presence
+   * changed Ã¢â‚¬â€ admission and a rename both re-run it Ã¢â‚¬â€ and because presence
    * mints a fresh peer id whenever an account has no row, the peer silently
    * came back under a new id. Every id the host was already holding (roster
    * rows, moderation targets, cursors) then pointed at nothing.
@@ -920,9 +926,9 @@ export function useCollaboration(
     return () => {
       if (!hasJoinedRef.current) return;
       const url = `/api/whiteboard/room/${roomId}/presence?peerId=${encodeURIComponent(localPeerIdRef.current)}`;
-      ajaxFetch(url, { method: 'DELETE', keepalive: true }).catch(() => {});
+      request(url, { method: 'DELETE', keepalive: true }).catch(() => {});
     };
-  }, [roomId]);
+  }, [roomId, request]);
 
   // Fallback presence while the collaboration provider is still initializing.
   useEffect(() => {
@@ -941,7 +947,7 @@ export function useCollaboration(
 
   const reloadPresence = useCallback(async () => {
     try {
-      const res = await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`);
+      const res = await request(`/api/whiteboard/room/${roomId}/presence`);
       if (!res.ok) return;
       if (isYjsProviderConnected(collaborationRef.current?.provider)) {
         setSyncDegraded(false);
@@ -970,11 +976,11 @@ export function useCollaboration(
     } catch {
       // silently fail
     }
-  }, [roomId]);
+  }, [roomId, request]);
 
   const approvePeer = useCallback(async (peerId: string, accountId?: string | null) => {
     try {
-      const res = await ajaxFetch(`/api/whiteboard/room/${roomId}/waiting`, {
+      const res = await request(`/api/whiteboard/room/${roomId}/waiting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -996,11 +1002,11 @@ export function useCollaboration(
       setModerationError('Could not let that person in. Please try again.');
       return false;
     }
-  }, [roomId, reloadPresence]);
+  }, [roomId, reloadPresence, request]);
 
   const rejectPeer = useCallback(async (peerId: string, accountId?: string | null) => {
     try {
-      const res = await ajaxFetch(`/api/whiteboard/room/${roomId}/waiting`, {
+      const res = await request(`/api/whiteboard/room/${roomId}/waiting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1016,39 +1022,39 @@ export function useCollaboration(
       setModerationError('Could not decline that person. Please try again.');
       return false;
     }
-  }, [roomId, reloadPresence]);
+  }, [roomId, reloadPresence, request]);
 
   const leaveWaitingRoom = useCallback(async () => {
     hasJoinedRef.current = false;
     setHasJoined(false);
     setIsWaiting(false);
     try {
-      await ajaxFetch(
+      await request(
         `/api/whiteboard/room/${roomId}/waiting?peerId=${encodeURIComponent(localPeerIdRef.current)}`,
         { method: 'DELETE' }
       );
     } catch {
       // still drop local waiting/join so the prompt can return
     }
-  }, [roomId]);
+  }, [roomId, request]);
 
   const leaveRoom = useCallback(async () => {
     destroyCollaboration();
     hasJoinedRef.current = false;
     setHasJoined(false);
     try {
-      await ajaxFetch(
+      await request(
         `/api/whiteboard/room/${roomId}/presence?peerId=${encodeURIComponent(localPeerIdRef.current)}`,
         { method: 'DELETE' },
       );
     } catch {
       // still drop local join state so the prompt can return
     }
-  }, [roomId, destroyCollaboration]);
+  }, [roomId, destroyCollaboration, request]);
 
   const kickPeer = useCallback(async (peerId: string, accountId?: string | null) => {
     try {
-      const res = await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
+      const res = await request(`/api/whiteboard/room/${roomId}/presence`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(moderationTargetBody('kick', peerId, accountId)),
@@ -1062,11 +1068,11 @@ export function useCollaboration(
       setModerationError('Could not remove that person. Please try again.');
       return false;
     }
-  }, [roomId, reloadPresence]);
+  }, [roomId, reloadPresence, request]);
 
   const setHandRaised = useCallback(async (raised: boolean) => {
     try {
-      const res = await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
+      const res = await request(`/api/whiteboard/room/${roomId}/presence`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: raised ? 'raise-hand' : 'lower-hand' }),
@@ -1076,11 +1082,11 @@ export function useCollaboration(
     } catch {
       return false;
     }
-  }, [roomId, reloadPresence]);
+  }, [roomId, reloadPresence, request]);
 
   const lowerPeerHand = useCallback(async (peerId: string, accountId?: string | null) => {
     try {
-      const res = await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
+      const res = await request(`/api/whiteboard/room/${roomId}/presence`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(moderationTargetBody('lower-peer-hand', peerId, accountId)),
@@ -1092,11 +1098,11 @@ export function useCollaboration(
       setModerationError('Could not lower that hand. Please try again.');
       return false;
     }
-  }, [roomId, reloadPresence]);
+  }, [roomId, reloadPresence, request]);
 
   const lowerAllHands = useCallback(async () => {
     try {
-      const res = await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
+      const res = await request(`/api/whiteboard/room/${roomId}/presence`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'lower-all-hands' }),
@@ -1108,11 +1114,11 @@ export function useCollaboration(
       setModerationError('Could not lower the hands. Please try again.');
       return false;
     }
-  }, [roomId, reloadPresence]);
+  }, [roomId, reloadPresence, request]);
 
   const sendToWaitingRoom = useCallback(async (peerId: string, accountId?: string | null) => {
     try {
-      const res = await ajaxFetch(`/api/whiteboard/room/${roomId}/presence`, {
+      const res = await request(`/api/whiteboard/room/${roomId}/presence`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(moderationTargetBody('suspend', peerId, accountId)),
@@ -1124,7 +1130,7 @@ export function useCollaboration(
       setModerationError('Could not move that person to the waiting room.');
       return false;
     }
-  }, [roomId, reloadPresence]);
+  }, [roomId, reloadPresence, request]);
 
   return {
     isConnected,
@@ -1132,6 +1138,14 @@ export function useCollaboration(
     roomName,
     /** Takes a rename locally, so the bar does not wait for a round trip. */
     setRoomName,
+    /**
+     * Takes an accepted seat cap locally, so the capacity shown beside the
+     * board updates the moment the settings route accepted it rather than
+     * waiting for the next room read.
+     */
+    setRoomCapacity: (next: number) => {
+      setMaxUsers(next);
+    },
     /** The socket has been down long enough that the fallbacks have stopped. */
     connectionLost,
     /** Synchronization is degraded (e.g. heartbeat errors or rate limit close). */

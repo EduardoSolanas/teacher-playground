@@ -785,7 +785,9 @@ describe('RoomContent admission states', () => {
     );
 
     expect(await screen.findByTestId('guest-join-prompt')).toBeTruthy();
-    expect(requested).toEqual([]);
+    // The guest prompt must come up without reading the teacher session.
+    // The room's own GET and access read are the room flow, not the session.
+    expect(requested).not.toContain('/auth/session/current');
   });
 });
 
@@ -941,7 +943,56 @@ describe('WhiteboardRoomPage', () => {
     stubNetwork(collaborationNetwork());
     render(<WhiteboardRoomPage />);
 
-    expect(await screen.findByTestId('whiteboard-canvas-area')).toBeTruthy();
+    expect(    await screen.findByTestId('whiteboard-canvas-area')).toBeTruthy();
+  });
+});
+
+describe('room seats from the title menu', () => {
+  it('saves the new seat count through the settings route and raises the capacity', async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const request: AjaxFetch = async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/auth/session/current') {
+        return jsonResponse({ displayName: 'Alice' });
+      }
+      if (method === 'POST' && url.endsWith('/settings')) {
+        posts.push({ url, body: JSON.parse(String(init?.body)) });
+        return jsonResponse({ success: true, maxUsers: 5 });
+      }
+      if (url === '/api/whiteboard/room/room-alpha') {
+        return jsonResponse({ elements: [], viewport: { x: 0, y: 0, zoom: 1 }, maxUsers: 2, updated_at: 1 });
+      }
+      if (url === '/api/whiteboard/room/room-alpha/access') {
+        return jsonResponse({ status: 'granted', role: 'creator' });
+      }
+      if (url.endsWith('/presence') && method === 'POST') {
+        return jsonResponse({ users: [], waitingPeers: [], hostPeerId: null, isWaiting: false, peerId: 'peer-1' });
+      }
+      return jsonResponse({});
+    };
+
+    render(<RoomContent roomId="room-alpha" request={request} />);
+
+    fireEvent.click(await screen.findByTestId('room-title-trigger'));
+    fireEvent.click(screen.getByTestId('room-menu-seats'));
+    expect(screen.getByTestId('room-seats-value').textContent).toBe('2');
+
+    // Free-plan rooms start at two seats; raise to five and save.
+    fireEvent.click(screen.getByTestId('room-seats-up'));
+    fireEvent.click(screen.getByTestId('room-seats-up'));
+    fireEvent.click(screen.getByTestId('room-seats-up'));
+    fireEvent.click(screen.getByTestId('room-seats-save'));
+
+    await waitFor(() => {
+      expect(posts).toEqual([
+        { url: '/api/whiteboard/room/room-alpha/settings', body: { maxUsers: 5 } },
+      ]);
+    });
+    // The capacity shown beside the board is the accepted one, not the stale one.
+    await waitFor(() => {
+      expect(screen.getByLabelText(/of 5/)).toBeTruthy();
+    });
   });
 });
 

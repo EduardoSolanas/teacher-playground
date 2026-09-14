@@ -151,3 +151,41 @@ test.describe('Undo/Redo Bar', () => {
     await expect(page.locator('.undo-button-container button')).toBeEnabled();
   });
 });
+
+test.describe('Room seats', () => {
+  test('raises the seat cap from the title menu, persists it, and refuses beyond the plan', async ({ page }) => {
+    // A one-seat room keeps occupancy below every cap the test touches:
+    // lowering a cap below who is already in the room would queue them on
+    // reload, which is correct behaviour but not what this test is about.
+    await page.goto(appUrl('/whiteboard'));
+    await page.locator('input[type="number"]').fill('1');
+    await page.getByTestId('whiteboard-create-room-btn').click();
+    await page.getByTestId('whiteboard-username-input').fill('SeatsHost');
+    await page.getByTestId('whiteboard-join-room-btn').click();
+    await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+
+    await page.getByTestId('room-title-trigger').click();
+    await page.getByTestId('room-menu-seats').click();
+    await expect(page.getByTestId('room-seats-value')).toHaveText('1');
+
+    // Raise to two: applied live, beside the board, without a reload.
+    await page.getByTestId('room-seats-up').click();
+    await page.getByTestId('room-seats-save').click();
+    await expect(page.getByLabel(/of 2/)).toBeVisible();
+
+    // A reload reads the seat count back from the room's settings.
+    await page.reload();
+    await expect(page.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+    await page.getByTestId('room-title-trigger').click();
+    await page.getByTestId('room-menu-seats').click();
+    await expect(page.getByTestId('room-seats-value')).toHaveText('2');
+
+    // Beyond the plan's free cap the server refuses, visibly, and the room
+    // keeps the cap it has. The draft survives the refusal so the teacher can
+    // pick a lower number instead of starting over.
+    await page.getByTestId('room-seats-up').click();
+    await page.getByTestId('room-seats-save').click();
+    await expect(page.getByTestId('room-seats-limit')).toBeVisible();
+    await expect(page.getByTestId('room-seats-value')).toHaveText('3');
+  });
+});
