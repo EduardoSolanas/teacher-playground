@@ -141,7 +141,8 @@ describe('BoardTabs', () => {
     const input = screen.getByTestId('board-name-input') as HTMLInputElement;
     expect(document.activeElement).toBe(input);
     expect(input.value).toBe('Board 3');
-    expect(input.selectionStart).toBe(0);
+    // Caret at the end: no full-name highlight, just an invitation to type.
+    expect(input.selectionStart).toBe(input.value.length);
     expect(input.selectionEnd).toBe(input.value.length);
 
     fireEvent.change(input, { target: { value: 'Algebra' } });

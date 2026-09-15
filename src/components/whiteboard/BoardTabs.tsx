@@ -182,14 +182,20 @@ export default function BoardTabs({
               aria-label="Board name"
               autoFocus
               value={renameDraft}
-              onFocus={(event) => event.currentTarget.select()}
+              onFocus={(event) => {
+                // Caret at the end, not select-all: a full blue highlight
+                // over the name reads as an error state, not an invitation.
+                const length = event.currentTarget.value.length;
+                event.currentTarget.setSelectionRange(length, length);
+              }}
               onChange={(event) => setRenameDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') commitRename();
                 if (event.key === 'Escape') setRenamingId(null);
               }}
               onBlur={commitRename}
-              className="relative z-30 w-40 shrink-0 rounded-t-lg border-t border-x border-slate-200 bg-white px-2.5 py-1 text-[0.75rem] font-medium text-slate-800 outline-none"
+              style={{ width: `${Math.max(8, renameDraft.length + 3)}ch`, outline: 'none', boxShadow: 'none' }}
+              className="relative z-30 shrink-0 rounded-t-lg border-t border-x border-slate-200 bg-white px-2.5 py-1 text-[0.75rem] font-medium text-slate-800 caret-slate-800 outline-none focus:outline-none focus:ring-0 selection:bg-slate-200 selection:text-slate-800"
             />
           ) : (
             <div
