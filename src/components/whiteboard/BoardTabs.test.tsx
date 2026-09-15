@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { ComponentProps } from 'react';
 import { describe, expect, it } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import * as Y from 'yjs';
 
 import BoardTabs from './BoardTabs';
@@ -165,5 +165,176 @@ describe('BoardTabs', () => {
 
     expect(screen.getByTestId('board-tabs-add')).toBeTruthy();
     expect(screen.queryByTestId('board-tabs-clear')).toBeNull();
+  });
+
+  it('renames a board through the inline editor', () => {
+    const doc = seededDoc(3);
+    render(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard />);
+
+    fireEvent.doubleClick(screen.getByTestId('board-tab-board-2'));
+
+    const input = screen.getByTestId('board-name-input') as HTMLInputElement;
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe('Board 3');
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe(input.value.length);
+
+    fireEvent.change(input, { target: { value: 'Algebra' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(screen.queryByTestId('board-name-input')).toBeNull();
+    expect(screen.getByTestId('board-tab-board-2').textContent).toBe('Algebra');
+    // The write went through the shared document, the definition's other
+    // fields (here the order) intact beside the new name.
+    expect(doc.getMap('boardsMeta').get('board-2')).toEqual({ name: 'Algebra', order: 2 });
+  });
+
+  it('escape cancels the rename without writing', () => {
+    const doc = seededDoc(3);
+    render(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard />);
+
+    fireEvent.doubleClick(screen.getByTestId('board-tab-board-1'));
+    const input = screen.getByTestId('board-name-input');
+    fireEvent.change(input, { target: { value: 'Algebra' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+
+    expect(screen.queryByTestId('board-name-input')).toBeNull();
+    expect(screen.getByTestId('board-tab-board-1').textContent).toBe('Board 2');
+    expect(doc.getMap('boardsMeta').get('board-1')).toEqual({ name: 'Board 2', order: 1 });
+
+    // Opening it again drafts from the board's live name, not the cancelled one.
+    fireEvent.doubleClick(screen.getByTestId('board-tab-board-1'));
+    expect((screen.getByTestId('board-name-input') as HTMLInputElement).value).toBe('Board 2');
+  });
+
+  it('the main board offers no rename', () => {
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(3)} canClearBoard />);
+
+    fireEvent.doubleClick(screen.getByTestId('board-tab-main'));
+
+    expect(screen.queryByTestId('board-name-input')).toBeNull();
+    expect(screen.getByTestId('board-tab-main').textContent).toBe('Board 1');
+  });
+
+  it('a blank rename leaves the name unchanged', () => {
+    const doc = seededDoc(3);
+    render(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard />);
+
+    fireEvent.doubleClick(screen.getByTestId('board-tab-board-1'));
+    const input = screen.getByTestId('board-name-input');
+    fireEvent.change(input, { target: { value: '   ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    // The hook refuses a blank silently: the editor closes with nothing
+    // written and no success state.
+    expect(screen.queryByTestId('board-name-input')).toBeNull();
+    expect(screen.getByTestId('board-tab-board-1').textContent).toBe('Board 2');
+    expect(doc.getMap('boardsMeta').get('board-1')).toEqual({ name: 'Board 2', order: 1 });
+  });
+
+  it('blurring the editor commits the rename', () => {
+    const doc = seededDoc(3);
+    render(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard />);
+
+    fireEvent.doubleClick(screen.getByTestId('board-tab-board-1'));
+    const input = screen.getByTestId('board-name-input');
+    fireEvent.change(input, { target: { value: 'Algebra' } });
+    fireEvent.blur(input);
+
+    expect(screen.queryByTestId('board-name-input')).toBeNull();
+    expect(screen.getByTestId('board-tab-board-1').textContent).toBe('Algebra');
+  });
+
+  it('the owner deletes the active board through the confirm dialog', async () => {
+    const doc = seededDoc(2);
+    const posts: Array<{ url: string; method?: string; body: unknown }> = [];
+    const request: AjaxFetch = (input, init) => {
+      posts.push({ url: String(input), method: init?.method, body: JSON.parse(String(init?.body)) });
+      // The real route's effect, applied where the real server would apply
+      // it: the boardsMeta write the peers receive as the broadcast frame.
+      const url = String(input);
+      if (url.endsWith('/boards/delete')) {
+        doc.getMap('boardsMeta').delete((JSON.parse(String(init?.body)) as { boardId: string }).boardId);
+      }
+      return Promise.resolve(jsonResponse({ ok: true }));
+    };
+    render(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard request={request} />);
+
+    fireEvent.click(screen.getByTestId('board-tab-board-1'));
+    fireEvent.click(screen.getByTestId('board-tabs-delete'));
+    fireEvent.click(screen.getByTestId('board-delete-confirm-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('board-tabs-delete-done')).toBeTruthy();
+    });
+    expect(posts).toEqual([
+      {
+        url: '/api/whiteboard/room/room-alpha/boards/delete',
+        method: 'POST',
+        body: { boardId: 'board-1' },
+      },
+    ]);
+    // The tab was the document's own: with the meta entry gone it is gone,
+    // and the room sits back on the main board.
+    expect(tabIds()).toEqual(['board-tab-main']);
+    expect(screen.getByTestId('board-tab-main').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('cancelling the dialog keeps the board', () => {
+    const request: AjaxFetch = () => Promise.resolve(jsonResponse({ ok: true }));
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard request={request} />);
+
+    fireEvent.click(screen.getByTestId('board-tab-board-1'));
+    fireEvent.click(screen.getByTestId('board-tabs-delete'));
+    fireEvent.click(screen.getByTestId('board-delete-cancel-btn'));
+
+    expect(screen.getByTestId('board-tab-board-1')).toBeTruthy();
+    expect(screen.getByTestId('board-tab-board-1').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('a failed delete reports and keeps the board', async () => {
+    const request: AjaxFetch = () => Promise.resolve(jsonResponse({ error: 'no' }, 403));
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard request={request} />);
+
+    fireEvent.click(screen.getByTestId('board-tab-board-1'));
+    fireEvent.click(screen.getByTestId('board-tabs-delete'));
+    fireEvent.click(screen.getByTestId('board-delete-confirm-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('board-tabs-delete-error')).toBeTruthy();
+    });
+    expect(screen.getByTestId('board-tab-board-1')).toBeTruthy();
+    expect(screen.getByTestId('board-tab-board-1').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('the delete control is hidden on the main board and from a non-owner', () => {
+    const doc = seededDoc(2);
+    const { rerender } = render(
+      <TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard />,
+    );
+    expect(screen.queryByTestId('board-tabs-delete')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('board-tab-board-1'));
+    expect(screen.getByTestId('board-tabs-delete')).toBeTruthy();
+
+    rerender(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard={false} />);
+    expect(screen.queryByTestId('board-tabs-delete')).toBeNull();
+  });
+
+  it('a room whose active board is deleted by the owner lands back on main', () => {
+    // The member's path: the deletion arrives as a document update, not a
+    // click, so nothing in the delete flow switches this client -- the strip
+    // itself has to notice the active board is gone.
+    const doc = seededDoc(2);
+    render(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard={false} />);
+
+    fireEvent.click(screen.getByTestId('board-tab-board-1'));
+    expect(screen.getByTestId('board-tab-board-1').getAttribute('aria-pressed')).toBe('true');
+
+    act(() => {
+      doc.getMap('boardsMeta').delete('board-1');
+    });
+
+    expect(screen.getByTestId('board-tab-main').getAttribute('aria-pressed')).toBe('true');
   });
 });

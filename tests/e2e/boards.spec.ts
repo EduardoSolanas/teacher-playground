@@ -320,4 +320,94 @@ test.describe('Multi-board rooms', () => {
       await memberContext.close();
     }
   });
+
+  test('a board can be renamed and every peer sees the new name', async ({ page, browser }) => {
+    test.slow();
+    await openOwnedRoom(page, 'RenameOwner');
+    await waitForProviderConnected(page);
+
+    const { context: memberContext, page: memberPage } = await joinMember(browser, page.url(), 'RenameMember', page);
+    try {
+      await waitForProviderConnected(memberPage);
+
+      await page.getByTestId('board-tabs-add').click();
+      const secondTab = await addedBoardTestId(page);
+      await expect(boardTabs(memberPage)).toHaveCount(2, { timeout: 15000 });
+
+      // The main board is canonical: double-clicking it opens no editor.
+      await page.getByTestId('board-tab-main').dblclick();
+      await expect(page.getByTestId('board-name-input')).toHaveCount(0);
+
+      // Double-click the added board, type the new name, Enter.
+      await page.getByTestId(secondTab).dblclick();
+      const input = page.getByTestId('board-name-input');
+      await expect(input).toBeVisible();
+      await expect(input).toHaveValue('Board 2');
+      await input.fill('Algebra');
+      await input.press('Enter');
+
+      // The label is the shared document's own, so the member's strip shows
+      // it without a reload.
+      await expect(page.getByTestId(secondTab)).toHaveText('Algebra');
+      await expect(boardTabs(memberPage).nth(1)).toHaveText('Algebra', { timeout: 15000 });
+    } finally {
+      await memberContext.close();
+    }
+  });
+
+  test('deleting a board removes it for everyone and the room lands on main', async ({ page, browser }) => {
+    test.slow();
+    await openOwnedRoom(page, 'DeleteOwner');
+    await waitForProviderConnected(page);
+
+    await appendElement(page, excalidrawRectangle('delete-main-stroke', 100, 100));
+    await expectScene(page, ['delete-main-stroke']);
+
+    const { context: memberContext, page: memberPage } = await joinMember(browser, page.url(), 'DeleteMember', page);
+    try {
+      await waitForProviderConnected(memberPage);
+      await expectScene(memberPage, ['delete-main-stroke']);
+
+      // The main board has no delete control for anybody: it is the room's
+      // floor, not a board.
+      await expect(page.getByTestId('board-tabs-delete')).toHaveCount(0);
+
+      await page.getByTestId('board-tabs-add').click();
+      const secondTab = await addedBoardTestId(page);
+      const secondBoardId = secondTab.replace('board-tab-', '');
+      await expect(boardTabs(memberPage)).toHaveCount(2, { timeout: 15000 });
+
+      // Deleting is the owner's control; a member never sees the button,
+      // even standing on the board that would be deleted.
+      await memberPage.getByTestId(secondTab).click();
+      await expect(memberPage.getByTestId('board-tabs-delete')).toHaveCount(0);
+      await expect(page.getByTestId('board-tabs-delete')).toBeVisible();
+
+      await appendElement(page, excalidrawRectangle('delete-board2-stroke', 220, 220));
+      await expectScene(page, ['delete-board2-stroke']);
+      await memberPage.getByTestId(secondTab).click();
+      await expectScene(memberPage, ['delete-board2-stroke']);
+
+      await page.getByTestId('board-tabs-delete').click();
+      await page.getByTestId('board-delete-confirm-btn').click();
+      await expect(page.getByTestId('board-tabs-delete-done')).toBeVisible({ timeout: 10000 });
+
+      // The tab disappears on both strips -- it was the document's own --
+      // and both rooms land back on main.
+      await expect(boardTabs(page)).toHaveCount(1);
+      await expect(boardTabs(memberPage)).toHaveCount(1, { timeout: 15000 });
+      await expect(page.getByTestId('board-tab-main')).toHaveAttribute('aria-pressed', 'true');
+      await expect(memberPage.getByTestId('board-tab-main')).toHaveAttribute('aria-pressed', 'true');
+
+      // The deleted board's elements are gone from the shared document for
+      // both of them; main's stroke survives.
+      await expectSharedBoard(page, secondBoardId, []);
+      await expectSharedBoard(memberPage, secondBoardId, []);
+      await expectSharedBoardToContain(page, 'main', 'delete-main-stroke');
+      await expectScene(page, ['delete-main-stroke']);
+      await expectScene(memberPage, ['delete-main-stroke']);
+    } finally {
+      await memberContext.close();
+    }
+  });
 });
