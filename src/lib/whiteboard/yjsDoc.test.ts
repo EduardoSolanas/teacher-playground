@@ -830,7 +830,7 @@ describe('replaceSharedElements board scoping', () => {
     });
 
     const [element] = getElementsFromArray(array);
-    expect(element.boardId).toBe('board-2');
+    expect((element as { boardId?: unknown }).boardId).toBe('board-2');
   });
 
   it('leaves elements on other boards alone when the scoped scene sweeps', () => {

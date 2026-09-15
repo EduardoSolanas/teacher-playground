@@ -144,7 +144,7 @@ type ExcalidrawWrapperProps = {
    * publishes is stamped with it, every element rendered is filtered to it,
    * and the room's other boards are untouched by anything drawn here.
    */
-  activeBoardId: string;
+  activeBoardId?: string;
   users: WhiteboardUser[];
   cursors: RemoteCursor[];
   activeTool: string;

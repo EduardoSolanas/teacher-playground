@@ -1928,7 +1928,7 @@ describe('multiple boards', () => {
     });
 
     const stored = getElementsFromArray(props.yElementsArray!);
-    expect(stored.find((element) => element.id === 'board2-el')?.boardId).toBe('board-2');
+    expect((stored.find((element) => element.id === 'board2-el') as { boardId?: unknown } | undefined)?.boardId).toBe('board-2');
   });
 
   it('renders only the elements of the active board', async () => {
@@ -1986,8 +1986,8 @@ describe('multiple boards', () => {
       expect(sceneIds(api)).toEqual([]);
     });
     const stored = getElementsFromArray(array);
-    expect(stored.find((element) => element.id === 'b2-1')?.isDeleted).toBe(true);
+    expect((stored.find((element) => element.id === 'b2-1') as { isDeleted?: unknown } | undefined)?.isDeleted).toBe(true);
     // The main board's element is untouched by board 2's erase.
-    expect(stored.find((element) => element.id === 'main-1')?.isDeleted).toBeFalsy();
+    expect((stored.find((element) => element.id === 'main-1') as { isDeleted?: unknown } | undefined)?.isDeleted).toBeFalsy();
   });
 });
