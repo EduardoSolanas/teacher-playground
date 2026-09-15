@@ -7,7 +7,7 @@ import type { AjaxFetch } from '@/lib/whiteboard/teacherRooms';
  * The list lives in the shared document's `boardsMeta` map, so every peer sees
  * the same tabs without a route of its own. The map is guarded server-side
  * (capped, shape-checked), and writes go through the document like drawing
- * does Ã¢â‚¬â€ an admitted editor can add a board exactly as they can draw on one.
+ * does — an admitted editor can add a board exactly as they can draw on one.
  */
 export type RoomBoard = {
   id: string;
