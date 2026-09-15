@@ -23,15 +23,20 @@ const OUTCOME_TEXT_CLASS = 'm-0 text-[0.75rem] leading-relaxed text-amber-300';
  * board stays state of the room, not of this strip: the editor above takes it
  * as a prop, so a switch is one value changing hands.
  *
- * Clearing a board asks the owner-only clear route which board to empty; it
- * never empties anything itself. The add control is for every admitted editor,
- * exactly like drawing is -- a refusal from the hook (no document, or the
- * room's cap) keeps the board where it is and says so rather than jumping.
+ * Clearing and deleting a board ask the owner-only routes; both confirm
+ * first, and both dialogs name the board they are about to erase. The add
+ * control is for every admitted editor, exactly like drawing is -- a refusal
+ * from the hook (the room's cap, or no document yet) keeps the board where it
+ * is and says which one it was.
  *
- * A board's name is edited in place: double-clicking its tab swaps the button
- * for an input that commits through the hook, so the label is always the
- * shared document's own and a peer's rename shows up here too. 'main' is not
- * a stored definition, so it is not offered a rename at all.
+ * A board's name is edited in place: double-clicking -- or focusing and
+ * pressing F2 -- swaps the tab for an input that commits through the hook, so
+ * the label is always the shared document's own and a peer's rename shows up
+ * here too. 'main' is not a stored definition, so it is not offered a rename
+ * at all.
+ *
+ * The tabs scroll inside their own run; the controls a teacher mid-lesson
+ * cannot afford to lose -- add, clear, delete -- sit pinned outside it.
  */
 export default function BoardTabs({
   roomId,
@@ -51,14 +56,19 @@ export default function BoardTabs({
   readonly request?: AjaxFetch;
 }) {
   const { boards, addBoard, renameBoard } = useBoardList(yDoc);
-  const [addRefused, setAddRefused] = useState(false);
+  const [addRefused, setAddRefused] = useState<'cap' | 'offline' | null>(null);
   const [clearing, setClearing] = useState(false);
   const [clearOutcome, setClearOutcome] = useState<'done' | 'error' | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [deleteOutcome, setDeleteOutcome] = useState<'done' | 'error' | null>(null);
+  const [confirmingClear, setConfirmingClear] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  // Outcomes name the board they acted on, so a strip full of tabs still
+  // says what just happened to which one.
+  const activeName = boards.find((board) => board.id === activeBoardId)?.name ?? 'Board';
 
   const startRename = useCallback((id: string, name: string) => {
     // 'main' is the room's first board, not a stored definition: the hook
@@ -93,27 +103,51 @@ export default function BoardTabs({
     }
   }, [activeBoardId, boards, onSelectBoard]);
 
+  /*
+   * A success speaks once and then gets out of the canvas's way; a failure
+   * stays until the teacher deals with it. The panel sits over the top-left
+   * of the drawing area, which is room a lesson wants back.
+   */
+  useEffect(() => {
+    if (clearOutcome !== 'done' && deleteOutcome !== 'done') return;
+    const timer = window.setTimeout(() => {
+      setClearOutcome((outcome) => (outcome === 'done' ? null : outcome));
+      setDeleteOutcome((outcome) => (outcome === 'done' ? null : outcome));
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [clearOutcome, deleteOutcome]);
+
   const handleAdd = useCallback(() => {
     setClearOutcome(null);
+    setDeleteOutcome(null);
+    if (!yDoc) {
+      /*
+       * No document yet means the socket has not delivered the room: adding
+       * is not refused by the room, it is just not possible yet.
+       */
+      setAddRefused('offline');
+      return;
+    }
     const created = addBoard();
     /*
      * 'main' is both the room's first board and the hook's fallback when
-     * nothing can be added -- no document, or the room's cap -- so a fallback
-     * must not be read as "switch to the main board", which would yank the
-     * lesson out from under a full room. Any other id is a board that was
-     * just created, and the editor moves to it.
+     * nothing can be added -- the room's cap -- so a fallback must not be
+     * read as "switch to the main board", which would yank the lesson out
+     * from under a full room. Any other id is a board that was just created,
+     * and the editor moves to it.
      */
     if (created === 'main') {
-      setAddRefused(true);
+      setAddRefused('cap');
       return;
     }
-    setAddRefused(false);
+    setAddRefused(null);
     onSelectBoard(created);
-  }, [addBoard, onSelectBoard]);
+  }, [addBoard, onSelectBoard, yDoc]);
 
   const clearActiveBoard = useCallback(async () => {
     setClearing(true);
     setClearOutcome(null);
+    setDeleteOutcome(null);
     try {
       const response = await request(`/api/whiteboard/room/${roomId}/clear`, {
         method: 'POST',
@@ -131,6 +165,7 @@ export default function BoardTabs({
   const deleteActiveBoard = useCallback(async () => {
     setDeleting(true);
     setDeleteOutcome(null);
+    setClearOutcome(null);
     try {
       const response = await request(`/api/whiteboard/room/${roomId}/boards/delete`, {
         method: 'POST',
@@ -153,50 +188,63 @@ export default function BoardTabs({
   return (
     <div
       data-testid="board-tabs"
-      className="relative flex shrink-0 items-center gap-1 border-b border-slate-200 px-2 py-1"
+      className="relative flex min-w-0 shrink-0 items-center gap-1 border-b border-slate-200 px-2 py-1"
     >
-      {boards.map((board) =>
-        board.id === renamingId ? (
-          <input
-            key={board.id}
-            data-testid="board-name-input"
-            aria-label="Board name"
-            autoFocus
-            value={renameDraft}
-            onFocus={(event) => event.currentTarget.select()}
-            onChange={(event) => setRenameDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') commitRename();
-              if (event.key === 'Escape') setRenamingId(null);
-            }}
-            onBlur={commitRename}
-            className="w-24 rounded-md border border-slate-600 bg-slate-800 px-2 py-0.5 text-[0.75rem] font-medium text-slate-100"
-          />
-        ) : (
-          <button
-            key={board.id}
-            type="button"
-            data-testid={`board-tab-${board.id}`}
-            aria-pressed={board.id === activeBoardId}
-            onClick={() => onSelectBoard(board.id)}
-            onDoubleClick={() => startRename(board.id, board.name)}
-            className={`rounded-md px-2 py-0.5 text-[0.75rem] font-medium transition-colors ${
-              board.id === activeBoardId
-                ? 'bg-slate-800 text-slate-100'
-                : 'text-slate-600 hover:bg-slate-800/10'
-            }`}
-          >
-            {board.name}
-          </button>
-        ),
-      )}
+      <div
+        data-testid="board-tabs-run"
+        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+      >
+        {boards.map((board) =>
+          board.id === renamingId ? (
+            <input
+              key={board.id}
+              data-testid="board-name-input"
+              aria-label="Board name"
+              autoFocus
+              value={renameDraft}
+              onFocus={(event) => event.currentTarget.select()}
+              onChange={(event) => setRenameDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') commitRename();
+                if (event.key === 'Escape') setRenamingId(null);
+              }}
+              onBlur={commitRename}
+              className="w-40 shrink-0 rounded-md border border-slate-600 bg-slate-800 px-2 py-0.5 text-[0.75rem] font-medium text-slate-100"
+            />
+          ) : (
+            <button
+              key={board.id}
+              type="button"
+              data-testid={`board-tab-${board.id}`}
+              aria-pressed={board.id === activeBoardId}
+              title={
+                board.id === 'main'
+                  ? `${board.name} — the room's first board`
+                  : `${board.name} — double-click or press F2 to rename`
+              }
+              onClick={() => onSelectBoard(board.id)}
+              onDoubleClick={() => startRename(board.id, board.name)}
+              onKeyDown={(event) => {
+                if (event.key === 'F2') startRename(board.id, board.name);
+              }}
+              className={`flex min-w-0 max-w-[10rem] shrink-0 items-center rounded-md px-2 py-0.5 text-[0.75rem] font-medium transition-colors ${
+                board.id === activeBoardId
+                  ? 'bg-slate-800 text-slate-100'
+                  : 'text-slate-600 hover:bg-slate-800/10'
+              }`}
+            >
+              <span className="truncate">{board.name}</span>
+            </button>
+          ),
+        )}
+      </div>
       <button
         type="button"
         data-testid="board-tabs-add"
         aria-label="Add board"
         title="Add board"
         onClick={handleAdd}
-        className="inline-flex h-6 w-6 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/10 hover:text-slate-700"
+        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/10 hover:text-slate-700"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
           <path d="M12 5v14" />
@@ -210,8 +258,8 @@ export default function BoardTabs({
           aria-label="Clear this board"
           title="Clear this board"
           disabled={clearing || deleting}
-          onClick={() => { void clearActiveBoard(); }}
-          className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+          onClick={() => { setConfirmingClear(true); }}
+          className="ml-auto inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M3 6h18" />
@@ -228,7 +276,7 @@ export default function BoardTabs({
           title="Delete this board"
           disabled={clearing || deleting}
           onClick={() => { setConfirmingDelete(true); }}
-          className="inline-flex h-6 w-6 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M4 7h16" />
@@ -239,21 +287,26 @@ export default function BoardTabs({
           </svg>
         </button>
       )}
-      {(addRefused || clearOutcome !== null || deleteOutcome !== null) && (
+      {(addRefused !== null || clearOutcome !== null || deleteOutcome !== null) && (
         <div className={OUTCOME_PANEL_CLASS}>
-          {addRefused && (
+          {addRefused === 'cap' && (
             <p role="status" data-testid="board-tabs-add-refused" className={OUTCOME_TEXT_CLASS}>
-              A new board couldn&rsquo;t be added. This room may already hold the most it can.
+              This room already holds the most boards it can (50). Delete a board to make room.
+            </p>
+          )}
+          {addRefused === 'offline' && (
+            <p role="status" data-testid="board-tabs-add-offline" className={OUTCOME_TEXT_CLASS}>
+              Reconnect to the room before adding boards.
             </p>
           )}
           {clearOutcome === 'done' && (
             <p role="status" data-testid="board-tabs-clear-done" className={OUTCOME_TEXT_CLASS}>
-              Board cleared.
+              {`${activeName} cleared.`}
             </p>
           )}
           {clearOutcome === 'error' && (
             <p role="status" data-testid="board-tabs-clear-error" className={OUTCOME_TEXT_CLASS}>
-              Couldn&rsquo;t clear this board.{' '}
+              {`Couldn't clear '${activeName}'. `}
               <button
                 type="button"
                 data-testid="board-tabs-clear-retry"
@@ -266,12 +319,12 @@ export default function BoardTabs({
           )}
           {deleteOutcome === 'done' && (
             <p role="status" data-testid="board-tabs-delete-done" className={OUTCOME_TEXT_CLASS}>
-              Board deleted.
+              {`${activeName} deleted.`}
             </p>
           )}
           {deleteOutcome === 'error' && (
             <p role="status" data-testid="board-tabs-delete-error" className={OUTCOME_TEXT_CLASS}>
-              Couldn&rsquo;t delete this board.{' '}
+              {`Couldn't delete '${activeName}'. `}
               <button
                 type="button"
                 data-testid="board-tabs-delete-retry"
@@ -285,10 +338,22 @@ export default function BoardTabs({
         </div>
       )}
       <ConfirmDialog
+        isOpen={confirmingClear}
+        title="Clear this board"
+        body={`This will erase everything on '${activeName}' for all users. Are you sure?`}
+        confirmLabel="Clear board"
+        testIdPrefix="board-clear"
+        onConfirm={() => {
+          setConfirmingClear(false);
+          void clearActiveBoard();
+        }}
+        onCancel={() => { setConfirmingClear(false); }}
+      />
+      <ConfirmDialog
         isOpen={confirmingDelete}
-        title="Delete Board"
-        body="This will remove the board and everything on it for all users. Are you sure?"
-        confirmLabel="Delete Board"
+        title="Delete board"
+        body={`This will remove '${activeName}' and everything on it for all users. Are you sure?`}
+        confirmLabel="Delete board"
         testIdPrefix="board-delete"
         onConfirm={() => {
           setConfirmingDelete(false);

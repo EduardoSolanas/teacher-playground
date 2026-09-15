@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { ComponentProps } from 'react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import * as Y from 'yjs';
 
@@ -114,8 +114,12 @@ describe('BoardTabs', () => {
     render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard request={request} />);
 
     fireEvent.click(screen.getByTestId('board-tab-board-1'));
+    fireEvent.click(screen.getByTestId('board-tabs-clear'));
+    // Nothing has been asked of the room yet: the dialog stands between.
+    expect(posts).toEqual([]);
+
+    fireEvent.click(screen.getByTestId('board-clear-confirm-btn'));
     const clear = screen.getByTestId('board-tabs-clear');
-    fireEvent.click(clear);
     expect(clear).toHaveProperty('disabled', true);
 
     release(jsonResponse({ ok: true }));
@@ -133,6 +137,37 @@ describe('BoardTabs', () => {
     ]);
   });
 
+  it('clearing asks for confirmation and cancelling changes nothing', async () => {
+    const posts: Array<{ url: string }> = [];
+    const request: AjaxFetch = (input) => {
+      posts.push({ url: String(input) });
+      return Promise.resolve(jsonResponse({ ok: true }));
+    };
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard request={request} />);
+
+    fireEvent.click(screen.getByTestId('board-tab-board-1'));
+    fireEvent.click(screen.getByTestId('board-tabs-clear'));
+    fireEvent.click(screen.getByTestId('board-clear-cancel-btn'));
+
+    expect(screen.queryByTestId('board-clear-confirm-btn')).toBeNull();
+    // Only the room read the strip mounted with; no clear was ever asked.
+    expect(posts.filter((post) => post.url.endsWith('/clear'))).toEqual([]);
+    expect(screen.getByTestId('board-tab-board-1').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('the clear and delete dialogs name the active board', () => {
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard />);
+
+    fireEvent.click(screen.getByTestId('board-tab-board-1'));
+    fireEvent.click(screen.getByTestId('board-tabs-clear'));
+    expect(screen.getByText(/'Board 2'/)).toBeTruthy();
+    fireEvent.click(screen.getByTestId('board-clear-cancel-btn'));
+
+    fireEvent.click(screen.getByTestId('board-tabs-delete'));
+    expect(screen.getByText(/'Board 2'/)).toBeTruthy();
+    fireEvent.click(screen.getByTestId('board-delete-cancel-btn'));
+  });
+
   it('surfaces a refused clear as an outcome message and keeps the board', async () => {
     const request: AjaxFetch = async (input) => {
       if (String(input).endsWith('/clear')) return jsonResponse({ error: 'no' }, 403);
@@ -142,6 +177,7 @@ describe('BoardTabs', () => {
 
     fireEvent.click(screen.getByTestId('board-tab-board-1'));
     fireEvent.click(screen.getByTestId('board-tabs-clear'));
+    fireEvent.click(screen.getByTestId('board-clear-confirm-btn'));
 
     expect(await screen.findByTestId('board-tabs-clear-error')).toBeTruthy();
     // The board is still the active one: a refusal changes nothing.
@@ -156,6 +192,7 @@ describe('BoardTabs', () => {
     render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard request={request} />);
 
     fireEvent.click(screen.getByTestId('board-tabs-clear'));
+    fireEvent.click(screen.getByTestId('board-clear-confirm-btn'));
 
     expect(await screen.findByTestId('board-tabs-clear-error')).toBeTruthy();
   });
@@ -336,5 +373,87 @@ describe('BoardTabs', () => {
     });
 
     expect(screen.getByTestId('board-tab-main').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('F2 opens the rename editor, except on the main board', () => {
+    const doc = seededDoc(2);
+    render(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard />);
+
+    fireEvent.keyDown(screen.getByTestId('board-tab-board-1'), { key: 'F2' });
+    expect(screen.getByTestId('board-name-input')).toBeTruthy();
+    fireEvent.keyDown(screen.getByTestId('board-name-input'), { key: 'Escape' });
+
+    fireEvent.keyDown(screen.getByTestId('board-tab-main'), { key: 'F2' });
+    expect(screen.queryByTestId('board-name-input')).toBeNull();
+  });
+
+  it('the tab tooltip offers the rename shortcut and marks the main board', () => {
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard />);
+
+    expect(screen.getByTestId('board-tab-board-1').getAttribute('title')).toMatch(/F2/);
+    expect(screen.getByTestId('board-tab-main').getAttribute('title')).toMatch(/first board/);
+  });
+
+  it('a success outcome dismisses itself while an error stays', async () => {
+    vi.useFakeTimers();
+    try {
+      let ok = true;
+      const request: AjaxFetch = async (input) => {
+        if (String(input).endsWith('/clear')) {
+          return ok ? jsonResponse({ ok: true }) : jsonResponse({ error: 'no' }, 403);
+        }
+        return jsonResponse({});
+      };
+      render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard request={request} />);
+
+      fireEvent.click(screen.getByTestId('board-tab-board-1'));
+      fireEvent.click(screen.getByTestId('board-tabs-clear'));
+      fireEvent.click(screen.getByTestId('board-clear-confirm-btn'));
+      await act(async () => {});
+      expect(screen.getByTestId('board-tabs-clear-done')).toBeTruthy();
+
+      act(() => {
+        vi.advanceTimersByTime(4500);
+      });
+      expect(screen.queryByTestId('board-tabs-clear-done')).toBeNull();
+
+      ok = false;
+      fireEvent.click(screen.getByTestId('board-tabs-clear'));
+      fireEvent.click(screen.getByTestId('board-clear-confirm-btn'));
+      await act(async () => {});
+      expect(screen.getByTestId('board-tabs-clear-error')).toBeTruthy();
+      act(() => {
+        vi.advanceTimersByTime(30000);
+      });
+      expect(screen.getByTestId('board-tabs-clear-error')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the add refusal separates a capped room from an offline one', () => {
+    const capped = render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(50)} canClearBoard />);
+    fireEvent.click(screen.getByTestId('board-tabs-add'));
+    expect(screen.getByTestId('board-tabs-add-refused').textContent).toMatch(/\(50\)/);
+    capped.unmount();
+
+    render(<TabsRoom roomId="room-beta" yDoc={null} canClearBoard />);
+    fireEvent.click(screen.getByTestId('board-tabs-add'));
+    expect(screen.getByTestId('board-tabs-add-offline')).toBeTruthy();
+  });
+
+  it('the tab run scrolls while the controls stay pinned outside it', () => {
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(3)} canClearBoard />);
+
+    // The delete control exists only for a non-main active board.
+    fireEvent.click(screen.getByTestId('board-tab-board-1'));
+
+    const run = screen.getByTestId('board-tabs-run');
+    expect(run.contains(screen.getByTestId('board-tab-main'))).toBe(true);
+    expect(run.contains(screen.getByTestId('board-tab-board-2'))).toBe(true);
+    // The controls a teacher mid-lesson cannot lose sit outside the scroll.
+    expect(run.contains(screen.getByTestId('board-tabs-add'))).toBe(false);
+    expect(run.contains(screen.getByTestId('board-tabs-clear'))).toBe(false);
+    expect(run.contains(screen.getByTestId('board-tabs-delete'))).toBe(false);
   });
 });

@@ -293,8 +293,11 @@ test.describe('Multi-board rooms', () => {
       await memberPage.getByTestId(secondTab).click();
       await expectScene(memberPage, ['clear-board2-stroke']);
 
-      // The owner empties the board they are on.
+      // The owner empties the board they are on -- asked first, like the
+      // delete is: a one-click wipe of a lesson is the trap the reviews
+      // flagged.
       await page.getByTestId('board-tabs-clear').click();
+      await page.getByTestId('board-clear-confirm-btn').click();
       await expect(page.getByTestId('board-tabs-clear-done')).toBeVisible({ timeout: 10000 });
       await expectScene(page, []);
       await expectScene(memberPage, []);

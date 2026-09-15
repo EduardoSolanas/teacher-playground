@@ -14,9 +14,9 @@ export default function ClearBoardModal({
   return (
     <ConfirmDialog
       isOpen={isOpen}
-      title="Clear Board"
-      body="This will remove all elements for all users. Are you sure?"
-      confirmLabel="Clear Board"
+      title="Clear all boards"
+      body="This will erase every board in this room for all users. Are you sure?"
+      confirmLabel="Clear all boards"
       testIdPrefix="whiteboard-clear"
       onConfirm={onConfirm}
       onCancel={onCancel}

@@ -33,7 +33,7 @@ describe('ClearBoardModal', () => {
       <ClearBoardModal isOpen={true} onCancel={onCancel} onConfirm={onConfirm} />
     );
 
-    const dialog = screen.getByRole('dialog', { name: /clear board/i });
+    const dialog = screen.getByRole('dialog', { name: /clear all boards/i });
     expect(dialog).toBeTruthy();
   });
 
@@ -57,7 +57,7 @@ describe('ClearBoardModal', () => {
       <ClearBoardModal isOpen={true} onCancel={onCancel} onConfirm={onConfirm} />
     );
 
-    const dialog = screen.getByRole('dialog', { name: /clear board/i });
+    const dialog = screen.getByRole('dialog', { name: /clear all boards/i });
     fireEvent.keyDown(dialog, { key: 'Escape' });
 
     expect(onCancel).toHaveBeenCalledTimes(1);
@@ -129,7 +129,7 @@ describe('ClearBoardModal', () => {
     // back to the body. A listener bound to the dialog element never sees the
     // keydown that follows, which silently kills Escape on a destructive
     // confirmation.
-    fireEvent.click(screen.getByText(/remove all elements/i));
+    fireEvent.click(screen.getByText(/erase every board/i));
     (document.activeElement as HTMLElement | null)?.blur();
 
     fireEvent.keyDown(document.body, { key: 'Escape' });

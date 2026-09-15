@@ -230,6 +230,24 @@ export function evictionNoticeCopy(flags: {
   return null;
 }
 
+/**
+ * Asks the owner-only route to empty the whole room, and reports whether it
+ * happened. The footer used to swallow both a refusal and a network error,
+ * closing the dialog as if the boards were gone when nothing of the kind had
+ * happened -- a teacher deserves to know the lesson is still on the board.
+ */
+export async function submitWholeBoardClear(
+  request: AjaxFetch,
+  roomId: string,
+): Promise<boolean> {
+  try {
+    const response = await request(`/api/whiteboard/room/${roomId}/clear`, { method: 'POST' });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 export function shouldShowStartCall({
   isHost,
   avAllowed,
@@ -364,6 +382,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
   const [guestHost, setGuestHost] = useState(false);
   const [guestHostReady, setGuestHostReady] = useState(false);
   const [clearModalOpen, setClearModalOpen] = useState(false);
+  const [clearFailed, setClearFailed] = useState(false);
   // The store is the single source of truth for the active tool: keyboard
   // shortcuts write to it directly, so deriving from it keeps the sidebar
   // highlight and Excalidraw's own tool in step with them.
@@ -1136,6 +1155,15 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
           The teacher ended the call.
         </div>
       )}
+      {clearFailed && (
+        <div
+          role="status"
+          data-testid="whiteboard-clear-failed"
+          className="fixed left-1/2 top-16 z-[1450] -translate-x-1/2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-[0.8rem] text-amber-300 shadow-xl shadow-slate-950/40"
+        >
+          Couldn&rsquo;t clear the boards. Check your connection and try again.
+        </div>
+      )}
       {shouldOverlayConnectingScreen({ boardEverShown, isSynced }) && <LoadingScreen />}
       {/* Stacked above the mobile tool bar; centred on its own row from sm: up. */}
       <ClearBoardModal
@@ -1151,24 +1179,26 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
            * lesson. The route is owner-only, and the deletion comes back over
            * this peer's own socket like everybody else's.
            */
-          void ajaxFetch(`/api/whiteboard/room/${roomId}/clear`, { method: 'POST' })
-            .then((response) => {
-              if (!response.ok) return;
-              /*
-               * The document is emptied by the server and the deletion arrives
-               * over this peer's socket, but the local caches beside it are
-               * not on that path: the legacy store, the React copy and the
-               * saved snapshot each hold their own elements. They were reset
-               * here before the route existed, and still have to be -- the
-               * difference is only that it now happens once the clear has been
-               * allowed rather than instead of asking.
-               */
-              setElements([]);
-              store.setElements([]);
-              store.deselectAll();
-              clearState();
-            })
-            .catch(() => undefined);
+          void submitWholeBoardClear(request, roomId).then((cleared) => {
+            if (!cleared) {
+              setClearFailed(true);
+              return;
+            }
+            setClearFailed(false);
+            /*
+             * The document is emptied by the server and the deletion arrives
+             * over this peer's socket, but the local caches beside it are
+             * not on that path: the legacy store, the React copy and the
+             * saved snapshot each hold their own elements. They were reset
+             * here before the route existed, and still have to be -- the
+             * difference is only that it now happens once the clear has been
+             * allowed rather than instead of asking.
+             */
+            setElements([]);
+            store.setElements([]);
+            store.deselectAll();
+            clearState();
+          });
         }}
         onCancel={() => setClearModalOpen(false)}
       />

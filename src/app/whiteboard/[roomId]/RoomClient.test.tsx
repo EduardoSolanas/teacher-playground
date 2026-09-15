@@ -25,6 +25,7 @@ import WhiteboardRoomPage, {
   shouldAnnounceCallEnded,
   resolveWaitingPosition,
   evictionNoticeCopy,
+  submitWholeBoardClear,
   supportButtonProps,
 } from './RoomClient';
 
@@ -545,6 +546,27 @@ describe('RoomContent main room', () => {
       .toContain(roomCanvasTopClass(false));
   });
 
+  it('a refused whole-board clear reports false, and success reports true', async () => {
+    const refused: AjaxFetch = async (input) => {
+      expect(String(input).endsWith('/clear')).toBe(true);
+      return new Response(null, { status: 403 });
+    };
+    expect(await submitWholeBoardClear(refused, 'room-alpha')).toBe(false);
+
+    const broken: AjaxFetch = async () => {
+      throw new Error('socket gone');
+    };
+    expect(await submitWholeBoardClear(broken, 'room-alpha')).toBe(false);
+
+    const posts: string[] = [];
+    const allowed: AjaxFetch = async (input) => {
+      posts.push(String(input));
+      return jsonResponse({ ok: true });
+    };
+    expect(await submitWholeBoardClear(allowed, 'room-alpha')).toBe(true);
+    expect(posts).toEqual(['/api/whiteboard/room/room-alpha/clear']);
+  });
+
   it('gives an editor the board without the owner controls', async () => {
     storeUserName();
     stubNetwork(collaborationNetwork({ access: { status: 'granted', role: 'editor' } }));
@@ -1017,7 +1039,10 @@ describe('room board tabs', () => {
     storeUserName();
     render(<RoomContent roomId="room-alpha" request={request} />);
 
+    // The strip's clear confirms first: the dialog stands between the click
+    // and the route.
     fireEvent.click(await screen.findByTestId('board-tabs-clear'));
+    fireEvent.click(screen.getByTestId('board-clear-confirm-btn'));
 
     await waitFor(() => {
       expect(posts).toEqual([
