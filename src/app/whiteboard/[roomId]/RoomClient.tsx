@@ -20,6 +20,7 @@ import { shouldCollapsePresenceForViewport } from '@/lib/whiteboard/presenceView
 import { shouldOverlayConnectingScreen } from '@/lib/whiteboard/connectingOverlay';
 import { shouldExpandForArrival } from '@/lib/whiteboard/waitingArrival';
 import ClearBoardModal from '@/components/whiteboard/ClearBoardModal';
+import BoardTabs from '@/components/whiteboard/BoardTabs';
 import RoomTopNav from '@/components/whiteboard/RoomTopNav';
 import AvSessionPanel from '@/components/av/AvSessionPanel';
 import StartCallButton from '@/components/av/StartCallButton';
@@ -405,6 +406,12 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
    * face.
    */
   const [presenceCollapsed, setPresenceCollapsed] = useState(true);
+  /*
+   * Which of the room's boards the editor is showing. The room owns it rather
+   * than the tab strip because the wrapper takes it as a prop too -- one
+   * value, handed to both, keeps the tabs and the canvas on the same board.
+   */
+  const [activeBoardId, setActiveBoardId] = useState('main');
   const [isGuiding, setIsGuiding] = useState(false);
   const {
     isConnected,
@@ -1020,30 +1027,52 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
           </div>
         }
       />
-      <div className={`${ROOM_CANVAS_CLASS} ${roomCanvasTopClass(guestHost)} ${roomCanvasRightClass(callRailVisible)}`} style={roomCanvasRailStyle(callRailVisible)} data-testid="whiteboard-canvas-area">
-        <ExcalidrawWrapper
+      <div className={`flex flex-col ${ROOM_CANVAS_CLASS} ${roomCanvasTopClass(guestHost)} ${roomCanvasRightClass(callRailVisible)}`} style={roomCanvasRailStyle(callRailVisible)} data-testid="whiteboard-canvas-area">
+        {/*
+          * The boards of the room, one tab each. Owner, not host, for the
+          * clear control -- the same split as the footer's clear above: the
+          * route refuses anybody who is not the owner, so gating on host
+          * would hand a peer a button that answers 403.
+          */}
+        <BoardTabs
           roomId={roomId}
-          userName={userName}
-          localPeerId={localPeerId}
           yDoc={yDoc}
-          yElementsArray={yElementsArray}
-          users={users}
-          cursors={cursors}
-          activeTool={activeTool}
-          isLocalHost={isLocalHost}
-          onToolChange={handleToolChange}
-          initialViewport={viewport}
-          onViewportChange={storeViewport}
-          onCursorMove={setCursor}
-          onElementsChange={setElements}
-          hostPeerId={hostPeerId}
-          guideMessage={guideMessage}
-          isGuiding={isGuiding}
-          onGuideViewport={handleGuideViewport}
-          footer={boardFooter}
-          onBoardActions={(actions) => { boardActionsRef.current = actions; }}
-          onSidebarOpenChange={handleSidebarOpenChange}
+          activeBoardId={activeBoardId}
+          onSelectBoard={setActiveBoardId}
+          canClearBoard={isRoomOwner}
+          request={request}
         />
+        {/*
+          * The strip is furniture in its own row; the board takes what is
+          * left. `relative` keeps Excalidraw's absolutes anchored to the
+          * board rather than reaching up under the tabs.
+          */}
+        <div className="relative min-h-0 w-full flex-1">
+          <ExcalidrawWrapper
+            roomId={roomId}
+            userName={userName}
+            localPeerId={localPeerId}
+            yDoc={yDoc}
+            yElementsArray={yElementsArray}
+            activeBoardId={activeBoardId}
+            users={users}
+            cursors={cursors}
+            activeTool={activeTool}
+            isLocalHost={isLocalHost}
+            onToolChange={handleToolChange}
+            initialViewport={viewport}
+            onViewportChange={storeViewport}
+            onCursorMove={setCursor}
+            onElementsChange={setElements}
+            hostPeerId={hostPeerId}
+            guideMessage={guideMessage}
+            isGuiding={isGuiding}
+            onGuideViewport={handleGuideViewport}
+            footer={boardFooter}
+            onBoardActions={(actions) => { boardActionsRef.current = actions; }}
+            onSidebarOpenChange={handleSidebarOpenChange}
+          />
+        </div>
       </div>
       {connectionLost && <ConnectionLostNotice />}
       {shouldShowSyncDegradedNotice({ syncDegraded, connectionLost }) && <SyncDegradedNotice />}

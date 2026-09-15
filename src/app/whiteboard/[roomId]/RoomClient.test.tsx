@@ -947,6 +947,87 @@ describe('WhiteboardRoomPage', () => {
   });
 });
 
+describe('room board tabs', () => {
+  it('renders one tab per board with the main board first', async () => {
+    storeUserName();
+    await renderRoom();
+
+    expect(screen.getByTestId('board-tabs')).toBeTruthy();
+    expect(screen.getByTestId('board-tab-main').textContent).toBe('Board 1');
+    expect(screen.getByTestId('board-tab-main').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('switches the active board when a tab is clicked and passes it to the wrapper', async () => {
+    /*
+     * The active board is the room's state: the tab strip reports the click
+     * and the editor takes the same value as a prop (its board-scoped
+     * behaviour is ExcalidrawWrapper.test.tsx's to prove -- the dynamic
+     * wrapper never mounts inside this suite). What this file can see is the
+     * round trip: add, land on the new board, and back to main.
+     */
+    storeUserName();
+    await renderRoom();
+
+    fireEvent.click(screen.getByTestId('board-tabs-add'));
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^board-tab-/)).toHaveLength(2);
+    });
+    const tabs = screen.getAllByTestId(/^board-tab-/);
+    expect(tabs[1].getAttribute('aria-pressed')).toBe('true');
+    expect(tabs[0].getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(screen.getByTestId('board-tab-main'));
+    expect(screen.getByTestId('board-tab-main').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('hides the per-board clear control from a non-owner', async () => {
+    storeUserName();
+    stubNetwork(collaborationNetwork({ access: { status: 'granted', role: 'editor' } }));
+    render(<RoomContent roomId="room-alpha" />);
+    await screen.findByTestId('whiteboard-canvas-area');
+
+    expect(screen.getByTestId('board-tabs')).toBeTruthy();
+    expect(screen.getByTestId('board-tabs-add')).toBeTruthy();
+    expect(screen.queryByTestId('board-tabs-clear')).toBeNull();
+  });
+
+  it('clears the active board through the owner-only clear route', async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const request: AjaxFetch = async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (method === 'POST' && url.endsWith('/clear')) {
+        posts.push({ url, body: JSON.parse(String(init?.body)) });
+        return jsonResponse({ ok: true });
+      }
+      if (url === '/auth/session/current') {
+        return jsonResponse({ displayName: 'Alice' });
+      }
+      if (url === '/api/whiteboard/room/room-alpha') {
+        return jsonResponse({ elements: [], viewport: { x: 0, y: 0, zoom: 1 }, maxUsers: 2, updated_at: 1 });
+      }
+      if (url === '/api/whiteboard/room/room-alpha/access') {
+        return jsonResponse({ status: 'granted', role: 'creator' });
+      }
+      if (url.endsWith('/presence') && method === 'POST') {
+        return jsonResponse({ users: [], waitingPeers: [], hostPeerId: null, isWaiting: false, peerId: 'peer-1' });
+      }
+      return jsonResponse({});
+    };
+    storeUserName();
+    render(<RoomContent roomId="room-alpha" request={request} />);
+
+    fireEvent.click(await screen.findByTestId('board-tabs-clear'));
+
+    await waitFor(() => {
+      expect(posts).toEqual([
+        { url: '/api/whiteboard/room/room-alpha/clear', body: { boardId: 'main' } },
+      ]);
+    });
+    expect(await screen.findByTestId('board-tabs-clear-done')).toBeTruthy();
+  });
+});
+
 describe('room seats from the title menu', () => {
   it('saves the new seat count through the settings route and raises the capacity', async () => {
     const posts: Array<{ url: string; body: unknown }> = [];
