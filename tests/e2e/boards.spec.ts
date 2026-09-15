@@ -277,10 +277,9 @@ test.describe('Multi-board rooms', () => {
       await waitForProviderConnected(memberPage);
       await expectScene(memberPage, ['clear-main-stroke']);
 
-      // Clearing is the owner's control; a member never sees the button.
-      await expect(memberPage.getByTestId('board-tabs')).toBeVisible();
-      await expect(memberPage.getByTestId('board-tabs-clear')).toHaveCount(0);
-      await expect(page.getByTestId('board-tabs-clear')).toBeVisible();
+      // The footer's clear is the owner's control; a member never sees it.
+      await expect(memberPage.getByTestId('whiteboard-clear-btn')).toHaveCount(0);
+      await expect(page.getByTestId('whiteboard-clear-btn')).toBeVisible();
 
       await page.getByTestId('board-tabs-add').click();
       const secondTab = await addedBoardTestId(page);
@@ -293,14 +292,17 @@ test.describe('Multi-board rooms', () => {
       await memberPage.getByTestId(secondTab).click();
       await expectScene(memberPage, ['clear-board2-stroke']);
 
-      // The owner empties the board they are on -- asked first, like the
-      // delete is: a one-click wipe of a lesson is the trap the reviews
-      // flagged.
-      await page.getByTestId('board-tabs-clear').click();
-      await page.getByTestId('board-clear-confirm-btn').click();
-      await expect(page.getByTestId('board-tabs-clear-done')).toBeVisible({ timeout: 10000 });
+      // The owner empties the board they are looking at -- the footer's
+      // clear acts on the current selection, asked first.
+      await page.getByTestId('whiteboard-clear-btn').click();
+      await expect(page.getByText(/'Board 2'/)).toBeVisible();
+      await page.getByTestId('whiteboard-clear-confirm-btn').click();
+
+      // The board empties for everyone -- and keeps its tab.
       await expectScene(page, []);
       await expectScene(memberPage, []);
+      await expect(boardTabs(page)).toHaveCount(2);
+      await expect(boardTabs(memberPage)).toHaveCount(2);
 
       // And it has to stay empty: a stale save landing after the clear would
       // quietly bring the board back, the way it once could the whole room.

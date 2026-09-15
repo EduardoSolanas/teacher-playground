@@ -25,7 +25,7 @@ import WhiteboardRoomPage, {
   shouldAnnounceCallEnded,
   resolveWaitingPosition,
   evictionNoticeCopy,
-  submitWholeBoardClear,
+  submitBoardClear,
   supportButtonProps,
 } from './RoomClient';
 
@@ -546,25 +546,28 @@ describe('RoomContent main room', () => {
       .toContain(roomCanvasTopClass(false));
   });
 
-  it('a refused whole-board clear reports false, and success reports true', async () => {
-    const refused: AjaxFetch = async (input) => {
+  it('a refused board clear reports false and names the board it asked about', async () => {
+    const refused: AjaxFetch = async (input, init) => {
       expect(String(input).endsWith('/clear')).toBe(true);
+      expect(JSON.parse(String(init?.body))).toEqual({ boardId: 'board-1' });
       return new Response(null, { status: 403 });
     };
-    expect(await submitWholeBoardClear(refused, 'room-alpha')).toBe(false);
+    expect(await submitBoardClear(refused, 'room-alpha', 'board-1')).toBe(false);
 
     const broken: AjaxFetch = async () => {
       throw new Error('socket gone');
     };
-    expect(await submitWholeBoardClear(broken, 'room-alpha')).toBe(false);
+    expect(await submitBoardClear(broken, 'room-alpha', 'board-1')).toBe(false);
 
-    const posts: string[] = [];
-    const allowed: AjaxFetch = async (input) => {
-      posts.push(String(input));
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const allowed: AjaxFetch = async (input, init) => {
+      posts.push({ url: String(input), body: JSON.parse(String(init?.body)) });
       return jsonResponse({ ok: true });
     };
-    expect(await submitWholeBoardClear(allowed, 'room-alpha')).toBe(true);
-    expect(posts).toEqual(['/api/whiteboard/room/room-alpha/clear']);
+    expect(await submitBoardClear(allowed, 'room-alpha', 'board-1')).toBe(true);
+    expect(posts).toEqual([
+      { url: '/api/whiteboard/room/room-alpha/clear', body: { boardId: 'board-1' } },
+    ]);
   });
 
   it('gives an editor the board without the owner controls', async () => {
@@ -1002,7 +1005,7 @@ describe('room board tabs', () => {
     expect(screen.getByTestId('board-tab-main').getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('hides the per-board clear control from a non-owner', async () => {
+  it('hides the per-board delete control from a non-owner', async () => {
     storeUserName();
     stubNetwork(collaborationNetwork({ access: { status: 'granted', role: 'editor' } }));
     render(<RoomContent roomId="room-alpha" />);
@@ -1010,46 +1013,8 @@ describe('room board tabs', () => {
 
     expect(screen.getByTestId('board-tabs')).toBeTruthy();
     expect(screen.getByTestId('board-tabs-add')).toBeTruthy();
+    expect(screen.queryByTestId('board-tabs-delete')).toBeNull();
     expect(screen.queryByTestId('board-tabs-clear')).toBeNull();
-  });
-
-  it('clears the active board through the owner-only clear route', async () => {
-    const posts: Array<{ url: string; body: unknown }> = [];
-    const request: AjaxFetch = async (input, init) => {
-      const url = String(input);
-      const method = init?.method ?? 'GET';
-      if (method === 'POST' && url.endsWith('/clear')) {
-        posts.push({ url, body: JSON.parse(String(init?.body)) });
-        return jsonResponse({ ok: true });
-      }
-      if (url === '/auth/session/current') {
-        return jsonResponse({ displayName: 'Alice' });
-      }
-      if (url === '/api/whiteboard/room/room-alpha') {
-        return jsonResponse({ elements: [], viewport: { x: 0, y: 0, zoom: 1 }, maxUsers: 2, updated_at: 1 });
-      }
-      if (url === '/api/whiteboard/room/room-alpha/access') {
-        return jsonResponse({ status: 'granted', role: 'creator' });
-      }
-      if (url.endsWith('/presence') && method === 'POST') {
-        return jsonResponse({ users: [], waitingPeers: [], hostPeerId: null, isWaiting: false, peerId: 'peer-1' });
-      }
-      return jsonResponse({});
-    };
-    storeUserName();
-    render(<RoomContent roomId="room-alpha" request={request} />);
-
-    // The strip's clear confirms first: the dialog stands between the click
-    // and the route.
-    fireEvent.click(await screen.findByTestId('board-tabs-clear'));
-    fireEvent.click(screen.getByTestId('board-clear-confirm-btn'));
-
-    await waitFor(() => {
-      expect(posts).toEqual([
-        { url: '/api/whiteboard/room/room-alpha/clear', body: { boardId: 'main' } },
-      ]);
-    });
-    expect(await screen.findByTestId('board-tabs-clear-done')).toBeTruthy();
   });
 });
 

@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { useCollaboration } from '@/hooks/useCollaboration';
 import { usePersistence } from '@/hooks/usePersistence';
+import { useBoardList } from '@/lib/whiteboard/boards';
 import { useClearSessionOnEviction } from '@/hooks/useClearSessionOnEviction';
 import { useAvSession } from '@/hooks/useAvSession';
 import UserNamePrompt from '@/components/whiteboard/UserNamePrompt';
@@ -231,17 +232,22 @@ export function evictionNoticeCopy(flags: {
 }
 
 /**
- * Asks the owner-only route to empty the whole room, and reports whether it
+ * Asks the owner-only route to empty one board, and reports whether it
  * happened. The footer used to swallow both a refusal and a network error,
- * closing the dialog as if the boards were gone when nothing of the kind had
+ * closing the dialog as if the board were gone when nothing of the kind had
  * happened -- a teacher deserves to know the lesson is still on the board.
  */
-export async function submitWholeBoardClear(
+export async function submitBoardClear(
   request: AjaxFetch,
   roomId: string,
+  boardId: string,
 ): Promise<boolean> {
   try {
-    const response = await request(`/api/whiteboard/room/${roomId}/clear`, { method: 'POST' });
+    const response = await request(`/api/whiteboard/room/${roomId}/clear`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ boardId }),
+    });
     return response.ok;
   } catch {
     return false;
@@ -506,6 +512,13 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
   const { clearState, clearSession } = usePersistence(roomId, elements, { x: 0, y: 0, zoom: 1 } as any);
 
   useClearSessionOnEviction(clearSession, { wasKicked, wasRejected, wasSuspended });
+
+  /*
+   * The footer's clear acts on the board being looked at, so its dialog can
+   * name it: the list is the shared document's own, same as the strip's.
+   */
+  const { boards: boardNames } = useBoardList(yDoc);
+  const activeBoardName = boardNames.find((board) => board.id === activeBoardId)?.name ?? 'Board';
 
   // Voice only after admission. Waiting / kicked peers never fetch a token.
   const avAllowed = Boolean(userName) && !isWaiting && !wasKicked;
@@ -1058,7 +1071,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
           yDoc={yDoc}
           activeBoardId={activeBoardId}
           onSelectBoard={setActiveBoardId}
-          canClearBoard={isRoomOwner}
+          canManageBoards={isRoomOwner}
           request={request}
         />
         {/*
@@ -1161,39 +1174,37 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
           data-testid="whiteboard-clear-failed"
           className="fixed left-1/2 top-16 z-[1450] -translate-x-1/2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-[0.8rem] text-amber-300 shadow-xl shadow-slate-950/40"
         >
-          Couldn&rsquo;t clear the boards. Check your connection and try again.
+          Couldn&rsquo;t clear this board. Check your connection and try again.
         </div>
       )}
       {shouldOverlayConnectingScreen({ boardEverShown, isSynced }) && <LoadingScreen />}
       {/* Stacked above the mobile tool bar; centred on its own row from sm: up. */}
       <ClearBoardModal
         isOpen={clearModalOpen}
+        boardName={activeBoardName}
         onConfirm={() => {
           setClearModalOpen(false);
           /*
-           * Ask the room to empty itself; do not empty it from here.
+           * Ask the room to empty the board being looked at; do not empty it
+           * from here. This used to write the empty array into the shared
+           * document directly, so the deletion travelled as an ordinary edit
+           * and the server never had a say -- anybody with a socket could
+           * wipe a lesson. The route is owner-only, and the deletion comes
+           * back over this peer's own socket like everybody else's.
            *
-           * This used to write the empty array into the shared document
-           * directly, so the deletion travelled as an ordinary edit and the
-           * server never had a say -- anybody with a socket could wipe a
-           * lesson. The route is owner-only, and the deletion comes back over
-           * this peer's own socket like everybody else's.
+           * The scene empties through that broadcast, but the local copies
+           * beside it are not on that path: the legacy store, the React copy
+           * and the saved snapshot each hold their own elements. They were
+           * reset here before the route existed, and still have to be -- the
+           * snapshot most of all, or a reload of an opted-in room would
+           * quietly resurrect the cleared board from its own cache.
            */
-          void submitWholeBoardClear(request, roomId).then((cleared) => {
+          void submitBoardClear(request, roomId, activeBoardId).then((cleared) => {
             if (!cleared) {
               setClearFailed(true);
               return;
             }
             setClearFailed(false);
-            /*
-             * The document is emptied by the server and the deletion arrives
-             * over this peer's socket, but the local caches beside it are
-             * not on that path: the legacy store, the React copy and the
-             * saved snapshot each hold their own elements. They were reset
-             * here before the route existed, and still have to be -- the
-             * difference is only that it now happens once the clear has been
-             * allowed rather than instead of asking.
-             */
             setElements([]);
             store.setElements([]);
             store.deselectAll();

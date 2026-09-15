@@ -17,6 +17,7 @@ function ModalWithTrigger() {
       </button>
       <ClearBoardModal
         isOpen={isOpen}
+        boardName="Board 2"
         onCancel={() => setIsOpen(false)}
         onConfirm={() => setIsOpen(false)}
       />
@@ -30,10 +31,10 @@ describe('ClearBoardModal', () => {
     const onConfirm = vi.fn();
 
     render(
-      <ClearBoardModal isOpen={true} onCancel={onCancel} onConfirm={onConfirm} />
+      <ClearBoardModal isOpen={true} boardName="Board 2" onCancel={onCancel} onConfirm={onConfirm} />
     );
 
-    const dialog = screen.getByRole('dialog', { name: /clear all boards/i });
+    const dialog = screen.getByRole('dialog', { name: /clear this board/i });
     expect(dialog).toBeTruthy();
   });
 
@@ -42,7 +43,7 @@ describe('ClearBoardModal', () => {
     const onConfirm = vi.fn();
 
     render(
-      <ClearBoardModal isOpen={true} onCancel={onCancel} onConfirm={onConfirm} />
+      <ClearBoardModal isOpen={true} boardName="Board 2" onCancel={onCancel} onConfirm={onConfirm} />
     );
 
     const cancelBtn = screen.getByTestId('whiteboard-clear-cancel-btn');
@@ -54,10 +55,10 @@ describe('ClearBoardModal', () => {
     const onConfirm = vi.fn();
 
     const { container } = render(
-      <ClearBoardModal isOpen={true} onCancel={onCancel} onConfirm={onConfirm} />
+      <ClearBoardModal isOpen={true} boardName="Board 2" onCancel={onCancel} onConfirm={onConfirm} />
     );
 
-    const dialog = screen.getByRole('dialog', { name: /clear all boards/i });
+    const dialog = screen.getByRole('dialog', { name: /clear this board/i });
     fireEvent.keyDown(dialog, { key: 'Escape' });
 
     expect(onCancel).toHaveBeenCalledTimes(1);
@@ -69,7 +70,7 @@ describe('ClearBoardModal', () => {
     const onConfirm = vi.fn();
 
     render(
-      <ClearBoardModal isOpen={true} onCancel={onCancel} onConfirm={onConfirm} />
+      <ClearBoardModal isOpen={true} boardName="Board 2" onCancel={onCancel} onConfirm={onConfirm} />
     );
 
     const clearBoardBtn = screen.getByTestId('whiteboard-clear-confirm-btn');
@@ -86,7 +87,7 @@ describe('ClearBoardModal', () => {
     const onConfirm = vi.fn();
 
     render(
-      <ClearBoardModal isOpen={true} onCancel={onCancel} onConfirm={onConfirm} />
+      <ClearBoardModal isOpen={true} boardName="Board 2" onCancel={onCancel} onConfirm={onConfirm} />
     );
 
     const cancelBtn = screen.getByTestId('whiteboard-clear-cancel-btn');
@@ -123,13 +124,13 @@ describe('ClearBoardModal', () => {
   it('still cancels on Escape after focus leaves the buttons', () => {
     const onCancel = vi.fn();
     const onConfirm = vi.fn();
-    render(<ClearBoardModal isOpen onCancel={onCancel} onConfirm={onConfirm} />);
+    render(<ClearBoardModal isOpen boardName="Board 2" onCancel={onCancel} onConfirm={onConfirm} />);
 
     // Clicking the explanatory text is not a focusable target, so focus falls
     // back to the body. A listener bound to the dialog element never sees the
     // keydown that follows, which silently kills Escape on a destructive
     // confirmation.
-    fireEvent.click(screen.getByText(/erase every board/i));
+    fireEvent.click(screen.getByText(/'Board 2'/));
     (document.activeElement as HTMLElement | null)?.blur();
 
     fireEvent.keyDown(document.body, { key: 'Escape' });
@@ -140,7 +141,7 @@ describe('ClearBoardModal', () => {
   it('pulls focus back into the dialog when Tab is pressed from outside it', () => {
     const onCancel = vi.fn();
     const onConfirm = vi.fn();
-    render(<ClearBoardModal isOpen onCancel={onCancel} onConfirm={onConfirm} />);
+    render(<ClearBoardModal isOpen boardName="Board 2" onCancel={onCancel} onConfirm={onConfirm} />);
 
     (document.activeElement as HTMLElement | null)?.blur();
     expect(document.activeElement).toBe(document.body);

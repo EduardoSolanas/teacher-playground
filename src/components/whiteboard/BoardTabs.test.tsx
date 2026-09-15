@@ -49,14 +49,14 @@ function tabIds(): string[] {
 
 describe('BoardTabs', () => {
   it('renders one tab per board with the main board first', () => {
-    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(3)} canClearBoard />);
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(3)} canManageBoards />);
 
     expect(tabIds()).toEqual(['board-tab-main', 'board-tab-board-1', 'board-tab-board-2']);
     expect(screen.getByTestId('board-tab-main').textContent).toBe('Board 1');
   });
 
   it('marks the active tab and switches the active board when a tab is clicked', () => {
-    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(3)} canClearBoard />);
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(3)} canManageBoards />);
 
     expect(screen.getByTestId('board-tab-main').getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByTestId('board-tab-board-1').getAttribute('aria-pressed')).toBe('false');
@@ -69,7 +69,7 @@ describe('BoardTabs', () => {
 
   it('the add control activates the newly added board', async () => {
     const doc = seededDoc(2);
-    render(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard />);
+    render(<TabsRoom roomId="room-alpha" yDoc={doc} canManageBoards />);
 
     fireEvent.click(screen.getByTestId('board-tabs-add'));
 
@@ -85,7 +85,7 @@ describe('BoardTabs', () => {
 
   it('the add control refuses to switch when the hook falls back to the main board', () => {
     // Main + 49 seeded boards: the room is at its cap, addBoard keeps 'main'.
-    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(50)} canClearBoard />);
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(50)} canManageBoards />);
     expect(tabIds()).toHaveLength(50);
 
     fireEvent.click(screen.getByTestId('board-tabs-add'));
@@ -95,118 +95,46 @@ describe('BoardTabs', () => {
     expect(screen.getByTestId('board-tabs-add-refused')).toBeTruthy();
   });
 
-  it('the clear control posts the active board id to the clear route', async () => {
-    const posts: Array<{ url: string; method?: string; body: unknown }> = [];
-    let release!: (response: Response) => void;
-    const request: AjaxFetch = (input, init) => {
-      if (String(input).endsWith('/clear')) {
-        return new Promise<Response>((resolve) => {
-          posts.push({
-            url: String(input),
-            method: init?.method,
-            body: JSON.parse(String(init?.body)),
-          });
-          release = resolve;
-        });
-      }
-      return Promise.resolve(jsonResponse({}));
-    };
-    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard request={request} />);
+  it('the delete dialog names the active board', () => {
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canManageBoards />);
 
     fireEvent.click(screen.getByTestId('board-tab-board-1'));
-    fireEvent.click(screen.getByTestId('board-tabs-clear'));
-    // Nothing has been asked of the room yet: the dialog stands between.
-    expect(posts).toEqual([]);
-
-    fireEvent.click(screen.getByTestId('board-clear-confirm-btn'));
-    const clear = screen.getByTestId('board-tabs-clear');
-    expect(clear).toHaveProperty('disabled', true);
-
-    release(jsonResponse({ ok: true }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('board-tabs-clear-done')).toBeTruthy();
-    });
-    expect(screen.getByTestId('board-tabs-clear')).toHaveProperty('disabled', false);
-    expect(posts).toEqual([
-      {
-        url: '/api/whiteboard/room/room-alpha/clear',
-        method: 'POST',
-        body: { boardId: 'board-1' },
-      },
-    ]);
-  });
-
-  it('clearing asks for confirmation and cancelling changes nothing', async () => {
-    const posts: Array<{ url: string }> = [];
-    const request: AjaxFetch = (input) => {
-      posts.push({ url: String(input) });
-      return Promise.resolve(jsonResponse({ ok: true }));
-    };
-    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard request={request} />);
-
-    fireEvent.click(screen.getByTestId('board-tab-board-1'));
-    fireEvent.click(screen.getByTestId('board-tabs-clear'));
-    fireEvent.click(screen.getByTestId('board-clear-cancel-btn'));
-
-    expect(screen.queryByTestId('board-clear-confirm-btn')).toBeNull();
-    // Only the room read the strip mounted with; no clear was ever asked.
-    expect(posts.filter((post) => post.url.endsWith('/clear'))).toEqual([]);
-    expect(screen.getByTestId('board-tab-board-1').getAttribute('aria-pressed')).toBe('true');
-  });
-
-  it('the clear and delete dialogs name the active board', () => {
-    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard />);
-
-    fireEvent.click(screen.getByTestId('board-tab-board-1'));
-    fireEvent.click(screen.getByTestId('board-tabs-clear'));
-    expect(screen.getByText(/'Board 2'/)).toBeTruthy();
-    fireEvent.click(screen.getByTestId('board-clear-cancel-btn'));
-
     fireEvent.click(screen.getByTestId('board-tabs-delete'));
     expect(screen.getByText(/'Board 2'/)).toBeTruthy();
     fireEvent.click(screen.getByTestId('board-delete-cancel-btn'));
   });
 
-  it('surfaces a refused clear as an outcome message and keeps the board', async () => {
+  it('surfaces a refused delete as an outcome message and keeps the board', async () => {
     const request: AjaxFetch = async (input) => {
-      if (String(input).endsWith('/clear')) return jsonResponse({ error: 'no' }, 403);
+      if (String(input).endsWith('/boards/delete')) return jsonResponse({ error: 'no' }, 403);
       return jsonResponse({});
     };
-    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard request={request} />);
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canManageBoards request={request} />);
 
     fireEvent.click(screen.getByTestId('board-tab-board-1'));
-    fireEvent.click(screen.getByTestId('board-tabs-clear'));
-    fireEvent.click(screen.getByTestId('board-clear-confirm-btn'));
+    fireEvent.click(screen.getByTestId('board-tabs-delete'));
+    fireEvent.click(screen.getByTestId('board-delete-confirm-btn'));
 
-    expect(await screen.findByTestId('board-tabs-clear-error')).toBeTruthy();
+    expect(await screen.findByTestId('board-tabs-delete-error')).toBeTruthy();
     // The board is still the active one: a refusal changes nothing.
     expect(screen.getByTestId('board-tab-board-1').getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('surfaces a failed clear request as an outcome message', async () => {
-    const request: AjaxFetch = async (input) => {
-      if (String(input).endsWith('/clear')) throw new Error('socket gone');
-      return jsonResponse({});
-    };
-    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard request={request} />);
+  it('the strip never offers a per-board clear', () => {
+    // Emptying a board without deleting it was the one destructive act with
+    // no undo and, briefly, no confirmation -- the room's board-scoped clear
+    // lives in the footer, and the strip keeps only delete.
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canManageBoards />);
 
-    fireEvent.click(screen.getByTestId('board-tabs-clear'));
-    fireEvent.click(screen.getByTestId('board-clear-confirm-btn'));
-
-    expect(await screen.findByTestId('board-tabs-clear-error')).toBeTruthy();
-  });
-
-  it('hides the clear control from a non-owner', () => {
-    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard={false} />);
-
-    expect(screen.getByTestId('board-tabs-add')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('board-tab-board-1'));
+    expect(screen.getByTestId('board-tabs-delete')).toBeTruthy();
     expect(screen.queryByTestId('board-tabs-clear')).toBeNull();
+    expect(screen.queryByTestId('board-clear-confirm-btn')).toBeNull();
   });
 
   it('renames a board through the inline editor', () => {
     const doc = seededDoc(3);
-    render(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard />);
+    render(<TabsRoom roomId="room-alpha" yDoc={doc} canManageBoards />);
 
     fireEvent.doubleClick(screen.getByTestId('board-tab-board-2'));
 
@@ -228,7 +156,7 @@ describe('BoardTabs', () => {
 
   it('escape cancels the rename without writing', () => {
     const doc = seededDoc(3);
-    render(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard />);
+    render(<TabsRoom roomId="room-alpha" yDoc={doc} canManageBoards />);
 
     fireEvent.doubleClick(screen.getByTestId('board-tab-board-1'));
     const input = screen.getByTestId('board-name-input');
@@ -245,7 +173,7 @@ describe('BoardTabs', () => {
   });
 
   it('the main board offers no rename', () => {
-    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(3)} canClearBoard />);
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(3)} canManageBoards />);
 
     fireEvent.doubleClick(screen.getByTestId('board-tab-main'));
 
@@ -254,7 +182,7 @@ describe('BoardTabs', () => {
   });
 
   it('the pencil beside each tab opens the inline editor', () => {
-    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(3)} canClearBoard />);
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(3)} canManageBoards />);
 
     fireEvent.click(screen.getByTestId('board-pencil-board-1'));
 
@@ -263,7 +191,7 @@ describe('BoardTabs', () => {
   });
 
   it('the main board offers no pencil', () => {
-    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(3)} canClearBoard />);
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(3)} canManageBoards />);
 
     expect(screen.queryByTestId('board-pencil-main')).toBeNull();
     expect(screen.getByTestId('board-pencil-board-1')).toBeTruthy();
@@ -271,7 +199,7 @@ describe('BoardTabs', () => {
 
   it('a blank rename leaves the name unchanged', () => {
     const doc = seededDoc(3);
-    render(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard />);
+    render(<TabsRoom roomId="room-alpha" yDoc={doc} canManageBoards />);
 
     fireEvent.doubleClick(screen.getByTestId('board-tab-board-1'));
     const input = screen.getByTestId('board-name-input');
@@ -287,7 +215,7 @@ describe('BoardTabs', () => {
 
   it('blurring the editor commits the rename', () => {
     const doc = seededDoc(3);
-    render(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard />);
+    render(<TabsRoom roomId="room-alpha" yDoc={doc} canManageBoards />);
 
     fireEvent.doubleClick(screen.getByTestId('board-tab-board-1'));
     const input = screen.getByTestId('board-name-input');
@@ -311,7 +239,7 @@ describe('BoardTabs', () => {
       }
       return Promise.resolve(jsonResponse({ ok: true }));
     };
-    render(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard request={request} />);
+    render(<TabsRoom roomId="room-alpha" yDoc={doc} canManageBoards request={request} />);
 
     fireEvent.click(screen.getByTestId('board-tab-board-1'));
     fireEvent.click(screen.getByTestId('board-tabs-delete'));
@@ -335,7 +263,7 @@ describe('BoardTabs', () => {
 
   it('cancelling the dialog keeps the board', () => {
     const request: AjaxFetch = () => Promise.resolve(jsonResponse({ ok: true }));
-    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard request={request} />);
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canManageBoards request={request} />);
 
     fireEvent.click(screen.getByTestId('board-tab-board-1'));
     fireEvent.click(screen.getByTestId('board-tabs-delete'));
@@ -347,7 +275,7 @@ describe('BoardTabs', () => {
 
   it('a failed delete reports and keeps the board', async () => {
     const request: AjaxFetch = () => Promise.resolve(jsonResponse({ error: 'no' }, 403));
-    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard request={request} />);
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canManageBoards request={request} />);
 
     fireEvent.click(screen.getByTestId('board-tab-board-1'));
     fireEvent.click(screen.getByTestId('board-tabs-delete'));
@@ -363,14 +291,14 @@ describe('BoardTabs', () => {
   it('the delete control is hidden on the main board and from a non-owner', () => {
     const doc = seededDoc(2);
     const { rerender } = render(
-      <TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard />,
+      <TabsRoom roomId="room-alpha" yDoc={doc} canManageBoards />,
     );
     expect(screen.queryByTestId('board-tabs-delete')).toBeNull();
 
     fireEvent.click(screen.getByTestId('board-tab-board-1'));
     expect(screen.getByTestId('board-tabs-delete')).toBeTruthy();
 
-    rerender(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard={false} />);
+    rerender(<TabsRoom roomId="room-alpha" yDoc={doc} canManageBoards={false} />);
     expect(screen.queryByTestId('board-tabs-delete')).toBeNull();
   });
 
@@ -379,7 +307,7 @@ describe('BoardTabs', () => {
     // click, so nothing in the delete flow switches this client -- the strip
     // itself has to notice the active board is gone.
     const doc = seededDoc(2);
-    render(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard={false} />);
+    render(<TabsRoom roomId="room-alpha" yDoc={doc} canManageBoards={false} />);
 
     fireEvent.click(screen.getByTestId('board-tab-board-1'));
     expect(screen.getByTestId('board-tab-board-1').getAttribute('aria-pressed')).toBe('true');
@@ -393,7 +321,7 @@ describe('BoardTabs', () => {
 
   it('F2 opens the rename editor, except on the main board', () => {
     const doc = seededDoc(2);
-    render(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard />);
+    render(<TabsRoom roomId="room-alpha" yDoc={doc} canManageBoards />);
 
     fireEvent.keyDown(screen.getByTestId('board-tab-board-1'), { key: 'F2' });
     expect(screen.getByTestId('board-name-input')).toBeTruthy();
@@ -404,7 +332,7 @@ describe('BoardTabs', () => {
   });
 
   it('the tab tooltip offers the rename shortcut and marks the main board', () => {
-    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard />);
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canManageBoards />);
 
     expect(screen.getByTestId('board-tab-board-1').getAttribute('title')).toMatch(/F2/);
     expect(screen.getByTestId('board-tab-main').getAttribute('title')).toMatch(/first board/);
@@ -415,51 +343,54 @@ describe('BoardTabs', () => {
     try {
       let ok = true;
       const request: AjaxFetch = async (input) => {
-        if (String(input).endsWith('/clear')) {
+        if (String(input).endsWith('/boards/delete')) {
           return ok ? jsonResponse({ ok: true }) : jsonResponse({ error: 'no' }, 403);
         }
         return jsonResponse({});
       };
-      render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canClearBoard request={request} />);
+      render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(2)} canManageBoards request={request} />);
 
       fireEvent.click(screen.getByTestId('board-tab-board-1'));
-      fireEvent.click(screen.getByTestId('board-tabs-clear'));
-      fireEvent.click(screen.getByTestId('board-clear-confirm-btn'));
+      fireEvent.click(screen.getByTestId('board-tabs-delete'));
+      fireEvent.click(screen.getByTestId('board-delete-confirm-btn'));
       await act(async () => {});
-      expect(screen.getByTestId('board-tabs-clear-done')).toBeTruthy();
+      expect(screen.getByTestId('board-tabs-delete-done')).toBeTruthy();
 
       act(() => {
         vi.advanceTimersByTime(4500);
       });
-      expect(screen.queryByTestId('board-tabs-clear-done')).toBeNull();
+      expect(screen.queryByTestId('board-tabs-delete-done')).toBeNull();
 
       ok = false;
-      fireEvent.click(screen.getByTestId('board-tabs-clear'));
-      fireEvent.click(screen.getByTestId('board-clear-confirm-btn'));
+      // The successful delete landed the room back on main, where the delete
+      // control does not exist -- stand on the board again.
+      fireEvent.click(screen.getByTestId('board-tab-board-1'));
+      fireEvent.click(screen.getByTestId('board-tabs-delete'));
+      fireEvent.click(screen.getByTestId('board-delete-confirm-btn'));
       await act(async () => {});
-      expect(screen.getByTestId('board-tabs-clear-error')).toBeTruthy();
+      expect(screen.getByTestId('board-tabs-delete-error')).toBeTruthy();
       act(() => {
         vi.advanceTimersByTime(30000);
       });
-      expect(screen.getByTestId('board-tabs-clear-error')).toBeTruthy();
+      expect(screen.getByTestId('board-tabs-delete-error')).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }
   });
 
   it('the add refusal separates a capped room from an offline one', () => {
-    const capped = render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(50)} canClearBoard />);
+    const capped = render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(50)} canManageBoards />);
     fireEvent.click(screen.getByTestId('board-tabs-add'));
     expect(screen.getByTestId('board-tabs-add-refused').textContent).toMatch(/\(50\)/);
     capped.unmount();
 
-    render(<TabsRoom roomId="room-beta" yDoc={null} canClearBoard />);
+    render(<TabsRoom roomId="room-beta" yDoc={null} canManageBoards />);
     fireEvent.click(screen.getByTestId('board-tabs-add'));
     expect(screen.getByTestId('board-tabs-add-offline')).toBeTruthy();
   });
 
   it('the tab run scrolls while the controls stay pinned outside it', () => {
-    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(3)} canClearBoard />);
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(3)} canManageBoards />);
 
     // The delete control exists only for a non-main active board.
     fireEvent.click(screen.getByTestId('board-tab-board-1'));
@@ -469,7 +400,6 @@ describe('BoardTabs', () => {
     expect(run.contains(screen.getByTestId('board-tab-board-2'))).toBe(true);
     // The controls a teacher mid-lesson cannot lose sit outside the scroll.
     expect(run.contains(screen.getByTestId('board-tabs-add'))).toBe(false);
-    expect(run.contains(screen.getByTestId('board-tabs-clear'))).toBe(false);
     expect(run.contains(screen.getByTestId('board-tabs-delete'))).toBe(false);
   });
 });
