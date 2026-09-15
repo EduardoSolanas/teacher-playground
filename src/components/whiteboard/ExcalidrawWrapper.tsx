@@ -25,7 +25,11 @@ import {
   isMappedAppTool,
 } from '@/lib/whiteboard/excalidrawSync';
 import { reconcileRemoteElements } from '@/lib/whiteboard/excalidrawReconcile';
-import { getElementsFromArray, replaceSharedElements } from '@/lib/whiteboard/yjsDoc';
+import {
+  dedupeSharedElementsById,
+  getElementsFromArray,
+  replaceSharedElements,
+} from '@/lib/whiteboard/yjsDoc';
 import { snapshotElements } from '@/lib/whiteboard/sceneSnapshot';
 import { shouldRestoreScene } from '@/lib/whiteboard/sceneRestore';
 import { libraryFileIds } from '@/lib/whiteboard/roomLibrary';
@@ -61,6 +65,18 @@ type ExcalidrawStandardTool = Exclude<ExcalidrawTool, 'custom'>;
 
 /** Background tries for one board-file PUT, including the initial attempt. */
 const MAX_UPLOAD_ATTEMPTS = 5;
+
+/**
+ * How long the pre-socket scene waits for the room's first sync before
+ * publishing anyway.
+ *
+ * A document that never receives anything — a fresh board, no peers — has
+ * nothing to race, so holding the scene forever would strand work that today
+ * reaches the document as soon as the document exists. If a first sync does
+ * land after the escape has fired, the duplicate it produces is collapsed by
+ * the remote-transaction heal in the document observer.
+ */
+const PRE_SYNC_FLUSH_ESCAPE_MS = 1000;
 
 /**
  * The handful of board actions the room's own title menu drives.
@@ -341,6 +357,14 @@ export default function ExcalidrawWrapper({
   const pendingElementsRef = useRef<SharedSceneElement[] | null>(null);
   /** Elements drawn locally before yDoc and yElementsArray were ready. */
   const pendingLocalPublishRef = useRef<readonly Record<string, unknown>[] | null>(null);
+  /**
+   * The document whose first sync from the room has landed; null while the
+   * current document has not synced yet. The pre-socket scene publishes only
+   * once this is set — or once the document already holds the room's content,
+   * which is the same guarantee read off the array when the sync landed before
+   * this observer attached.
+   */
+  const syncedDocRef = useRef<Y.Doc | null>(null);
   /** Scene captured mid-stroke, flushed to React state on pointer up. */
   const deferredElementsRef = useRef<SharedSceneElement[] | null>(null);
   const hasAcceptedInitialSceneRef = useRef(false);
@@ -836,25 +860,65 @@ export default function ExcalidrawWrapper({
 
     const elementsArray = yElementsArray;
 
-    // Flush any local elements drawn before the shared document was ready
-    const pendingLocal = pendingLocalPublishRef.current;
-    if (pendingLocal && pendingLocal.length > 0) {
+    // A replacement document has not synced yet, whatever an earlier one did.
+    if (syncedDocRef.current !== yDoc) syncedDocRef.current = null;
+
+    const flushPendingLocal = (adoptAsLastSynced: boolean) => {
+      const pendingLocal = pendingLocalPublishRef.current;
+      if (!pendingLocal || pendingLocal.length === 0) return;
       pendingLocalPublishRef.current = null;
       const existing = getElementsFromArray(elementsArray);
       const merged = mergeApiSnapshotElements(pendingLocal, existing);
       replaceSharedElements(yDoc, elementsArray, merged, 'local', {
         boardId: activeBoardIdRef.current,
       });
-      lastSyncedElementsRef.current = merged;
       lastPublishedIdsRef.current = merged
         .map((element) => (element as { id?: unknown })?.id)
         .filter((id): id is string => typeof id === 'string');
-    }
+      if (adoptAsLastSynced) lastSyncedElementsRef.current = merged;
+    };
+
+    /*
+     * The pre-socket scene waits for the room's first sync.
+     *
+     * Publishing it into a document the server is still filling races the
+     * server's own delivery of the same elements: the publish's by-id snapshot
+     * sees an array without them and appends, raw applyUpdate merges by Yjs
+     * struct rather than by element id, and both entries survive — on this
+     * peer and, propagated, on every other. Once the sync has landed (a
+     * non-empty array is the same guarantee when it landed before this
+     * observer attached) the flush merges against what arrived instead.
+     */
+    const escapeTimer = syncedDocRef.current === yDoc || elementsArray.length > 0
+      ? null
+      : window.setTimeout(() => {
+        // A room that never delivers anything has nothing to race.
+        flushPendingLocal(true);
+      }, PRE_SYNC_FLUSH_ESCAPE_MS);
+    if (escapeTimer === null) flushPendingLocal(true);
 
     // Listen only for element changes. Cursor/awareness updates must not rewrite
     // the Excalidraw scene.
     const handler = (_events: Y.YEvent<Y.Map<unknown>>[], transaction: Y.Transaction) => {
       if (transaction.origin === 'local') return;
+
+      // The room's first sync for this document has landed.
+      syncedDocRef.current = yDoc;
+
+      /*
+       * A publish that raced the first sync leaves two live entries with one
+       * id, because raw applyUpdate merges by Yjs struct and not by element
+       * id. Heal it before anything reads the array: the delete runs as its
+       * own transaction (Yjs defers observer writes), and this handler runs
+       * again for it to apply the collapsed scene.
+       */
+      dedupeSharedElementsById(yDoc, elementsArray);
+
+      // The gate is open — it just opened, or opened earlier — so the
+      // pre-socket scene publishes now, merged with what arrived. lastSynced
+      // is left to the read below, so the merged scene still reaches the
+      // editor when the room's copy was newer than the queued one.
+      flushPendingLocal(false);
 
       /*
        * The one reader, not a second copy of it.
@@ -905,6 +969,7 @@ export default function ExcalidrawWrapper({
     fileReadyMap.observe(fileReadyHandler);
 
     return () => {
+      if (escapeTimer !== null) window.clearTimeout(escapeTimer);
       elementsArray.unobserveDeep(handler);
       fileReadyMap.unobserve(fileReadyHandler);
     };

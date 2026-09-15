@@ -1101,6 +1101,73 @@ test.describe('Multi-Peer Sync', () => {
     }
   });
 
+  test('a late join converges on one shared entry per element id', async ({ page, browser }) => {
+    await cleanContextAndJoin(page, 'TwinAlice');
+    const roomUrl = page.url();
+
+    await selectTool(page.getByTestId('toolbar-rectangle'), 'rectangle');
+    await dragOnCanvas(page, { x: 320, y: 150 }, { x: 420, y: 250 });
+    await waitForSync(page, 1, 10000);
+
+    /*
+     * The member's HTTP seed is one side of the race, so the element has to
+     * be in the stored room before the second browser joins.
+     */
+    const roomId = roomIdFromPageUrl(page);
+    await expect
+      .poll(
+        async () => {
+          const res = await page.request.get(appUrl(`/api/whiteboard/room/${roomId}`));
+          if (!res.ok()) return 0;
+          const body = await res.json();
+          return body.elements?.length ?? 0;
+        },
+        { timeout: 15000 },
+      )
+      .toBeGreaterThanOrEqual(1);
+
+    const ownerIds = await getSharedYjsElementIds(page);
+    expect(ownerIds).toHaveLength(1);
+    const [elementId] = ownerIds;
+
+    const bobContext = await newAuthenticatedContext(browser);
+    const bobPage = await bobContext.newPage();
+    try {
+      await bobContext.addInitScript(() => {
+        localStorage.removeItem('whiteboard_username');
+        localStorage.removeItem('whiteboard_user_color');
+      });
+      await bobPage.goto(roomUrl);
+      await bobPage.getByTestId('whiteboard-username-input').fill('LateBob');
+      await bobPage.getByTestId('whiteboard-join-room-btn').click();
+      await approveWaitingPeerIfPresent(page);
+      await expect(bobPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+      await waitForProviderConnected(bobPage);
+
+      /*
+       * Strict, not toContain: a member's early publish races the server's own
+       * delivery of the same element, and raw applyUpdate merges by Yjs struct
+       * rather than by element id, so both entries used to survive -- on the
+       * member and, propagated back, on the owner too. The shared array must
+       * converge on exactly one live entry per id on both peers.
+       */
+      await expect
+        .poll(() => getSharedYjsElementIds(bobPage), {
+          timeout: 20000,
+          message: "the member's shared array never held exactly one entry for the owner's element",
+        })
+        .toEqual([elementId]);
+      await expect
+        .poll(() => getSharedYjsElementIds(page), {
+          timeout: 20000,
+          message: "the owner's shared array did not stay at one entry for the element",
+        })
+        .toEqual([elementId]);
+    } finally {
+      await bobContext.close();
+    }
+  });
+
   /*
    * The drawing that used to kill the room.
    *

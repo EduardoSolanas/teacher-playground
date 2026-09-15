@@ -258,11 +258,17 @@ describe('ExcalidrawWrapper scene sync', () => {
     expect(array.toArray().map((map) => map.get('id'))).toEqual(['rect-stays']);
   });
 
-  it('flushes elements drawn before the shared document arrives', async () => {
+  it('flushes elements drawn before the shared document arrives once the room has synced', async () => {
     setFetchHandler(() => new Response(null, { status: 404 }));
     const { doc, array } = createYjsBoard();
+    const remote = remoteBoard();
+    // Concurrent inserts of one id integrate in client-id order; fixed ids
+    // keep the expected document order deterministic in both directions.
+    doc.clientID = 1;
+    remote.doc.clientID = 2;
     const { CaptureUpdateAction } = await loadExcalidrawPackage();
     const [rectangle] = await rectangleElements(['rect-pending']);
+    const [roomElement] = await rectangleElements(['rect-room']);
 
     const { view, props, api, ExcalidrawWrapper } = await renderWrapper({
       yDoc: null,
@@ -275,10 +281,90 @@ describe('ExcalidrawWrapper scene sync', () => {
     await act(async () => {
       view.rerender(<ExcalidrawWrapper {...props} yDoc={doc} yElementsArray={array} />);
     });
+    /*
+     * The publish waits for the room's first sync: publishing into a document
+     * the server is still filling races the server's own copy of the same
+     * elements. The sync below opens the gate, and the flush lands merged
+     * behind it.
+     */
+    await act(async () => {
+      seedRemote(remote.doc, remote.array, [roomElement]);
+      syncFromRemote(doc, remote.doc);
+    });
 
     await waitFor(() => {
-      expect(array.toArray().some((map) => map.get('id') === 'rect-pending')).toBe(true);
+      expect(array.toArray().map((map) => map.get('id')).filter(
+        (id) => typeof id === 'string',
+      )).toEqual(['rect-room', 'rect-pending']);
     });
+  });
+
+  it('publishes the pre-socket scene after the first sync, merged with what arrived', async () => {
+    setFetchHandler(() => new Response(null, { status: 404 }));
+    const { doc, array } = createYjsBoard();
+    const remote = remoteBoard();
+    /*
+     * Concurrent inserts of one id integrate in client-id order, the lower id
+     * first. Fixing them pins which struct a collapsed duplicate would keep,
+     * so the race below fails for its assertion rather than by luck.
+     */
+    doc.clientID = 1;
+    remote.doc.clientID = 2;
+    const { CaptureUpdateAction } = await loadExcalidrawPackage();
+    const [local] = await rectangleElements(['rect-late']);
+    const [stored] = await rectangleElements(['rect-late']);
+    // The room's stored snapshot is staler than what its live document holds.
+    const serverNewer = { ...stored, x: stored.x + 40, version: (stored.version ?? 1) + 4 };
+
+    const { view, props, api, ExcalidrawWrapper } = await renderWrapper({
+      yDoc: null,
+      yElementsArray: null,
+    });
+    await act(async () => {
+      api.updateScene({ elements: [local], captureUpdate: CaptureUpdateAction.NEVER });
+    });
+
+    await act(async () => {
+      view.rerender(<ExcalidrawWrapper {...props} yDoc={doc} yElementsArray={array} />);
+    });
+    // The server's own copy of the element lands around the first publish.
+    await act(async () => {
+      seedRemote(remote.doc, remote.array, [serverNewer]);
+      syncFromRemote(doc, remote.doc);
+    });
+
+    await waitFor(() => {
+      expect(array.toArray().filter((map) => map.get('id') === 'rect-late')).toHaveLength(1);
+    });
+    const [element] = getElementsFromArray(array).filter((el) => el.id === 'rect-late');
+    // What survives is the room's copy, not this client's racing one.
+    expect((element as { x?: number }).x).toBe(serverNewer.x);
+  });
+
+  it('flushes the pre-socket scene when the room stays quiet past the escape', async () => {
+    setFetchHandler(() => new Response(null, { status: 404 }));
+    const { doc, array } = createYjsBoard();
+    const { CaptureUpdateAction } = await loadExcalidrawPackage();
+    const [rectangle] = await rectangleElements(['rect-quiet']);
+
+    const { view, props, api, ExcalidrawWrapper } = await renderWrapper({
+      yDoc: null,
+      yElementsArray: null,
+    });
+    await act(async () => {
+      api.updateScene({ elements: [rectangle], captureUpdate: CaptureUpdateAction.NEVER });
+    });
+
+    await act(async () => {
+      view.rerender(<ExcalidrawWrapper {...props} yDoc={doc} yElementsArray={array} />);
+    });
+    // Gated: a quiet room delivers nothing, so nothing is published yet.
+    expect(array.toArray()).toHaveLength(0);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+    });
+    expect(array.toArray().map((map) => map.get('id'))).toEqual(['rect-quiet']);
   });
 });
 
@@ -366,6 +452,29 @@ describe('ExcalidrawWrapper remote collaboration', () => {
 
     await waitFor(() => {
       expect(api.getSceneElements().some((element) => element.id === 'rect-valid')).toBe(true);
+    });
+  });
+
+  it('collapses duplicate ids the document received from concurrent inserts', async () => {
+    setFetchHandler(() => new Response(null, { status: 404 }));
+    const { doc, array } = createYjsBoard();
+    const firstPeer = remoteBoard();
+    const secondPeer = remoteBoard();
+    await renderWrapper({ yDoc: doc, yElementsArray: array });
+    const [first] = await rectangleElements(['rect-twin']);
+    const [second] = await rectangleElements(['rect-twin']);
+
+    seedRemote(firstPeer.doc, firstPeer.array, [first]);
+    seedRemote(secondPeer.doc, secondPeer.array, [
+      { ...second, version: (second.version ?? 1) + 3 },
+    ]);
+    await act(async () => {
+      syncFromRemote(doc, firstPeer.doc);
+      syncFromRemote(doc, secondPeer.doc);
+    });
+
+    await waitFor(() => {
+      expect(array.toArray().filter((map) => map.get('id') === 'rect-twin')).toHaveLength(1);
     });
   });
 

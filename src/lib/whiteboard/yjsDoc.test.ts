@@ -2,6 +2,7 @@ import * as Y from 'yjs';
 import { describe, expect, it } from 'vitest';
 import {
   createWhiteboardDoc,
+  dedupeSharedElementsById,
   getElementsFromArray,
   replaceSharedElements,
   pruneTombstonedElements,
@@ -814,6 +815,118 @@ describe('replaceSharedElements field transport', () => {
     pruneTombstonedElements(doc);
 
     expect(origins).toEqual(['prune']);
+  });
+});
+
+describe('dedupeSharedElementsById', () => {
+  /**
+   * Inserts one element per transaction, so repeated ids stay distinct maps —
+   * one `replaceSharedElements` call would update an existing id in place
+   * rather than creating the twin this suite is about.
+   */
+  function insertOne(array: Y.Array<Y.Map<unknown>>, element: Record<string, unknown>) {
+    const map = new Y.Map<unknown>();
+    for (const [key, value] of Object.entries(element)) map.set(key, value);
+    array.push([map]);
+  }
+
+  it('keeps the first live entry per id and deletes later twins', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('twin-room');
+    insertOne(elementsArray, { id: 'x', type: 'rectangle', width: 10 });
+    insertOne(elementsArray, { id: 'other', type: 'ellipse' });
+    insertOne(elementsArray, { id: 'x', type: 'rectangle', width: 30 });
+
+    const deleted = dedupeSharedElementsById(doc, elementsArray);
+
+    expect(deleted).toBe(1);
+    expect(getElementsFromArray(elementsArray)).toHaveLength(2);
+    expect(getElementsFromArray(elementsArray).find((el) => el.id === 'x')).toMatchObject({
+      width: 10,
+    });
+    expect(idsOf(doc)).toEqual(['other', 'x']);
+  });
+
+  it('collapses three twins down to the first', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('triple-twin');
+    insertOne(elementsArray, { id: 'x', type: 'rectangle', width: 1 });
+    insertOne(elementsArray, { id: 'x', type: 'rectangle', width: 2 });
+    insertOne(elementsArray, { id: 'x', type: 'rectangle', width: 3 });
+
+    const deleted = dedupeSharedElementsById(doc, elementsArray);
+
+    expect(deleted).toBe(2);
+    expect(getElementsFromArray(elementsArray)).toHaveLength(1);
+    expect((getElementsFromArray(elementsArray)[0] as { width?: number }).width).toBe(1);
+  });
+
+  it('leaves a tombstoned entry beside its live twin alone', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('tombstone-twin');
+    insertOne(elementsArray, { id: 'x', type: 'rectangle' });
+    insertOne(elementsArray, { id: 'x', type: 'rectangle', isDeleted: true });
+
+    const deleted = dedupeSharedElementsById(doc, elementsArray);
+
+    expect(deleted).toBe(0);
+    expect(elementsArray.length).toBe(2);
+  });
+
+  it('ignores entries whose stored id is not a usable string', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('bad-id-twin');
+    insertOne(elementsArray, { id: 123, type: 'rectangle' });
+    insertOne(elementsArray, { id: 123, type: 'rectangle' });
+    insertOne(elementsArray, { id: '', type: 'rectangle' });
+    insertOne(elementsArray, { id: '', type: 'rectangle' });
+    insertOne(elementsArray, { type: 'rectangle' });
+
+    const deleted = dedupeSharedElementsById(doc, elementsArray);
+
+    expect(deleted).toBe(0);
+    expect(elementsArray.length).toBe(5);
+  });
+
+  it('leaves a document with unique ids untouched and writes nothing', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('clean-room');
+    insertOne(elementsArray, { id: 'a', type: 'rectangle' });
+    insertOne(elementsArray, { id: 'b', type: 'ellipse' });
+    const origins: unknown[] = [];
+    doc.on('afterTransaction', (transaction: Y.Transaction) => origins.push(transaction.origin));
+
+    const deleted = dedupeSharedElementsById(doc, elementsArray);
+
+    expect(deleted).toBe(0);
+    expect(elementsArray.length).toBe(2);
+    expect(origins).toEqual([]);
+  });
+
+  it('tags the heal with the dedupe origin', () => {
+    const { doc, elementsArray } = createWhiteboardDoc('heal-origin');
+    insertOne(elementsArray, { id: 'x', type: 'rectangle' });
+    insertOne(elementsArray, { id: 'x', type: 'rectangle' });
+    const origins: unknown[] = [];
+    doc.on('afterTransaction', (transaction: Y.Transaction) => origins.push(transaction.origin));
+
+    dedupeSharedElementsById(doc, elementsArray);
+
+    expect(origins).toEqual(['dedupe']);
+  });
+
+  it('converges a connected peer when one side heals the twin', () => {
+    const a = createWhiteboardDoc('heal-a');
+    const b = createWhiteboardDoc('heal-b');
+    connect(a.doc, b.doc);
+
+    insertOne(a.elementsArray, { id: 'x', type: 'rectangle', width: 10 });
+    insertOne(b.elementsArray, { id: 'x', type: 'rectangle', width: 20 });
+    expect(a.elementsArray.length).toBe(2);
+    expect(b.elementsArray.length).toBe(2);
+
+    const deleted = dedupeSharedElementsById(a.doc, a.elementsArray);
+    expect(deleted).toBe(1);
+    expect(getElementsFromArray(a.elementsArray).map((el) => el.id)).toEqual(['x']);
+
+    // The delete travels as an ordinary update; no twin is left on the peer.
+    expect(getElementsFromArray(b.elementsArray).map((el) => el.id)).toEqual(['x']);
+    expect(b.elementsArray.length).toBe(1);
   });
 });
 

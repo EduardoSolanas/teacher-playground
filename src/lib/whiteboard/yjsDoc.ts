@@ -202,6 +202,50 @@ export function replaceSharedElements(
   }, origin);
 }
 
+/**
+ * Collapse concurrent inserts of one element id to the array's first entry.
+ *
+ * A peer that publishes its pre-sync scene races the server's own delivery of
+ * the same element: raw `applyUpdate` merges by Yjs struct (client id and
+ * clock), not by element id, so both entries survive — on that peer and,
+ * propagated, on every other. Excalidraw dedupes by id when rendering, but
+ * `replaceSharedElements` and every moderation path are built on the
+ * one-live-entry-per-id invariant this restores.
+ *
+ * Yjs array order is total, so keeping the first live entry is a choice every
+ * peer makes identically, and the deletes converge as ordinary updates.
+ * Entries Excalidraw has tombstoned (`isDeleted`) are not duplicates of a live
+ * element and are left alone.
+ *
+ * Returns the number of twin entries deleted.
+ */
+export function dedupeSharedElementsById(
+  doc: Y.Doc,
+  elementsArray: Y.Array<Y.Map<any>>,
+  origin: unknown = 'dedupe',
+): number {
+  const firstIndexById = new Map<string, number>();
+  const duplicateIndexes: number[] = [];
+  elementsArray.toArray().forEach((map, index) => {
+    if (map.get('isDeleted') === true) return;
+    const id = map.get('id');
+    if (typeof id !== 'string' || id.length === 0) return;
+    if (firstIndexById.has(id)) duplicateIndexes.push(index);
+    else firstIndexById.set(id, index);
+  });
+
+  if (duplicateIndexes.length === 0) return 0;
+
+  doc.transact(() => {
+    // Highest index first, so the lower indexes stay valid while deleting.
+    for (let i = duplicateIndexes.length - 1; i >= 0; i--) {
+      elementsArray.delete(duplicateIndexes[i], 1);
+    }
+  }, origin);
+
+  return duplicateIndexes.length;
+}
+
 export function getElementsFromArray(
   elementsArray: Y.Array<Y.Map<any>>
 ): CanvasElement[] {
