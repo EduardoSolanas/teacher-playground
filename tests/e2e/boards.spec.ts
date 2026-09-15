@@ -337,12 +337,16 @@ test.describe('Multi-board rooms', () => {
       const secondTab = await addedBoardTestId(page);
       await expect(boardTabs(memberPage)).toHaveCount(2, { timeout: 15000 });
 
-      // The main board is canonical: double-clicking it opens no editor.
+      // The main board is canonical: no pencil, and double-clicking it opens
+      // no editor.
+      await expect(page.getByTestId('board-pencil-main')).toHaveCount(0);
       await page.getByTestId('board-tab-main').dblclick();
       await expect(page.getByTestId('board-name-input')).toHaveCount(0);
 
-      // Double-click the added board, type the new name, Enter.
-      await page.getByTestId(secondTab).dblclick();
+      // The pencil on the tab is the visible way in; double-click and F2 are
+      // the shortcuts.
+      await expect(page.getByTestId(secondTab.replace('board-tab-', 'board-pencil-'))).toBeVisible();
+      await page.getByTestId(secondTab.replace('board-tab-', 'board-pencil-')).click();
       const input = page.getByTestId('board-name-input');
       await expect(input).toBeVisible();
       await expect(input).toHaveValue('Board 2');

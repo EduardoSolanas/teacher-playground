@@ -253,6 +253,22 @@ describe('BoardTabs', () => {
     expect(screen.getByTestId('board-tab-main').textContent).toBe('Board 1');
   });
 
+  it('the pencil beside each tab opens the inline editor', () => {
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(3)} canClearBoard />);
+
+    fireEvent.click(screen.getByTestId('board-pencil-board-1'));
+
+    const input = screen.getByTestId('board-name-input') as HTMLInputElement;
+    expect(input.value).toBe('Board 2');
+  });
+
+  it('the main board offers no pencil', () => {
+    render(<TabsRoom roomId="room-alpha" yDoc={seededDoc(3)} canClearBoard />);
+
+    expect(screen.queryByTestId('board-pencil-main')).toBeNull();
+    expect(screen.getByTestId('board-pencil-board-1')).toBeTruthy();
+  });
+
   it('a blank rename leaves the name unchanged', () => {
     const doc = seededDoc(3);
     render(<TabsRoom roomId="room-alpha" yDoc={doc} canClearBoard />);

@@ -212,29 +212,47 @@ export default function BoardTabs({
               className="w-40 shrink-0 rounded-md border border-slate-600 bg-slate-800 px-2 py-0.5 text-[0.75rem] font-medium text-slate-100"
             />
           ) : (
-            <button
+            <div
               key={board.id}
-              type="button"
-              data-testid={`board-tab-${board.id}`}
-              aria-pressed={board.id === activeBoardId}
-              title={
-                board.id === 'main'
-                  ? `${board.name} — the room's first board`
-                  : `${board.name} — double-click or press F2 to rename`
-              }
-              onClick={() => onSelectBoard(board.id)}
-              onDoubleClick={() => startRename(board.id, board.name)}
-              onKeyDown={(event) => {
-                if (event.key === 'F2') startRename(board.id, board.name);
-              }}
-              className={`flex min-w-0 max-w-[10rem] shrink-0 items-center rounded-md px-2 py-0.5 text-[0.75rem] font-medium transition-colors ${
+              className={`flex min-w-0 max-w-[10rem] shrink-0 items-center rounded-md transition-colors ${
                 board.id === activeBoardId
                   ? 'bg-slate-800 text-slate-100'
                   : 'text-slate-600 hover:bg-slate-800/10'
               }`}
             >
-              <span className="truncate">{board.name}</span>
-            </button>
+              <button
+                type="button"
+                data-testid={`board-tab-${board.id}`}
+                aria-pressed={board.id === activeBoardId}
+                title={
+                  board.id === 'main'
+                    ? `${board.name} — the room's first board`
+                    : `${board.name} — double-click, press F2, or use the pencil to rename`
+                }
+                onClick={() => onSelectBoard(board.id)}
+                onDoubleClick={() => startRename(board.id, board.name)}
+                onKeyDown={(event) => {
+                  if (event.key === 'F2') startRename(board.id, board.name);
+                }}
+                className="flex min-w-0 items-center rounded-md px-2 py-0.5 text-[0.75rem] font-medium"
+              >
+                <span className="truncate">{board.name}</span>
+              </button>
+              {board.id !== 'main' && (
+                <button
+                  type="button"
+                  data-testid={`board-pencil-${board.id}`}
+                  aria-label={`Rename ${board.name}`}
+                  title={`Rename ${board.name}`}
+                  onClick={() => startRename(board.id, board.name)}
+                  className="mr-1 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:text-slate-100"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                  </svg>
+                </button>
+              )}
+            </div>
           ),
         )}
       </div>
