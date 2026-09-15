@@ -306,6 +306,14 @@ function stringField(body: Record<string, unknown> | null, field: string): strin
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+/*
+ * Board ids follow the rule the shared-map guard applies to `boardsMeta` keys
+ * (SHARED_MAP_RULES in sceneGuard): 1..64 characters of [A-Za-z0-9_-]. 'main'
+ * -- the board an unstamped element belongs to -- matches, as does every id
+ * the client mints for a new tab.
+ */
+const BOARD_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
 function muteKindField(body: Record<string, unknown> | null): 'audio' | 'video' | null {
   const value = body?.kind;
   if (value === undefined) return 'audio';
@@ -1011,7 +1019,7 @@ export class RoomDO extends DurableObject {
         }
         break;
       case 'clear':
-        if (method === 'POST') return this.clearBoard(roomId);
+        if (method === 'POST') return this.clearBoard(roomId, request);
         break;
       case 'settings':
         if (method === 'GET' || method === 'HEAD') {
@@ -1708,8 +1716,39 @@ export class RoomDO extends DurableObject {
    * Doing it here rather than in the client is the whole point. The client
    * still asks, but asking is now a request the owner check above can refuse,
    * where before the deletion simply arrived as an edit.
+   *
+   * An optional `{ boardId }` body narrows the clear to that one board; an
+   * absent or empty body keeps the whole-room clear. Anything else in the body
+   * is refused before the document is even loaded, so a malformed request can
+   * never half-clear a lesson.
    */
-  private async clearBoard(roomId: string): Promise<Response> {
+  private async clearBoard(roomId: string, request: Request): Promise<Response> {
+    const refuse = (error: string) => Response.json(
+      { error },
+      { status: 400, headers: { 'Cache-Control': 'no-store' } },
+    );
+
+    const bodyText = (await request.text()).trim();
+    let boardId: string | undefined;
+    if (bodyText.length > 0) {
+      let body: unknown;
+      try {
+        body = JSON.parse(bodyText);
+      } catch {
+        return refuse('Invalid JSON body');
+      }
+      if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+        return refuse('Invalid JSON body');
+      }
+      const requested = (body as Record<string, unknown>).boardId;
+      if (requested !== undefined) {
+        if (typeof requested !== 'string' || !BOARD_ID_PATTERN.test(requested)) {
+          return refuse('Invalid boardId');
+        }
+        boardId = requested;
+      }
+    }
+
     const doc = await this.getRoomDoc(roomId);
     let cleared: Uint8Array | null = null;
     const capture = (update: Uint8Array, origin: unknown) => {
@@ -1717,7 +1756,20 @@ export class RoomDO extends DurableObject {
     };
     doc.on('update', capture);
     try {
-      replaceSharedElements(doc, doc.getArray('elements'), [], 'board-clear');
+      if (boardId === undefined) {
+        /*
+         * replaceSharedElements' stale sweep is scoped to a single board --
+         * unstamped elements count as 'main' -- so it would leave other
+         * boards' elements standing. The whole-room clear deletes the array
+         * itself instead: every board's elements go in one transaction.
+         */
+        doc.transact(() => {
+          const elements = doc.getArray('elements');
+          if (elements.length > 0) elements.delete(0, elements.length);
+        }, 'board-clear');
+      } else {
+        replaceSharedElements(doc, doc.getArray('elements'), [], 'board-clear', { boardId });
+      }
     } finally {
       doc.off('update', capture);
     }
