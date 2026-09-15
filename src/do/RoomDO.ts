@@ -263,7 +263,7 @@ function isArchivedRoomWrite(
   method: string,
   segments: string[],
 ): boolean {
-  if (section === '' || section === 'clear') return method === 'POST';
+  if (section === '' || section === 'clear' || section === 'boards') return method === 'POST';
   if (section === 'settings') return method === 'POST' || method === 'PATCH';
   if (section === 'library') return method === 'POST';
   if (section === 'files') {
@@ -851,6 +851,16 @@ export class RoomDO extends DurableObject {
     }
 
     /*
+     * Deleting a board takes its tab and its elements away from the whole
+     * room at once, so it rides under exactly the gate clearing does.
+     */
+    if (section === 'boards') {
+      if (guest) return forbidden();
+      if (method === 'POST') return owner ? null : forbidden();
+      return forbidden();
+    }
+
+    /*
      * Owner-only, and denied to a guest outright, exactly as settings is.
      *
      * This gate is the authorization; the switch below only dispatches. A
@@ -1020,6 +1030,11 @@ export class RoomDO extends DurableObject {
         break;
       case 'clear':
         if (method === 'POST') return this.clearBoard(roomId, request);
+        break;
+      case 'boards':
+        if (method === 'POST' && segments[2] === 'delete') {
+          return this.deleteBoard(roomId, request);
+        }
         break;
       case 'settings':
         if (method === 'GET' || method === 'HEAD') {
@@ -1775,6 +1790,64 @@ export class RoomDO extends DurableObject {
     }
 
     if (cleared) this.broadcastToRoom(roomId, encodeUpdateFrame(cleared));
+    return Response.json({ ok: true }, { headers: { 'Cache-Control': 'no-store' } });
+  }
+
+  /**
+   * Deletes one board, on the server, for everybody at once: its boardsMeta
+   * tab entry and every element stamped with it.
+   *
+   * Modelled on {@link clearBoard} -- refuse everything questionable before
+   * the document is even loaded, then transact under a tagged origin. The
+   * sweep and the meta delete share one transaction (replaceSharedElements'
+   * inner transact merges into this one, whose origin wins), so the room
+   * receives a single 'board-delete' frame: a peer's tab list reads
+   * boardsMeta, and a half-applied delete would leave a tab that opens onto
+   * a board whose elements are already gone.
+   *
+   * 'main' is refused outright. It is the canonical board: no meta entry to
+   * remove, and an id with no meta entry is treated as orphan sweep -- so
+   * without this guard, "deleting main" would empty the main canvas and
+   * report success.
+   */
+  private async deleteBoard(roomId: string, request: Request): Promise<Response> {
+    const refuse = (error: string) => Response.json(
+      { error },
+      { status: 400, headers: { 'Cache-Control': 'no-store' } },
+    );
+
+    const bodyText = (await request.text()).trim();
+    let body: unknown;
+    try {
+      body = JSON.parse(bodyText);
+    } catch {
+      return refuse('Invalid JSON body');
+    }
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      return refuse('Invalid JSON body');
+    }
+    const boardId = (body as Record<string, unknown>).boardId;
+    if (typeof boardId !== 'string' || !BOARD_ID_PATTERN.test(boardId)) {
+      return refuse('Invalid boardId');
+    }
+    if (boardId === 'main') return refuse('The main board cannot be deleted');
+
+    const doc = await this.getRoomDoc(roomId);
+    let deleted: Uint8Array | null = null;
+    const capture = (update: Uint8Array, origin: unknown) => {
+      if (origin === 'board-delete') deleted = update;
+    };
+    doc.on('update', capture);
+    try {
+      doc.transact(() => {
+        replaceSharedElements(doc, doc.getArray('elements'), [], 'board-delete', { boardId });
+        doc.getMap('boardsMeta').delete(boardId);
+      }, 'board-delete');
+    } finally {
+      doc.off('update', capture);
+    }
+
+    if (deleted) this.broadcastToRoom(roomId, encodeUpdateFrame(deleted));
     return Response.json({ ok: true }, { headers: { 'Cache-Control': 'no-store' } });
   }
 
