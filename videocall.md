@@ -4,7 +4,11 @@
 > as it then stood, with a seven-step sequencing plan. **Steps 1–6 have been
 > built and shipped**; the sections below now describe what shipped and where.
 > What remains open is background blur (step 7) and the three open questions
-> at the end. The original diagnoses are kept because they explain why the
+> at the end. Since this status was last written, a **pre-join camera and mic
+> check** (`PreJoinCheck`) now stands between every "Start call" / "Rejoin
+> call" press — and the room's auto-entry — and the call itself: preview,
+> mic level, device pickers, soft failure copy, and a decline that is not
+> nagged. The original diagnoses are kept because they explain why the
 > call is shaped the way it is.
 
 ## The short answer to "is LiveKit already providing this?"
@@ -17,6 +21,7 @@ Yes where it matters. The gaps this memo named are closed.
 | Mute yourself | `setMicrophoneEnabled` / `setCameraEnabled` | Yes |
 | Mute somebody else, enforced | LiveKit server API `MutePublishedTrack` | **Yes — server-enforced** |
 | Choose a device | `switchActiveDevice` | Yes |
+| Check camera and mic before joining | Client-side `getUserMedia` preview — `PreJoinCheck`, no LiveKit session yet | **Yes** — runs on phones first: confirm joins, cancel stays out |
 | Connection quality per participant | `RoomEvent.ConnectionQualityChanged` | **Yes** — roster badge, shown only when poor or lost |
 | Background blur | `@livekit/track-processors` — a **separate** package | **No** — the one deliberate remainder; see below |
 | Noise suppression | Browser `getUserMedia` constraints; LiveKit's Krisp filter is a paid add-on | Partially |
