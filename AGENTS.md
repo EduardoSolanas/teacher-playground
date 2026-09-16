@@ -99,6 +99,22 @@ Peer ids change when presence re-mints them, so a peer id captured before
 admission may not identify that peer afterwards. Re-resolve the row rather than
 reusing an id across an admission or suspend boundary.
 
+## Style changes
+
+Any change that alters what the page looks like — CSS, Tailwind classes, layout
+structure, spacing, breakpoints — is verified visually in a real browser before
+it is committed, in addition to whatever the unit suite asserts. Spawn a
+UX-expert subagent to open the real rendered page (Playwright against the local
+Worker via `scripts/run-e2e.mjs`), exercise the affected surface, and capture it
+at every breakpoint the change touches — at minimum desktop, the 640-900px
+band, and 390x844 phone. The agent judges the rendered result (clipping,
+overflow, orphaned wraps, crowding, spacing rhythm, broken alignment), not the
+markup, and reports a verdict: PASS, or FAIL with the specific defects and the
+screenshots that show them. A FAIL blocks the commit until the style is fixed
+and re-verified. jsdom has no layout and class-contract tests prove structure,
+not appearance — a green `npm test` says nothing about how a style change
+looks, which is exactly what this check exists to catch.
+
 ## Mutation testing
 
 This repo treats mutation testing as proof that a test would fail if the guard
