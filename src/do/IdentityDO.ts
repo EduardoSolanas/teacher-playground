@@ -17,6 +17,7 @@ import {
   readPreferredDisplayName,
   setPreferredDisplayName,
   touchOwnedRoom,
+  listAccountsForAdmin,
 } from '../lib/identity/identityStore';
 import {
   SessionUnauthorizedError,
@@ -80,11 +81,13 @@ import {
 import {
   approveCompanyInvoice,
   isAttachableSubscriptionStatus,
+  normalizeOperatorEmail,
   operatorEmailFor,
   parseOperatorEmails,
   reviewDisputeHold,
   settleCompanyInvoice,
 } from '../lib/company/operator';
+import { parseAdminEmails } from '../lib/admin/adminGuard';
 import { resolveEffectivePlan } from '../lib/plan/effectivePlan';
 import { findReferralCode } from '../lib/referrals/codes';
 import { readReferralSummary } from '../lib/referrals/summary';
@@ -130,6 +133,7 @@ const CLEAR_ERASURE_PATH = '/accounts/clear-erasure';
 const ACCOUNT_PROFILE_PATH = '/accounts/profile';
 const ACCOUNT_PLAN_PATH = '/accounts/plan';
 const ACCOUNT_ROOMS_PATH = '/accounts/rooms';
+const ACCOUNT_LIST_PATH = '/accounts/list';
 const ACCOUNT_ROOMS_TOUCH_PATH = '/accounts/rooms/touch';
 const ACCOUNT_ROOMS_ARCHIVE_PATH = '/accounts/rooms/archive-state';
 const REVOKE_ALL_PATH = '/accounts/revoke-all';
@@ -287,6 +291,12 @@ function configuredTutorAccountCap(env: unknown): number | undefined {
 function configuredOperatorEmails(env: unknown): string | undefined {
   if (typeof env !== 'object' || env === null) return undefined;
   const raw = (env as { OPERATOR_EMAILS?: unknown }).OPERATOR_EMAILS;
+  return typeof raw === 'string' ? raw : undefined;
+}
+
+function configuredAdminEmails(env: unknown): string | undefined {
+  if (typeof env !== 'object' || env === null) return undefined;
+  const raw = (env as { ADMIN_EMAILS?: unknown }).ADMIN_EMAILS;
   return typeof raw === 'string' ? raw : undefined;
 }
 
@@ -897,6 +907,39 @@ function operatorAuthorizationError(
   return null;
 }
 
+function isAdminListBody(value: unknown): value is { adminEmail: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 1 &&
+    typeof body.adminEmail === 'string' &&
+    body.adminEmail.length >= 3 &&
+    body.adminEmail.length <= 254
+  );
+}
+
+/**
+ * The DO-side re-check of the /admin allowlist, mirroring the operator one:
+ * an unset list hides the route (404) and an email outside it is refused
+ * (403), so the Worker guard failing open still leaves this closed.
+ */
+function adminAuthorizationError(
+  adminEmails: string | undefined,
+  adminEmail: string,
+): Response | null {
+  const admins = parseAdminEmails(adminEmails);
+  if (admins.size === 0) {
+    return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+  }
+  const email = normalizeOperatorEmail(adminEmail);
+  if (email === null || !admins.has(email)) {
+    return Response.json({ error: 'Forbidden' }, { status: 403, headers: noStore() });
+  }
+  return null;
+}
+
 function isCompanyMemberBody(value: unknown): value is { accountId: string } {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false;
@@ -1120,11 +1163,13 @@ export class IdentityDO extends DurableObject {
   readonly db: RoomDatabase;
   readonly tutorAccountCap: number | undefined;
   readonly operatorEmails: string | undefined;
+  readonly adminEmails: string | undefined;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
     this.tutorAccountCap = configuredTutorAccountCap(env);
     this.operatorEmails = configuredOperatorEmails(env);
+    this.adminEmails = configuredAdminEmails(env);
     this.db = new DODatabase(ctx.storage.sql, ctx.storage);
     applyIdentitySchema(this.db);
     applyBillingRateLimitSchema(this.db);
@@ -1252,6 +1297,15 @@ export class IdentityDO extends DurableObject {
         );
       }
       return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+    }
+
+    if (url.pathname === ACCOUNT_LIST_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readExactJson(request, isAdminListBody);
+      if ('response' in parsed) return parsed.response;
+      const denied = adminAuthorizationError(this.adminEmails, parsed.body.adminEmail);
+      if (denied) return denied;
+      return Response.json(listAccountsForAdmin(this.db), { headers: noStore() });
     }
 
     if (url.pathname === RESOLVE_PATH) {

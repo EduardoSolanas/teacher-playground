@@ -13,6 +13,7 @@ import {
   readPreferredDisplayName,
   setPreferredDisplayName,
   createGuestAccount,
+  listAccountsForAdmin,
 } from './identityStore';
 import { applySchema as applyRoomSchema } from '../whiteboard/roomSchema';
 
@@ -1443,5 +1444,82 @@ describe('tutor account cap', () => {
 
     expect(isTutorCapReached(outcome)).toBe(false);
     expect(countActiveAccessAccounts()).toBe(6);
+  });
+});
+
+describe('listAccountsForAdmin', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    applyIdentitySchema(db);
+  });
+
+  function resolveStoredAccount(subjectKey: string) {
+    const outcome = resolveAccountForSubject(db, {
+      issuer: 'https://access.example.com',
+      subject: subjectKey,
+    });
+    if (isTutorCapReached(outcome)) {
+      throw new Error('unexpected tutor cap outcome');
+    }
+    return outcome;
+  }
+
+  it('lists every account newest first, including disabled and guest accounts, with the full total', () => {
+    const first = resolveStoredAccount('admin-list-first').account;
+    const second = resolveStoredAccount('admin-list-second').account;
+    // Both resolutions can land in the same millisecond; push the first back
+    // so "createdAt descending" has an unambiguous answer.
+    db.prepare(`UPDATE accounts SET created_at = created_at - 5000 WHERE account_id = ?`)
+      .run(first.accountId);
+    // Ahead of the access accounts' real timestamps so the guest is newest.
+    const guest = createGuestAccount(db, {
+      roomId: 'admin-list-guest-room',
+      now: Date.now() + 10_000,
+    });
+    setPreferredDisplayName(db, second.accountId, 'Second Teacher');
+    db.prepare(
+      `UPDATE accounts SET state = 'disabled', updated_at = updated_at + 1
+       WHERE account_id = ?`,
+    ).run(first.accountId);
+
+    const listed = listAccountsForAdmin(db);
+
+    expect(listed.total).toBe(3);
+    expect(listed.accounts.map((row) => row.accountId)).toEqual([
+      guest.accountId,
+      second.accountId,
+      first.accountId,
+    ]);
+    expect(listed.accounts[1]).toEqual({
+      accountId: second.accountId,
+      state: 'active',
+      provenance: 'access',
+      displayName: 'Second Teacher',
+      createdAt: expect.any(Number),
+      updatedAt: expect.any(Number),
+    });
+    expect(listed.accounts[0]).toMatchObject({ provenance: 'guest', state: 'active' });
+    expect(listed.accounts[2]).toMatchObject({ state: 'disabled', provenance: 'access' });
+  });
+
+  it('caps the rows at 200 while total keeps counting every account', () => {
+    const insert = db.prepare(
+      `INSERT INTO accounts (account_id, state, authorization_epoch, created_at, updated_at, provenance)
+       VALUES (?, 'active', 0, ?, ?, 'access')`,
+    );
+    const now = Date.now();
+    for (let index = 0; index < 205; index += 1) {
+      insert.run(`acct-${String(index).padStart(4, '0')}`, now + index, now + index);
+    }
+
+    const listed = listAccountsForAdmin(db);
+
+    expect(listed.total).toBe(205);
+    expect(listed.accounts).toHaveLength(200);
+    // Newest first: the rows dropped by the cap are the oldest ones.
+    expect(listed.accounts[0].accountId).toBe('acct-0204');
+    expect(listed.accounts[199].accountId).toBe('acct-0005');
   });
 });

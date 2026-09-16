@@ -95,6 +95,12 @@ export function isRouteAllowedOnHost(
     return hostKind === 'teacher' && (method === 'GET' || method === 'HEAD');
   }
 
+  // The /admin page shell. The account data behind it is gated twice more:
+  // the ADMIN_EMAILS allowlist on the API route and again in the IdentityDO.
+  if (pathname === '/admin') {
+    return hostKind === 'teacher' && (method === 'GET' || method === 'HEAD');
+  }
+
   // Teacher-only paths: allow on teacher host, deny on guest host
   const isTeacherOnlyPath =
     pathname === '/' ||
@@ -115,6 +121,9 @@ export function isRouteAllowedOnHost(
     // The operator surface: staff actions such as the emergency account disable.
     pathname === '/api/operator' ||
     pathname.startsWith('/api/operator/') ||
+    // The admin account list, gated again by the ADMIN_EMAILS allowlist in the
+    // Worker and the IdentityDO. Exact path: the surface has no sub-routes.
+    pathname === '/api/admin/users' ||
     pathname === REFERRAL_ME_PATH ||
     pathname === '/api/whiteboard/rooms';
 

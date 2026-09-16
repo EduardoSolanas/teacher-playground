@@ -2670,3 +2670,67 @@ describe('IdentityDO negative routing contract', () => {
     expect(unknownRoute.status).toBe(404);
   });
 });
+
+/*
+ * The account-list route is the DO side of the /admin surface. The Worker
+ * guard decides first; this re-check is the second of the two gates, so a
+ * mistake in either alone still leaves the list closed. It mirrors the
+ * operator routes: the allowlist is read from this object's own env at
+ * construction, and the verified email arrives in the body from the Worker —
+ * never from the client.
+ */
+describe('IdentityDO /accounts/list (admin surface defense in depth)', () => {
+  const ADMIN_EMAIL = 'admin@example.test';
+
+  function adminList(body: unknown): Promise<Response> {
+    return identityStub().fetch('https://identity/accounts/list', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('refuses a foreign email with 403', async () => {
+    const foreign = await adminList({ adminEmail: 'intruder@example.test' });
+    expect(foreign.status).toBe(403);
+    expect(await foreign.json()).toEqual({ error: 'Forbidden' });
+  });
+
+  it('accepts an allowlisted email case-insensitively and answers with rows and a total', async () => {
+    const upper = await adminList({ adminEmail: 'ADMIN@Example.Test' });
+    expect(upper.status).toBe(200);
+    const body = (await upper.json()) as { accounts: unknown[]; total: number };
+    expect(Array.isArray(body.accounts)).toBe(true);
+    expect(typeof body.total).toBe('number');
+    expect(body.total).toBeGreaterThanOrEqual(1);
+  });
+
+  it('answers 404 when the allowlist is unset, and 405/400 on bad requests', async () => {
+    const wrongMethod = await identityStub().fetch('https://identity/accounts/list', {
+      method: 'GET',
+    });
+    expect(wrongMethod.status).toBe(405);
+
+    const badBody = await adminList({ adminEmail: 'x' });
+    expect(badBody.status).toBe(400);
+
+    // The constructor read this field from env, so clearing it is exactly the
+    // unset-surface shape, exercised on the real instance and restored after.
+    await runInDurableObject(identityStub(), async (instance: IdentityDO) => {
+      const mutable = instance as { adminEmails?: string };
+      const original = mutable.adminEmails;
+      mutable.adminEmails = undefined;
+      try {
+        const hidden = await instance.fetch(new Request('https://identity/accounts/list', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ adminEmail: ADMIN_EMAIL }),
+        }));
+        expect(hidden.status).toBe(404);
+        expect(await hidden.json()).toEqual({ error: 'Not found' });
+      } finally {
+        mutable.adminEmails = original;
+      }
+    });
+  });
+});

@@ -157,6 +157,15 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(isRouteAllowedOnHost('/account/company/extra', 'GET', 'teacher')).toBe(false);
     });
 
+    it('/admin (account list page) is teacher-only GET/HEAD', () => {
+      expect(isRouteAllowedOnHost('/admin', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/admin', 'HEAD', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/admin', 'GET', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/admin', 'GET', 'marketing')).toBe(false);
+      expect(isRouteAllowedOnHost('/admin', 'POST', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/admin/extra', 'GET', 'teacher')).toBe(false);
+    });
+
     // Guest-only paths
     it('POST /auth/guest is guest-only', () => {
       expect(isRouteAllowedOnHost('/auth/guest', 'POST', 'guest')).toBe(true);
@@ -1097,6 +1106,24 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
         '/api/billing/webhooks',
       ]) {
         expect(isRouteAllowedOnHost(pathname, 'POST', 'teacher'), pathname).toBe(false);
+      }
+    });
+
+    it('keeps the admin users API on the teacher host only', () => {
+      expect(isRouteAllowedOnHost('/api/admin/users', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/admin/users', 'GET', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/api/admin/users', 'GET', 'marketing')).toBe(false);
+      expect(isRouteAllowedOnHost('/api/admin/users', 'GET', 'unknown')).toBe(false);
+    });
+
+    it('keeps suffix and prefix variants of /api/admin/users out of the allowance', () => {
+      for (const pathname of [
+        '/api/admin/users/',
+        '/api/admin/users/extra',
+        '/api/admin/usersX',
+        '/api/admin',
+      ]) {
+        expect(isRouteAllowedOnHost(pathname, 'GET', 'teacher'), pathname).toBe(false);
       }
     });
 

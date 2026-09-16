@@ -244,6 +244,9 @@ try {
       '--var', 'TEACHER_HOSTNAME:app.localhost',
       '--var', 'GUEST_HOSTNAME:join.localhost',
       '--var', 'MARKETING_HOSTNAME:playground.localhost',
+      // The /admin surface allowlist for the local suite; the e2e admin spec
+      // hardcodes the same address for its admin subject.
+      '--var', 'ADMIN_EMAILS:admin@example.test',
       '--ip', '127.0.0.1',
       '--port', String(upstreamPort),
     ], { stdio: 'inherit' });

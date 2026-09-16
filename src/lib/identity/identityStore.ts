@@ -831,6 +831,60 @@ export function readAccountAuthorizations(
 
 const MAX_OWNED_ROOM_NAME_LENGTH = 100;
 
+/**
+ * Hard cap on the rows one admin account-list read returns, so the /admin
+ * surface cannot pull the whole table in one response even as the account
+ * count grows. `total` carries the real count past the cap.
+ */
+export const MAX_ADMIN_ACCOUNT_LIST_ROWS = 200;
+
+export type AccountProvenance = 'access' | 'guest';
+
+export interface AdminAccountRow {
+  accountId: string;
+  state: AccountState;
+  provenance: AccountProvenance;
+  displayName: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AdminAccountList {
+  accounts: AdminAccountRow[];
+  total: number;
+}
+
+/**
+ * Every account, every state: the admin surface exists to show the truth, so
+ * disabled and guest rows are listed beside active access accounts. Newest
+ * first (the account an admin is about to ask about is usually the newest),
+ * with the account id as tiebreak so two rows created in the same millisecond
+ * cannot trade places between reads.
+ */
+export function listAccountsForAdmin(db: RoomDatabase): AdminAccountList {
+  const total = Number(
+    (db.prepare(`SELECT COUNT(*) AS count FROM accounts`).get() as { count: number }).count,
+  );
+  const accounts = db
+    .prepare(
+      `SELECT account_id AS accountId, state, provenance,
+              preferred_display_name AS displayName,
+              created_at AS createdAt, updated_at AS updatedAt
+       FROM accounts
+       ORDER BY created_at DESC, account_id DESC
+       LIMIT ?`,
+    )
+    .all(MAX_ADMIN_ACCOUNT_LIST_ROWS) as AdminAccountRow[];
+  return {
+    accounts: accounts.map((row) => ({
+      ...row,
+      createdAt: Number(row.createdAt),
+      updatedAt: Number(row.updatedAt),
+    })),
+    total,
+  };
+}
+
 export type OwnedRoomRole = 'owner';
 
 export interface OwnedRoomRecord {

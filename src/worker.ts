@@ -92,9 +92,11 @@ import {
 } from './lib/billing/reconcile';
 import {
   isAttachableSubscriptionStatus,
+  normalizeOperatorEmail,
   operatorEmailFor,
   parseOperatorEmails,
 } from './lib/company/operator';
+import { parseAdminEmails } from './lib/admin/adminGuard';
 
 export interface Env {
   ROOMS: DurableObjectNamespace;
@@ -135,6 +137,8 @@ export interface Env {
   STRIPE_WEBHOOK_SECRET?: string;
   /** Comma-separated operator allowlist. Unset disables the operator surface. */
   OPERATOR_EMAILS?: string;
+  /** Comma-separated admin allowlist for the /admin surface. Unset disables the surface. */
+  ADMIN_EMAILS?: string;
 }
 
 // Room ids cannot be enumerated at build time, so the static export contains a
@@ -182,8 +186,10 @@ const OPERATOR_DISPUTE_REVIEW_API = '/api/company/operator/disputes/review';
 const OPERATOR_ACCOUNTS_API_PREFIX = '/api/operator/accounts/';
 /** Account actions an operator may take, each an IdentityDO route of the same name. */
 const OPERATOR_ACCOUNT_ACTIONS = new Set(['disable', 'enable', 'revoke-all']);
+const ADMIN_USERS_API = '/api/admin/users';
 const AUTH_GUEST = '/auth/guest';
 const IDENTITY_ACCOUNT_ROOMS = 'https://identity/accounts/rooms';
+const IDENTITY_ACCOUNT_LIST = 'https://identity/accounts/list';
 const IDENTITY_GUESTS_PURGE = 'https://identity/guests/purge';
 const IDENTITY_ACCOUNT_PLAN = 'https://identity/accounts/plan';
 const IDENTITY_COMPANIES = 'https://identity/companies';
@@ -1325,6 +1331,65 @@ function operatorSurfaceGuard(
     ));
   }
   return { email };
+}
+
+/**
+ * The /admin surface's own rules, cloned from the operator guard: an unset
+ * allowlist hides the surface (404, so it does not advertise itself), and
+ * anything but the Access-verified principal email on the list is refused.
+ * The candidate is never taken from the request.
+ */
+function adminSurfaceGuard(
+  env: Env,
+  principal: VerifiedAccessPrincipal,
+): { email: string } | Response {
+  const admins = parseAdminEmails(env.ADMIN_EMAILS);
+  if (admins.size === 0) {
+    return withSecurityHeaders(Response.json(
+      { error: 'Not found' },
+      { status: 404, headers: { 'Cache-Control': 'no-store' } },
+    ));
+  }
+  const email = normalizeOperatorEmail(principal.email);
+  if (email === null || !admins.has(email)) {
+    return withSecurityHeaders(Response.json(
+      { error: 'Forbidden' },
+      { status: 403, headers: { 'Cache-Control': 'no-store' } },
+    ));
+  }
+  return { email };
+}
+
+/**
+ * GET /api/admin/users: the account list behind the admin allowlist. The
+ * guard decides before the session, and the DO re-checks the same allowlist
+ * with the guard-verified email, so the two gates are independent.
+ */
+async function adminUsersRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'GET') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'GET' } },
+    ));
+  }
+  const guard = adminSurfaceGuard(env, principal);
+  if (guard instanceof Response) return guard;
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const result = await identity.fetch(new Request(IDENTITY_ACCOUNT_LIST, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ adminEmail: guard.email }),
+  }));
+  return withSecurityHeaders(new Response(result.body, {
+    status: result.status,
+    headers: result.headers,
+  }));
 }
 
 async function identityOperatorFetch(
@@ -3252,6 +3317,9 @@ const worker = {
           principal,
           url.pathname.slice(OPERATOR_ACCOUNTS_API_PREFIX.length),
         );
+      }
+      if (url.pathname === ADMIN_USERS_API) {
+        return adminUsersRoute(env, request, principal);
       }
       if (url.pathname === BILLING_CHECKOUT_PATH) {
         return billingCheckout(env, request, principal);

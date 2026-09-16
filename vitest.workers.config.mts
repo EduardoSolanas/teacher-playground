@@ -26,6 +26,7 @@ export default defineConfig({
             // configured cap.
             TUTOR_ACCOUNT_CAP: '10000',
             OPERATOR_EMAILS: 'ops@example.test',
+            ADMIN_EMAILS: 'admin@example.test',
             STRIPE_API_BASE: 'https://stripe.invalid',
             STRIPE_SECRET_KEY: 'sk_test_worker_binding',
             STRIPE_WEBHOOK_SECRET: 'whsec_worker_binding',
