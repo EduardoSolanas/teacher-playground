@@ -167,8 +167,8 @@ test.describe('call rail header at the rail floor', () => {
   test('keeps every layout option inside the rail at its narrowest', async ({ browser }) => {
     const host = await newAuthenticatedContext(browser, `call-rail-floor-${Date.now()}`);
     const page = await host.newPage();
-    // 18vw of 700px is 126px, under the 11rem floor, so the docked rail is
-    // pinned to exactly 176px -- the width where the header used to clip.
+    // 18vw of 700px is 126px, under the 17rem floor, so the docked rail is
+    // pinned to exactly 272px -- the width where the header used to clip.
     await page.setViewportSize({ width: 700, height: 900 });
 
     try {
@@ -186,11 +186,10 @@ test.describe('call rail header at the rail floor', () => {
       }
 
       /*
-       * The picker is its own full-width row now, so the group is measured
-       * where it sits -- against the panel edge -- and its own scroll box
-       * for internal fit. The panel-wide scroll box is no good as a yardstick
-       * either: the end-call button in the controls cluster already pokes
-       * ~8px past it on its own.
+       * The group is measured against the panel edge and its own scroll box
+       * for internal fit. The panel-wide scroll box is no good as a yardstick:
+       * the end-call button in the controls cluster already pokes ~8px past
+       * it on its own.
        */
       await expect.poll(async () => {
         const [groupBox, panelBox] = await Promise.all([group.boundingBox(), panel.boundingBox()]);
@@ -200,16 +199,15 @@ test.describe('call rail header at the rail floor', () => {
       await expect.poll(() => group.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
 
       /*
-       * The stack is deliberate, not emergent: row 1 is the Hide button alone
-       * and the picker is a full-width row beneath it, so the floor's wrap
-       * lands as a 2+1 stack instead of a shared line stranding the button.
+       * Hide and the picker share one row at every docked width -- the rail
+       * floor is sized for exactly that -- so the boxes overlap vertically.
        */
       const hide = page.getByRole('button', { name: 'Hide the call' });
       await expect.poll(async () => {
         const [hideBox, groupBox] = await Promise.all([hide.boundingBox(), group.boundingBox()]);
-        if (!hideBox || !groupBox) return Number.NEGATIVE_INFINITY;
-        return groupBox.y - (hideBox.y + hideBox.height);
-      }).toBeGreaterThan(0);
+        if (!hideBox || !groupBox) return false;
+        return groupBox.y < hideBox.y + hideBox.height && hideBox.y < groupBox.y + groupBox.height;
+      }).toBe(true);
 
       await group.getByRole('radio', { name: 'Hidden' }).click();
       await expect(group.getByRole('radio', { name: 'Hidden' })).toHaveAttribute('aria-checked', 'true');

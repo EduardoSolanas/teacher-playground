@@ -7,6 +7,7 @@ vi.mock('next/navigation', () => ({
 
 import type { WhiteboardUser } from '@/types/whiteboard';
 import type { AjaxFetch } from '@/lib/whiteboard/teacherRooms';
+import { CALL_RAIL_WIDTH } from '@/lib/av/callRail';
 
 import WhiteboardRoomPage, {
   ROOM_CANVAS_CLASS,
@@ -136,7 +137,9 @@ describe('room canvas width', () => {
 
   it('sets the rail width variable on the canvas only while the rail is there', () => {
     const open = roomCanvasRailStyle(true) as Record<string, string>;
-    expect(open['--call-rail-w']).toBe('clamp(11rem,18vw,15rem)');
+    // The value itself is pinned in callRail.test.ts; here the contract is
+    // that the canvas reads the same single-source constant.
+    expect(open['--call-rail-w']).toBe(CALL_RAIL_WIDTH);
     expect(roomCanvasRailStyle(false)).toEqual({});
   });
 
