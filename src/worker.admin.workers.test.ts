@@ -60,6 +60,10 @@ interface AdminAccountRow {
   state: string;
   provenance: string;
   displayName: string | null;
+  organisation: string | null;
+  plan: string | null;
+  planStatus: string | null;
+  rooms: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -135,7 +139,11 @@ describe('Worker GET /api/admin/users', () => {
         'accountId',
         'createdAt',
         'displayName',
+        'organisation',
+        'plan',
+        'planStatus',
         'provenance',
+        'rooms',
         'state',
         'updatedAt',
       ]);

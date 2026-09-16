@@ -25,6 +25,10 @@ const usersBody = {
       state: 'active',
       provenance: 'cloudflare_access',
       displayName: null,
+      organisation: null,
+      plan: null,
+      planStatus: null,
+      rooms: 0,
       createdAt: createdAtOld,
       updatedAt: updatedAtOld,
     },
@@ -33,6 +37,10 @@ const usersBody = {
       state: 'disabled',
       provenance: 'guest_upgrade',
       displayName: 'Ada Lovelace',
+      organisation: 'Aster Tutoring',
+      plan: 'tutor_pro_monthly',
+      planStatus: 'active',
+      rooms: 3,
       createdAt: createdAtNew,
       updatedAt: updatedAtNew,
     },
@@ -104,6 +112,132 @@ describe('AdminUsersPanel account list', () => {
     expect(fallbackRow.textContent).not.toContain('null');
   });
 
+  it('renders the columns from the payload in the preferred order', async () => {
+    render(<AdminUsersPanel request={async () => jsonResponse(200, usersBody)} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-user-acc_newer')).toBeTruthy();
+    });
+    const table = screen.getByTestId('admin-users-table');
+    const headers = Array.from(table.querySelectorAll('thead th')).map((th) => th.textContent);
+    expect(headers).toEqual([
+      'Display name',
+      'Organisation',
+      'Plan',
+      'Plan status',
+      'Rooms',
+      'Provenance',
+      'State',
+      'Created',
+      'Updated',
+      'Account id',
+    ]);
+
+    // The middot plan cell is gone by design: plan and planStatus are their
+    // own columns, and the accountId column closes the row.
+    const newestCells = Array.from(
+      screen.getByTestId('admin-user-acc_newer').querySelectorAll('td'),
+    ).map((td) => td.textContent);
+    expect(newestCells).toEqual([
+      'Ada Lovelace',
+      'Aster Tutoring',
+      'tutor_pro_monthly',
+      'active',
+      '3',
+      'guest_upgrade',
+      'disabled',
+      shortDate(createdAtNew),
+      shortDate(updatedAtNew),
+      'acc_newer',
+    ]);
+
+    // No membership and no entitlement row: em-dashes, not nulls or zeros
+    // pretending to be data.
+    const olderCells = Array.from(
+      screen.getByTestId('admin-user-acc_older').querySelectorAll('td'),
+    ).map((td) => td.textContent);
+    expect(olderCells[1]).toBe('—');
+    expect(olderCells[2]).toBe('—');
+    expect(olderCells[3]).toBe('—');
+    expect(olderCells[9]).toBe('acc_older');
+  });
+
+  it('renders an unknown backend field as a column after the known ones', async () => {
+    const extendedBody = {
+      accounts: [usersBody.accounts[0], { ...usersBody.accounts[1], loginCount: 7 }],
+      total: 2,
+    };
+    render(<AdminUsersPanel request={async () => jsonResponse(200, extendedBody)} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-users-table')).toBeTruthy();
+    });
+    const table = screen.getByTestId('admin-users-table');
+    const headers = Array.from(table.querySelectorAll('thead th')).map((th) => th.textContent);
+    expect(headers).toEqual([
+      'Display name',
+      'Organisation',
+      'Plan',
+      'Plan status',
+      'Rooms',
+      'Provenance',
+      'State',
+      'Created',
+      'Updated',
+      'Account id',
+      'Login Count',
+    ]);
+
+    const newestCells = Array.from(
+      screen.getByTestId('admin-user-acc_newer').querySelectorAll('td'),
+    ).map((td) => td.textContent);
+    expect(newestCells).toHaveLength(11);
+    expect(newestCells[10]).toBe('7');
+  });
+
+  it('yields one column for a key only some rows carry, em-dash on the rest', async () => {
+    const partialBody = {
+      accounts: [{ ...usersBody.accounts[0], signupSource: 'invite' }, usersBody.accounts[1]],
+      total: 2,
+    };
+    render(<AdminUsersPanel request={async () => jsonResponse(200, partialBody)} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-users-table')).toBeTruthy();
+    });
+    const table = screen.getByTestId('admin-users-table');
+    const headers = Array.from(table.querySelectorAll('thead th')).map((th) => th.textContent);
+    expect(headers.filter((header) => header === 'Signup Source')).toHaveLength(1);
+    expect(headers[headers.length - 1]).toBe('Signup Source');
+
+    const olderCells = Array.from(
+      screen.getByTestId('admin-user-acc_older').querySelectorAll('td'),
+    ).map((td) => td.textContent);
+    expect(olderCells).toHaveLength(11);
+    expect(olderCells[10]).toBe('invite');
+    const newestCells = Array.from(
+      screen.getByTestId('admin-user-acc_newer').querySelectorAll('td'),
+    ).map((td) => td.textContent);
+    expect(newestCells).toHaveLength(11);
+    expect(newestCells[10]).toBe('—');
+  });
+
+  it('right-aligns the rooms column', async () => {
+    render(<AdminUsersPanel request={async () => jsonResponse(200, usersBody)} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-users-table')).toBeTruthy();
+    });
+    const table = screen.getByTestId('admin-users-table');
+    const headCells = Array.from(table.querySelectorAll('thead th'));
+    expect(headCells[4].textContent).toBe('Rooms');
+    expect(headCells[4].className).toContain('text-right');
+    const bodyCells = Array.from(table.querySelectorAll('tbody td'));
+    for (let index = 4; index < bodyCells.length; index += 10) {
+      expect(bodyCells[index].className).toContain('text-right');
+    }
+  });
+
   it('renders a full-width table with the brand compare padding and hairlines', async () => {
     render(<AdminUsersPanel request={async () => jsonResponse(200, usersBody)} />);
 
@@ -112,15 +246,15 @@ describe('AdminUsersPanel account list', () => {
     });
     const table = screen.getByTestId('admin-users-table');
     expect(table.className).toContain('w-full');
-    expect(table.className).toContain('min-w-[40rem]');
+    expect(table.className).toContain('min-w-[52rem]');
     expect(table.className).toContain('border-[color:var(--line)]');
     expect(table.className).toContain('text-[0.94rem]');
     expect(table.parentElement?.className).toContain('overflow-x-auto');
 
     const headCells = Array.from(table.querySelectorAll('thead th'));
-    expect(headCells).toHaveLength(5);
+    expect(headCells).toHaveLength(10);
     const bodyCells = Array.from(table.querySelectorAll('tbody td'));
-    expect(bodyCells).toHaveLength(10);
+    expect(bodyCells).toHaveLength(20);
     for (const cell of [...headCells, ...bodyCells]) {
       expect(cell.className).toContain('px-[0.9rem]');
       expect(cell.className).toContain('py-[0.7rem]');

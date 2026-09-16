@@ -93,12 +93,22 @@ test.describe('the admin surface across accounts', () => {
       await expect(rows.first()).toBeVisible();
       await expect(admin.page.getByTestId('admin-users-total')).toContainText(/^[1-9]\d* accounts?$/);
 
+        // The identity DB enrichment is part of the visible table. Exact
+        // names: "Plan" would otherwise also match the "Plan status" header.
+        for (const header of ['Organisation', 'Plan', 'Rooms']) {
+          await expect(admin.page.getByRole('columnheader', { name: header, exact: true })).toBeVisible();
+        }
+
       // The signed-in account itself is on the list.
       const current = await apiCall(admin.page, '/auth/session/current');
       expect(current.status).toBe(200);
       const accountId = (current.json as { accountId?: string }).accountId;
       expect(accountId).toBeTruthy();
-      await expect(admin.page.getByTestId(`admin-user-${accountId}`)).toBeVisible();
+      const ownRow = admin.page.getByTestId(`admin-user-${accountId}`);
+      await expect(ownRow).toBeVisible();
+      // Rooms is the fifth column (after plan and plan status): a plain
+      // count, never blank for a real row.
+      await expect(ownRow.locator('td').nth(4)).toHaveText(/^\d+$/);
 
       expect(await apiStatus(admin.page, '/api/admin/users')).toBe(200);
     } finally {

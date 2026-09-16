@@ -1497,6 +1497,10 @@ describe('listAccountsForAdmin', () => {
       state: 'active',
       provenance: 'access',
       displayName: 'Second Teacher',
+      organisation: null,
+      plan: null,
+      planStatus: null,
+      rooms: 0,
       createdAt: expect.any(Number),
       updatedAt: expect.any(Number),
     });
@@ -1521,5 +1525,119 @@ describe('listAccountsForAdmin', () => {
     // Newest first: the rows dropped by the cap are the oldest ones.
     expect(listed.accounts[0].accountId).toBe('acct-0204');
     expect(listed.accounts[199].accountId).toBe('acct-0005');
+  });
+
+  it('enriches each row with the active organisation, entitlement plan, and owned-room count', () => {
+    const member = resolveStoredAccount('admin-list-company-member').account;
+    const plain = resolveStoredAccount('admin-list-plain').account;
+    const guest = createGuestAccount(db, {
+      roomId: 'admin-list-guest-room',
+      now: Date.now() + 10_000,
+    });
+
+    db.prepare(
+      `INSERT INTO companies (company_id, name, state, created_at, updated_at)
+       VALUES ('comp-1', 'Aster Tutoring', 'active', 1, 1)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO company_members (company_id, account_id, role, state, created_at)
+       VALUES ('comp-1', ?, 'member', 'active', 5)`,
+    ).run(member.accountId);
+    db.prepare(
+      `INSERT INTO entitlements (account_id, source, plan_id, status, updated_at)
+       VALUES (?, 'personal', 'tutor_pro_monthly', 'active', 5)`,
+    ).run(member.accountId);
+    recordOwnedRoom(db, { accountId: member.accountId, roomId: 'member-room-a', now: 10 });
+    recordOwnedRoom(db, { accountId: member.accountId, roomId: 'member-room-b', now: 11 });
+    recordOwnedRoom(db, { accountId: guest.accountId, roomId: 'guest-owned-room', now: 11 });
+
+    const listed = listAccountsForAdmin(db);
+    const byId = new Map(listed.accounts.map((row) => [row.accountId, row]));
+
+    expect(byId.get(member.accountId)).toMatchObject({
+      organisation: 'Aster Tutoring',
+      plan: 'tutor_pro_monthly',
+      planStatus: 'active',
+      rooms: 2,
+    });
+    // No membership, no entitlement, no owned rooms: the free defaults.
+    expect(byId.get(plain.accountId)).toMatchObject({
+      organisation: null,
+      plan: null,
+      planStatus: null,
+      rooms: 0,
+    });
+    expect(byId.get(guest.accountId)).toMatchObject({
+      organisation: null,
+      plan: null,
+      planStatus: null,
+      rooms: 1,
+    });
+  });
+
+  it('names only the active membership of an active company, never a revoked or disabled one', () => {
+    const revoked = resolveStoredAccount('admin-list-revoked').account;
+    const disabledCompany = resolveStoredAccount('admin-list-disabled-co').account;
+    const both = resolveStoredAccount('admin-list-both').account;
+
+    db.prepare(
+      `INSERT INTO companies (company_id, name, state, created_at, updated_at)
+       VALUES ('comp-revoked', 'Revoked Co', 'active', 1, 1)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO companies (company_id, name, state, created_at, updated_at)
+       VALUES ('comp-disabled', 'Disabled Co', 'disabled', 1, 1)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO companies (company_id, name, state, created_at, updated_at)
+       VALUES ('comp-both', 'Current Co', 'active', 1, 1)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO company_members (company_id, account_id, role, state, created_at, revoked_at)
+       VALUES ('comp-revoked', ?, 'member', 'revoked', 5, 6)`,
+    ).run(revoked.accountId);
+    db.prepare(
+      `INSERT INTO company_members (company_id, account_id, role, state, created_at)
+       VALUES ('comp-disabled', ?, 'member', 'active', 5)`,
+    ).run(disabledCompany.accountId);
+    // One account with both: the active membership is the one that names the
+    // organisation, even though the revoked row is newer.
+    db.prepare(
+      `INSERT INTO company_members (company_id, account_id, role, state, created_at, revoked_at)
+       VALUES ('comp-revoked', ?, 'member', 'revoked', 7, 8)`,
+    ).run(both.accountId);
+    db.prepare(
+      `INSERT INTO company_members (company_id, account_id, role, state, created_at)
+       VALUES ('comp-both', ?, 'member', 'active', 5)`,
+    ).run(both.accountId);
+
+    const listed = listAccountsForAdmin(db);
+    const byId = new Map(listed.accounts.map((row) => [row.accountId, row]));
+
+    expect(byId.get(revoked.accountId)).toMatchObject({ organisation: null });
+    expect(byId.get(disabledCompany.accountId)).toMatchObject({ organisation: null });
+    expect(byId.get(both.accountId)).toMatchObject({ organisation: 'Current Co' });
+  });
+
+  it('prefers the company entitlement when an account holds both sources', () => {
+    const seat = resolveStoredAccount('admin-list-seat').account;
+
+    db.prepare(
+      `INSERT INTO companies (company_id, name, state, created_at, updated_at)
+       VALUES ('comp-seat', 'Seat Co', 'active', 1, 1)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO entitlements (account_id, source, plan_id, status, updated_at)
+       VALUES (?, 'personal', 'tutor_pro_annual', 'active', 5)`,
+    ).run(seat.accountId);
+    db.prepare(
+      `INSERT INTO entitlements (account_id, source, plan_id, status, company_id, updated_at)
+       VALUES (?, 'company', 'corporate_seat', 'active', 'comp-seat', 5)`,
+    ).run(seat.accountId);
+
+    const listed = listAccountsForAdmin(db);
+    const row = listed.accounts.find((entry) => entry.accountId === seat.accountId);
+
+    expect(row).toMatchObject({ plan: 'corporate_seat', planStatus: 'active' });
   });
 });

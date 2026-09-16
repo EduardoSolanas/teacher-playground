@@ -2699,10 +2699,28 @@ describe('IdentityDO /accounts/list (admin surface defense in depth)', () => {
   it('accepts an allowlisted email case-insensitively and answers with rows and a total', async () => {
     const upper = await adminList({ adminEmail: 'ADMIN@Example.Test' });
     expect(upper.status).toBe(200);
-    const body = (await upper.json()) as { accounts: unknown[]; total: number };
+    const body = (await upper.json()) as {
+      accounts: Array<{
+        organisation: unknown;
+        plan: unknown;
+        planStatus: unknown;
+        rooms: unknown;
+      }>;
+      total: number;
+    };
     expect(Array.isArray(body.accounts)).toBe(true);
+    expect(body.accounts.length).toBeGreaterThanOrEqual(1);
     expect(typeof body.total).toBe('number');
     expect(body.total).toBeGreaterThanOrEqual(1);
+
+    // The enrichment fields ride along on every row: organisation, plan, and
+    // planStatus are strings or null, and rooms is a non-negative count.
+    const row = body.accounts[0];
+    expect(typeof row.organisation === 'string' || row.organisation === null).toBe(true);
+    expect(typeof row.plan === 'string' || row.plan === null).toBe(true);
+    expect(typeof row.planStatus === 'string' || row.planStatus === null).toBe(true);
+    expect(typeof row.rooms).toBe('number');
+    expect(row.rooms).toBeGreaterThanOrEqual(0);
   });
 
   it('answers 404 when the allowlist is unset, and 405/400 on bad requests', async () => {

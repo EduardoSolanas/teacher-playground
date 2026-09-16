@@ -845,6 +845,10 @@ export interface AdminAccountRow {
   state: AccountState;
   provenance: AccountProvenance;
   displayName: string | null;
+  organisation: string | null;
+  plan: string | null;
+  planStatus: string | null;
+  rooms: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -860,6 +864,13 @@ export interface AdminAccountList {
  * first (the account an admin is about to ask about is usually the newest),
  * with the account id as tiebreak so two rows created in the same millisecond
  * cannot trade places between reads.
+ *
+ * Each row also carries what the identity DB already knows about the account:
+ * the active membership's company name (a revoked membership or a disabled
+ * company names nothing), the entitlement plan and status (company source
+ * before personal, matching resolveEffectivePlan's precedence; no row means
+ * free), and the count of owned rooms. All of it is one query, so the cap,
+ * the order, and the total are exactly what they were before enrichment.
  */
 export function listAccountsForAdmin(db: RoomDatabase): AdminAccountList {
   const total = Number(
@@ -867,17 +878,50 @@ export function listAccountsForAdmin(db: RoomDatabase): AdminAccountList {
   );
   const accounts = db
     .prepare(
-      `SELECT account_id AS accountId, state, provenance,
-              preferred_display_name AS displayName,
-              created_at AS createdAt, updated_at AS updatedAt
-       FROM accounts
-       ORDER BY created_at DESC, account_id DESC
+      `SELECT
+         a.account_id AS accountId,
+         a.state,
+         a.provenance,
+         a.preferred_display_name AS displayName,
+         (
+           SELECT c.name
+           FROM company_members cm
+           JOIN companies c ON c.company_id = cm.company_id
+           WHERE cm.account_id = a.account_id
+             AND cm.state = 'active'
+             AND c.state = 'active'
+           ORDER BY cm.created_at DESC, cm.company_id ASC
+           LIMIT 1
+         ) AS organisation,
+         (
+           SELECT e.plan_id FROM entitlements e
+           WHERE e.account_id = a.account_id
+           ORDER BY CASE WHEN e.source = 'company' THEN 0 ELSE 1 END, e.source ASC
+           LIMIT 1
+         ) AS plan,
+         (
+           SELECT e.status FROM entitlements e
+           WHERE e.account_id = a.account_id
+           ORDER BY CASE WHEN e.source = 'company' THEN 0 ELSE 1 END, e.source ASC
+           LIMIT 1
+         ) AS planStatus,
+         COALESCE(owned_rooms.roomCount, 0) AS rooms,
+         a.created_at AS createdAt,
+         a.updated_at AS updatedAt
+       FROM accounts a
+       LEFT JOIN (
+         SELECT account_id, COUNT(*) AS roomCount
+         FROM account_rooms
+         GROUP BY account_id
+       ) owned_rooms ON owned_rooms.account_id = a.account_id
+       ORDER BY a.created_at DESC, a.account_id DESC
        LIMIT ?`,
     )
     .all(MAX_ADMIN_ACCOUNT_LIST_ROWS) as AdminAccountRow[];
   return {
     accounts: accounts.map((row) => ({
       ...row,
+      rooms: Number(row.rooms),
       createdAt: Number(row.createdAt),
       updatedAt: Number(row.updatedAt),
     })),
