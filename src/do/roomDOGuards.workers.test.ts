@@ -667,16 +667,37 @@ describe('RoomDO method and lifecycle guards', () => {
       internals(instance).dirtyRooms.has(roomId)
     )), { timeout: SOCKET_EVENT_DEADLINE_MS, interval: 50 }).toBe(true);
 
-    const after = await runInDurableObject(stub(roomId), async (instance: RoomDO) => {
-      instance.db.prepare('DELETE FROM rooms WHERE room_id = ?').run(roomId);
-      await internals(instance).flushDirtyDocs();
-      return {
-        hasDoc: internals(instance).docs.has(roomId),
-        dirtyCount: internals(instance).dirtyRooms.size,
-      };
+    /*
+     * The room flushes itself behind the test's back: the drawing throttle and
+     * the revocation alarm both call flushDirtyDocs, and a flush landing
+     * between "seen dirty" and "delete the row" clears the flag while leaving
+     * the document cached -- correct product behavior, fatal to the
+     * precondition. So the deletion is retried: every attempt re-dirties the
+     * room with a fresh frame, and only an attempt whose dirty check and
+     * DELETE run in the same synchronous breath -- no await between them for
+     * an alarm to slip through -- is accepted as evidence.
+     */
+    await expect.poll(async () => {
+      socket.send(cursorFrame('retry-peer'));
+      await expect.poll(() => runInDurableObject(stub(roomId), (instance: RoomDO) => (
+        internals(instance).dirtyRooms.has(roomId)
+      )), { timeout: SOCKET_EVENT_DEADLINE_MS, interval: 50 }).toBe(true);
+
+      const after = await runInDurableObject(stub(roomId), async (instance: RoomDO) => {
+        const room = internals(instance);
+        if (!room.dirtyRooms.has(roomId)) return null;
+        instance.db.prepare('DELETE FROM rooms WHERE room_id = ?').run(roomId);
+        await room.flushDirtyDocs();
+        return {
+          hasDoc: room.docs.has(roomId),
+          dirtyCount: room.dirtyRooms.size,
+        };
+      });
+      return after ?? 'flushed-early';
+    }, { timeout: SOCKET_EVENT_DEADLINE_MS, interval: 50 }).toEqual({
+      hasDoc: false,
+      dirtyCount: 0,
     });
-    expect(after.hasDoc).toBe(false);
-    expect(after.dirtyCount).toBe(0);
   });
 
   it('drops a pending projection when its room row has disappeared', async () => {
