@@ -24,7 +24,9 @@ import ClearBoardModal from '@/components/whiteboard/ClearBoardModal';
 import BoardTabs from '@/components/whiteboard/BoardTabs';
 import RoomTopNav from '@/components/whiteboard/RoomTopNav';
 import AvSessionPanel from '@/components/av/AvSessionPanel';
+import { PreJoinCheck } from '@/components/av/PreJoinCheck';
 import StartCallButton from '@/components/av/StartCallButton';
+import { peerCallEntryAction, shouldResetPreJoinAnswered } from '@/lib/av/preJoin';
 import ConnectionLostNotice from '@/components/whiteboard/ConnectionLostNotice';
 import SyncDegradedNotice from '@/components/whiteboard/SyncDegradedNotice';
 import RoomTitleMenu from '@/components/whiteboard/RoomTitleMenu';
@@ -336,22 +338,6 @@ export function resolveWaitingPosition(
   return position || waitingCount + 1;
 }
 
-/*
- * Deliberately not conditioned on a host being present. The call belongs to the
- * room: if the teacher refreshes, drops off wifi or closes the tab, the peers
- * are still talking to each other and must stay connected. Requiring a host
- * here dropped the whole room the moment the host's presence row went away.
- */
-export function shouldPeerEnterCall({
-  callActive,
-  avAllowed,
-}: {
-  callActive: boolean;
-  avAllowed: boolean;
-}): boolean {
-  return Boolean(callActive && avAllowed);
-}
-
 /**
  * The placement flags for the support pill.
  *
@@ -532,6 +518,19 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
    */
   const [callWanted, setCallWanted] = useState(false);
   const avEnabled = avAllowed && callWanted;
+  /*
+   * The device check stands between every call start and the call itself:
+   * the start button and the room's call activation both open it, and only
+   * its own Join button turns the wish into a session.
+   */
+  const [preJoinOpen, setPreJoinOpen] = useState(false);
+  /*
+   * Whether this peer has answered the check for the call that is live now.
+   * A refusal must not be nagged -- the effect below keeps a peer who declined
+   * out while the call stays active -- and a call ending clears the answer so
+   * the next activation asks again.
+   */
+  const answeredPreJoinRef = useRef(false);
   const av = useAvSession({
     roomId,
     identity: localPeerId,
@@ -541,7 +540,23 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
   const avPeerStates = mapAvPeerStateByPeerId(av.participants, users, localPeerId);
 
   const handleStartCall = useCallback(() => {
+    /*
+     * Explicit intent always opens the check, even for a peer who declined
+     * moments ago -- pressing the button is the way back in, not a wish to be
+     * asked twice.
+     */
+    setPreJoinOpen(true);
+  }, []);
+
+  const handlePreJoinConfirm = useCallback(() => {
+    answeredPreJoinRef.current = true;
+    setPreJoinOpen(false);
     setCallWanted(true);
+  }, []);
+
+  const handlePreJoinCancel = useCallback(() => {
+    answeredPreJoinRef.current = true;
+    setPreJoinOpen(false);
   }, []);
 
   /*
@@ -607,11 +622,29 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
 
   const hasHost = users.some((u) => u.isHost);
 
-  // Non-host peers follow the room call state: when host starts a call, all peers enter.
-  // When host ends the call or leaves the room, peers exit the call.
+  // Non-host peers follow the room call state through the device check: when
+  // host starts a call, peers are asked to check their devices; confirming is
+  // what joins them. When the call ends, peers leave it, and the answer is
+  // cleared so the next activation asks again. A peer who declined is left out
+  // while the call stays live -- shouldShowStartCall still offers the button.
+  const peerPreviousCallActiveRef = useRef(false);
   useEffect(() => {
     if (isLocalHost) return;
-    setCallWanted(shouldPeerEnterCall({ callActive: remoteCallActive, avAllowed }));
+    const action = peerCallEntryAction({
+      callActive: remoteCallActive,
+      avAllowed,
+      answeredPreJoin: answeredPreJoinRef.current,
+    });
+    if (action === 'leave-call') {
+      if (shouldResetPreJoinAnswered(peerPreviousCallActiveRef.current, remoteCallActive)) {
+        answeredPreJoinRef.current = false;
+      }
+      setCallWanted(false);
+      setPreJoinOpen(false);
+    } else if (action === 'open-pre-join') {
+      setPreJoinOpen(true);
+    }
+    peerPreviousCallActiveRef.current = remoteCallActive;
   }, [isLocalHost, remoteCallActive, avAllowed]);
 
   /*
@@ -1157,6 +1190,12 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
           onOpenChange={setCallRailOpen}
           onLeaveCall={handleLeaveCall}
           onEndCallForEveryone={isLocalHost ? handleEndCallForEveryone : undefined}
+        />
+      )}
+      {preJoinOpen && avAllowed && (
+        <PreJoinCheck
+          onConfirm={handlePreJoinConfirm}
+          onCancel={handlePreJoinCancel}
         />
       )}
       {callEndedNotice && (

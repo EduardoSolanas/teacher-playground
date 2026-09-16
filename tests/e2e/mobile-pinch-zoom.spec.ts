@@ -77,6 +77,8 @@ test.describe('board on a phone', () => {
       await expect.poll(() => boardZoom(page), { timeout: 15000 }).toBe(1);
 
       await page.getByTestId('av-start-call').click();
+      // The device check stands between the button and the session.
+      await page.getByTestId('av-pre-join-confirm').click();
       await expect(page.getByTestId('av-toggle-mic')).toBeVisible({ timeout: 15000 });
       await page.evaluate(() => (window as any).__debugExcalidrawApi.setActiveTool({ type: 'freedraw' }));
 

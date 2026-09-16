@@ -44,6 +44,15 @@ async function waitForJoinedCall(page: Page) {
 }
 
 /**
+ * The room's call activation opens the device check on an admitted peer's
+ * side; the peer joins by confirming it, exactly like the host does.
+ */
+async function confirmPeerPreJoin(peerPage: Page) {
+  await peerPage.getByTestId('av-pre-join').waitFor({ state: 'visible', timeout: 15000 });
+  await peerPage.getByTestId('av-pre-join-confirm').click();
+}
+
+/**
  * Real-media voice calling validation.
  *
  * These tests require a functional LiveKit service with LIVEKIT_TEST_URL configured.
@@ -67,6 +76,8 @@ test.describe('real-media voice calling', () => {
     const peerIdentityPromise = waitForAvIdentity(peerPage);
 
     await hostPage.getByTestId('av-start-call').click();
+    await hostPage.getByTestId('av-pre-join-confirm').click();
+    await confirmPeerPreJoin(peerPage);
     const hostIdentity = await hostIdentityPromise;
     const peerIdentity = await peerIdentityPromise;
 
@@ -109,6 +120,8 @@ test.describe('real-media voice calling', () => {
     const peerIdentityPromise = waitForAvIdentity(peerPage);
 
     await hostPage.getByTestId('av-start-call').click();
+    await hostPage.getByTestId('av-pre-join-confirm').click();
+    await confirmPeerPreJoin(peerPage);
     const peerAccountId = await peerIdentityPromise;
     await hostIdentityPromise;
 
@@ -146,9 +159,14 @@ test.describe('real-media voice calling', () => {
     await joinRoomApproved(peerPage, hostPage, roomId, 'StatePeer');
 
     // Start call
+    const hostIdentityPromise = waitForAvIdentity(hostPage);
+    const peerIdentityPromise = waitForAvIdentity(peerPage);
+
     await hostPage.getByTestId('av-start-call').click();
-    await waitForAvIdentity(hostPage);
-    await waitForAvIdentity(peerPage);
+    await hostPage.getByTestId('av-pre-join-confirm').click();
+    await confirmPeerPreJoin(peerPage);
+    await hostIdentityPromise;
+    await peerIdentityPromise;
     await waitForJoinedCall(hostPage);
     await waitForJoinedCall(peerPage);
 

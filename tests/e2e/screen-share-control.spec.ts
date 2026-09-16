@@ -39,6 +39,10 @@ test.describe('screen share control', () => {
       await joinRoomApproved(peerPage, hostPage, roomId, 'SharePeer');
 
       await hostPage.getByTestId('av-start-call').click();
+      await hostPage.getByTestId('av-pre-join-confirm').click();
+      // The room's call activation opens the check on the peer's side too.
+      await peerPage.getByTestId('av-pre-join').waitFor({ state: 'visible', timeout: 15000 });
+      await peerPage.getByTestId('av-pre-join-confirm').click();
       await waitForJoinedCall(hostPage);
       await waitForJoinedCall(peerPage);
 

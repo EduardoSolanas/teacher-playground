@@ -6,6 +6,8 @@ import {
   joinRoomApproved,
   expandPresenceIfCollapsed,
   liveKitConfigured,
+  moderateApprovedPeer,
+  approveFirstWaitingPeer,
 } from './helpers';
 
 function appUrl(path: string) {
@@ -55,7 +57,20 @@ async function startCallAsHost(hostPage: Page) {
     isAvTokenResponse(candidate.url(), candidate.request().method()),
   );
   await hostPage.getByTestId('av-start-call').click();
+  // The device check stands between the button and the session; confirming
+  // is what requests the token.
+  await hostPage.getByTestId('av-pre-join').waitFor({ state: 'visible', timeout: 15000 });
+  await hostPage.getByTestId('av-pre-join-confirm').click();
   expect((await hostToken).ok()).toBe(true);
+}
+
+/**
+ * The room's call activation opens the device check on an admitted peer's
+ * side; the peer joins by confirming it, exactly like the host does.
+ */
+async function confirmPeerPreJoin(peerPage: Page) {
+  await peerPage.getByTestId('av-pre-join').waitFor({ state: 'visible', timeout: 15000 });
+  await peerPage.getByTestId('av-pre-join-confirm').click();
 }
 
 async function waitForJoinedCall(page: Page) {
@@ -141,7 +156,8 @@ test.describe('video calling panel', () => {
     await expect(peerPage.getByTestId('av-start-call')).toHaveCount(0);
 
     const identities = Promise.all([waitForAvIdentity(hostPage), waitForAvIdentity(peerPage)]);
-    await hostPage.getByTestId('av-start-call').click();
+    await startCallAsHost(hostPage);
+    await confirmPeerPreJoin(peerPage);
     // Awaited together so a failure on one side does not leave the other wait
     // pending past the end of the test.
     const [hostAccountId, peerAccountId] = await identities;
@@ -199,6 +215,7 @@ test.describe('video calling panel', () => {
       await joinRoomApproved(peerPage, hostPage, roomId, 'EndPeer');
 
       await startCallAsHost(hostPage);
+      await confirmPeerPreJoin(peerPage);
       await waitForJoinedCall(hostPage);
       await waitForJoinedCall(peerPage);
 
@@ -218,6 +235,143 @@ test.describe('video calling panel', () => {
     } finally {
       await host.close();
       await peer.close();
+    }
+  });
+
+  /*
+   * The pre-join gate: nobody joins the room call without passing through the
+   * device check, whichever side of the activation they are on.
+   */
+
+  /** Admits the student while no call is live, then starts one from the host. */
+  async function admitStudentAndStartCall(
+    hostPage: Page,
+    studentPage: Page,
+    hostName: string,
+    studentName: string,
+  ): Promise<void> {
+    const roomId = await createRoomWithMaxUsers(hostPage, hostName, 2);
+    test.skip(!(await liveKitConfigured(hostPage, roomId)), LIVEKIT_UNCONFIGURED);
+    await joinRoomApproved(studentPage, hostPage, roomId, studentName);
+    await startCallAsHost(hostPage);
+    await waitForJoinedCall(hostPage);
+  }
+
+  test('a student is asked to check their devices before the call admits them', async ({ browser }) => {
+    const host = await newAuthenticatedContext(browser, 'prejoin-host');
+    const student = await newAuthenticatedContext(browser, 'prejoin-student');
+    const hostPage = await host.newPage();
+    const studentPage = await student.newPage();
+
+    try {
+      await admitStudentAndStartCall(hostPage, studentPage, 'PreJoinHost', 'PreJoinStudent');
+
+      // The room's call activation asks; it does not join.
+      await expect(studentPage.getByTestId('av-pre-join')).toBeVisible({ timeout: 15000 });
+      await expect(studentPage.getByTestId('av-session-panel')).toHaveCount(0);
+
+      // Confirming is what joins.
+      await studentPage.getByTestId('av-pre-join-confirm').click();
+      await waitForJoinedCall(studentPage);
+    } finally {
+      await host.close();
+      await student.close();
+    }
+  });
+
+  test('a student who cancels the device check stays out until they ask again', async ({ browser }) => {
+    const host = await newAuthenticatedContext(browser, 'prejoin-cancel-host');
+    const student = await newAuthenticatedContext(browser, 'prejoin-cancel-student');
+    const hostPage = await host.newPage();
+    const studentPage = await student.newPage();
+
+    try {
+      await admitStudentAndStartCall(hostPage, studentPage, 'PreJoinCancelHost', 'PreJoinCancelStudent');
+
+      await expect(studentPage.getByTestId('av-pre-join')).toBeVisible({ timeout: 15000 });
+      await studentPage.getByTestId('av-pre-join-cancel').click();
+      await expect(studentPage.getByTestId('av-pre-join')).toHaveCount(0);
+      await expect(studentPage.getByTestId('av-session-panel')).toHaveCount(0);
+
+      // Not stranded: the explicit control is the way back in, and pressing
+      // it asks again rather than joining silently.
+      await expect(studentPage.getByTestId('av-start-call')).toBeVisible({ timeout: 15000 });
+      await studentPage.getByTestId('av-start-call').click();
+      await expect(studentPage.getByTestId('av-pre-join')).toBeVisible({ timeout: 15000 });
+      await studentPage.getByTestId('av-pre-join-confirm').click();
+      await waitForJoinedCall(studentPage);
+    } finally {
+      await host.close();
+      await student.close();
+    }
+  });
+
+  test('a call ending asks the student again the next time it starts', async ({ browser }) => {
+    const host = await newAuthenticatedContext(browser, 'prejoin-restart-host');
+    const student = await newAuthenticatedContext(browser, 'prejoin-restart-student');
+    const hostPage = await host.newPage();
+    const studentPage = await student.newPage();
+
+    try {
+      await admitStudentAndStartCall(hostPage, studentPage, 'PreJoinRestartHost', 'PreJoinRestartStudent');
+
+      await expect(studentPage.getByTestId('av-pre-join')).toBeVisible({ timeout: 15000 });
+      await studentPage.getByTestId('av-pre-join-cancel').click();
+      await expect(studentPage.getByTestId('av-pre-join')).toHaveCount(0);
+
+      // The teacher ends this call and starts a fresh one.
+      await hostPage.getByTestId('av-end-call-everyone').click();
+      await hostPage.getByTestId('av-end-call-confirm-confirm-btn').click();
+      await startCallAsHost(hostPage);
+
+      // The refusal answered the previous call; the new one asks again.
+      await expect(studentPage.getByTestId('av-pre-join')).toBeVisible({ timeout: 15000 });
+    } finally {
+      await host.close();
+      await student.close();
+    }
+  });
+
+  test('a student who declined is not asked twice by the same call', async ({ browser }) => {
+    const host = await newAuthenticatedContext(browser, 'prejoin-stay-host');
+    const student = await newAuthenticatedContext(browser, 'prejoin-stay-student');
+    const hostPage = await host.newPage();
+    const studentPage = await student.newPage();
+
+    try {
+      await admitStudentAndStartCall(hostPage, studentPage, 'PreJoinStayHost', 'PreJoinStayStudent');
+
+      await expect(studentPage.getByTestId('av-pre-join')).toBeVisible({ timeout: 15000 });
+      await studentPage.getByTestId('av-pre-join-cancel').click();
+      await expect(studentPage.getByTestId('av-pre-join')).toHaveCount(0);
+
+      /*
+       * Out to the waiting room and back in, while the call never stops. The
+       * re-admission re-runs the peer's call-entry decision, which must honour
+       * the refusal already given instead of springing the check again.
+       */
+      await expandPresenceIfCollapsed(hostPage);
+      const studentRow = hostPage
+        .locator('[data-testid^="whiteboard-user-"]')
+        .filter({ hasText: 'PreJoinStayStudent' })
+        .first();
+      await expect(studentRow).toBeVisible({ timeout: 15000 });
+      const rowTestId = await studentRow.getAttribute('data-testid');
+      const peerId = rowTestId?.replace('whiteboard-user-', '');
+      expect(peerId).toBeTruthy();
+      await moderateApprovedPeer(hostPage, peerId!, 'suspend');
+      await expect(studentPage.getByTestId('whiteboard-canvas-area')).toHaveCount(0);
+
+      await approveFirstWaitingPeer(hostPage);
+      await expect(studentPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+
+      // The refusal stands for the call that is still live; the explicit
+      // button remains the way in.
+      await expect(studentPage.getByTestId('av-pre-join')).toHaveCount(0);
+      await expect(studentPage.getByTestId('av-start-call')).toBeVisible({ timeout: 15000 });
+    } finally {
+      await host.close();
+      await student.close();
     }
   });
 });

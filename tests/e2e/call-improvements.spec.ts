@@ -38,6 +38,8 @@ test.describe('call identity presentation', () => {
         isAvTokenResponse(response.url(), response.request().method()),
       );
       await page.getByTestId('av-start-call').click();
+      // The device check stands between the button and the session.
+      await page.getByTestId('av-pre-join-confirm').click();
       expect((await tokenResponse).ok()).toBe(true);
       await waitForJoinedCall(page);
 
@@ -98,6 +100,7 @@ test.describe('call panel on a phone', () => {
       test.skip(!(await liveKitConfigured(page, roomId)), 'LiveKit is not configured in this E2E environment.');
 
       await page.getByTestId('av-start-call').click();
+      await page.getByTestId('av-pre-join-confirm').click();
       await waitForJoinedCall(page);
 
       /*
@@ -129,6 +132,7 @@ test.describe('call panel on a phone', () => {
         test.skip(!(await liveKitConfigured(page, roomId)), 'LiveKit is not configured in this E2E environment.');
 
         await page.getByTestId('av-start-call').click();
+        await page.getByTestId('av-pre-join-confirm').click();
         await waitForJoinedCall(page);
 
         /*

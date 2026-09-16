@@ -19,7 +19,6 @@ import WhiteboardRoomPage, {
   resolveAvTargetAccountId,
   roomCanvasTopClass,
   shouldShowStartCall,
-  shouldPeerEnterCall,
   shouldShowSyncDegradedNotice,
   shouldBroadcastCallStart,
   shouldAnnounceCallEnded,
@@ -423,37 +422,6 @@ describe('supportButtonProps', () => {
   });
 });
 
-describe('shouldPeerEnterCall', () => {
-  it('returns true when the room call is active and av is allowed', () => {
-    expect(shouldPeerEnterCall({ callActive: true, avAllowed: true })).toBe(true);
-  });
-
-  it('returns false when the room call is not active', () => {
-    expect(shouldPeerEnterCall({ callActive: false, avAllowed: true })).toBe(false);
-  });
-
-  it('returns false when av is not allowed for the peer', () => {
-    expect(shouldPeerEnterCall({ callActive: true, avAllowed: false })).toBe(false);
-  });
-
-  it('keeps peers in the call when no host is present', () => {
-    /*
-     * The host refreshing the page, dropping off wifi or closing the tab must
-     * not hang up on everyone else -- the peers are talking to each other, and
-     * the call belongs to the room. This used to be gated on a host being
-     * present, which ended the call for the whole room the moment the host's
-     * presence row went away.
-     */
-    const usersWithoutHost = [
-      makeUser({ peerId: 'p1', isHost: false }),
-      makeUser({ peerId: 'p3', isHost: false }),
-    ];
-    expect(usersWithoutHost.some((u) => u.isHost)).toBe(false);
-    expect(shouldPeerEnterCall({ callActive: true, avAllowed: true })).toBe(true);
-  });
-});
-
-
 describe('shouldShowSyncDegradedNotice', () => {
   it('returns true when sync is degraded and connection is not lost', () => {
     expect(shouldShowSyncDegradedNotice({ syncDegraded: true, connectionLost: false })).toBe(true);
@@ -646,7 +614,7 @@ describe('RoomContent main room', () => {
     expect((window as { __whiteboardCollab?: unknown }).__whiteboardCollab).toBeUndefined();
   });
 
-  it('opens the call panel once the host asks for a call', async () => {
+  it('opens the device check instead of joining when start is pressed', async () => {
     storeUserName();
     await renderRoom((url, init) => {
       if (url.startsWith('/api/av/token')) return new Response(null, { status: 500 });
@@ -655,8 +623,59 @@ describe('RoomContent main room', () => {
 
     fireEvent.click(await screen.findByTestId('av-start-call'));
 
+    expect(await screen.findByTestId('av-pre-join')).toBeTruthy();
+    expect(screen.queryByTestId('av-session-panel')).toBeNull();
+  });
+
+  it('joins the call once the device check is confirmed', async () => {
+    storeUserName();
+    await renderRoom((url, init) => {
+      if (url.startsWith('/api/av/token')) return new Response(null, { status: 500 });
+      return collaborationNetwork()(url, init);
+    });
+
+    fireEvent.click(await screen.findByTestId('av-start-call'));
+    fireEvent.click(await screen.findByTestId('av-pre-join-confirm'));
+
     expect(await screen.findByTestId('av-session-panel')).toBeTruthy();
-    expect(screen.queryByTestId('av-start-call')).toBeNull();
+    expect(screen.queryByTestId('av-pre-join')).toBeNull();
+  });
+
+  it('keeps the call off when the device check is cancelled', async () => {
+    storeUserName();
+    await renderRoom((url, init) => {
+      if (url.startsWith('/api/av/token')) return new Response(null, { status: 500 });
+      return collaborationNetwork()(url, init);
+    });
+
+    fireEvent.click(await screen.findByTestId('av-start-call'));
+    fireEvent.click(await screen.findByTestId('av-pre-join-cancel'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('av-pre-join')).toBeNull();
+    });
+    expect(screen.queryByTestId('av-session-panel')).toBeNull();
+    // The explicit control stays available for somebody who cancelled.
+    expect(screen.getByTestId('av-start-call')).toBeTruthy();
+  });
+
+  it('asks again when start is pressed after a cancel', async () => {
+    storeUserName();
+    await renderRoom((url, init) => {
+      if (url.startsWith('/api/av/token')) return new Response(null, { status: 500 });
+      return collaborationNetwork()(url, init);
+    });
+
+    fireEvent.click(await screen.findByTestId('av-start-call'));
+    fireEvent.click(await screen.findByTestId('av-pre-join-cancel'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('av-pre-join')).toBeNull();
+    });
+
+    // Explicit intent always opens the check, even right after a refusal.
+    fireEvent.click(screen.getByTestId('av-start-call'));
+
+    expect(await screen.findByTestId('av-pre-join')).toBeTruthy();
   });
 
   it('surfaces a refused kick as a moderation error', async () => {

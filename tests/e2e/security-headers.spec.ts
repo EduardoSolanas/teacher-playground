@@ -148,6 +148,8 @@ test.describe('per-host security headers (SEC-A22/A23)', () => {
      */
     if (await liveKitConfigured(page, roomId)) {
       await page.getByTestId('av-start-call').click();
+      // The device check stands between the button and the session.
+      await page.getByTestId('av-pre-join-confirm').click();
       await expect(page.getByTestId('av-session-panel')).toBeVisible({ timeout: 20000 });
     } else {
       await expect(page.getByTestId('av-start-call')).toBeVisible();
