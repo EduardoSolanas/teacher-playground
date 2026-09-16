@@ -201,8 +201,8 @@ function callRecoveryAction(
 
 function modeButtonClass(active: boolean): string {
   return active
-    ? 'rounded-lg bg-slate-800 px-3 py-1 text-[0.6875rem] font-semibold text-white shadow-sm border border-slate-700/80 transition-colors duration-150'
-    : 'rounded-lg px-3 py-1 text-[0.6875rem] font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 transition-colors duration-150';
+    ? 'inline-flex min-h-9 pointer-coarse:min-h-11 items-center justify-center rounded-lg bg-slate-800 px-3 py-1 sm:flex-1 sm:px-2 text-[0.6875rem] font-semibold text-white shadow-sm border border-slate-700/80 transition-colors duration-150'
+    : 'inline-flex min-h-9 pointer-coarse:min-h-11 items-center justify-center rounded-lg px-3 py-1 sm:flex-1 sm:px-2 text-[0.6875rem] font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 transition-colors duration-150';
 }
 
 /*
@@ -735,43 +735,43 @@ export default function AvSessionPanel({
       className={`fixed z-[1400] flex flex-col rounded-b-2xl border-b border-slate-700/70 bg-slate-900/95 backdrop-blur-xl p-3 shadow-2xl shadow-slate-950/60 max-h-[40dvh] overflow-y-auto sm:max-h-none sm:rounded-none sm:border-b-0 sm:border-l sm:shadow-none ${placement}`}
     >
       {/*
-       * flex-wrap at all three levels: the rail bottoms out at 11rem, where
-       * "Hide the call" plus the layout picker are wider than the panel, and
-       * without a wrap the third radio is clipped off the panel edge.
+       * One header on the phone sheet -- "Hide the call" and the picker fit
+       * its full width on a line. The docked rail cannot say the same: its
+       * 176px floor is narrower than Hide plus three layout labels, which
+       * shared a row into clipped radios. So from sm up the picker drops to
+       * its own full-width row and its radios flex to equal thirds -- the
+       * floor's 2+1 wrap reads as a deliberate stack, not an orphan.
        */}
-      <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2 gap-y-2 px-0.5">
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5 gap-y-2">
-          <button
-            type="button"
-            data-testid="av-panel-collapse"
-            onClick={() => { setOpen(false); writeCallHidden(true); }}
-            aria-label="Hide the call"
-            className="inline-flex min-h-9 pointer-coarse:min-h-11 items-center gap-1 rounded-lg px-2 py-1 text-[0.6875rem] font-semibold uppercase tracking-wider text-slate-400 transition-colors duration-150 hover:bg-slate-800 hover:text-slate-200"
-          >
-            Hide
-          </button>
-          <div
-            role="radiogroup"
-            aria-label="Video layout"
-            onKeyDown={handleLayoutKeyDown}
-            className="inline-flex min-w-0 flex-wrap items-center gap-0.5 rounded-xl border border-slate-800 bg-slate-950/60 p-0.5 shadow-inner"
-          >
-            {LAYOUT_OPTIONS.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                role="radio"
-                aria-checked={mode === option.value}
-                tabIndex={mode === option.value ? 0 : -1}
-                onClick={() => selectMode(option.value)}
-                className={modeButtonClass(mode === option.value)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
+      <div className="mb-2.5 flex min-w-0 flex-wrap items-center gap-1.5 gap-y-2 px-0.5">
+        <button
+          type="button"
+          data-testid="av-panel-collapse"
+          onClick={() => { setOpen(false); writeCallHidden(true); }}
+          aria-label="Hide the call"
+          className="inline-flex min-h-9 pointer-coarse:min-h-11 items-center gap-1 rounded-lg px-2 py-1 text-[0.6875rem] font-semibold uppercase tracking-wider text-slate-400 transition-colors duration-150 hover:bg-slate-800 hover:text-slate-200"
+        >
+          Hide
+        </button>
+        <div
+          role="radiogroup"
+          aria-label="Video layout"
+          onKeyDown={handleLayoutKeyDown}
+          className="inline-flex w-auto min-w-0 flex-wrap items-center gap-0.5 rounded-xl border border-slate-800 bg-slate-950/60 p-0.5 shadow-inner sm:w-full"
+        >
+          {LAYOUT_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              role="radio"
+              aria-checked={mode === option.value}
+              tabIndex={mode === option.value ? 0 : -1}
+              onClick={() => selectMode(option.value)}
+              className={modeButtonClass(mode === option.value)}
+            >
+              {option.label}
+            </button>
+          ))}
         </div>
-
       </div>
 
       {visibleMessage && (

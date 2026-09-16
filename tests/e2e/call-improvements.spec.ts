@@ -186,25 +186,30 @@ test.describe('call rail header at the rail floor', () => {
       }
 
       /*
-       * The overflow lives one level above the radios: flexbox floors the
-       * picker at its own min-content width rather than squeezing it, so the
-       * radiogroup's own scroll box never overflows -- the group as a whole
-       * spills past the panel edge and gets clipped there. The panel-wide
-       * scroll box is no good as a yardstick either: the end-call button in
-       * the controls cluster already pokes ~8px past it on its own. So the
-       * group is measured where it sits -- against the panel edge -- and the
-       * header's own scroll boxes are measured for internal fit.
+       * The picker is its own full-width row now, so the group is measured
+       * where it sits -- against the panel edge -- and its own scroll box
+       * for internal fit. The panel-wide scroll box is no good as a yardstick
+       * either: the end-call button in the controls cluster already pokes
+       * ~8px past it on its own.
        */
       await expect.poll(async () => {
         const [groupBox, panelBox] = await Promise.all([group.boundingBox(), panel.boundingBox()]);
         if (!groupBox || !panelBox) return Number.POSITIVE_INFINITY;
         return groupBox.x + groupBox.width - (panelBox.x + panelBox.width);
       }).toBeLessThanOrEqual(1);
-      await expect.poll(() => group.evaluate((el) => {
-        const headerRow = el.parentElement?.parentElement;
-        const boxes = [el, headerRow].map((box) => (box ? box.scrollWidth - box.clientWidth : Number.POSITIVE_INFINITY));
-        return Math.max(...boxes);
-      })).toBeLessThanOrEqual(1);
+      await expect.poll(() => group.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+
+      /*
+       * The stack is deliberate, not emergent: row 1 is the Hide button alone
+       * and the picker is a full-width row beneath it, so the floor's wrap
+       * lands as a 2+1 stack instead of a shared line stranding the button.
+       */
+      const hide = page.getByRole('button', { name: 'Hide the call' });
+      await expect.poll(async () => {
+        const [hideBox, groupBox] = await Promise.all([hide.boundingBox(), group.boundingBox()]);
+        if (!hideBox || !groupBox) return Number.NEGATIVE_INFINITY;
+        return groupBox.y - (hideBox.y + hideBox.height);
+      }).toBeGreaterThan(0);
 
       await group.getByRole('radio', { name: 'Hidden' }).click();
       await expect(group.getByRole('radio', { name: 'Hidden' })).toHaveAttribute('aria-checked', 'true');

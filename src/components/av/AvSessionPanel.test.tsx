@@ -599,28 +599,47 @@ describe('AvSessionPanel', () => {
     expect(panel.className).not.toContain('sm:right-2');
   });
 
-  it('wraps the call header so the layout picker survives the rail floor', () => {
+  it('stacks the layout picker on sm up, and keeps one header row on the phone sheet', () => {
     /*
-     * The rail is clamp(11rem, 18vw, 15rem), and at the 11rem floor the header
-     * has ~148px while "Hide the call" plus the three-way picker need ~230px.
-     * Nothing wrapped, so the third radio was clipped off the panel edge -- the
-     * cut-off "H…" the screenshot shows. jsdom has no layout, so the contract
-     * asserted here is the wrap classes themselves; the browser-side proof is
-     * the call-improvements e2e at a viewport that pins the rail to the floor.
+     * "Hide the call" plus the three-way picker cannot share the rail's
+     * 176px floor (~148px of header), so from sm up the picker drops to its
+     * own full-width row and each radio flexes to an equal third -- the
+     * floor's 2+1 wrap reads as a stack, not an orphan. The phone sheet fits
+     * both on one line, and its height budget is pinned by e2e, so the stack
+     * and the segment widths must be sm-scoped. jsdom has no layout, so the
+     * contract asserted here is the classes themselves; the browser-side
+     * proof is the call-improvements e2e at a viewport that pins the rail to
+     * the floor and at 390x844.
      */
     const av = makeAv();
     render(<AvSessionPanel av={av} localIdentity="me" />);
 
     const hide = screen.getByRole('button', { name: 'Hide the call' });
     const group = screen.getByRole('radiogroup', { name: 'Video layout' });
-    const pickerRow = hide.parentElement as HTMLElement; // Hide + the picker together
-    const headerRow = pickerRow.parentElement as HTMLElement;
+    const headerRow = hide.parentElement as HTMLElement;
 
-    expect(group.className).toContain('flex-wrap');
-    expect(group.className).toContain('min-w-0');
-    expect(pickerRow.className).toContain('flex-wrap');
-    expect(pickerRow.className).toContain('min-w-0');
+    // One header row containing both; the picker only becomes its own
+    // full-width row from sm up, where the docked rail exists.
+    expect(headerRow.contains(group)).toBe(true);
+    const groupClasses = group.className.split(/\s+/);
+    expect(groupClasses).toContain('sm:w-full');
+    expect(groupClasses).not.toContain('w-full');
+    expect(groupClasses).toContain('flex-wrap');
+    expect(groupClasses).toContain('min-w-0');
     expect(headerRow.className).toContain('flex-wrap');
+
+    // Equal segments on sm up, natural widths on the phone, with the file's
+    // coarse-pointer hit-area idiom (UX-N1) at every width.
+    for (const name of ['Gallery', 'Focus', 'Hidden']) {
+      const radio = screen.getByRole('radio', { name }).className.split(/\s+/);
+      expect(radio).toContain('sm:flex-1');
+      expect(radio).not.toContain('flex-1');
+      expect(radio).toContain('justify-center');
+      expect(radio).toContain('sm:px-2');
+      expect(radio).toContain('px-3');
+      expect(radio).toContain('min-h-9');
+      expect(radio).toContain('pointer-coarse:min-h-11');
+    }
   });
 
 
