@@ -96,6 +96,45 @@ stop-camera and share controls acting on accounts. Their evidence is in
 - Each integration records what data flows to the provider and joins the data
   inventory before launch.
 
+## Embedded paginated documents (PDF, PPTX, DOCX)
+
+The implementation contract is in [the embedded documents specification](spec/EMBEDDED_DOCUMENTS_SPEC.md).
+These requirements describe an unbuilt feature, not verified controls.
+
+- Documents are first-party room assets, not arbitrary iframe or URL embeds.
+  Existing third-party embed restrictions remain in force. Only the owner may
+  import, remove, or publish a shared page change; annotation writes follow
+  existing editor grants. Local page browsing does not grant shared-write rights.
+- Authorize every original, manifest, thumbnail, page, range request and conversion
+  status read against current room membership. Waiting, revoked, suspended and
+  cross-room callers cannot read them. Private caching must not bypass these
+  checks; revocation cannot erase bytes a participant already downloaded.
+- Validate file signatures and package contents as well as declared MIME types.
+  Bound compressed and expanded sizes, archive entries, page counts, pixels,
+  conversion time and concurrent jobs. Disable macros, external relationships,
+  scripts and converter network access. Reject encrypted or unsupported inputs
+  explicitly. Do not render source Office HTML or active PDF content in the app.
+- Render Office documents and PDF previews in an isolated, resource-limited
+  conversion boundary; serve validated page images to participants. Any future
+  client PDF renderer needs a separately verified sanitization contract under
+  the teaching-content-import requirement above. Original downloads are
+  authenticated attachments, never inline active content.
+- Reserve quota atomically for originals, previews, thumbnails and intermediate
+  outputs; settle actual usage and release failed reservations. Do not weaken
+  existing image upload validation or quotas to admit documents. Conversion
+  completion must recheck document existence and room lifecycle so late jobs
+  cannot recreate deleted data.
+- Scope assets and deduplication to a room. Validate document references and
+  annotation page bindings on the server; a scene payload cannot confer access
+  to another room's assets. Job completion is authenticated, idempotent and bound
+  to an immutable document version.
+- Define retention, undo grace, reference-aware deletion, abandoned-job cleanup,
+  room/account erasure, export and backup behavior before shipping. Erasure
+  overrides undo grace and removes originals, derived pages and temporary data.
+  Register these objects in SECURITY_ROUTE_REVIEW.md and
+  SECURITY_DATA_PROTECTION.md before launch, with negative worker/e2e tests and
+  guard mutation evidence required by AGENTS.md.
+
 ## Third-party embeds
 
 Today embeds are **off**: the server's scene guard deletes every `embeddable`,
