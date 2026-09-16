@@ -599,7 +599,29 @@ describe('AvSessionPanel', () => {
     expect(panel.className).not.toContain('sm:right-2');
   });
 
+  it('wraps the call header so the layout picker survives the rail floor', () => {
+    /*
+     * The rail is clamp(11rem, 18vw, 15rem), and at the 11rem floor the header
+     * has ~148px while "Hide the call" plus the three-way picker need ~230px.
+     * Nothing wrapped, so the third radio was clipped off the panel edge -- the
+     * cut-off "H…" the screenshot shows. jsdom has no layout, so the contract
+     * asserted here is the wrap classes themselves; the browser-side proof is
+     * the call-improvements e2e at a viewport that pins the rail to the floor.
+     */
+    const av = makeAv();
+    render(<AvSessionPanel av={av} localIdentity="me" />);
 
+    const hide = screen.getByRole('button', { name: 'Hide the call' });
+    const group = screen.getByRole('radiogroup', { name: 'Video layout' });
+    const pickerRow = hide.parentElement as HTMLElement; // Hide + the picker together
+    const headerRow = pickerRow.parentElement as HTMLElement;
+
+    expect(group.className).toContain('flex-wrap');
+    expect(group.className).toContain('min-w-0');
+    expect(pickerRow.className).toContain('flex-wrap');
+    expect(pickerRow.className).toContain('min-w-0');
+    expect(headerRow.className).toContain('flex-wrap');
+  });
 
 
   it('offers a fullscreen control on every face', () => {

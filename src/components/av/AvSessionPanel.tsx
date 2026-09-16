@@ -734,8 +734,13 @@ export default function AvSessionPanel({
        */
       className={`fixed z-[1400] flex flex-col rounded-b-2xl border-b border-slate-700/70 bg-slate-900/95 backdrop-blur-xl p-3 shadow-2xl shadow-slate-950/60 max-h-[40dvh] overflow-y-auto sm:max-h-none sm:rounded-none sm:border-b-0 sm:border-l sm:shadow-none ${placement}`}
     >
-      <div className="mb-2.5 flex items-center justify-between gap-2 px-0.5">
-        <div className="flex items-center gap-1.5">
+      {/*
+       * flex-wrap at all three levels: the rail bottoms out at 11rem, where
+       * "Hide the call" plus the layout picker are wider than the panel, and
+       * without a wrap the third radio is clipped off the panel edge.
+       */}
+      <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2 gap-y-2 px-0.5">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5 gap-y-2">
           <button
             type="button"
             data-testid="av-panel-collapse"
@@ -749,7 +754,7 @@ export default function AvSessionPanel({
             role="radiogroup"
             aria-label="Video layout"
             onKeyDown={handleLayoutKeyDown}
-            className="inline-flex items-center gap-0.5 rounded-xl border border-slate-800 bg-slate-950/60 p-0.5 shadow-inner"
+            className="inline-flex min-w-0 flex-wrap items-center gap-0.5 rounded-xl border border-slate-800 bg-slate-950/60 p-0.5 shadow-inner"
           >
             {LAYOUT_OPTIONS.map((option) => (
               <button

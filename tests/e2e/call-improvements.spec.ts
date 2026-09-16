@@ -162,3 +162,55 @@ test.describe('call panel on a phone', () => {
     });
   }
 });
+
+test.describe('call rail header at the rail floor', () => {
+  test('keeps every layout option inside the rail at its narrowest', async ({ browser }) => {
+    const host = await newAuthenticatedContext(browser, `call-rail-floor-${Date.now()}`);
+    const page = await host.newPage();
+    // 18vw of 700px is 126px, under the 11rem floor, so the docked rail is
+    // pinned to exactly 176px -- the width where the header used to clip.
+    await page.setViewportSize({ width: 700, height: 900 });
+
+    try {
+      const roomId = await createRoomWithMaxUsers(page, 'RailHost', 1);
+      test.skip(!(await liveKitConfigured(page, roomId)), 'LiveKit is not configured in this E2E environment.');
+
+      await page.getByTestId('av-start-call').click();
+      await page.getByTestId('av-pre-join-confirm').click();
+      await waitForJoinedCall(page);
+
+      const panel = page.getByTestId('av-session-panel');
+      const group = page.getByRole('radiogroup', { name: 'Video layout' });
+      for (const name of ['Gallery', 'Focus', 'Hidden']) {
+        await expect(group.getByRole('radio', { name })).toBeVisible();
+      }
+
+      /*
+       * The overflow lives one level above the radios: flexbox floors the
+       * picker at its own min-content width rather than squeezing it, so the
+       * radiogroup's own scroll box never overflows -- the group as a whole
+       * spills past the panel edge and gets clipped there. The panel-wide
+       * scroll box is no good as a yardstick either: the end-call button in
+       * the controls cluster already pokes ~8px past it on its own. So the
+       * group is measured where it sits -- against the panel edge -- and the
+       * header's own scroll boxes are measured for internal fit.
+       */
+      await expect.poll(async () => {
+        const [groupBox, panelBox] = await Promise.all([group.boundingBox(), panel.boundingBox()]);
+        if (!groupBox || !panelBox) return Number.POSITIVE_INFINITY;
+        return groupBox.x + groupBox.width - (panelBox.x + panelBox.width);
+      }).toBeLessThanOrEqual(1);
+      await expect.poll(() => group.evaluate((el) => {
+        const headerRow = el.parentElement?.parentElement;
+        const boxes = [el, headerRow].map((box) => (box ? box.scrollWidth - box.clientWidth : Number.POSITIVE_INFINITY));
+        return Math.max(...boxes);
+      })).toBeLessThanOrEqual(1);
+
+      await group.getByRole('radio', { name: 'Hidden' }).click();
+      await expect(group.getByRole('radio', { name: 'Hidden' })).toHaveAttribute('aria-checked', 'true');
+      await expect(group.getByRole('radio', { name: 'Gallery' })).toHaveAttribute('aria-checked', 'false');
+    } finally {
+      await host.close();
+    }
+  });
+});
