@@ -69,48 +69,53 @@ converter; the MVP does not ship them.
 
 ## 3. Recommendation
 
-1. **PDF MVP: candidate A.** One empirical probe decides it (§4). It keeps
-   the single-Worker deployment, costs no new infrastructure, and PDF.js is
-   the most battle-tested open-source PDF renderer available.
-2. **PPTX/DOCX milestones: candidate B**, contingent on Containers pricing
-   measured during the PDF milestone; C is the fallback. This keeps the MVP
-   unblocked while leaving the Office path open with its own honest cost
-   conversation.
+1. **PDF MVP and all formats: candidate B.** The in-worker candidate (A) was
+   rejected on P1 evidence (§4). One container image runs the open-source
+   converter set: `pdftoppm` (poppler) for PDF, LibreOffice for PPTX/DOCX.
+2. **Candidate C** remains the fallback if Containers pricing fails the
+   measured cost probe (P6), which is now the only open spike question.
 3. Either way, the trusted re-encode/validation boundary (§5) stays in Worker
-   code the repository owns; no candidate may publish pages that skipped it.
+   code the repository owns; the container never receives storage
+   credentials, and no candidate may publish pages that skipped the boundary.
 
-## 4. Empirical probes (the actual spike — pending)
+## 4. Empirical probe results
 
-Each probe is a workerd test in this repository (or a scratch harness promoted
-to a test) against real fixtures; none may be satisfied by a mock renderer.
+**P1 — pixel path: FAILED. Decisive.** workerd (1.20260811, compat 2024-12-10,
+nodejs_compat) exposes **no canvas surface at all**: `OffscreenCanvas`,
+`OffscreenCanvasRenderingContext2D`, `ImageData`, and `createImageBitmap` are
+all `undefined` (recorded by the committed tripwire
+`src/canvasSurface.workers.test.ts`, which fails if a future toolchain ships a
+canvas surface and forces this spike to be re-opened). No compatibility flag
+enabling one exists in workerd, miniflare, or `@cloudflare/vitest-pool-workers`
+(searched). pdf.js v6 therefore cannot rasterize inside a Worker, and a
+software rasterizer substitute would be a project of its own.
 
-- **P1 — pixel path:** `documentsSpike.workers.test.ts › renders a pdf fixture
-  page to OffscreenCanvas pixels inside workerd`. Fixture: a 2-page PDF built
-  with embedded text and one vector shape. Acceptance: non-blank pixel data
-  with the expected aspect ratio; deterministic across two runs.
-- **P2 — WebP encode:** `› encodes canvas output to image/webp`. Acceptance:
-  bytes decode as WebP (verified by a real decoder in the test), width/height
-  match. If workerd lacks WebP encoding, record PNG and the re-encode plan.
-- **P3 — DOM shims:** `› renders with the enumerated workerd shim set` —
-  document every shim pdf.js needs; the set becomes the conversion job's
-  contract.
-- **P4 — limits under load:** a 200-page, 20 MiB fixture: wall time, peak
-  memory, and CPU against the §6 defaults (120 s, page dimension caps). This
-  decides whether PDF.js-in-workerd meets the classroom-fixture bar or the
-  wall-time default must change.
-- **P5 — hostile input:** encrypted PDF, polyglot PDF/ZIP, and a decompression-
-  bomb PDF: clean safe failures, no hang, no memory blowout beyond the
-  documented job limits.
-- **P6 — Office pricing probe (deferred to the PPTX milestone):** Containers
-  cost/cold-start measurement for candidate B.
+**P3 — shim set: recorded, moot.** pdf.js v6 uses `Path2D` unconditionally
+(20 call sites) and `DOMMatrix` (7 sites: `preMultiplySelf`, `invertSelf`,
+`multiplySelf`, `translate`, `scale`, `addPath(path, matrix)`) with no feature
+guards; the probe implemented working shims for both, but they cannot matter
+without a pixel surface. The shims and probe harness are preserved in the
+spike's git history (commit preceding this edit).
 
-Probe outcomes update §4–§6 defaults of the spec and this document records the
-final decision. Until then: **flag contract implemented; pipeline code frozen.**
+**P2/P4/P5: not reachable** — they depend on P1's pixel path. They are
+re-scoped below to candidate B's container runtime.
 
-## 5. License register (provisional, pinned at probe time)
+**Verdict: candidate A rejected. Candidate B (isolated container running
+open-source converters) is selected as presumptive; candidate C
+(self-hosted sidecar) is the fallback if Containers pricing fails P6.**
+
+Candidate B's design shape for the pipeline (to be proven by milestone 2–3
+tests): a converter container claims a job lease from an authenticated Worker
+API, renders pages locally (`pdftoppm` from poppler for PDF; LibreOffice for
+Office formats), and pushes every page through a Worker validation endpoint
+that owns the trusted re-encode/bounds checks and the only R2 write path — the
+container never receives storage credentials. The Worker-side lease/publish
+protocol from §5 is unchanged by which runtime executes the conversion.
+
+## 5. License register (provisional, pinned at image-build time)
 
 | Component | License | Notes |
 | --- | --- | --- |
-| `pdfjs-dist` | Apache-2.0 | Version pinned at probe; transitive deps reviewed then |
-| LibreOffice (candidate B) | MPL-2.0 | Only if the Office milestone proceeds |
-| Liberation/Carlito fonts (candidate B) | SIL OFL / GPL+exception | Metric-substitution fidelity must be fixture-tested |
+| `poppler-utils` (`pdftoppm`) | GPL-2.0 | Unmodified binary invoked server-side inside the isolated container; not redistributed or linked into the application. Fidelity and license reviewed again at image pin |
+| LibreOffice (Office formats) | MPL-2.0 | Only when the PPTX/DOCX milestone proceeds |
+| Liberation/Carlito fonts (container) | SIL OFL / GPL+exception | Metric-substitution fidelity must be fixture-tested |
