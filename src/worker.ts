@@ -139,6 +139,14 @@ export interface Env {
   OPERATOR_EMAILS?: string;
   /** Comma-separated admin allowlist for the /admin surface. Unset disables the surface. */
   ADMIN_EMAILS?: string;
+  /**
+   * Embedded-documents surface mode (spec/EMBEDDED_DOCUMENTS_SPEC.md §10,
+   * milestone 0): 'off' hides the surface entirely, 'read-only' is the kill
+   * switch (reads continue, uploads/conversions/placement stop), 'on' opens
+   * everything. Parsed by src/lib/documents/documentsFlag.ts; anything
+   * unrecognised parses as 'off' — fail closed.
+   */
+  EMBEDDED_DOCUMENTS?: string;
 }
 
 // Room ids cannot be enumerated at build time, so the static export contains a
