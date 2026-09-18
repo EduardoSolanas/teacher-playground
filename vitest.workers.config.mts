@@ -27,6 +27,10 @@ export default defineConfig({
             TUTOR_ACCOUNT_CAP: '10000',
             OPERATOR_EMAILS: 'ops@example.test',
             ADMIN_EMAILS: 'admin@example.test',
+            // Embedded-documents surface (milestone 2). Tests for the off and
+            // read-only modes override this binding per test and restore it,
+            // the way the admin tests override ADMIN_EMAILS.
+            EMBEDDED_DOCUMENTS: 'on',
             STRIPE_API_BASE: 'https://stripe.invalid',
             STRIPE_SECRET_KEY: 'sk_test_worker_binding',
             STRIPE_WEBHOOK_SECRET: 'whsec_worker_binding',

@@ -18,7 +18,11 @@ describe('workerd canvas surface probe (spike tripwire)', () => {
     expect(typeof g.createImageBitmap).toBe('undefined');
     if (typeof g.OffscreenCanvas === 'function') {
       // A shipped canvas surface re-opens the spike; make the failure loud.
-      const canvas = new (g.OffscreenCanvas as new (w: number, h: number) => OffscreenCanvas)(10, 10);
+      // Typed structurally: the worker tsconfig has no OffscreenCanvas lib type.
+      const Ctor = g.OffscreenCanvas as new (w: number, h: number) => {
+        getContext(kind: string): unknown;
+      };
+      const canvas = new Ctor(10, 10);
       expect(canvas.getContext('2d')).toBeNull();
     }
   });
