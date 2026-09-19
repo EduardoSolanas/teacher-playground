@@ -78,3 +78,30 @@ Assignment and status index for `STORAGE_OPTIMISATIONS.md`, which is the evidenc
 - Security headers, authorization tests, dependency audits, secret scanning, R2 cleanup paths, and server document persistence are substantial existing protections. Improve specific gaps; do not replace the architecture wholesale.
 
 These are source-confirmed observations, not a claim that every edge case or deployed version is verified.
+
+## Security findings and performance queue - 2026-09-16 (TypeSafe-assisted review)
+
+Provenance: candidates were retrieved by code inspection, then judged by the
+TypeSafe System One model (`jev-1.13.0`, agent skill `typesafe-ai`, key in the
+`TYPESAFE_API_KEY` user environment variable) for exploitability/severity
+(C-series) or impact/effort/worth-now (S-series), and then independently
+verified against the actual code by the orchestrator. TypeSafe output is
+decision support, never evidence. Two deliberate negative controls (SEC-C3,
+SEC-C4) were flagged as candidates and verified clean; they are kept to show
+the pipeline discriminates. Per the file's rules: one ID, one verified change.
+
+| ID | Area | Finding | Evidence | Recommended action | Status | Effort |
+| --- | --- | --- | --- | --- | --- | --- |
+| SEC-C1 | Rate limiting | `POST /api/whiteboard/room/:id/documents` accepts 25 MiB binary uploads with **no rate limiter**, unlike scene-write/presence/room-create. Owner-only and quota-capped (250 MiB/room), but request volume and CPU are unthrottled. TypeSafe: exploitable 0.83, severity 2.8/4. Orchestrator: confirmed. | dispatch `src/worker.ts:3831` calls `documentsUploadRoute` with no limiter; limiter patterns at `src/worker.ts:261-322` | Add a documents-upload limiter mirroring the scene-write pattern; red test: `worker.documents.workers.test.ts` throttles after the configured burst | Open | S |
+| SEC-C2 | Upload robustness | Content-Length is validated, then the **whole body is materialized** via `request.arrayBuffer()` before the real byte-cap check; a lying header can buffer oversized input into the 128 MB isolate until the runtime aborts. Nothing persists before the cap. TypeSafe: severity 3.0; orchestrator rates it hardening (1), availability blip only. | `src/worker.ts:2098-2104` | Enforce the cap while reading (bounded reader) or accept the runtime limit and document the choice | Open | S |
+| SEC-C3 | Negative control (clean) | Parameterized-SQL `${table}` interpolation — the table name iterates the hard-coded `['room_presence','waiting_peers']` array, never user input. TypeSafe: exploitable 0.10. | `src/lib/whiteboard/membership.ts:427,442` | None. Recorded as checked evidence. | Closed (clean) | — |
+| SEC-C4 | Negative control (clean) | Open redirect via `/auth/access/logout?redirect=` — `safeRedirectPath` refuses absolute/protocol-relative/backslash/traversal targets; tested including `https://evil.example/steal`. TypeSafe: exploitable 0.13. | `src/lib/access/accessLogoutUrl.ts` + tests | None. Recorded as checked evidence. | Closed (clean) | — |
+| PERF-S1 | Size / load | Dynamically import the LiveKit SDK + A/V UI so the ~1.8 MB chunk loads only when a call is requested, not on every room open. TypeSafe: impact 2.4/4, effort 1.4/4, worth-now 0.69. Orchestrator: confirmed best value-per-effort. | `RoomClient.tsx` static imports; `.next` chunk listing | Red/green dynamic import + class-contract test; AGENTS.md UX gate on room-open at 390x844 | Open | M |
+| PERF-S2 | Size / load | Split the 2.9 MB Excalidraw fork chunk (per-tool dynamic imports, deferred non-core pieces). TypeSafe: impact 2.7/4, effort 2.4/4, worth-now 0.61. | `.next` chunk listing | Fold into the next pinned fork release batch — pairs with embedded-documents milestone 5 fork work | Open | L |
+| PERF-S3 | Connectivity (rejected) | y-webrtc P2P board sync — **rejected by design**: board updates must keep flowing through the RoomDO, where authorization, persistence, snapshots and moderation live. TypeSafe concurred: impact 0.8/4, effort 3.7/4, worth-now 0.14. | spec/EMBEDDED_DOCUMENTS_SPEC.md §2 seam rationale | None — non-goal. Do not revisit without a security-design review | Closed (rejected) | — |
+| PERF-S4 | Connectivity | LiveKit ICE/TURN reachability audit for restrictive school/cellular networks; extend call-panel diagnostics only if gaps are found. LiveKit Cloud provides managed TURN; the per-participant connection-quality badge already ships. TypeSafe: impact 2.7/4, effort overstated by the model (audit is the real work). | `UX_IMPROVEMENTS.md` connection-quality row; `ywebrtcProvider.ts` | Run the audit on a restrictive network; file findings as new IDs if any | Open | S |
+| PERF-S5 | Latency | Preconnect/preload hints for the signaling websocket and LiveKit edge domains on the room page. TypeSafe: impact 1.4/4, effort 0.4/4, worth-now 0.65. | `ywebrtcProvider.ts` signaling path; room page head | Add the hints with a small structural test | Open | S |
+
+Suggested order: PERF-S5 + PERF-S1 in one session, SEC-C1 + SEC-C2 as the next
+security patch, PERF-S4's audit alongside, PERF-S2 batched with the next fork
+release.
