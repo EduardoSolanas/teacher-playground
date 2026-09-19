@@ -105,3 +105,23 @@ the pipeline discriminates. Per the file's rules: one ID, one verified change.
 Suggested order: PERF-S5 + PERF-S1 in one session, SEC-C1 + SEC-C2 as the next
 security patch, PERF-S4's audit alongside, PERF-S2 batched with the next fork
 release.
+
+## General improvements - 2026-09-16 (TypeSafe-assisted sweep, second pass)
+
+Same provenance rule as the section above: code inspection retrieves the
+facts, TypeSafe (`jev-1.13.0`) scores impact/effort/worth-now, the orchestrator
+verifies against the code before an ID is recorded. Facts checked this pass:
+no service worker / web-app manifest exists anywhere in `src/` or `public/`;
+CI already caches npm and Playwright browsers; SERVER_SIDE_BOARD_PLAN.md is a
+shipped-state record; backup policy is manual-only by its own description.
+
+| ID | Area | Finding | Evidence | Recommended action | Status | Effort |
+| --- | --- | --- | --- | --- | --- | --- |
+| BAK-01 | Durability | **No automated DO SQLite backup exists.** SECURITY_BACKUP_RESTORE.md documents a manual procedure and explicitly states no automated restore is implemented; the RPO therefore depends on the operator remembering to run it. TypeSafe: impact 2.6/4, effort 2.2/4, worth-now **0.84** (highest this pass). Orchestrator: confirmed — the top operational risk for a solo operator holding classroom data. | SECURITY_BACKUP_RESTORE.md header; no cron/workflow export in the repo | Scheduled export of RoomDO/IdentityDO state to R2 via cron route or GitHub workflow + one rehearsed restore test | Open | M |
+| OPS-01 | Observability | Internal errors go to DO console logs only (`logInternalRoomError`); a solo operator without a shell open sees nothing. TypeSafe: impact 2.1/4, effort 1.9/4, worth-now 0.76. | `src/lib/whiteboard/roomDb.ts` error paths; `logAuthEvent` is audit-only | Bounded error ring/table in RoomDO + IdentityDO surfaced as a recent-errors view on /admin (the page already exists) | Open | M |
+| OFF-01 | Offline / mobile | No service worker, manifest, or offline capability: a dropped school wifi or mobile connection takes the whole board away mid-lesson, though the sync-degraded notice exists for degraded sync. TypeSafe: impact 2.7/4, effort 2.3/4, worth-now 0.57 — the model defers it behind BAK-01/OPS-01 on effort/risk (service-worker cache staleness is a real foot-gun), and the orchestrator agrees. | grep: no `serviceWorker`/`manifest.json` in src/ or public/ | Cache the static shell + last snapshot read, install prompt, online-only writes with the existing degraded banner. Design note first: SW staleness is the known hazard | Deferred (after BAK-01/OPS-01) | M |
+| ADM-01 | Admin usability | /admin caps at the newest 200 accounts (43k+ in dev) with no pagination or display-name search. TypeSafe: impact 1.5/4, effort 1.6/4, worth-now 0.59. | `listAccountsForAdmin` cap; AdminUsersPanel | Cursor pagination + name search when production account volume makes the cap bite | Deferred | S |
+
+Updated suggested order for the whole queue: SEC-C1 + SEC-C2 security patch,
+then BAK-01, then OPS-01, then PERF-S5 + PERF-S1, then OFF-01/ADM-01 as
+capacity allows; PERF-S2 stays batched with the next fork release.
