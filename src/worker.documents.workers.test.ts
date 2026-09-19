@@ -5,6 +5,7 @@ import type { RoomDO } from './do/RoomDO';
 import { MAX_BOARD_FILE_BYTES, MAX_ROOM_FILE_BYTES_TOTAL } from './lib/whiteboard/boardFileRoutes';
 import { getFileBytesTotal, setFileBytes } from './lib/whiteboard/roomSchema';
 import { authenticatedFetch, bootstrapLocalSession, type LocalAuthSession } from './test/workerAuth';
+import { DOCUMENTS_UPLOAD_RATE_MAX } from './lib/worker/rateLimits';
 
 const BASE = 'https://example.com';
 
@@ -114,6 +115,79 @@ function storedOriginalCount(roomId: string): Promise<number> {
 }
 
 describe('POST /api/whiteboard/room/:roomId/documents (milestone 2)', () => {
+  it('throttles document uploads after the configured burst with 429 and Retry-After (SEC-C1)', async () => {
+    const owner = await bootstrapLocalSession(`doc-rate-owner-${crypto.randomUUID()}`);
+    const roomId = `doc-rate-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+
+    // local-test only applies limiters when this header is set, so ordinary
+    // tests never trip them by accident (mirror of the scene-write test).
+    const uploadStrict = (index: number) => authenticatedFetch(
+      `/api/whiteboard/room/${roomId}/documents?idempotencyKey=rate-${index}`,
+      owner,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/pdf', 'x-test-strict-rate-limit': '1' },
+        body: pdfBytes(1024),
+      },
+    );
+
+    for (let index = 0; index < DOCUMENTS_UPLOAD_RATE_MAX; index += 1) {
+      const response = await uploadStrict(index);
+      expect(response.status, `upload ${index}`).toBe(201);
+    }
+
+    const limited = await uploadStrict(DOCUMENTS_UPLOAD_RATE_MAX);
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('cache-control')).toBe('no-store');
+    const retryAfter = limited.headers.get('retry-after');
+    expect(retryAfter).not.toBeNull();
+    expect(Number(retryAfter)).toBeGreaterThan(0);
+    expect(await limited.json()).toEqual({ error: 'Too many requests' });
+
+    // The limiter is per-route: the same account's other endpoints still work.
+    expect((await authenticatedFetch('/auth/session/current', owner)).status).toBe(200);
+  });
+
+  it('caps a lying endless body with 413 instead of buffering it forever (SEC-C2)', async () => {
+    const owner = await bootstrapLocalSession(`doc-cap-owner-${crypto.randomUUID()}`);
+    const roomId = `doc-cap-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId, owner);
+
+    // Forged Content-Length (workerd preserves it on outgoing Requests), real
+    // stream that passes the declared cap and then never closes: the old
+    // arrayBuffer() path would hang on this forever. The bounded reader must
+    // stop at the cap, cancel the stream, and answer 413.
+    const chunk = pdfBytes(1 << 20); // 1 MiB
+    let sent = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent <= MAX_BOARD_FILE_BYTES) {
+          controller.enqueue(chunk);
+          sent += chunk.byteLength;
+        }
+        // Never close.
+      },
+    });
+    const request = new Request(`${BASE}/api/whiteboard/room/${roomId}/documents`, {
+      method: 'POST',
+      body: endless,
+      headers: {
+        Origin: BASE,
+        'content-type': 'application/pdf',
+        'content-length': '100',
+        'Cf-Access-Jwt-Assertion': owner.token,
+        Cookie: owner.cookie,
+      },
+      // @ts-expect-error streaming bodies need duplex in some runtimes
+      duplex: 'half',
+    });
+    const response = await SELF.fetch(request);
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({ error: 'File too large' });
+    expect(await storedOriginalCount(roomId)).toBe(0);
+  });
+
   it('answers 404 to everyone while the surface is off', async () => {
     const owner = await bootstrapLocalSession(`doc-off-owner-${crypto.randomUUID()}`);
     const outsider = await bootstrapLocalSession(`doc-off-outsider-${crypto.randomUUID()}`);

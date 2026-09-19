@@ -35,6 +35,16 @@ export const PRESENCE_POST_RATE_MAX = 90;
 export const SCENE_WRITE_RATE_MAX = 120;
 
 /**
+ * Document uploads per account per minute (milestone 2 hardening, SEC-C1).
+ *
+ * Uploads are 25 MiB binaries buffered in-isolate for digesting, so unlike a
+ * JSON scene write each request has real CPU and bandwidth cost. A lesson adds
+ * a handful of documents at most; ten per minute leaves generous headroom for
+ * retries while bounding what one owner account can push through.
+ */
+export const DOCUMENTS_UPLOAD_RATE_MAX = 10;
+
+/**
  * Stripe webhook deliveries per client IP per minute (SEC-A21).
  *
  * Stripe sends from a small published set of addresses and retries a 429 with

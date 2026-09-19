@@ -40,6 +40,7 @@ import {
   isOriginGuardedPath,
   readBoundedJsonBody,
   readBoundedText,
+  readBoundedBytes,
   isPublicPath,
   isValidRoomId,
   MARKETING_PAGES,
@@ -63,6 +64,7 @@ import {
   buildR2ObjectKey,
 } from './lib/whiteboard/boardFileRoutes';
 import { parseDocumentsMode, documentsAllowsWrites, documentsSurfaceVisible } from './lib/documents/documentsFlag';
+import { DOCUMENTS_UPLOAD_RATE_MAX } from './lib/worker/rateLimits';
 import {
   detectDocumentMediaType,
   documentContentType,
@@ -326,6 +328,22 @@ function sceneWriteLimiterFor(env: Env) {
   return env.ENVIRONMENT === 'local-test'
     ? strictLocalTestSceneWriteLimiter
     : productionSceneWriteLimiter;
+}
+
+const DOCUMENTS_UPLOAD_RATE_WINDOW_MS = RATE_WINDOW_MS;
+const productionDocumentsUploadLimiter = createRateLimiter({
+  windowMs: DOCUMENTS_UPLOAD_RATE_WINDOW_MS,
+  max: DOCUMENTS_UPLOAD_RATE_MAX,
+});
+const strictLocalTestDocumentsUploadLimiter = createRateLimiter({
+  windowMs: DOCUMENTS_UPLOAD_RATE_WINDOW_MS,
+  max: DOCUMENTS_UPLOAD_RATE_MAX,
+});
+
+function documentsUploadLimiterFor(env: Env) {
+  return env.ENVIRONMENT === 'local-test'
+    ? strictLocalTestDocumentsUploadLimiter
+    : productionDocumentsUploadLimiter;
 }
 
 /** Guest join POSTs per client IP within a one-minute window. */
@@ -2054,6 +2072,13 @@ async function documentsUploadRoute(
     return withSecurityHeaders(new Response('Invalid room id', { status: 400 }));
   }
 
+  // SEC-C1: uploads are 25 MiB binaries — the one write surface without a
+  // limiter until now. Keyed per verified account, same window as the others.
+  if (session) {
+    const limit = documentsUploadLimiterFor(env).take(session.accountId);
+    if (!limit.ok) return rateLimited(env, limit.retryAfterMs);
+  }
+
   const contentLength = request.headers.get('content-length');
   if (!contentLength || isNaN(Number(contentLength))) {
     return withSecurityHeaders(new Response('Content-Length required', { status: 411 }));
@@ -2092,16 +2117,18 @@ async function documentsUploadRoute(
     return withSecurityHeaders(Response.json({ error: 'Invalid request' }, { status: 400 }));
   }
 
-  // Buffered, not streamed: the digest and the magic-byte check need the
-  // whole original, and the per-object cap bounds what a lying content-length
-  // can push into the isolate.
-  const bytes = new Uint8Array(await request.arrayBuffer());
-  if (bytes.byteLength > MAX_BOARD_FILE_BYTES) {
+  // The digest and the magic-byte check need the whole original, but SEC-C2:
+  // a forged Content-Length must not buffer an oversized body into the
+  // isolate. The bounded reader stops pulling at the cap, cancels the stream,
+  // and answers 413 — nothing oversized is ever materialized.
+  const bounded = await readBoundedBytes(request, MAX_BOARD_FILE_BYTES);
+  if (!bounded.ok) {
     return withSecurityHeaders(Response.json(
       { error: 'File too large' },
-      { status: 413, headers: { 'Cache-Control': 'no-store' } },
+      { status: bounded.status, headers: { 'Cache-Control': 'no-store' } },
     ));
   }
+  const bytes = bounded.bytes;
   const mediaType = detectDocumentMediaType(bytes);
   if (mediaType === null) {
     return withSecurityHeaders(Response.json(
