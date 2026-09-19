@@ -64,6 +64,7 @@ import {
   buildR2ObjectKey,
 } from './lib/whiteboard/boardFileRoutes';
 import { parseDocumentsMode, documentsAllowsWrites, documentsSurfaceVisible } from './lib/documents/documentsFlag';
+import { runBackupCycle } from './lib/backup/backupCycle';
 import { DOCUMENTS_UPLOAD_RATE_MAX } from './lib/worker/rateLimits';
 import {
   detectDocumentMediaType,
@@ -158,6 +159,14 @@ export interface Env {
    * unrecognised parses as 'off' — fail closed.
    */
   EMBEDDED_DOCUMENTS?: string;
+  /**
+   * Scheduled DO SQLite backup cycle (BAK-01). 'off'/'false'/'0' stops the
+   * daily export to BOARD_FILES; unset, 'on'/'true'/'1' and anything else run
+   * it. Parsed by src/lib/backup/backup.ts, which fails open deliberately:
+   * a mistyped value costs R2 storage, while failing closed would silently
+   * leave classroom data with no application-managed export.
+   */
+  BACKUPS_ENABLED?: string;
 }
 
 // Room ids cannot be enumerated at build time, so the static export contains a
@@ -3904,6 +3913,13 @@ const worker = {
       if (subpath === '/guest-verify' || subpath.startsWith('/guest-verify/')) {
         return withSecurityHeaders(new Response(null, { status: 404 }));
       }
+      // Refuse the internal backup-export route from the public API (BAK-01).
+      // The cron cycle reaches the room object through the namespace binding,
+      // so the only thing this refusal blocks is a browser or bot pulling a
+      // full row dump of the room's SQLite state through the front door.
+      if (subpath === '/backup' || subpath.startsWith('/backup/')) {
+        return withSecurityHeaders(new Response(null, { status: 404 }));
+      }
       if (
         request.method === 'DELETE'
         && subpath === ''
@@ -4039,6 +4055,8 @@ const worker = {
     _ctx: ExecutionContext,
   ): Promise<void> {
     await runBillingReconcile(env, controller.scheduledTime);
+    // BAK-01: never throws — per-target failures are logged and skipped.
+    await runBackupCycle(env, controller.scheduledTime);
   },
 };
 

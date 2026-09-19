@@ -5,12 +5,16 @@ import type { RoomDatabase } from '../lib/whiteboard/db';
 import {
   IdentityInputError,
   MAX_AUTHORIZATION_BATCH,
+  applyBackupRegistrySchema,
   applyIdentitySchema,
   createGuestAccount,
   isTutorCapReached,
+  listDueBackupTargets,
   listOwnedRooms,
+  markBackupDone,
   readAccountAuthorizations,
   recordOwnedRoom,
+  registerBackupTarget,
   removeOwnedRoom,
   ownedRoomExists,
   resolveAccountForSubject,
@@ -18,6 +22,7 @@ import {
   setPreferredDisplayName,
   touchOwnedRoom,
   listAccountsForAdmin,
+  type BackupDoClass,
 } from '../lib/identity/identityStore';
 import {
   SessionUnauthorizedError,
@@ -164,6 +169,9 @@ const COMPANY_OWNER_PATH = '/companies/owner';
 const OPERATOR_INVOICE_APPROVAL_PATH = '/operator/invoice-approval';
 const OPERATOR_INVOICE_SETTLE_PATH = '/operator/invoice-approval/settle';
 const OPERATOR_DISPUTE_REVIEW_PATH = '/operator/disputes/review';
+const BACKUP_REGISTER_PATH = '/backup/register';
+const BACKUP_DUE_PATH = '/backup/due';
+const BACKUP_MARK_DONE_PATH = '/backup/mark-done';
 const STRIPE_SUBSCRIPTION_ID_PATTERN = /^[A-Za-z0-9_]{1,255}$/;
 const BILLING_PAYLOAD_HASH_PATTERN = /^[0-9a-f]{64}$/;
 const OPERATION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -953,6 +961,58 @@ function isCompanyMemberBody(value: unknown): value is { accountId: string } {
   );
 }
 
+function isBackupDoClass(value: unknown): value is BackupDoClass {
+  return value === 'rooms' || value === 'identity';
+}
+
+function isBackupDoId(doClass: BackupDoClass, doId: unknown): doId is string {
+  if (typeof doId !== 'string' || doId.length < 1 || doId.length > 128) return false;
+  return doClass !== 'rooms' || isValidRoomId(doId);
+}
+
+function isBackupTimestamp(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/** RoomDO activity registration: which object was active, and when. */
+function isBackupRegisterBody(value: unknown): value is {
+  doClass: BackupDoClass;
+  doId: string;
+  lastActivityAt: number;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 3 &&
+    isBackupDoClass(body.doClass) &&
+    isBackupDoId(body.doClass, body.doId) &&
+    isBackupTimestamp(body.lastActivityAt)
+  );
+}
+
+/** The cron cycle asks which targets need a backup as of `now`. */
+function isBackupDueBody(value: unknown): value is { now: number } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  return Object.keys(body).length === 1 && isBackupTimestamp(body.now);
+}
+
+/** The cron cycle records a completed export for one target. */
+function isBackupMarkDoneBody(value: unknown): value is {
+  doClass: BackupDoClass;
+  doId: string;
+  at: number;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  return (
+    Object.keys(body).length === 3 &&
+    isBackupDoClass(body.doClass) &&
+    isBackupDoId(body.doClass, body.doId) &&
+    isBackupTimestamp(body.at)
+  );
+}
+
 interface BillingSystemSeatSettleBody {
   kind: 'seat-change';
   companyId: string;
@@ -1173,6 +1233,7 @@ export class IdentityDO extends DurableObject {
     this.db = new DODatabase(ctx.storage.sql, ctx.storage);
     applyIdentitySchema(this.db);
     applyBillingRateLimitSchema(this.db);
+    applyBackupRegistrySchema(this.db);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -2756,6 +2817,39 @@ export class IdentityDO extends DurableObject {
         return Response.json({ error: 'Forbidden' }, { status: 403, headers: noStore() });
       }
       return Response.json({ error: 'Not found' }, { status: 404, headers: noStore() });
+    }
+
+    /*
+     * Internal backup registry (BAK-01). Same trust model as the room-object
+     * routes above: the Worker never forwards /backup/*, so these are reachable
+     * only DO-to-DO — RoomDO registers activity, the Worker's cron cycle reads
+     * the due list and records completed exports. Every field is validated
+     * before it reaches SQL.
+     */
+    if (url.pathname === BACKUP_REGISTER_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readExactJson(request, isBackupRegisterBody);
+      if ('response' in parsed) return parsed.response;
+      registerBackupTarget(this.db, parsed.body);
+      return Response.json({ ok: true }, { headers: noStore() });
+    }
+
+    if (url.pathname === BACKUP_DUE_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readExactJson(request, isBackupDueBody);
+      if ('response' in parsed) return parsed.response;
+      return Response.json(
+        { due: listDueBackupTargets(this.db, parsed.body.now) },
+        { headers: noStore() },
+      );
+    }
+
+    if (url.pathname === BACKUP_MARK_DONE_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readExactJson(request, isBackupMarkDoneBody);
+      if ('response' in parsed) return parsed.response;
+      markBackupDone(this.db, parsed.body);
+      return Response.json({ ok: true }, { headers: noStore() });
     }
 
     return Response.json({ error: 'Not found' }, { status: 404 });

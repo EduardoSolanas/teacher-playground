@@ -1,6 +1,7 @@
 import type { RoomDatabase } from '../whiteboard/db';
 import { isValidRoomId } from '../worker/requestGuard';
 import { MAX_NAME_LENGTH, stripAsciiControls } from '../whiteboard/requestSchemas';
+import { isBackupDue } from '../backup/backup';
 
 const MAX_SUBJECT_KEY_LENGTH = 2048;
 
@@ -1112,4 +1113,144 @@ export function setPreferredDisplayName(
     .run(cleaned, now, accountId).changes;
   if (updated !== 1) throw new IdentityInputError('account not found');
   return cleaned;
+}
+
+/*
+ * Backup registry (BAK-01).
+ *
+ * The identity object is the one shared, always-warm authority, so it holds the
+ * index of which Durable Objects still need an application-managed export.
+ * Room objects register themselves through the same internal-request idiom as
+ * the owned-room touch: the routes below are reachable only DO-to-DO (the
+ * Worker never forwards /backup/*), and every value is validated before it
+ * reaches SQL.
+ */
+
+export type BackupDoClass = 'rooms' | 'identity';
+
+export interface BackupRegistryRow {
+  doClass: BackupDoClass;
+  doId: string;
+  lastBackupAt: number | null;
+  lastActivityAt: number | null;
+}
+
+export interface BackupDueTarget {
+  doClass: BackupDoClass;
+  doId: string;
+}
+
+/** Upper bound so one cron tick can never pull an unbounded due list. */
+export const MAX_BACKUP_DUE_TARGETS = 50;
+
+/** Additive, idempotent: the registry table joins the identity schema. */
+export function applyBackupRegistrySchema(db: RoomDatabase): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS backup_registry (
+      do_class TEXT NOT NULL,
+      do_id TEXT NOT NULL,
+      last_backup_at INTEGER,
+      last_activity_at INTEGER,
+      PRIMARY KEY (do_class, do_id)
+    )
+  `);
+}
+
+function validateBackupTarget(doClass: BackupDoClass, doId: string): void {
+  if (doClass !== 'rooms' && doClass !== 'identity') {
+    throw new IdentityInputError('doClass must be "rooms" or "identity"');
+  }
+  if (typeof doId !== 'string' || doId.length < 1 || doId.length > 128) {
+    throw new IdentityInputError('doId must be a string of 1..128 characters');
+  }
+  if (doClass === 'rooms') requireValidRoomId(doId);
+}
+
+function validateBackupTimestamp(value: number, name: string): void {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new IdentityInputError(`${name} must be a non-negative integer`);
+  }
+}
+
+/**
+ * Creates or refreshes a registry row for one active object. The activity
+ * stamp only ever moves forward (a late-arriving older stamp must not rewind
+ * it), and a backup already recorded stays recorded: registering activity is
+ * never evidence that a backup happened or stopped being needed.
+ */
+export function registerBackupTarget(
+  db: RoomDatabase,
+  input: { doClass: BackupDoClass; doId: string; lastActivityAt: number },
+): void {
+  validateBackupTarget(input.doClass, input.doId);
+  validateBackupTimestamp(input.lastActivityAt, 'lastActivityAt');
+  db.prepare(
+    `INSERT INTO backup_registry (do_class, do_id, last_backup_at, last_activity_at)
+     VALUES (?, ?, NULL, ?)
+     ON CONFLICT(do_class, do_id) DO UPDATE SET
+       last_activity_at = MAX(COALESCE(backup_registry.last_activity_at, 0), excluded.last_activity_at)`,
+  ).run(input.doClass, input.doId, input.lastActivityAt);
+}
+
+/**
+ * Records a completed backup. A row that vanished between the due read and
+ * this call is recreated, so a finished export is never lost to a race.
+ */
+export function markBackupDone(
+  db: RoomDatabase,
+  input: { doClass: BackupDoClass; doId: string; at: number },
+): void {
+  validateBackupTarget(input.doClass, input.doId);
+  validateBackupTimestamp(input.at, 'at');
+  db.prepare(
+    `INSERT INTO backup_registry (do_class, do_id, last_backup_at, last_activity_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(do_class, do_id) DO UPDATE SET
+       last_backup_at = excluded.last_backup_at`,
+  ).run(input.doClass, input.doId, input.at, input.at);
+}
+
+/**
+ * The targets that need a backup now, oldest backup first so a truncated
+ * cycle always spends its budget on the most neglected objects. Due semantics
+ * come from the single definition in isBackupDue, read in JS so the SQL and
+ * the unit-testable rule cannot drift.
+ */
+export function listDueBackupTargets(
+  db: RoomDatabase,
+  now: number,
+  options: { limit?: number; cadenceMs?: number; activityWindowMs?: number } = {},
+): Array<{ doClass: BackupDoClass; doId: string }> {
+  const limit = options.limit ?? MAX_BACKUP_DUE_TARGETS;
+  const rows = db
+    .prepare(
+      `SELECT do_class AS doClass, do_id AS doId,
+              last_backup_at AS lastBackupAt, last_activity_at AS lastActivityAt
+       FROM backup_registry
+       ORDER BY COALESCE(last_backup_at, 0) ASC, do_class ASC, do_id ASC`,
+    )
+    .all() as BackupRegistryRow[];
+
+  const due: BackupDueTarget[] = [];
+  for (const row of rows) {
+    if (due.length >= limit) break;
+    // Stryker disable next-line ConditionalExpression -- a NULL activity stamp is unknown, and treating it as activity 0 (Number(null)) can only read as ancient, which isBackupDue already refuses; both paths skip the row, so the mutant is equivalent.
+    if (row.lastActivityAt === null) continue;
+    if (
+      !isBackupDue(
+        // Stryker disable next-line ConditionalExpression -- Number(null) is 0, an ancient backup, which isBackupDue treats exactly like null (due), so the ternary's condition mutant cannot change any outcome.
+        row.lastBackupAt === null ? null : Number(row.lastBackupAt),
+        Number(row.lastActivityAt),
+        now,
+        {
+          windowMs: options.cadenceMs,
+          activityWindowMs: options.activityWindowMs,
+        },
+      )
+    ) {
+      continue;
+    }
+    due.push({ doClass: row.doClass, doId: row.doId });
+  }
+  return due;
 }

@@ -96,9 +96,15 @@ describe('production deployment policy', () => {
     const triggers = /^\[env\.prod\.triggers\]\s*\r?\ncrons\s*=\s*\[([^\]]*)\]/m.exec(wranglerConfig);
     expect(triggers, '[env.prod.triggers] with crons').not.toBeNull();
     const crons = [...(triggers?.[1] ?? '').matchAll(/"([^"]+)"/g)].map((match) => match[1]);
-    expect(crons).toHaveLength(1);
+    // The billing reconcile and the BAK-01 backup cycle share the scheduled
+    // handler; both schedules must be deployed for both to run.
+    expect(crons).toHaveLength(2);
+    expect(crons).toContain('23 4 * * *');
+    expect(crons).toContain('0 3 * * *');
     // Once a day, at a fixed minute and hour.
-    expect(crons[0]).toMatch(/^\d{1,2} \d{1,2} \* \* \*$/);
+    for (const cron of crons) {
+      expect(cron).toMatch(/^\d{1,2} \d{1,2} \* \* \*$/);
+    }
   });
 
   it('keeps local context omission confined to the dedicated local config', () => {

@@ -2752,3 +2752,141 @@ describe('IdentityDO /accounts/list (admin surface defense in depth)', () => {
     });
   });
 });
+
+/*
+ * Backup registry routes (BAK-01). These are internal DO-to-DO routes in the
+ * same trust model as /accounts/rooms/touch: the Worker never forwards
+ * /backup/*, so the only callers are RoomDO (register) and the Worker's cron
+ * cycle (due, mark-done).
+ */
+describe('backup registry routes', () => {
+  const REGISTER_URL = 'https://identity/backup/register';
+  const DUE_URL = 'https://identity/backup/due';
+  const MARK_DONE_URL = 'https://identity/backup/mark-done';
+
+  function post(path: string, body: unknown): Promise<Response> {
+    return identityStub().fetch(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  function register(doId: string, lastActivityAt = Date.now()): Promise<Response> {
+    return post(REGISTER_URL, { doClass: 'rooms', doId, lastActivityAt });
+  }
+
+  function due(now = Date.now()): Promise<Array<{ doClass: string; doId: string }>> {
+    return post(DUE_URL, { now }).then(
+      (response) => response.json() as Promise<{ due: Array<{ doClass: string; doId: string }> }>,
+    ).then((body) => body.due);
+  }
+
+  it('registers a room target that then appears on the due list', async () => {
+    const roomId = `backup-reg-${crypto.randomUUID().slice(0, 8)}`;
+    const registered = await register(roomId);
+    expect(registered.status).toBe(200);
+
+    const dueList = await due();
+    expect(dueList).toContainEqual({ doClass: 'rooms', doId: roomId });
+  });
+
+  it('excludes a target once the cycle marks it done', async () => {
+    const roomId = `backup-done-${crypto.randomUUID().slice(0, 8)}`;
+    await register(roomId);
+    expect(await due()).toContainEqual({ doClass: 'rooms', doId: roomId });
+
+    const marked = await post(MARK_DONE_URL, {
+      doClass: 'rooms',
+      doId: roomId,
+      at: Date.now(),
+    });
+    expect(marked.status).toBe(200);
+    expect(await due()).not.toContainEqual({ doClass: 'rooms', doId: roomId });
+  });
+
+  it('keeps a fresh backup authoritative when activity registers afterwards', async () => {
+    const roomId = `backup-refresh-${crypto.randomUUID().slice(0, 8)}`;
+    await register(roomId, Date.now() - 60_000);
+    await post(MARK_DONE_URL, { doClass: 'rooms', doId: roomId, at: Date.now() - 60_000 });
+    expect(await due()).not.toContainEqual({ doClass: 'rooms', doId: roomId });
+
+    // Registering later activity keeps last_backup_at untouched: a backup made
+    // a minute ago covers the room for the whole cadence, so fresh activity
+    // must not force a redundant export.
+    await register(roomId);
+    expect(await due()).not.toContainEqual({ doClass: 'rooms', doId: roomId });
+  });
+
+  it('excludes targets idle beyond the retention window', async () => {
+    const roomId = `backup-idle-${crypto.randomUUID().slice(0, 8)}`;
+    const stale = Date.now() - 91 * 24 * 60 * 60 * 1000;
+    await post(REGISTER_URL, { doClass: 'rooms', doId: roomId, lastActivityAt: stale });
+    expect(await due()).not.toContainEqual({ doClass: 'rooms', doId: roomId });
+  });
+
+  it('caps the due list at 50 targets', async () => {
+    await runInDurableObject(identityStub(), (instance: IdentityDO) => {
+      const insert = instance.db.prepare(
+        `INSERT OR REPLACE INTO backup_registry (do_class, do_id, last_backup_at, last_activity_at)
+         VALUES ('rooms', ?, NULL, ?)`,
+      );
+      const now = Date.now();
+      for (let index = 0; index < 52; index += 1) {
+        insert.run(`backup-cap-${crypto.randomUUID().slice(0, 8)}-${index}`, now);
+      }
+    });
+    const dueList = await due();
+    expect(dueList.length).toBe(50);
+  });
+
+  it('accepts the identity class with an opaque object id', async () => {
+    const registered = await post(REGISTER_URL, {
+      doClass: 'identity',
+      doId: 'global',
+      lastActivityAt: Date.now(),
+    });
+    expect(registered.status).toBe(200);
+    expect(await due()).toContainEqual({ doClass: 'identity', doId: 'global' });
+  });
+
+  it('refuses wrong methods and malformed bodies', async () => {
+    const wrongMethod = await identityStub().fetch(REGISTER_URL, { method: 'GET' });
+    expect(wrongMethod.status).toBe(405);
+
+    for (const body of [
+      {},
+      { doClass: 'rooms', doId: 'room-1' },
+      { doClass: 'rooms', doId: '../etc/passwd', lastActivityAt: Date.now() },
+      { doClass: 'files', doId: 'room-1', lastActivityAt: Date.now() },
+      { doClass: 'rooms', doId: 'room-1', lastActivityAt: 'now' },
+      { doClass: 'rooms', doId: 'room-1', lastActivityAt: Date.now(), extra: true },
+    ]) {
+      const response = await post(REGISTER_URL, body);
+      expect(response.status, JSON.stringify(body)).toBe(400);
+    }
+
+    for (const body of [null, {}, { now: 'soon' }, { now: Date.now(), extra: 1 }]) {
+      const response = await post(DUE_URL, body);
+      expect(response.status, JSON.stringify(body)).toBe(400);
+    }
+
+    for (const body of [
+      { doClass: 'rooms', doId: 'room-1' },
+      { doClass: 'rooms', doId: '../etc/passwd', at: Date.now() },
+      { doClass: 'rooms', doId: 'room-1', at: 'now' },
+    ]) {
+      const response = await post(MARK_DONE_URL, body);
+      expect(response.status, JSON.stringify(body)).toBe(400);
+    }
+  });
+
+  it('never exposes the registry routes through the public Worker', async () => {
+    const response = await SELF.fetch('https://example.com/api/internal/identity/backup/due', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ now: Date.now() }),
+    });
+    expect(response.status).toBe(404);
+  });
+});

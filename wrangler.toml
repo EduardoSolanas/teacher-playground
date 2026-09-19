@@ -32,6 +32,12 @@ preview_urls = false
 [observability]
 enabled = true
 
+# Daily application-managed DO SQLite export (BAK-01). Declared at the top
+# level per the pinned design; note that named environments do NOT inherit
+# triggers, so [env.prod.triggers] below carries the same schedule too.
+[triggers]
+crons = ["0 3 * * *"]
+
 # new_sqlite_classes (not new_classes) gives the Durable Object a
 # SQLite-backed storage backend, which is what DODatabase requires.
 #
@@ -130,8 +136,10 @@ binding = "BOARD_FILES"
 # webhook gets noticed (SEC-015). Triggers are not inherited from the top level,
 # so without this block production never runs the handler at all. 04:23 UTC,
 # outside UK lesson hours. With no subscriptions stored it reads nothing.
+# The 03:00 UTC entry is the BAK-01 backup cycle; the Worker's scheduled()
+# handler runs the reconcile and the backup export in that one invocation.
 [env.prod.triggers]
-crons = ["23 4 * * *"]
+crons = ["23 4 * * *", "0 3 * * *"]
 
 [env.prod.vars]
 ACCESS_ISSUER = "https://ha-smart-home.cloudflareaccess.com"

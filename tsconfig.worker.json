@@ -14,6 +14,8 @@
   "include": [
     "src/worker.ts",
     "src/do/**/*.ts",
+    "src/lib/backup/backup.ts",
+    "src/lib/backup/backupCycle.ts",
     "src/lib/whiteboard/doDatabase.ts",
     "src/lib/whiteboard/db.ts",
     "src/lib/whiteboard/roomSchema.ts",

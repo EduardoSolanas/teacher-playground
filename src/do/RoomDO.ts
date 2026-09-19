@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { DODatabase } from '../lib/whiteboard/doDatabase';
 import { applySchema, getGrantVersion, incrementGrantVersion, purgeExpiredRoomsAndTombstones, roomExists, getFileBytesTotal, addFileBytes } from '../lib/whiteboard/roomSchema';
+import { ROOM_BACKUP_TABLES, serializeBackup } from '../lib/backup/backup';
 import { MAX_BOARD_FILE_BYTES, MAX_ROOM_FILE_BYTES_TOTAL } from '../lib/whiteboard/boardFileRoutes';
 import {
   assertNotTombstoned,
@@ -80,6 +81,7 @@ import {
   SIGNALING_MAX_SOCKETS_PER_ACCOUNT,
   SIGNALING_MAX_SOCKETS_PER_ROOM,
   SIGNALING_RATE_WINDOW_MS,
+  isValidRoomId,
 } from '../lib/worker/requestGuard';
 import { SIGNALING_ALLOWED_TOPIC } from '../lib/worker/signalingPolicy';
 import { decideSignalingAction, SIGNALING_ABUSE_CEILING } from '../lib/worker/signalingBudget';
@@ -531,6 +533,29 @@ export class RoomDO extends DurableObject {
       const roomId = url.searchParams.get('roomId');
       if (!roomId) {
         return Response.json({ error: 'Missing roomId' }, { status: 400 });
+      }
+
+      /*
+       * Internal backup export (BAK-01). Called only by the Worker's cron
+       * cycle over the namespace binding — the public API refuses /backup/*
+       * subpaths before they are ever forwarded here, so this branch needs no
+       * room-level session check. It returns a full row dump of this room's
+       * SQLite state, which is exactly what must never reach a browser.
+       */
+      if (url.pathname === '/room/backup/export') {
+        if (request.method !== 'POST') {
+          return Response.json(
+            { error: 'Method not allowed' },
+            { status: 405, headers: { Allow: 'POST' } },
+          );
+        }
+        if (!isValidRoomId(roomId)) {
+          return Response.json({ error: 'Invalid roomId' }, { status: 400 });
+        }
+        return Response.json(
+          { dump: serializeBackup(this.db, ROOM_BACKUP_TABLES) },
+          { headers: { 'Cache-Control': 'no-store' } },
+        );
       }
 
       const segments = url.pathname.split('/').filter(Boolean);
@@ -2015,6 +2040,33 @@ export class RoomDO extends DurableObject {
       ));
       if (!response.ok) {
         console.error('identity account rooms touch failed', response.status);
+      }
+
+      /*
+       * Backup registry (BAK-01): the same touch is the room's declaration
+       * "this room was active at `now`", so the registry row is created or
+       * refreshed here rather than by a separate sweep. Best-effort like the
+       * touch itself — a missed registration only delays this room's first
+       * export until its next activity.
+       */
+      try {
+        const registered = await identity.fetch(new Request(
+          'https://identity/backup/register',
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              doClass: 'rooms',
+              doId: roomId,
+              lastActivityAt: now,
+            }),
+          },
+        ));
+        if (!registered.ok) {
+          console.error('identity backup register failed', registered.status);
+        }
+      } catch (error) {
+        console.error('identity backup register failed', error instanceof Error ? error.message : error);
       }
     } catch {
       console.error('identity account rooms touch failed');
