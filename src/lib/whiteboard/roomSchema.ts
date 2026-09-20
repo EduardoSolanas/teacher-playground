@@ -120,6 +120,21 @@ export function applySchema(db: RoomDatabase): void {
   `);
 
   /*
+   * Bounded error ring (OPS-01): the internal errors this object logs to the
+   * console are also kept here, so /admin can surface them to an operator
+   * without shell access. The insert path trims to ERROR_RING_CAP rows, so the
+   * table can never grow with a flooding failure.
+   */
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS error_ring (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      at INTEGER NOT NULL,
+      scope TEXT NOT NULL,
+      message TEXT NOT NULL
+    )
+  `);
+
+  /*
    * Embedded-document manifests and conversion jobs (milestone 2 of
    * spec/EMBEDDED_DOCUMENTS_SPEC.md). Additive and idempotent: both tables are
    * created when missing and never altered destructively. One manifest per
@@ -248,6 +263,38 @@ export const ROOM_SCOPED_TABLES = [
   'room_document_jobs',
   'rooms',
 ] as const;
+
+/** How many internal error rows the ring keeps; the insert trims to this. */
+export const ERROR_RING_CAP = 100;
+
+export interface RoomErrorRow {
+  at: number;
+  scope: string;
+  message: string;
+}
+
+/**
+ * Record one internal error in the bounded ring, dropping the oldest rows
+ * beyond {@link ERROR_RING_CAP}. Must be wrapped by the caller: the ring is a
+ * diagnostic, so its own failure must never worsen the operation that failed.
+ */
+export function recordRoomError(db: RoomDatabase, input: RoomErrorRow): void {
+  db.prepare(
+    `INSERT INTO error_ring (at, scope, message) VALUES (?, ?, ?)`,
+  ).run(input.at, input.scope, input.message);
+  db.prepare(
+    `DELETE FROM error_ring WHERE id NOT IN (
+       SELECT id FROM error_ring ORDER BY id DESC LIMIT ?
+     )`,
+  ).run(ERROR_RING_CAP);
+}
+
+/** The ring newest first, at most {@link ERROR_RING_CAP} rows. */
+export function listRoomErrors(db: RoomDatabase): RoomErrorRow[] {
+  return db
+    .prepare(`SELECT at, scope, message FROM error_ring ORDER BY id DESC LIMIT ?`)
+    .all(ERROR_RING_CAP) as RoomErrorRow[];
+}
 
 /** Deletes every room-scoped row in one SQLite transaction. */
 export function deleteRoomScopedData(db: RoomDatabase, roomId: string): void {

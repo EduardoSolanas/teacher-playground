@@ -328,7 +328,11 @@ describe('AdminUsersPanel account list', () => {
 
   it('recovers into the table when the first load throws and Retry succeeds', async () => {
     let attempts = 0;
-    const request: AjaxFetch = async () => {
+    const request: AjaxFetch = async (input) => {
+      // The panel also fetches the error rings; only the users path counts.
+      if (String(input) === '/api/admin/errors') {
+        return jsonResponse(200, { errors: [] });
+      }
       attempts += 1;
       if (attempts === 1) throw new Error('network down');
       return jsonResponse(200, usersBody);
@@ -353,7 +357,10 @@ describe('AdminUsersPanel account list', () => {
 
   it('offers the same recovery when the server answers 500', async () => {
     let attempts = 0;
-    const request: AjaxFetch = async () => {
+    const request: AjaxFetch = async (input) => {
+      if (String(input) === '/api/admin/errors') {
+        return jsonResponse(200, { errors: [] });
+      }
       attempts += 1;
       return attempts === 1
         ? jsonResponse(500, { error: 'boom' })
@@ -401,5 +408,263 @@ describe('AdminUsersPanel account list', () => {
     });
 
     expect(view.container.innerHTML).toBe('');
+  });
+});
+
+describe('AdminUsersPanel recent errors section', () => {
+  it('renders recorded errors with message, time, scope, and source below the table', async () => {
+    const requestedPaths: string[] = [];
+    const request: AjaxFetch = async (input) => {
+      const path = String(input);
+      requestedPaths.push(path);
+      if (path === '/api/admin/errors') {
+        return jsonResponse(200, {
+          errors: [
+            {
+              at: Date.UTC(2026, 2, 1, 10, 30),
+              scope: 'flushProjectionGetRoomDoc',
+              message: 'snapshot format 3 is not known',
+              source: 'room',
+              roomId: 'room-a',
+            },
+            {
+              at: Date.UTC(2026, 2, 1, 9, 0),
+              scope: 'billing:apply',
+              message: 'apply failed',
+              source: 'identity',
+            },
+          ],
+        });
+      }
+      return jsonResponse(200, usersBody);
+    };
+
+    render(<AdminUsersPanel request={request} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-errors')).toBeTruthy();
+    });
+    expect(requestedPaths).toContain('/api/admin/errors');
+
+    const rows = screen.getAllByTestId('admin-error-row');
+    expect(rows).toHaveLength(2);
+    // Newest first, exactly as the bounded ring serves them.
+    expect(rows[0].textContent).toContain('snapshot format 3 is not known');
+    expect(rows[0].textContent).toContain('flushProjectionGetRoomDoc');
+    expect(rows[0].textContent).toContain('room');
+    expect(rows[0].textContent).toContain('room-a');
+    expect(rows[1].textContent).toContain('apply failed');
+    expect(rows[1].textContent).toContain('billing:apply');
+    expect(rows[1].textContent).toContain('identity');
+
+    const empty = screen.queryByTestId('admin-errors-empty');
+    expect(empty).toBeNull();
+    // The accounts table is untouched by the errors section.
+    expect(screen.getByTestId('admin-users-table')).toBeTruthy();
+  });
+
+  it('shows an empty state when no errors are recorded', async () => {
+    const request: AjaxFetch = async (input) =>
+      String(input) === '/api/admin/errors'
+        ? jsonResponse(200, { errors: [] })
+        : jsonResponse(200, usersBody);
+
+    render(<AdminUsersPanel request={request} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-errors-empty')).toBeTruthy();
+    });
+    expect(screen.getByTestId('admin-errors-empty').textContent).toMatch(/no recent errors/i);
+    expect(screen.queryByTestId('admin-errors-table')).toBeNull();
+    expect(screen.getByTestId('admin-users-table')).toBeTruthy();
+  });
+
+  it('keeps the account table when the errors fetch fails', async () => {
+    const request: AjaxFetch = async (input) =>
+      String(input) === '/api/admin/errors'
+        ? jsonResponse(500, { error: 'boom' })
+        : jsonResponse(200, usersBody);
+
+    render(<AdminUsersPanel request={request} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-users-table')).toBeTruthy();
+    });
+    expect(screen.getByTestId('admin-users-total').textContent).toContain('2 accounts');
+    expect(screen.queryByTestId('admin-errors')).toBeNull();
+    expect(screen.queryByTestId('admin-load-error')).toBeNull();
+  });
+
+  it('ignores malformed error rows instead of rendering them', async () => {
+    const request: AjaxFetch = async (input) =>
+      String(input) === '/api/admin/errors'
+        ? jsonResponse(200, {
+            errors: [
+              { at: 'not-a-number', scope: 'x', message: 'y', source: 'identity' },
+              { at: 5, scope: '', message: 'y', source: 'identity' },
+              { at: 6, scope: 'billing:apply', message: 'kept', source: 'identity' },
+            ],
+          })
+        : jsonResponse(200, usersBody);
+
+    render(<AdminUsersPanel request={request} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-errors')).toBeTruthy();
+    });
+    const rows = screen.getAllByTestId('admin-error-row');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain('kept');
+  });
+});
+
+describe('AdminUsersPanel search and load more', () => {
+  function account(id: string, createdAt: number): Record<string, unknown> {
+    return {
+      accountId: id,
+      state: 'active',
+      provenance: 'access',
+      displayName: null,
+      organisation: null,
+      plan: null,
+      planStatus: null,
+      rooms: 0,
+      createdAt,
+      updatedAt: createdAt,
+    };
+  }
+
+  const pageOneBody = {
+    accounts: [account('page_a2', 2000), account('page_a1', 1000)],
+    total: 4,
+    nextCursor: { createdAt: 1000, accountId: 'page_a1' },
+  };
+  const pageTwoBody = {
+    accounts: [account('page_a4', 4000), account('page_a3', 3000)],
+    total: 4,
+    nextCursor: null,
+  };
+  const searchedBody = {
+    accounts: [account('search_hit', 5000)],
+    total: 1,
+    nextCursor: null,
+  };
+
+  function panelRequest(usersPages: Record<string, unknown>): {
+    request: AjaxFetch;
+    userPaths: string[];
+  } {
+    const userPaths: string[] = [];
+    const request: AjaxFetch = async (input) => {
+      const path = String(input);
+      if (path === '/api/admin/errors') {
+        return jsonResponse(200, { errors: [] });
+      }
+      userPaths.push(path);
+      for (const [needle, body] of Object.entries(usersPages)) {
+        if (path.includes(needle)) return jsonResponse(200, body);
+      }
+      return jsonResponse(200, usersPages['*']);
+    };
+    return { request, userPaths };
+  }
+
+  it('hides Load more when the payload carries no next cursor', async () => {
+    const { request } = panelRequest({ '*': { accounts: usersBody.accounts, total: 2, nextCursor: null } });
+    render(<AdminUsersPanel request={request} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-users-table')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('admin-users-load-more')).toBeNull();
+  });
+
+  it('appends the next page below the first via the cursor and retires the button', async () => {
+    const { request } = panelRequest({
+      'cursor=': pageTwoBody,
+      '*': pageOneBody,
+    });
+    render(<AdminUsersPanel request={request} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-users-table')).toBeTruthy();
+    });
+    expect(screen.getAllByTestId(/^admin-user-/)).toHaveLength(2);
+    expect(screen.getByTestId('admin-users-total').textContent).toContain('4 accounts');
+
+    fireEvent.click(screen.getByTestId('admin-users-load-more'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-user-page_a4')).toBeTruthy();
+    });
+    // Presentation order stays newest first across the appended page.
+    const rows = screen.getAllByTestId(/^admin-user-/);
+    expect(rows.map((row) => row.getAttribute('data-testid'))).toEqual([
+      'admin-user-page_a4',
+      'admin-user-page_a3',
+      'admin-user-page_a2',
+      'admin-user-page_a1',
+    ]);
+    expect(screen.getByTestId('admin-users-total').textContent).toContain('4 accounts');
+    expect(screen.queryByTestId('admin-users-load-more')).toBeNull();
+  });
+
+  it('debounces the search input into one searched request and replaces the rows', async () => {
+    const { request, userPaths } = panelRequest({
+      'search=': searchedBody,
+      '*': pageOneBody,
+    });
+    render(<AdminUsersPanel request={request} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-users-table')).toBeTruthy();
+    });
+    const input = screen.getByTestId('admin-users-search');
+    expect(input.tagName).toBe('INPUT');
+
+    fireEvent.change(input, { target: { value: 'ada' } });
+    // Debounced: nothing fires immediately after the keystroke.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(userPaths.filter((path) => path.includes('search='))).toHaveLength(0);
+
+    await waitFor(() => {
+      expect(userPaths.some((path) => path.includes('search=ada'))).toBe(true);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-user-search_hit')).toBeTruthy();
+    });
+    const searchFetches = userPaths.filter((path) => path.includes('search=ada'));
+    expect(searchFetches).toHaveLength(1);
+    expect(screen.getByTestId('admin-users-total').textContent).toContain('1 account');
+  });
+
+  it('returns to the unsearched list when the search input is cleared', async () => {
+    const { request, userPaths } = panelRequest({
+      'search=': searchedBody,
+      '*': pageOneBody,
+    });
+    render(<AdminUsersPanel request={request} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-users-table')).toBeTruthy();
+    });
+    const input = screen.getByTestId('admin-users-search');
+    fireEvent.change(input, { target: { value: 'ada' } });
+    await waitFor(() => {
+      expect(userPaths.some((path) => path.includes('search=ada'))).toBe(true);
+    });
+
+    fireEvent.change(input, { target: { value: '' } });
+    await waitFor(() => {
+      const unsearchedFetches = userPaths.filter(
+        (path) => path === '/api/admin/users' || !path.includes('search='),
+      );
+      expect(unsearchedFetches.length).toBeGreaterThanOrEqual(2);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-user-page_a2')).toBeTruthy();
+    });
   });
 });

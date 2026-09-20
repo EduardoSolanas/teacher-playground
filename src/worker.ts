@@ -215,9 +215,12 @@ const OPERATOR_ACCOUNTS_API_PREFIX = '/api/operator/accounts/';
 /** Account actions an operator may take, each an IdentityDO route of the same name. */
 const OPERATOR_ACCOUNT_ACTIONS = new Set(['disable', 'enable', 'revoke-all']);
 const ADMIN_USERS_API = '/api/admin/users';
+const ADMIN_ERRORS_API = '/api/admin/errors';
 const AUTH_GUEST = '/auth/guest';
 const IDENTITY_ACCOUNT_ROOMS = 'https://identity/accounts/rooms';
 const IDENTITY_ACCOUNT_LIST = 'https://identity/accounts/list';
+const IDENTITY_ERRORS_RING = 'https://identity/errors/ring';
+const ROOM_ERRORS_PATH = '/room/errors';
 const IDENTITY_GUESTS_PURGE = 'https://identity/guests/purge';
 const IDENTITY_ACCOUNT_PLAN = 'https://identity/accounts/plan';
 const IDENTITY_COMPANIES = 'https://identity/companies';
@@ -1424,11 +1427,19 @@ async function adminUsersRoute(
   if (guard instanceof Response) return guard;
   const outcome = await sessionAuthorized(env, request, principal);
   if (outcome.denied) return outcome.denied;
+  const url = new URL(request.url);
+  const cursorParam = url.searchParams.get('cursor');
+  const searchParam = url.searchParams.get('search');
   const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
   const result = await identity.fetch(new Request(IDENTITY_ACCOUNT_LIST, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ adminEmail: guard.email }),
+    body: JSON.stringify({
+      adminEmail: guard.email,
+      // The raw param travels to the DO, which owns parsing and validation.
+      ...(cursorParam !== null ? { cursor: cursorParam } : {}),
+      ...(searchParam !== null && searchParam.length > 0 ? { search: searchParam } : {}),
+    }),
   }));
   return withSecurityHeaders(new Response(result.body, {
     status: result.status,
@@ -1447,6 +1458,104 @@ async function identityOperatorFetch(
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   }));
+}
+
+/** One ring row exactly as /admin renders it. */
+interface AdminErrorRow {
+  at: number;
+  scope: string;
+  message: string;
+  source: 'identity' | 'room';
+  roomId?: string;
+}
+
+/** Accepts only well-formed ring rows; anything else is not surfaced. */
+function toAdminErrorRow(
+  value: unknown,
+  source: 'identity' | 'room',
+  roomId?: string,
+): AdminErrorRow | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const at = record.at;
+  const scope = record.scope;
+  const message = record.message;
+  if (typeof at !== 'number' || !Number.isFinite(at)) return null;
+  if (typeof scope !== 'string' || scope.length === 0) return null;
+  if (typeof message !== 'string' || message.length === 0) return null;
+  return {
+    at,
+    scope,
+    message,
+    source,
+    ...(source === 'room' && roomId ? { roomId } : {}),
+  };
+}
+
+async function fetchRingRows(
+  response: Response,
+  source: 'identity' | 'room',
+  roomId?: string,
+): Promise<AdminErrorRow[]> {
+  if (!response.ok) return [];
+  const body = (await response.json()) as { errors?: unknown };
+  const rows = Array.isArray(body?.errors) ? body.errors : [];
+  return rows
+    .map((row) => toAdminErrorRow(row, source, roomId))
+    .filter((row): row is AdminErrorRow => row !== null);
+}
+
+/**
+ * GET /api/admin/errors: the bounded error rings (OPS-01) behind the same
+ * admin allowlist as the account list — the guard decides before the session,
+ * and the IdentityDO re-checks the allowlist for its own ring. `?roomId=`
+ * optionally adds that room's ring, read from the RoomDO that owns the data.
+ */
+async function adminErrorsRoute(
+  env: Env,
+  request: Request,
+  principal: VerifiedAccessPrincipal,
+): Promise<Response> {
+  if (request.method !== 'GET') {
+    return withSecurityHeaders(Response.json(
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'GET' } },
+    ));
+  }
+  const guard = adminSurfaceGuard(env, principal);
+  if (guard instanceof Response) return guard;
+  const outcome = await sessionAuthorized(env, request, principal);
+  if (outcome.denied) return outcome.denied;
+
+  const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
+  const identityResponse = await identity.fetch(new Request(IDENTITY_ERRORS_RING, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ adminEmail: guard.email }),
+  }));
+  const errors = await fetchRingRows(identityResponse, 'identity');
+
+  const roomId = new URL(request.url).searchParams.get('roomId');
+  if (roomId !== null) {
+    if (!isValidRoomId(roomId)) {
+      return withSecurityHeaders(Response.json(
+        { error: 'Invalid roomId' },
+        { status: 400, headers: { 'Cache-Control': 'no-store' } },
+      ));
+    }
+    const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+    const roomResponse = await stub.fetch(new Request(
+      `https://room${ROOM_ERRORS_PATH}?roomId=${encodeURIComponent(roomId)}`,
+      { method: 'GET' },
+    ));
+    errors.push(...await fetchRingRows(roomResponse, 'room', roomId));
+  }
+
+  errors.sort((a, b) => b.at - a.at);
+  return withSecurityHeaders(Response.json(
+    { errors },
+    { headers: { 'Cache-Control': 'no-store' } },
+  ));
 }
 
 async function settleOperatorInvoiceViaDo(
@@ -3610,6 +3719,9 @@ const worker = {
       }
       if (url.pathname === ADMIN_USERS_API) {
         return adminUsersRoute(env, request, principal);
+      }
+      if (url.pathname === ADMIN_ERRORS_API) {
+        return adminErrorsRoute(env, request, principal);
       }
       if (url.pathname === BILLING_CHECKOUT_PATH) {
         return billingCheckout(env, request, principal);

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import type { AjaxFetch } from '@/lib/whiteboard/teacherRooms';
 
@@ -19,9 +19,55 @@ interface AdminAccountSummary {
   [key: string]: unknown;
 }
 
+interface AdminUsersCursor {
+  createdAt: number;
+  accountId: string;
+}
+
 interface AdminUsersSummary {
   accounts: AdminAccountSummary[];
   total: number;
+  nextCursor: AdminUsersCursor | null;
+}
+
+interface AdminErrorRow {
+  at: number;
+  scope: string;
+  message: string;
+  source: 'identity' | 'room';
+  roomId?: string;
+}
+
+const ERROR_SOURCES: ReadonlySet<string> = new Set(['identity', 'room']);
+
+function toErrorRow(entry: unknown): AdminErrorRow | null {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const record = entry as Record<string, unknown>;
+  const at = record.at;
+  const scope = record.scope;
+  const message = record.message;
+  const source = record.source;
+  if (typeof at !== 'number' || !Number.isFinite(at)) return null;
+  if (typeof scope !== 'string' || scope.length === 0) return null;
+  if (typeof message !== 'string' || message.length === 0) return null;
+  if (typeof source !== 'string' || !ERROR_SOURCES.has(source)) return null;
+  const roomId = record.roomId;
+  return {
+    at,
+    scope,
+    message,
+    source: source as AdminErrorRow['source'],
+    ...(typeof roomId === 'string' && roomId.length > 0 ? { roomId } : {}),
+  };
+}
+
+function parseAdminErrors(payload: unknown): AdminErrorRow[] | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  if (!Array.isArray(record.errors)) return null;
+  return record.errors
+    .map(toErrorRow)
+    .filter((row): row is AdminErrorRow => row !== null);
 }
 
 function toAccount(entry: unknown): AdminAccountSummary | null {
@@ -78,7 +124,23 @@ function parseAdminUsers(payload: unknown): AdminUsersSummary | null {
   const accounts = accountsPayload
     .map(toAccount)
     .filter((account): account is AdminAccountSummary => account !== null);
-  return { accounts, total };
+  // An absent, malformed, or null cursor means "this is the last page".
+  const rawCursor = record.nextCursor;
+  let nextCursor: AdminUsersCursor | null = null;
+  if (rawCursor && typeof rawCursor === 'object' && !Array.isArray(rawCursor)) {
+    const cursorRecord = rawCursor as Record<string, unknown>;
+    const createdAt = cursorRecord.createdAt;
+    const accountId = cursorRecord.accountId;
+    if (
+      typeof createdAt === 'number' &&
+      Number.isFinite(createdAt) &&
+      typeof accountId === 'string' &&
+      accountId.length > 0
+    ) {
+      nextCursor = { createdAt, accountId };
+    }
+  }
+  return { accounts, total, nextCursor };
 }
 
 /** One known column: header label, optional cell formatter, optional alignment. */
@@ -203,45 +265,113 @@ export default function AdminUsersPanel({
   const [loadFailed, setLoadFailed] = useState(false);
   const [refused, setRefused] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [errors, setErrors] = useState<AdminErrorRow[] | null>(null);
+  const [nextCursor, setNextCursor] = useState<AdminUsersCursor | null>(null);
+  const [searchInput, setSearchInput] = useState('');
+  const [searchApplied, setSearchApplied] = useState('');
+  const [loadingMore, setLoadingMore] = useState(false);
+  /** The search the currently rendered list reflects; '' is the unsearched list. */
+  const lastSearchRef = useRef('');
 
-  const loadUsers = useCallback(async () => {
-    setLoadFailed(false);
-    setRefused(false);
-    try {
-      const response = await request('/api/admin/users');
-      if (!response.ok) {
-        // 403 and 404 are both "this page is not for you": a disabled admin
-        // surface must be indistinguishable from a denied account, so neither
-        // response may leak which one it was.
-        if (response.status === 403 || response.status === 404) {
-          setRefused(true);
-        } else {
-          setLoadFailed(true);
+  const loadAccounts = useCallback(
+    async (search: string, cursor: AdminUsersCursor | null = null) => {
+      const params = new URLSearchParams();
+      if (cursor) params.set('cursor', JSON.stringify(cursor));
+      if (search.length > 0) params.set('search', search);
+      const query = params.toString();
+      setLoadFailed(false);
+      setRefused(false);
+      try {
+        const response = await request(`/api/admin/users${query ? `?${query}` : ''}`);
+        if (!response.ok) {
+          // 403 and 404 are both "this page is not for you": a disabled admin
+          // surface must be indistinguishable from a denied account, so neither
+          // response may leak which one it was.
+          if (response.status === 403 || response.status === 404) {
+            setRefused(true);
+          } else {
+            setLoadFailed(true);
+          }
+          return;
         }
-        return;
-      }
-      const parsed = parseAdminUsers(await response.json());
-      if (parsed === null) {
+        const parsed = parseAdminUsers(await response.json());
+        if (parsed === null) {
+          setLoadFailed(true);
+          return;
+        }
+        if (cursor) {
+          // A loaded page continues the list; nothing already shown is dropped.
+          setAccounts((existing) => [...(existing ?? []), ...parsed.accounts]);
+        } else {
+          setAccounts(parsed.accounts);
+          setSearchApplied(search);
+        }
+        setTotal(parsed.total);
+        setNextCursor(parsed.nextCursor);
+      } catch {
         setLoadFailed(true);
-        return;
       }
-      setAccounts(parsed.accounts);
-      setTotal(parsed.total);
-    } catch {
-      setLoadFailed(true);
+    },
+    [request],
+  );
+
+  const loadMore = useCallback(async () => {
+    if (nextCursor === null || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      await loadAccounts(searchApplied, nextCursor);
+    } finally {
+      setLoadingMore(false);
     }
+  }, [loadAccounts, nextCursor, loadingMore, searchApplied]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      // The rings are diagnostics: whatever happens to this fetch, the account
+      // list must still render. Any failure — status or network — just hides
+      // the section.
+      try {
+        const errorsResponse = await request('/api/admin/errors');
+        const parsedErrors = errorsResponse.ok
+          ? parseAdminErrors(await errorsResponse.json())
+          : null;
+        if (!cancelled) setErrors(parsedErrors);
+      } catch {
+        if (!cancelled) setErrors(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [request]);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      await loadUsers();
+      await loadAccounts('');
       if (!cancelled) setLoading(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, [loadUsers]);
+  }, [loadAccounts]);
+
+  // Debounced search: 300ms after the last keystroke the searched page
+  // replaces the list; an emptied input returns to the unsearched list.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const trimmed = searchInput.trim();
+      if (trimmed === lastSearchRef.current) return;
+      lastSearchRef.current = trimmed;
+      void loadAccounts(trimmed);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchInput, loadAccounts]);
+
+  const retryUsers = useCallback(() => {
+    void loadAccounts(lastSearchRef.current);
+  }, [loadAccounts]);
 
   if (loading) {
     return (
@@ -274,9 +404,7 @@ export default function AdminUsersPanel({
         <button
           type="button"
           data-testid="admin-load-retry"
-          onClick={() => {
-            void loadUsers();
-          }}
+          onClick={retryUsers}
           className="btn"
         >
           Try again
@@ -303,6 +431,20 @@ export default function AdminUsersPanel({
             Showing the newest {accounts.length} of {total} accounts.
           </p>
         ) : null}
+        <div className="field-group">
+          <label htmlFor="admin-users-search" className="app-label">
+            Search display names
+          </label>
+          <input
+            id="admin-users-search"
+            type="search"
+            data-testid="admin-users-search"
+            value={searchInput}
+            maxLength={200}
+            onChange={(event) => setSearchInput(event.target.value)}
+            className="field-input"
+          />
+        </div>
         <div className="overflow-x-auto">
           <table
             data-testid="admin-users-table"
@@ -348,7 +490,66 @@ export default function AdminUsersPanel({
             </tbody>
           </table>
         </div>
+        {nextCursor !== null ? (
+          <button
+            type="button"
+            data-testid="admin-users-load-more"
+            onClick={() => {
+              void loadMore();
+            }}
+            disabled={loadingMore}
+            className="btn mt-4"
+          >
+            Load more
+          </button>
+        ) : null}
       </section>
+      {errors !== null ? (
+        <section data-testid="admin-errors" className="mt-10">
+          <h2 className="app-h2">Recent errors</h2>
+          <p className="app-small">
+            Internal errors the room and identity stores logged, newest first. Bounded to the
+            latest 100.
+          </p>
+          {errors.length === 0 ? (
+            <p data-testid="admin-errors-empty" className="app-small">
+              No recent errors.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table
+                data-testid="admin-errors-table"
+                className="w-full min-w-[52rem] border-collapse border border-[color:var(--line)] bg-white text-[0.94rem]"
+              >
+                <caption className="sr-only">Recent internal errors</caption>
+                <thead>
+                  <tr>
+                    <th scope="col" className={TABLE_HEAD_CELL}>Time</th>
+                    <th scope="col" className={TABLE_HEAD_CELL}>Scope</th>
+                    <th scope="col" className={TABLE_HEAD_CELL}>Source</th>
+                    <th scope="col" className={TABLE_HEAD_CELL}>Room</th>
+                    <th scope="col" className={TABLE_HEAD_CELL}>Message</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {errors.map((row, index) => (
+                    <tr
+                      key={`${row.at}-${row.scope}-${index}`}
+                      data-testid="admin-error-row"
+                    >
+                      <td className={TABLE_BODY_CELL}>{formatDate(row.at)}</td>
+                      <td className={TABLE_BODY_CELL}>{row.scope}</td>
+                      <td className={TABLE_BODY_CELL}>{row.source}</td>
+                      <td className={TABLE_BODY_CELL}>{row.roomId ?? MISSING_VALUE}</td>
+                      <td className={TABLE_BODY_CELL}>{row.message}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      ) : null}
     </>
   );
 }

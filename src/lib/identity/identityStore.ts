@@ -540,6 +540,20 @@ export function applyIdentitySchema(db: RoomDatabase): void {
       SELECT RAISE(ABORT, 'company_invites: expires_at must be after created_at');
     END
   `);
+
+  /*
+   * Bounded error ring (OPS-01): identity-side internal errors join the room
+   * side on /admin. The insert path trims to IDENTITY_ERROR_RING_CAP rows, so
+   * the table can never grow with a flooding failure.
+   */
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS identity_error_ring (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      at INTEGER NOT NULL,
+      scope TEXT NOT NULL,
+      message TEXT NOT NULL
+    )
+  `);
 }
 
 export interface AuditContext {
@@ -857,6 +871,61 @@ export interface AdminAccountRow {
 export interface AdminAccountList {
   accounts: AdminAccountRow[];
   total: number;
+  /** The cursor for the next page, or null when this page is the last. */
+  nextCursor: AdminAccountListCursor | null;
+}
+
+/** Position of the last row of the previous page in the admin list order. */
+export interface AdminAccountListCursor {
+  createdAt: number;
+  accountId: string;
+}
+
+export interface AdminAccountListOptions {
+  /** First row of this page is strictly older than this cursor. */
+  cursor?: AdminAccountListCursor | null;
+  /** Case-insensitive substring match on preferred_display_name. */
+  search?: string | null;
+  /** Page size; capped at MAX_ADMIN_ACCOUNT_LIST_ROWS. */
+  limit?: number;
+}
+
+/** Escapes LIKE wildcards so a search term matches itself literally. */
+function escapeLikeTerm(term: string): string {
+  return term.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
+/** How many identity-side internal error rows the ring keeps. */
+export const IDENTITY_ERROR_RING_CAP = 100;
+
+export interface IdentityErrorRow {
+  at: number;
+  scope: string;
+  message: string;
+}
+
+/**
+ * Record one identity-side internal error in the bounded ring, dropping the
+ * oldest rows beyond {@link IDENTITY_ERROR_RING_CAP}. The caller wraps this:
+ * the ring is a diagnostic, so its own failure must never worsen the
+ * operation that failed.
+ */
+export function recordIdentityError(db: RoomDatabase, input: IdentityErrorRow): void {
+  db.prepare(
+    `INSERT INTO identity_error_ring (at, scope, message) VALUES (?, ?, ?)`,
+  ).run(input.at, input.scope, input.message);
+  db.prepare(
+    `DELETE FROM identity_error_ring WHERE id NOT IN (
+       SELECT id FROM identity_error_ring ORDER BY id DESC LIMIT ?
+     )`,
+  ).run(IDENTITY_ERROR_RING_CAP);
+}
+
+/** The ring newest first, at most {@link IDENTITY_ERROR_RING_CAP} rows. */
+export function listIdentityErrors(db: RoomDatabase): IdentityErrorRow[] {
+  return db
+    .prepare(`SELECT at, scope, message FROM identity_error_ring ORDER BY id DESC LIMIT ?`)
+    .all(IDENTITY_ERROR_RING_CAP) as IdentityErrorRow[];
 }
 
 /**
@@ -866,6 +935,13 @@ export interface AdminAccountList {
  * with the account id as tiebreak so two rows created in the same millisecond
  * cannot trade places between reads.
  *
+ * Pages are cursor-based: a full page carries the `nextCursor` of its last
+ * row, and passing it back continues strictly after that row, immune to rows
+ * appearing or disappearing in between. `search` narrows everything — page,
+ * total, and cursor — to accounts whose preferred display name contains the
+ * term case-insensitively (LIKE wildcards in the term match themselves, and
+ * accounts without a display name are never a hit).
+ *
  * Each row also carries what the identity DB already knows about the account:
  * the active membership's company name (a revoked membership or a disabled
  * company names nothing), the entitlement plan and status (company source
@@ -873,9 +949,44 @@ export interface AdminAccountList {
  * free), and the count of owned rooms. All of it is one query, so the cap,
  * the order, and the total are exactly what they were before enrichment.
  */
-export function listAccountsForAdmin(db: RoomDatabase): AdminAccountList {
+export function listAccountsForAdmin(
+  db: RoomDatabase,
+  options: AdminAccountListOptions = {},
+): AdminAccountList {
+  const limit = Math.max(
+    1,
+    Math.min(options.limit ?? MAX_ADMIN_ACCOUNT_LIST_ROWS, MAX_ADMIN_ACCOUNT_LIST_ROWS),
+  );
+  const search = options.search?.trim() ?? '';
+
+  let searchLike: { clause: string; param: string } | null = null;
+  if (search.length > 0) {
+    searchLike = {
+      clause: `a.preferred_display_name IS NOT NULL
+       AND lower(a.preferred_display_name) LIKE '%' || ? || '%' ESCAPE '\\'`,
+      param: escapeLikeTerm(search.toLowerCase()),
+    };
+  }
+  // The total counts the whole matching set — the cursor only slices pages.
+  const whereTotal = searchLike !== null ? `WHERE ${searchLike.clause}` : '';
+
+  const cursor = options.cursor;
+  const pageClauses: string[] = [];
+  const pageParams: Array<string | number> = [];
+  if (searchLike !== null) {
+    pageClauses.push(searchLike.clause);
+    pageParams.push(searchLike.param);
+  }
+  if (cursor) {
+    pageClauses.push(`(a.created_at < ? OR (a.created_at = ? AND a.account_id < ?))`);
+    pageParams.push(cursor.createdAt, cursor.createdAt, cursor.accountId);
+  }
+  const wherePage = pageClauses.length > 0 ? `WHERE ${pageClauses.join(' AND ')}` : '';
+
   const total = Number(
-    (db.prepare(`SELECT COUNT(*) AS count FROM accounts`).get() as { count: number }).count,
+    (db
+      .prepare(`SELECT COUNT(*) AS count FROM accounts a ${whereTotal}`)
+      .get(...(searchLike !== null ? [searchLike.param] : [])) as { count: number }).count,
   );
   const accounts = db
     .prepare(
@@ -915,18 +1026,25 @@ export function listAccountsForAdmin(db: RoomDatabase): AdminAccountList {
          FROM account_rooms
          GROUP BY account_id
        ) owned_rooms ON owned_rooms.account_id = a.account_id
+       ${wherePage}
        ORDER BY a.created_at DESC, a.account_id DESC
        LIMIT ?`,
     )
-    .all(MAX_ADMIN_ACCOUNT_LIST_ROWS) as AdminAccountRow[];
+    .all(...pageParams, limit + 1) as AdminAccountRow[];
+  const page = accounts.slice(0, limit);
+  const last = page[page.length - 1];
   return {
-    accounts: accounts.map((row) => ({
+    accounts: page.map((row) => ({
       ...row,
       rooms: Number(row.rooms),
       createdAt: Number(row.createdAt),
       updatedAt: Number(row.updatedAt),
     })),
     total,
+    nextCursor:
+      accounts.length > limit && last
+        ? { createdAt: Number(last.createdAt), accountId: last.accountId }
+        : null,
   };
 }
 

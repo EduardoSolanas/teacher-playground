@@ -12,9 +12,12 @@ import {
   removeOwnedRoom,
   readPreferredDisplayName,
   setPreferredDisplayName,
-  createGuestAccount,
-  listAccountsForAdmin,
-} from './identityStore';
+   createGuestAccount,
+   listAccountsForAdmin,
+   listIdentityErrors,
+   recordIdentityError,
+   IDENTITY_ERROR_RING_CAP,
+ } from './identityStore';
 import { applySchema as applyRoomSchema } from '../whiteboard/roomSchema';
 
 function resolveStoredAccount(
@@ -64,6 +67,7 @@ describe('authoritative identity store', () => {
       'company_subscriptions',
       'entitlement_audit',
       'entitlements',
+      'identity_error_ring',
       'pending_erasures',
       'referral_codes',
       'referral_events',
@@ -1639,5 +1643,270 @@ describe('listAccountsForAdmin', () => {
     const row = listed.accounts.find((entry) => entry.accountId === seat.accountId);
 
     expect(row).toMatchObject({ plan: 'corporate_seat', planStatus: 'active' });
+  });
+
+  it('returns a null nextCursor when every account fits on the first page', () => {
+    resolveStoredAccount('admin-page-single').account;
+
+    const listed = listAccountsForAdmin(db);
+
+    expect(listed.total).toBe(1);
+    expect(listed.accounts).toHaveLength(1);
+    expect(listed.nextCursor).toBeNull();
+  });
+
+  it('walks 250 accounts as a 200-row page plus a 50-row page through the cursor', () => {
+    const insert = db.prepare(
+      `INSERT INTO accounts (account_id, state, authorization_epoch, created_at, updated_at, provenance)
+       VALUES (?, 'active', 0, ?, ?, 'access')`,
+    );
+    const now = Date.now();
+    for (let index = 0; index < 250; index += 1) {
+      insert.run(`walk-${String(index).padStart(4, '0')}`, now + index, now + index);
+    }
+
+    const page1 = listAccountsForAdmin(db);
+    expect(page1.total).toBe(250);
+    expect(page1.accounts).toHaveLength(200);
+    expect(page1.accounts[0].accountId).toBe('walk-0249');
+    expect(page1.accounts[199].accountId).toBe('walk-0050');
+    expect(page1.nextCursor).toEqual({
+      createdAt: page1.accounts[199].createdAt,
+      accountId: 'walk-0050',
+    });
+
+    const page2 = listAccountsForAdmin(db, { cursor: page1.nextCursor! });
+    expect(page2.total).toBe(250);
+    expect(page2.accounts).toHaveLength(50);
+    expect(page2.accounts[0].accountId).toBe('walk-0049');
+    expect(page2.accounts[49].accountId).toBe('walk-0000');
+    expect(page2.nextCursor).toBeNull();
+
+    const ids1 = new Set(page1.accounts.map((row) => row.accountId));
+    for (const row of page2.accounts) {
+      expect(ids1.has(row.accountId)).toBe(false);
+    }
+  });
+
+  it('caps the requested limit at 200 and honors a smaller one', () => {
+    const insert = db.prepare(
+      `INSERT INTO accounts (account_id, state, authorization_epoch, created_at, updated_at, provenance)
+       VALUES (?, 'active', 0, ?, ?, 'access')`,
+    );
+    const now = Date.now();
+    for (let index = 0; index < 210; index += 1) {
+      insert.run(`cap-${String(index).padStart(4, '0')}`, now + index, now + index);
+    }
+
+    const capped = listAccountsForAdmin(db, { limit: 500 });
+    expect(capped.accounts).toHaveLength(200);
+
+    const small = listAccountsForAdmin(db, { limit: 10 });
+    expect(small.accounts).toHaveLength(10);
+    expect(small.accounts[0].accountId).toBe('cap-0209');
+    expect(small.nextCursor).toEqual({
+      createdAt: small.accounts[9].createdAt,
+      accountId: 'cap-0200',
+    });
+  });
+
+  it('continues strictly after the cursor row when the cursor names an early account', () => {
+    const insert = db.prepare(
+      `INSERT INTO accounts (account_id, state, authorization_epoch, created_at, updated_at, provenance)
+       VALUES (?, 'active', 0, ?, ?, 'access')`,
+    );
+    const now = Date.now();
+    for (let index = 0; index < 10; index += 1) {
+      insert.run(`cont-${index}`, now + index, now + index);
+    }
+    const anchor = db
+      .prepare(`SELECT created_at AS createdAt FROM accounts WHERE account_id = 'cont-7'`)
+      .get() as { createdAt: number };
+
+    const listed = listAccountsForAdmin(db, {
+      cursor: { createdAt: anchor.createdAt, accountId: 'cont-7' },
+    });
+
+    expect(listed.accounts.map((row) => row.accountId)).toEqual([
+      'cont-6',
+      'cont-5',
+      'cont-4',
+      'cont-3',
+      'cont-2',
+      'cont-1',
+      'cont-0',
+    ]);
+  });
+
+  it('searches display names case-insensitively as a substring and totals only the matches', () => {
+    const insert = db.prepare(
+      `INSERT INTO accounts (account_id, state, authorization_epoch, created_at, updated_at, provenance, preferred_display_name)
+       VALUES (?, 'active', 0, ?, ?, 'access', ?)`,
+    );
+    const now = Date.now();
+    insert.run('search-ada', now, now, 'Ada Lovelace');
+    insert.run('search-ada2', now + 1, now + 1, 'ada grant');
+    insert.run('search-grace', now + 2, now + 2, 'GRACE HOPPER');
+    insert.run('search-null', now + 3, now + 3, null);
+
+    const listed = listAccountsForAdmin(db, { search: 'ADA' });
+
+    expect(listed.total).toBe(2);
+    expect(listed.accounts.map((row) => row.accountId).sort()).toEqual([
+      'search-ada',
+      'search-ada2',
+    ]);
+  });
+
+  it('excludes null display names and escapes LIKE wildcards when searching', () => {
+    const insert = db.prepare(
+      `INSERT INTO accounts (account_id, state, authorization_epoch, created_at, updated_at, provenance, preferred_display_name)
+       VALUES (?, 'active', 0, ?, ?, 'access', ?)`,
+    );
+    const now = Date.now();
+    insert.run('esc-percent', now, now, '100%_done');
+    insert.run('esc-x', now + 1, now + 1, '100Xdone');
+    insert.run('esc-null', now + 2, now + 2, null);
+
+    const percent = listAccountsForAdmin(db, { search: '100%' });
+    expect(percent.total).toBe(1);
+    expect(percent.accounts.map((row) => row.accountId)).toEqual(['esc-percent']);
+
+    // An unescaped bare % would match every row; escaped it matches only the
+    // literal percent sign.
+    const barePercent = listAccountsForAdmin(db, { search: '%' });
+    expect(barePercent.total).toBe(1);
+    expect(barePercent.accounts.map((row) => row.accountId)).toEqual(['esc-percent']);
+
+    const underscore = listAccountsForAdmin(db, { search: '_' });
+    expect(underscore.total).toBe(1);
+    expect(underscore.accounts.map((row) => row.accountId)).toEqual(['esc-percent']);
+
+    const miss = listAccountsForAdmin(db, { search: 'nobody-by-this-name' });
+    expect(miss.total).toBe(0);
+    expect(miss.accounts).toHaveLength(0);
+    expect(miss.nextCursor).toBeNull();
+  });
+
+  it('paginates inside a search: the cursor continues the filtered order', () => {
+    const insert = db.prepare(
+      `INSERT INTO accounts (account_id, state, authorization_epoch, created_at, updated_at, provenance, preferred_display_name)
+       VALUES (?, 'active', 0, ?, ?, 'access', ?)`,
+    );
+    const now = Date.now();
+    for (let index = 0; index < 5; index += 1) {
+      insert.run(`spage-${index}`, now + index, now + index, `Teacher ${index}`);
+    }
+    insert.run('spage-other', now + 100, now + 100, 'Someone Else');
+
+    const page1 = listAccountsForAdmin(db, { search: 'teacher', limit: 3 });
+    expect(page1.total).toBe(5);
+    expect(page1.accounts).toHaveLength(3);
+    expect(page1.nextCursor).not.toBeNull();
+
+    const page2 = listAccountsForAdmin(db, { search: 'teacher', cursor: page1.nextCursor! });
+    expect(page2.total).toBe(5);
+    expect(page2.accounts).toHaveLength(2);
+    expect(page2.nextCursor).toBeNull();
+
+    const ids = [
+      ...page1.accounts.map((row) => row.accountId),
+      ...page2.accounts.map((row) => row.accountId),
+    ].sort();
+    expect(ids).toEqual([
+      'spage-0',
+      'spage-1',
+      'spage-2',
+      'spage-3',
+      'spage-4',
+    ]);
+  });
+
+  it('trims surrounding whitespace off a search term and treats whitespace-only as unsearched', () => {
+    const insert = db.prepare(
+      `INSERT INTO accounts (account_id, state, authorization_epoch, created_at, updated_at, provenance, preferred_display_name)
+       VALUES (?, 'active', 0, ?, ?, 'access', ?)`,
+    );
+    const now = Date.now();
+    insert.run('trim-ada', now, now, 'Ada Lovelace');
+    insert.run('trim-grace', now + 1, now + 1, 'Grace Hopper');
+
+    const padded = listAccountsForAdmin(db, { search: '  ADA  ' });
+    expect(padded.total).toBe(1);
+    expect(padded.accounts.map((row) => row.accountId)).toEqual(['trim-ada']);
+
+    const whitespaceOnly = listAccountsForAdmin(db, { search: '   ' });
+    // The unsearched list: every account, unfiltered total.
+    expect(whitespaceOnly.total).toBe(2);
+    expect(whitespaceOnly.accounts).toHaveLength(2);
+  });
+
+  it('matches an accented term against its lowercase spelling', () => {
+    const insert = db.prepare(
+      `INSERT INTO accounts (account_id, state, authorization_epoch, created_at, updated_at, provenance, preferred_display_name)
+       VALUES (?, 'active', 0, ?, ?, 'access', ?)`,
+    );
+    const now = Date.now();
+    insert.run('accent-eco', now, now, 'école prim');
+    insert.run('accent-other', now + 1, now + 1, 'Someone Else');
+
+    const listed = listAccountsForAdmin(db, { search: 'École' });
+    expect(listed.total).toBe(1);
+    expect(listed.accounts.map((row) => row.accountId)).toEqual(['accent-eco']);
+  });
+
+  it('returns a null nextCursor when the account count fills the cap exactly', () => {
+    const insert = db.prepare(
+      `INSERT INTO accounts (account_id, state, authorization_epoch, created_at, updated_at, provenance)
+       VALUES (?, 'active', 0, ?, ?, 'access')`,
+    );
+    const now = Date.now();
+    for (let index = 0; index < 200; index += 1) {
+      insert.run(`exact-${String(index).padStart(4, '0')}`, now + index, now + index);
+    }
+
+    const listed = listAccountsForAdmin(db);
+    expect(listed.total).toBe(200);
+    expect(listed.accounts).toHaveLength(200);
+    expect(listed.nextCursor).toBeNull();
+  });
+});
+
+describe('the identity error ring', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    applyIdentitySchema(db);
+  });
+
+  it('lists recorded identity errors newest first with at, scope, and message', () => {
+    recordIdentityError(db, { at: 1000, scope: 'billing:apply', message: 'boom-1' });
+    recordIdentityError(db, { at: 2000, scope: 'billing:reconcile', message: 'boom-2' });
+
+    expect(listIdentityErrors(db)).toEqual([
+      { at: 2000, scope: 'billing:reconcile', message: 'boom-2' },
+      { at: 1000, scope: 'billing:apply', message: 'boom-1' },
+    ]);
+  });
+
+  it(`trims the oldest row at the ${IDENTITY_ERROR_RING_CAP}-row cap: the 101st insert drops the first`, () => {
+    for (let index = 1; index <= IDENTITY_ERROR_RING_CAP + 1; index += 1) {
+      recordIdentityError(db, {
+        at: index,
+        scope: `billing:op-${index}`,
+        message: `error-${index}`,
+      });
+    }
+
+    const rows = listIdentityErrors(db);
+    expect(rows).toHaveLength(IDENTITY_ERROR_RING_CAP);
+    expect(rows[0]).toMatchObject({ scope: `billing:op-${IDENTITY_ERROR_RING_CAP + 1}` });
+    expect(rows[IDENTITY_ERROR_RING_CAP - 1]).toMatchObject({ scope: 'billing:op-2' });
+    expect(rows.some((row) => row.scope === 'billing:op-1')).toBe(false);
+    const count = (
+      db.prepare(`SELECT COUNT(*) AS count FROM identity_error_ring`).get() as { count: number }
+    ).count;
+    expect(count).toBe(IDENTITY_ERROR_RING_CAP);
   });
 });

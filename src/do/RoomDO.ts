@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { DODatabase } from '../lib/whiteboard/doDatabase';
-import { applySchema, getGrantVersion, incrementGrantVersion, purgeExpiredRoomsAndTombstones, roomExists, getFileBytesTotal, addFileBytes } from '../lib/whiteboard/roomSchema';
+import { applySchema, getGrantVersion, incrementGrantVersion, listRoomErrors, purgeExpiredRoomsAndTombstones, recordRoomError, roomExists, getFileBytesTotal, addFileBytes } from '../lib/whiteboard/roomSchema';
 import { ROOM_BACKUP_TABLES, serializeBackup } from '../lib/backup/backup';
 import { MAX_BOARD_FILE_BYTES, MAX_ROOM_FILE_BYTES_TOTAL } from '../lib/whiteboard/boardFileRoutes';
 import {
@@ -522,6 +522,24 @@ export class RoomDO extends DurableObject {
     applySchema(this.db);
   }
 
+  /**
+   * Logs an internal error the usual way and keeps it in the bounded error
+   * ring (OPS-01) so /admin can surface it. The ring is a diagnostic: its own
+   * failure must never worsen the operation that just failed.
+   */
+  private recordInternalRoomError(op: string, error: unknown, roomId?: string): void {
+    logInternalRoomError(op, error, roomId);
+    try {
+      recordRoomError(this.db, {
+        at: Date.now(),
+        scope: op,
+        message: redactForLog(error instanceof Error ? error.message : String(error)),
+      });
+    } catch {
+      // The ring must never break the failing operation further.
+    }
+  }
+
   async fetch(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url);
@@ -542,6 +560,27 @@ export class RoomDO extends DurableObject {
        * room-level session check. It returns a full row dump of this room's
        * SQLite state, which is exactly what must never reach a browser.
        */
+      /*
+       * Internal error-ring read (OPS-01). Called only by the Worker's admin
+       * surface after the ADMIN_EMAILS guard and session check — the admin
+       * route authorizes; this branch only serves the ring to that caller.
+       */
+      if (url.pathname === '/room/errors') {
+        if (request.method !== 'GET') {
+          return Response.json(
+            { error: 'Method not allowed' },
+            { status: 405, headers: { Allow: 'GET' } },
+          );
+        }
+        if (!isValidRoomId(roomId)) {
+          return Response.json({ error: 'Invalid roomId' }, { status: 400 });
+        }
+        return Response.json(
+          { errors: listRoomErrors(this.db) },
+          { headers: { 'Cache-Control': 'no-store' } },
+        );
+      }
+
       if (url.pathname === '/room/backup/export') {
         if (request.method !== 'POST') {
           return Response.json(
@@ -1726,7 +1765,7 @@ export class RoomDO extends DurableObject {
       syncProtocol.writeUpdate(encoder, cleaned);
       return encoding.toUint8Array(encoder);
     } catch (error) {
-      logInternalRoomError('stageSyncUpdate', error, roomId);
+      this.recordInternalRoomError('stageSyncUpdate', error, roomId);
       const empty = Y.encodeStateAsUpdate(new Y.Doc());
       const encoder = encoding.createEncoder();
       encoding.writeVarUint(encoder, 0);
@@ -2267,7 +2306,7 @@ export class RoomDO extends DurableObject {
          * the unread bytes or throw out of the alarm and stall every other
          * room this object holds.
          */
-        logInternalRoomError('flushProjectionGetRoomDoc', error, roomId);
+        this.recordInternalRoomError('flushProjectionGetRoomDoc', error, roomId);
         continue;
       }
 
@@ -2305,7 +2344,7 @@ export class RoomDO extends DurableObject {
         await this.ctx.storage.delete(`ydoc-projection:${roomId}`);
         this.projectionDirtyRooms.delete(roomId);
       } catch (err) {
-        logInternalRoomError('flushProjection', err, roomId);
+        this.recordInternalRoomError('flushProjection', err, roomId);
         // The Yjs snapshot above is the durable copy and it is already written;
         // the row is a convenience for the read path, not the record.
       }
@@ -2410,7 +2449,7 @@ export class RoomDO extends DurableObject {
           presencePayloadForAccount(this.db, roomId, attachment.accountId),
         );
       } catch (err) {
-        logInternalRoomError('broadcastPresence', err, roomId);
+        this.recordInternalRoomError('broadcastPresence', err, roomId);
         return;
       }
 
@@ -3094,7 +3133,7 @@ export class RoomDO extends DurableObject {
 
           await this.flushIfDue();
         } catch (err) {
-          logInternalRoomError('serverDocSync', err, attachment.roomId);
+          this.recordInternalRoomError('serverDocSync', err, attachment.roomId);
         }
         return;
       }
@@ -3237,7 +3276,7 @@ export class RoomDO extends DurableObject {
       try {
         await this.flushDirtyDocs({ isLastSocketClose: true });
       } catch (err) {
-        logInternalRoomError('socketGoneFlush', err);
+        this.recordInternalRoomError('socketGoneFlush', err);
         // A failed flush must not throw out of handleSocketGone.
       }
     }

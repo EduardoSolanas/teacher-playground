@@ -9,21 +9,24 @@ import {
   applyIdentitySchema,
   createGuestAccount,
   isTutorCapReached,
-  listDueBackupTargets,
-  listOwnedRooms,
-  markBackupDone,
-  readAccountAuthorizations,
-  recordOwnedRoom,
-  registerBackupTarget,
-  removeOwnedRoom,
-  ownedRoomExists,
-  resolveAccountForSubject,
-  readPreferredDisplayName,
-  setPreferredDisplayName,
-  touchOwnedRoom,
-  listAccountsForAdmin,
-  type BackupDoClass,
-} from '../lib/identity/identityStore';
+   listDueBackupTargets,
+   listIdentityErrors,
+   listOwnedRooms,
+   markBackupDone,
+   readAccountAuthorizations,
+   recordIdentityError,
+   recordOwnedRoom,
+   registerBackupTarget,
+   removeOwnedRoom,
+   ownedRoomExists,
+   resolveAccountForSubject,
+   readPreferredDisplayName,
+   setPreferredDisplayName,
+   touchOwnedRoom,
+   listAccountsForAdmin,
+   type AdminAccountListCursor,
+   type BackupDoClass,
+ } from '../lib/identity/identityStore';
 import {
   SessionUnauthorizedError,
   TutorCapReachedError,
@@ -155,6 +158,7 @@ const BILLING_SYSTEM_SETTLE_PATH = '/billing/settle';
 const BILLING_RECONCILE_PATH = '/billing/reconcile';
 const BILLING_RATE_LIMIT_PATH = '/billing/rate-limit';
 const BILLING_CUSTOMER_PATH = '/billing/customer';
+const ERRORS_RING_PATH = '/errors/ring';
 const REFERRALS_ME_PATH = '/referrals/me';
 const REFERRAL_VALIDATE_PATH = '/referrals/validate';
 const COMPANY_PATH = '/companies';
@@ -915,17 +919,64 @@ function operatorAuthorizationError(
   return null;
 }
 
-function isAdminListBody(value: unknown): value is { adminEmail: string } {
+interface AdminListBody {
+  adminEmail: string;
+  cursor?: string;
+  search?: string;
+}
+
+const MAX_ADMIN_LIST_SEARCH_LENGTH = 200;
+
+function isAdminListBody(value: unknown): value is AdminListBody {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false;
   }
   const body = value as Record<string, unknown>;
   return (
-    Object.keys(body).length === 1 &&
+    Object.keys(body).every(
+      (key) => key === 'adminEmail' || key === 'cursor' || key === 'search',
+    ) &&
     typeof body.adminEmail === 'string' &&
     body.adminEmail.length >= 3 &&
-    body.adminEmail.length <= 254
+    body.adminEmail.length <= 254 &&
+    (body.cursor === undefined || typeof body.cursor === 'string') &&
+    (body.search === undefined ||
+      (typeof body.search === 'string' &&
+        body.search.length >= 1 &&
+        body.search.length <= MAX_ADMIN_LIST_SEARCH_LENGTH))
   );
+}
+
+/**
+ * Parses the opaque cursor the client echoes back: a JSON object carrying the
+ * position of the previous page's last row. Anything else is a bad request,
+ * never a silent full-table read.
+ */
+function parseAdminListCursor(raw: string): AdminAccountListCursor | Response {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return Response.json({ error: 'Invalid cursor' }, { status: 400, headers: noStore() });
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return Response.json({ error: 'Invalid cursor' }, { status: 400, headers: noStore() });
+  }
+  const record = parsed as Record<string, unknown>;
+  const createdAt = record.createdAt;
+  const accountId = record.accountId;
+  if (
+    Object.keys(record).length !== 2 ||
+    typeof createdAt !== 'number' ||
+    !Number.isInteger(createdAt) ||
+    createdAt < 0 ||
+    typeof accountId !== 'string' ||
+    accountId.length < 1 ||
+    accountId.length > 128
+  ) {
+    return Response.json({ error: 'Invalid cursor' }, { status: 400, headers: noStore() });
+  }
+  return { createdAt, accountId };
 }
 
 /**
@@ -946,6 +997,27 @@ function adminAuthorizationError(
     return Response.json({ error: 'Forbidden' }, { status: 403, headers: noStore() });
   }
   return null;
+}
+
+/**
+ * Keeps a billing-path failure in the bounded identity error ring (OPS-01)
+ * next to its console line. The ring is a diagnostic: its own failure must
+ * never worsen the operation that just failed.
+ */
+function recordBillingRingError(
+  db: RoomDatabase,
+  scope: string,
+  error: unknown,
+): void {
+  try {
+    recordIdentityError(db, {
+      at: Date.now(),
+      scope,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  } catch {
+    // The ring must never break the failing operation further.
+  }
 }
 
 function isCompanyMemberBody(value: unknown): value is { accountId: string } {
@@ -1366,7 +1438,28 @@ export class IdentityDO extends DurableObject {
       if ('response' in parsed) return parsed.response;
       const denied = adminAuthorizationError(this.adminEmails, parsed.body.adminEmail);
       if (denied) return denied;
-      return Response.json(listAccountsForAdmin(this.db), { headers: noStore() });
+      let cursor: AdminAccountListCursor | null = null;
+      if (parsed.body.cursor !== undefined) {
+        const outcome = parseAdminListCursor(parsed.body.cursor);
+        if (outcome instanceof Response) return outcome;
+        cursor = outcome;
+      }
+      return Response.json(
+        listAccountsForAdmin(this.db, {
+          cursor,
+          ...(parsed.body.search !== undefined ? { search: parsed.body.search } : {}),
+        }),
+        { headers: noStore() },
+      );
+    }
+
+    if (url.pathname === ERRORS_RING_PATH) {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const parsed = await readExactJson(request, isAdminListBody);
+      if ('response' in parsed) return parsed.response;
+      const denied = adminAuthorizationError(this.adminEmails, parsed.body.adminEmail);
+      if (denied) return denied;
+      return Response.json({ errors: listIdentityErrors(this.db) }, { headers: noStore() });
     }
 
     if (url.pathname === RESOLVE_PATH) {
@@ -1888,6 +1981,7 @@ export class IdentityDO extends DurableObject {
             error: error instanceof Error ? error.message : String(error),
           }),
         );
+        recordBillingRingError(this.db, 'billing:apply', error);
         return Response.json({ error: 'apply_failed' }, { status: 500, headers: noStore() });
       }
     }
@@ -1981,6 +2075,7 @@ export class IdentityDO extends DurableObject {
             error: error instanceof Error ? error.message : String(error),
           }),
         );
+        recordBillingRingError(this.db, 'billing:operations', error);
         return Response.json({ error: 'operation_failed' }, { status: 500, headers: noStore() });
       }
     }
@@ -2010,6 +2105,7 @@ export class IdentityDO extends DurableObject {
             error: error instanceof Error ? error.message : String(error),
           }),
         );
+        recordBillingRingError(this.db, 'billing:settle', error);
         return Response.json({ error: 'settle_failed' }, { status: 500, headers: noStore() });
       }
     }
@@ -2139,6 +2235,7 @@ export class IdentityDO extends DurableObject {
             error: error instanceof Error ? error.message : String(error),
           }),
         );
+        recordBillingRingError(this.db, 'billing:reconcile', error);
         return Response.json({ error: 'reconcile_failed' }, { status: 500, headers: noStore() });
       }
     }
