@@ -23,7 +23,6 @@ import { shouldExpandForArrival } from '@/lib/whiteboard/waitingArrival';
 import ClearBoardModal from '@/components/whiteboard/ClearBoardModal';
 import BoardTabs from '@/components/whiteboard/BoardTabs';
 import RoomTopNav from '@/components/whiteboard/RoomTopNav';
-import AvSessionPanel from '@/components/av/AvSessionPanel';
 import { PreJoinCheck } from '@/components/av/PreJoinCheck';
 import StartCallButton from '@/components/av/StartCallButton';
 import { peerCallEntryAction, shouldResetPreJoinAnswered } from '@/lib/av/preJoin';
@@ -106,6 +105,33 @@ const ExcalidrawWrapper = dynamic(
   {
     ssr: false,
     loading: () => <div className={EXCALIDRAW_LOADING_CLASS} />,
+  },
+);
+
+/**
+ * The placeholder while the call panel chunk loads (PERF-S1).
+ *
+ * The panel, and the LiveKit SDK it carries, start downloading only when a
+ * call is actually asked for -- so the brief wait happens exactly when
+ * somebody pressed "Join call". The skeleton mirrors the panel's collapsed
+ * "Show call" pill, same corner, same skin, pulsing: a call the room is
+ * opening, not empty space. It is a div, not a button -- nothing to press
+ * yet -- and aria-hidden, because it names nothing.
+ */
+export const AV_PANEL_LOADING_CLASS =
+  'fixed z-[1400] rounded-full border border-slate-700/80 bg-slate-900/95 px-3 py-1.5 text-[0.6875rem] font-medium text-slate-200 shadow-lg shadow-slate-900/30 animate-pulse left-2 top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)] sm:bottom-16 sm:left-14 sm:top-auto';
+
+const AvSessionPanel = dynamic(
+  () => import('@/components/av/AvSessionPanel'),
+  {
+    ssr: false,
+    loading: () => (
+      <div
+        className={AV_PANEL_LOADING_CLASS}
+        data-testid="av-panel-loading"
+        aria-hidden="true"
+      />
+    ),
   },
 );
 

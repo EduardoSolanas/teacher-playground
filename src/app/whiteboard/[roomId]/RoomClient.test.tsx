@@ -12,6 +12,7 @@ import { CALL_RAIL_WIDTH } from '@/lib/av/callRail';
 import WhiteboardRoomPage, {
   ROOM_CANVAS_CLASS,
   EXCALIDRAW_LOADING_CLASS,
+  AV_PANEL_LOADING_CLASS,
   RoomContent,
   roomCanvasRightClass,
   roomCanvasRailStyle,
@@ -91,6 +92,23 @@ describe('room canvas responsive top offset', () => {
     expect(EXCALIDRAW_LOADING_CLASS).toContain('h-full');
     expect(EXCALIDRAW_LOADING_CLASS).toContain('min-h-0');
     expect(EXCALIDRAW_LOADING_CLASS).not.toContain('min-h-[25rem]');
+  });
+
+  it('mirrors the collapsed Show call pill while the call chunk loads (PERF-S1)', () => {
+    /*
+     * Same fixed corner, same pill skin and z-layer as the panel's own
+     * "Show call" state, so the skeleton reads as the call arriving rather
+     * than as furniture teleporting. The pulse is the only tell that it is
+     * not the real control yet.
+     */
+    expect(AV_PANEL_LOADING_CLASS).toContain('fixed');
+    expect(AV_PANEL_LOADING_CLASS).toContain('z-[1400]');
+    expect(AV_PANEL_LOADING_CLASS).toContain('rounded-full');
+    expect(AV_PANEL_LOADING_CLASS).toContain('left-2');
+    expect(AV_PANEL_LOADING_CLASS).toContain('top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)]');
+    expect(AV_PANEL_LOADING_CLASS).toContain('sm:bottom-16 sm:left-14 sm:top-auto');
+    expect(AV_PANEL_LOADING_CLASS).toContain('bg-slate-900/95');
+    expect(AV_PANEL_LOADING_CLASS).toContain('animate-pulse');
   });
 });
 
@@ -503,6 +521,21 @@ afterEach(() => {
 });
 
 describe('RoomContent main room', () => {
+  it('opens the room with the start button ready and no call surface mounted (PERF-S1)', async () => {
+    /*
+     * The call panel -- and the LiveKit SDK behind it -- is a chunk fetched
+     * only when a call is asked for. Until then the room must render whole:
+     * the start button is the entry point and is there from the first paint,
+     * and neither the panel nor its loading skeleton is in the document.
+     */
+    storeUserName();
+    await renderRoom();
+
+    expect(screen.getByTestId('av-start-call')).toBeTruthy();
+    expect(screen.queryByTestId('av-session-panel')).toBeNull();
+    expect(screen.queryByTestId('av-panel-loading')).toBeNull();
+  });
+
   it('draws the owner board shell with the room title and footer controls', async () => {
     storeUserName();
     await renderRoom();

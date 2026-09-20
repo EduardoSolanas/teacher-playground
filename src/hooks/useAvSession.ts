@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import type { Room } from 'livekit-client';
+import type { LiveKitProvider } from '@/lib/av/livekitProvider';
 import {
   createAvSession,
   type AvDevice,
@@ -14,7 +15,6 @@ import {
   type DeviceKind,
   type ParticipantState,
 } from '@/lib/av/avSession';
-import { LiveKitProvider } from '@/lib/av/livekitProvider';
 
 export interface UseAvSessionOptions {
   readonly roomId: string;
@@ -182,7 +182,16 @@ export function useAvSession(options: UseAvSessionOptions): UseAvSessionResult {
         return;
       }
 
-      const provider = new LiveKitProvider();
+      /*
+       * The SDK is the heaviest module the room can load (PERF-S1), and this
+       * is the only line that ever needs it: fetched alongside the token it
+       * will spend, and only once a token exists to spend. A room that never
+       * calls never downloads it.
+       */
+      const { LiveKitProvider: Provider } = await import('@/lib/av/livekitProvider');
+      if (cancelled) return;
+
+      const provider = new Provider();
       const session = createAvSession(provider);
       providerRef.current = provider;
       sessionRef.current = session;
