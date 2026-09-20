@@ -1,10 +1,17 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { EXCALIDRAW_ASSET_PATH } from "@/lib/whiteboard/excalidrawAssetPath";
+import ServiceWorkerRegistration from "@/components/ServiceWorkerRegistration";
 
 export const metadata: Metadata = {
   title: "Teacher Playground",
   description: "A secure collaborative whiteboard classroom for teachers and students",
+  /*
+   * The offline shell's web-app manifest (OFF-01). The file itself ships as
+   * a plain public/ asset; manifest-src falls back to default-src 'self' in
+   * the Worker's CSP, so no policy change is needed to fetch it.
+   */
+  manifest: "/manifest.webmanifest",
 };
 
 export const viewport: Viewport = {
@@ -39,7 +46,15 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body>{children}</body>
+      <body>
+        {children}
+        {/*
+          * OFF-01: production-only service-worker registration for the
+          * offline shell. Renders nothing; failures are swallowed by
+          * contract, so a refused registration can never disturb a lesson.
+          */}
+        <ServiceWorkerRegistration />
+      </body>
     </html>
   );
 }

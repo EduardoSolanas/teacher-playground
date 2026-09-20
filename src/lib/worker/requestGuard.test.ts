@@ -244,6 +244,25 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(isRouteAllowedOnHost('/_next/static/chunk.css', 'HEAD', 'guest')).toBe(true);
     });
 
+    it('GET/HEAD the offline-shell assets on both app hosts (OFF-01)', () => {
+      // The service worker script and the web-app manifest are fetched by the
+      // browser from app pages, which run on the teacher and the guest host.
+      expect(isRouteAllowedOnHost('/sw.js', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/sw.js', 'GET', 'guest')).toBe(true);
+      expect(isRouteAllowedOnHost('/manifest.webmanifest', 'HEAD', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/manifest.webmanifest', 'GET', 'guest')).toBe(true);
+    });
+
+    it('the offline-shell assets are write-denied and absent from the marketing host', () => {
+      expect(isRouteAllowedOnHost('/sw.js', 'POST', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/sw.js', 'POST', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/manifest.webmanifest', 'POST', 'teacher')).toBe(false);
+      // The marketing pages are self-contained static HTML that never
+      // registers a worker, so the path stays off that host entirely.
+      expect(isRouteAllowedOnHost('/sw.js', 'GET', 'marketing')).toBe(false);
+      expect(isRouteAllowedOnHost('/manifest.webmanifest', 'GET', 'marketing')).toBe(false);
+    });
+
     it('POST /_next/* is not allowed', () => {
       expect(isRouteAllowedOnHost('/_next/static/chunk.js', 'POST', 'teacher')).toBe(false);
       expect(isRouteAllowedOnHost('/_next/static/chunk.js', 'POST', 'guest')).toBe(false);
@@ -665,6 +684,34 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(csp).toContain("style-src 'self' 'unsafe-inline'");
       expect(csp).toContain("script-src 'self'");
       expect(wrapped.headers.get('Content-Security-Policy-Report-Only')).toBeNull();
+    });
+
+    it('admits same-origin worker scripts so the offline shell can register (OFF-01)', async () => {
+      /*
+       * A service worker script fetch is governed by worker-src, falling back
+       * through child-src to script-src. script-src carries the per-response
+       * nonce with 'strict-dynamic', which ignores 'self', so without an
+       * explicit worker-src the nonce-less /sw.js registration is refused as
+       * a policy violation. 'self' stays the narrowest possible value:
+       * service worker scripts must be same-origin by spec anyway.
+       */
+      const wrapped = withSecurityHeaders(
+        new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
+      );
+      const csp = wrapped.headers.get('Content-Security-Policy') ?? '';
+      expect(csp).toContain("worker-src 'self'");
+      expect(csp).not.toMatch(/script-src[^;]*'unsafe-inline'/);
+
+      // The variant the app's HTML actually gets: nonce'd script-src with
+      // strict-dynamic, plus the same worker-src admission — this is the
+      // combination under which a nonce-less /sw.js fetch would otherwise be
+      // refused.
+      const nonced = await withNonceHtmlSecurityHeaders(
+        new Response('<html></html>', { headers: { 'content-type': 'text/html; charset=utf-8' } }),
+      );
+      const noncedCsp = nonced.headers.get('Content-Security-Policy') ?? '';
+      expect(noncedCsp).toContain("worker-src 'self'");
+      expect(noncedCsp).toContain("'strict-dynamic'");
     });
 
     it('blocks form submissions to other origins in the CSP', () => {
@@ -1188,6 +1235,18 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
         '/api/admin/usersX',
         '/api/admin',
       ]) {
+        expect(isRouteAllowedOnHost(pathname, 'GET', 'teacher'), pathname).toBe(false);
+      }
+    });
+
+    it('keeps the admin errors API on the teacher host only', () => {
+      // The host guard passes any method through on teacher-only paths; the
+      // route itself answers 405 to non-GET, exactly like /api/admin/users.
+      expect(isRouteAllowedOnHost('/api/admin/errors', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/api/admin/errors', 'GET', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/api/admin/errors', 'GET', 'marketing')).toBe(false);
+      expect(isRouteAllowedOnHost('/api/admin/errors', 'GET', 'unknown')).toBe(false);
+      for (const pathname of ['/api/admin/errors/', '/api/admin/errorsX']) {
         expect(isRouteAllowedOnHost(pathname, 'GET', 'teacher'), pathname).toBe(false);
       }
     });

@@ -121,9 +121,11 @@ export function isRouteAllowedOnHost(
     // The operator surface: staff actions such as the emergency account disable.
     pathname === '/api/operator' ||
     pathname.startsWith('/api/operator/') ||
-    // The admin account list, gated again by the ADMIN_EMAILS allowlist in the
-    // Worker and the IdentityDO. Exact path: the surface has no sub-routes.
+    // The admin account list and the bounded error rings, gated again by the
+    // ADMIN_EMAILS allowlist in the Worker and the IdentityDO. Exact paths:
+    // the surface has no sub-routes.
     pathname === '/api/admin/users' ||
+    pathname === '/api/admin/errors' ||
     pathname === REFERRAL_ME_PATH ||
     pathname === '/api/whiteboard/rooms';
 
@@ -214,6 +216,14 @@ export function isRouteAllowedOnHost(
 
   // GET/HEAD /favicon.ico on both hosts
   if (pathname === '/favicon.ico') {
+    return method === 'GET' || method === 'HEAD';
+  }
+
+  // GET/HEAD the offline shell's own assets on both app hosts (OFF-01). The
+  // browser fetches /sw.js and the manifest from the app pages, which run on
+  // the teacher and the guest host alike. The marketing host is deliberately
+  // not listed: its self-contained static pages never register a worker.
+  if (pathname === '/sw.js' || pathname === '/manifest.webmanifest') {
     return method === 'GET' || method === 'HEAD';
   }
 
@@ -691,6 +701,14 @@ export function withSecurityHeaders(
         // advertised at all.
         options?.fontSrc ?? DEFAULT_FONT_SRC,
         "style-src 'self' 'unsafe-inline'",
+        // The offline shell's registration (OFF-01). A service worker script
+        // fetch is governed by worker-src, falling back through child-src to
+        // script-src — and script-src carries the per-response nonce with
+        // 'strict-dynamic', which ignores 'self'. Without an explicit
+        // worker-src the nonce-less /sw.js registration is refused as a
+        // policy violation. 'self' is the narrowest possible value: service
+        // worker scripts must be same-origin by spec anyway.
+        "worker-src 'self'",
         options?.scriptNonce
           ? `script-src 'self' 'nonce-${options.scriptNonce}' 'strict-dynamic'`
           : "script-src 'self'",
