@@ -5,55 +5,8 @@ const EXCALIDRAW_TOOL_BY_APP_TOOL: Record<string, string> = {
 
 const VALID_EXCALIDRAW_ELEMENT_TYPES = new Set([
   'rectangle', 'diamond', 'ellipse', 'arrow', 'line', 'freedraw', 'text', 'image',
-  'frame', 'magicframe', 'iframe', 'embeddable', 'document',
+  'frame', 'magicframe', 'iframe', 'embeddable',
 ]);
-
-/*
- * A `document` element is one placed instance of an uploaded document
- * (EMBEDDED_DOCUMENTS_SPEC §4.3). It carries only bounded, non-secret
- * references and display state: element id, board id, instance id, document
- * id, shared page index, geometry, a version, and an optional bounded label.
- * The projection below is closed -- original bytes, page bytes, data URLs,
- * base64, download URLs, conversion diagnostics, page manifests, and per-page
- * image elements never survive serialization, and neither does any future
- * field this contract does not name.
- */
-const DOCUMENT_ELEMENT_REFERENCE_KEYS = ['boardId', 'instanceId', 'documentId'] as const;
-const DOCUMENT_ELEMENT_GEOMETRY_KEYS = ['x', 'y', 'width', 'height', 'angle'] as const;
-
-function serializeDocumentElement(element: Record<string, unknown>): Record<string, unknown> | null {
-  const id = element.id;
-  if (typeof id !== 'string' || id.length === 0) return null;
-  for (const key of DOCUMENT_ELEMENT_REFERENCE_KEYS) {
-    const value = element[key];
-    if (typeof value !== 'string' || value.length === 0) return null;
-  }
-  const sharedPageIndex = element.sharedPageIndex as number;
-  if (!Number.isInteger(sharedPageIndex) || sharedPageIndex < 0) return null;
-  for (const key of DOCUMENT_ELEMENT_GEOMETRY_KEYS) {
-    const value = element[key] as number;
-    if (!Number.isFinite(value)) return null;
-  }
-  const version = element.version as number;
-  if (!Number.isInteger(version)) return null;
-
-  const serialized: Record<string, unknown> = {
-    id,
-    type: 'document',
-    boardId: element.boardId,
-    instanceId: element.instanceId,
-    documentId: element.documentId,
-    sharedPageIndex,
-    x: element.x,
-    y: element.y,
-    width: element.width,
-    height: element.height,
-    angle: element.angle,
-    version,
-  };
-  if (typeof element.label === 'string') serialized.label = element.label;
-  return serialized;
-}
 
 export function toExcalidrawToolType(tool: string): string {
   return EXCALIDRAW_TOOL_BY_APP_TOOL[tool] ?? 'selection';
@@ -81,7 +34,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function serializeExcalidrawElement(element: unknown): Record<string, unknown> | null {
   if (!isRecord(element) || typeof element.type !== 'string') return null;
   if (!VALID_EXCALIDRAW_ELEMENT_TYPES.has(element.type)) return null;
-  if (element.type === 'document') return serializeDocumentElement(element);
   return JSON.parse(JSON.stringify(element)) as Record<string, unknown>;
 }
 

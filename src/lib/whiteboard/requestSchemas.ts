@@ -16,10 +16,6 @@ export const MAX_ELEMENT_STRING_LENGTH = 4096;
 export const MAX_ELEMENT_KEYS = 64;
 export const MAX_ELEMENT_NEST_DEPTH = 10;
 export const MAX_MAX_USERS = 10;
-/** Bounded reference strings on a `document` element (EMBEDDED_DOCUMENTS_SPEC §4.3). */
-export const MAX_DOCUMENT_REF_LENGTH = 128;
-/** Bounded accessible label on a `document` element. */
-export const MAX_DOCUMENT_LABEL_LENGTH = 200;
 
 /** Excalidraw embed/media types that must not persist unless explicitly allowlisted. */
 export const BLOCKED_ELEMENT_TYPES = new Set([
@@ -171,85 +167,6 @@ export function isAllowedElementLink(value: string): boolean {
   }
 }
 
-/**
- * The closed field allowlist for a `document` element on the HTTP scene route:
- * the element's own id and type, bounded non-secret references, display
- * geometry, a version, and an optional bounded label. Anything else -- bytes,
- * data URLs, download URLs, diagnostics, manifests, per-page images -- is
- * rejected rather than persisted.
- */
-const DOCUMENT_ELEMENT_REF_KEYS = ['boardId', 'instanceId', 'documentId'] as const;
-const DOCUMENT_ELEMENT_GEOMETRY_KEYS = ['x', 'y', 'width', 'height', 'angle'] as const;
-const DOCUMENT_ELEMENT_KEYS = new Set([
-  'id',
-  'type',
-  ...DOCUMENT_ELEMENT_REF_KEYS,
-  'sharedPageIndex',
-  ...DOCUMENT_ELEMENT_GEOMETRY_KEYS,
-  'version',
-  'label',
-]);
-
-function addDocumentElementIssues(
-  element: Record<string, unknown>,
-  ctx: z.RefinementCtx,
-): void {
-  for (const key of Object.keys(element)) {
-    if (!DOCUMENT_ELEMENT_KEYS.has(key)) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'document element carries only bounded reference fields',
-      });
-    }
-  }
-
-  for (const key of DOCUMENT_ELEMENT_REF_KEYS) {
-    const value = element[key];
-    if (typeof value !== 'string' || value.length === 0 || value.length > MAX_DOCUMENT_REF_LENGTH) {
-      ctx.addIssue({
-        code: 'custom',
-        message: `document element ${key} must be a string of 1 to ${MAX_DOCUMENT_REF_LENGTH} characters`,
-      });
-    }
-  }
-
-  const sharedPageIndex = element.sharedPageIndex as number;
-  if (!Number.isInteger(sharedPageIndex) || sharedPageIndex < 0) {
-    ctx.addIssue({
-      code: 'custom',
-      message: 'document element sharedPageIndex must be a non-negative integer',
-    });
-  }
-
-  for (const key of DOCUMENT_ELEMENT_GEOMETRY_KEYS) {
-    const value = element[key];
-    if (!Number.isFinite(value)) {
-      ctx.addIssue({
-        code: 'custom',
-        message: `document element ${key} must be a finite number`,
-      });
-    }
-  }
-
-  const version = element.version;
-  if (!Number.isInteger(version)) {
-    ctx.addIssue({
-      code: 'custom',
-      message: 'document element version must be an integer',
-    });
-  }
-
-  if (element.label !== undefined) {
-    const label = element.label;
-    if (typeof label !== 'string' || label.length > MAX_DOCUMENT_LABEL_LENGTH) {
-      ctx.addIssue({
-        code: 'custom',
-        message: `document element label must be a string of at most ${MAX_DOCUMENT_LABEL_LENGTH} characters`,
-      });
-    }
-  }
-}
-
 export const sceneElementSchema = z
   .object({
     id: z.string().regex(ELEMENT_ID_RE, 'element id must match the allowed grammar'),
@@ -264,10 +181,6 @@ export const sceneElementSchema = z
           code: 'custom',
           message: 'element type is not permitted',
         });
-      }
-      if (normalizedType === 'document') {
-        addDocumentElementIssues(element, ctx);
-        return;
       }
     }
 

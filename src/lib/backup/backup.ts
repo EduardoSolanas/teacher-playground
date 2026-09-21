@@ -50,6 +50,14 @@ export const ROOM_BACKUP_TABLES: readonly string[] = [
   ...ROOM_SCOPED_TABLES.filter((table) => table !== 'rooms'),
 ];
 
+/**
+ * Tables that backups taken before their removal still list. The schema drops
+ * them, so restore skips them -- but only while they are empty: a retired
+ * table carrying rows is data this build no longer has anywhere to put, and
+ * silently discarding it would make the restore look complete when it is not.
+ */
+const RETIRED_TABLES: ReadonlySet<string> = new Set(['room_documents', 'room_document_jobs']);
+
 export class BackupError extends Error {
   constructor(message: string) {
     super(message);
@@ -218,6 +226,12 @@ export function restoreBackup(db: RoomDatabase, dump: BackupDump): void {
       if (!Array.isArray(table.rows)) {
         throw new BackupRestoreError(`malformed backup: rows of ${table.name} must be an array`);
       }
+      if (RETIRED_TABLES.has(table.name)) {
+        if (table.rows.length === 0) continue;
+        throw new BackupRestoreError(
+          `cannot restore retired table ${quoteIdentifier(table.name)} with rows`,
+        );
+      }
       const columns = tableColumns(db, table.name);
       if (columns.length === 0) {
         throw new BackupRestoreError(`cannot restore unknown table ${quoteIdentifier(table.name)}`);
@@ -286,11 +300,10 @@ export function backupObjectKey(
  * Whether the backup cycle may run.
  *
  * Unset, empty, 'on'/'true'/'1' enable; 'off'/'false'/'0' is the kill switch;
- * anything else enables. Fail-open is deliberate and unlike
- * documentsFlag's fail-closed: a mistyped value here costs R2 storage for
- * objects nobody restores, while failing closed would silently leave every
- * classroom's only application-managed export uncollected with nothing on the
- * page to say so. The explicit switches exist for the operator who wants the
+ * anything else enables. Fail-open is deliberate: a mistyped value here costs
+ * R2 storage for objects nobody restores, while failing closed would silently
+ * leave every classroom's only application-managed export uncollected with
+ * nothing on the page to say so. The explicit switches exist for the operator who wants the
  * cost back.
  */
 export function parseBackupsEnabled(raw: string | undefined): boolean {

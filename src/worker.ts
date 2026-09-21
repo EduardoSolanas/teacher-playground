@@ -40,7 +40,6 @@ import {
   isOriginGuardedPath,
   readBoundedJsonBody,
   readBoundedText,
-  readBoundedBytes,
   isPublicPath,
   isValidRoomId,
   MARKETING_PAGES,
@@ -63,17 +62,7 @@ import {
   isAllowedMimeType,
   buildR2ObjectKey,
 } from './lib/whiteboard/boardFileRoutes';
-import { parseDocumentsMode, documentsAllowsWrites, documentsSurfaceVisible } from './lib/documents/documentsFlag';
 import { runBackupCycle } from './lib/backup/backupCycle';
-import { DOCUMENTS_UPLOAD_RATE_MAX } from './lib/worker/rateLimits';
-import {
-  detectDocumentMediaType,
-  documentContentType,
-  documentOriginalKey,
-  isValidIdempotencyKey,
-  MAX_DOCUMENT_FILENAME_RAW_LENGTH,
-  type DocumentManifestSummary,
-} from './lib/documents/documentUpload';
 import { applyPlanMaxUsersParam } from './lib/whiteboard/planMaxUsers';
 import { PLAN_CATALOG, type PlanId } from './lib/plan/catalog';
 import { readBillingEnv, type BillingEnv } from './lib/billing/stripeConfig';
@@ -151,14 +140,6 @@ export interface Env {
   OPERATOR_EMAILS?: string;
   /** Comma-separated admin allowlist for the /admin surface. Unset disables the surface. */
   ADMIN_EMAILS?: string;
-  /**
-   * Embedded-documents surface mode (spec/EMBEDDED_DOCUMENTS_SPEC.md §10,
-   * milestone 0): 'off' hides the surface entirely, 'read-only' is the kill
-   * switch (reads continue, uploads/conversions/placement stop), 'on' opens
-   * everything. Parsed by src/lib/documents/documentsFlag.ts; anything
-   * unrecognised parses as 'off' — fail closed.
-   */
-  EMBEDDED_DOCUMENTS?: string;
   /**
    * Scheduled DO SQLite backup cycle (BAK-01). 'off'/'false'/'0' stops the
    * daily export to BOARD_FILES; unset, 'on'/'true'/'1' and anything else run
@@ -340,22 +321,6 @@ function sceneWriteLimiterFor(env: Env) {
   return env.ENVIRONMENT === 'local-test'
     ? strictLocalTestSceneWriteLimiter
     : productionSceneWriteLimiter;
-}
-
-const DOCUMENTS_UPLOAD_RATE_WINDOW_MS = RATE_WINDOW_MS;
-const productionDocumentsUploadLimiter = createRateLimiter({
-  windowMs: DOCUMENTS_UPLOAD_RATE_WINDOW_MS,
-  max: DOCUMENTS_UPLOAD_RATE_MAX,
-});
-const strictLocalTestDocumentsUploadLimiter = createRateLimiter({
-  windowMs: DOCUMENTS_UPLOAD_RATE_WINDOW_MS,
-  max: DOCUMENTS_UPLOAD_RATE_MAX,
-});
-
-function documentsUploadLimiterFor(env: Env) {
-  return env.ENVIRONMENT === 'local-test'
-    ? strictLocalTestDocumentsUploadLimiter
-    : productionDocumentsUploadLimiter;
 }
 
 /** Guest join POSTs per client IP within a one-minute window. */
@@ -2130,252 +2095,6 @@ function settleReservedFileBytes(
   );
 }
 
-const DOCUMENTS_API = /^\/api\/whiteboard\/room\/([^/]+)\/documents$/;
-
-function documentsNotFound(): Response {
-  // JSON, not the bare host 404: the surface must look absent to callers the
-  // same way the admin surface does when its allowlist is empty.
-  return withSecurityHeaders(Response.json(
-    { error: 'Not found' },
-    { status: 404, headers: { 'Cache-Control': 'no-store' } },
-  ));
-}
-
-function documentsUploadFailed(): Response {
-  return withSecurityHeaders(Response.json(
-    { error: 'Upload failed' },
-    { status: 500, headers: { 'Cache-Control': 'no-store' } },
-  ));
-}
-
-/**
- * Owner-authorized embedded-document upload (milestone 2 of
- * spec/EMBEDDED_DOCUMENTS_SPEC.md). The body is the original binary.
- *
- * Order matters and is pinned: method -> surface flag -> size bounds ->
- * room authorization (owner) -> magic bytes -> idempotent replay ->
- * quota reservation -> R2 store -> manifest/job rows. Nothing counts against
- * the room's byte quota until the bytes have arrived and passed detection,
- * and nothing is stored unless the reservation was accepted, so a refused or
- * failed upload leaves neither rows nor objects behind.
- */
-async function documentsUploadRoute(
-  env: Env,
-  request: Request,
-  url: URL,
-  session: ValidatedSession | null,
-  guestCaller: boolean,
-): Promise<Response> {
-  if (request.method !== 'POST') {
-    return withSecurityHeaders(Response.json(
-      { error: 'Method not allowed' },
-      { status: 405, headers: { Allow: 'POST' } },
-    ));
-  }
-  const mode = parseDocumentsMode(env.EMBEDDED_DOCUMENTS);
-  if (!documentsSurfaceVisible(mode)) return documentsNotFound();
-  if (!documentsAllowsWrites(mode)) {
-    // Kill switch: uploads stop for everybody, owner included. This never
-    // weakens the owner check below — it only refuses earlier.
-    return withSecurityHeaders(Response.json(
-      { error: 'Forbidden' },
-      { status: 403, headers: { 'Cache-Control': 'no-store' } },
-    ));
-  }
-
-  const match = url.pathname.match(DOCUMENTS_API);
-  if (!match || !session) return documentsNotFound();
-  const roomId = decodeURIComponent(match[1]);
-  if (!isValidRoomId(roomId)) {
-    return withSecurityHeaders(new Response('Invalid room id', { status: 400 }));
-  }
-
-  // SEC-C1: uploads are 25 MiB binaries — the one write surface without a
-  // limiter until now. Keyed per verified account, same window as the others.
-  if (session) {
-    const limit = documentsUploadLimiterFor(env).take(session.accountId);
-    if (!limit.ok) return rateLimited(env, limit.retryAfterMs);
-  }
-
-  const contentLength = request.headers.get('content-length');
-  if (!contentLength || isNaN(Number(contentLength))) {
-    return withSecurityHeaders(new Response('Content-Length required', { status: 411 }));
-  }
-  if (Number(contentLength) > MAX_BOARD_FILE_BYTES) {
-    // Refused before a byte is read: the reservation has not run yet either.
-    return withSecurityHeaders(Response.json(
-      { error: 'File too large' },
-      { status: 413, headers: { 'Cache-Control': 'no-store' } },
-    ));
-  }
-
-  // The room decides ownership: 403 for a non-owner, 404 for an unknown room,
-  // both before any bytes are accepted.
-  const authCheck = await forward(
-    env,
-    roomId,
-    '/room/documents/authorize-upload',
-    new Request('https://room/documents/authorize-upload', { method: 'GET' }),
-    url,
-    session,
-    guestCaller,
-  );
-  if (!authCheck.ok) return authCheck;
-
-  const query = url.searchParams;
-  const rawFilename = query.get('filename');
-  if (
-    rawFilename !== null
-    && (rawFilename.length === 0 || rawFilename.length > MAX_DOCUMENT_FILENAME_RAW_LENGTH)
-  ) {
-    return withSecurityHeaders(Response.json({ error: 'Invalid request' }, { status: 400 }));
-  }
-  const idempotencyKey = query.get('idempotencyKey');
-  if (idempotencyKey !== null && !isValidIdempotencyKey(idempotencyKey)) {
-    return withSecurityHeaders(Response.json({ error: 'Invalid request' }, { status: 400 }));
-  }
-
-  // The digest and the magic-byte check need the whole original, but SEC-C2:
-  // a forged Content-Length must not buffer an oversized body into the
-  // isolate. The bounded reader stops pulling at the cap, cancels the stream,
-  // and answers 413 — nothing oversized is ever materialized.
-  const bounded = await readBoundedBytes(request, MAX_BOARD_FILE_BYTES);
-  if (!bounded.ok) {
-    return withSecurityHeaders(Response.json(
-      { error: 'File too large' },
-      { status: bounded.status, headers: { 'Cache-Control': 'no-store' } },
-    ));
-  }
-  const bytes = bounded.bytes;
-  const mediaType = detectDocumentMediaType(bytes);
-  if (mediaType === null) {
-    return withSecurityHeaders(Response.json(
-      { error: 'Unsupported media type' },
-      { status: 415, headers: { 'Cache-Control': 'no-store' } },
-    ));
-  }
-  const digestHex = hexDigest(await crypto.subtle.digest('SHA-256', bytes));
-
-  /*
-   * A repeated idempotency key returns the original manifest result before
-   * reserving or storing anything, so a client retry never double-charges
-   * quota. A concurrent duplicate is settled by the manifest's unique index
-   * at create time, below.
-   */
-  if (idempotencyKey !== null) {
-    const find = await forward(
-      env,
-      roomId,
-      '/room/documents/find',
-      new Request('https://room/documents/find', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ idempotencyKey }),
-      }),
-      url,
-      session,
-      guestCaller,
-    );
-    if (!find.ok) return find;
-    const payload = await find.json() as { found?: unknown; document?: DocumentManifestSummary };
-    if (payload.found === true && payload.document) {
-      return withSecurityHeaders(Response.json(payload.document, {
-        status: 201,
-        headers: { 'Cache-Control': 'no-store' },
-      }));
-    }
-  }
-
-  // Same reservation the board-file PUT uses: one synchronous SQL turn in the
-  // room, so racing uploads cannot both pass the cap.
-  const reservation = await forward(
-    env,
-    roomId,
-    '/room/files/reserve',
-    new Request('https://room/room/files/reserve', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ bytes: bytes.byteLength }),
-    }),
-    url,
-    session,
-    guestCaller,
-  );
-  if (!reservation.ok) return reservation;
-
-  const documentId = crypto.randomUUID();
-  const key = documentOriginalKey(roomId, documentId);
-  let stored: R2Object | null = null;
-  try {
-    stored = await env.BOARD_FILES.put(key, bytes, {
-      httpMetadata: { contentType: documentContentType(mediaType) },
-    });
-  } catch {
-    stored = null;
-  }
-  if (!stored || stored.size !== bytes.byteLength) {
-    if (stored) await env.BOARD_FILES.delete(key);
-    await settleReservedFileBytes(env, roomId, url, session, guestCaller, bytes.byteLength, 0);
-    return documentsUploadFailed();
-  }
-
-  const create = await forward(
-    env,
-    roomId,
-    '/room/documents/create',
-    new Request('https://room/documents/create', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        documentId,
-        ...(rawFilename !== null ? { filename: rawFilename } : {}),
-        mediaType,
-        byteLength: bytes.byteLength,
-        contentDigest: digestHex,
-        ...(idempotencyKey !== null ? { idempotencyKey } : {}),
-      }),
-    }),
-    url,
-    session,
-    guestCaller,
-  );
-  if (!create.ok) {
-    await env.BOARD_FILES.delete(key);
-    await settleReservedFileBytes(env, roomId, url, session, guestCaller, bytes.byteLength, 0);
-    return create;
-  }
-  const created = await create.json() as {
-    replayed?: unknown;
-    document?: DocumentManifestSummary;
-  };
-  if (created.replayed === true && created.document) {
-    // A concurrent upload with the same idempotency key created the manifest
-    // first: this caller's bytes are orphans under its own fresh document id,
-    // so they go back, along with the reservation.
-    await env.BOARD_FILES.delete(key);
-    await settleReservedFileBytes(env, roomId, url, session, guestCaller, bytes.byteLength, 0);
-    return withSecurityHeaders(Response.json(created.document, {
-      status: 201,
-      headers: { 'Cache-Control': 'no-store' },
-    }));
-  }
-  if (!created.document) {
-    await env.BOARD_FILES.delete(key);
-    await settleReservedFileBytes(env, roomId, url, session, guestCaller, bytes.byteLength, 0);
-    return documentsUploadFailed();
-  }
-  return withSecurityHeaders(Response.json(created.document, {
-    status: 201,
-    headers: { 'Cache-Control': 'no-store' },
-  }));
-}
-
-function hexDigest(buffer: ArrayBuffer): string {
-  return [...new Uint8Array(buffer)]
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
-}
-
 async function probeRoomAccessStatus(
   env: Env,
   roomId: string,
@@ -3970,13 +3689,6 @@ const worker = {
         { error: 'Method not allowed' },
         { status: 405, headers: { Allow: 'GET, HEAD, PUT' } },
       ));
-    }
-
-    // Embedded-document upload. Handled before ROOM_API so the binary body
-    // bypasses the JSON body-reading logic, exactly like the board-file route.
-    const documentsMatch = url.pathname.match(DOCUMENTS_API);
-    if (documentsMatch) {
-      return documentsUploadRoute(env, request, url, session, guestCaller);
     }
 
     const match = url.pathname.match(ROOM_API);

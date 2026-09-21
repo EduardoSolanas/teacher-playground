@@ -58,10 +58,6 @@ import {
   handleRequestsPost,
 } from '../lib/whiteboard/handlers/requests';
 import { handleRequestsIdPost } from '../lib/whiteboard/handlers/requestsId';
-import {
-  handleDocumentsCreateRequest,
-  handleDocumentsFindRequest,
-} from '../lib/whiteboard/handlers/documents';
 import { issueAvTokenResponse } from '../lib/av/handleAvToken';
 import {
   removeLiveKitParticipant,
@@ -277,7 +273,6 @@ function isArchivedRoomWrite(
     if (action === 'authorize-write') return true;
     return (action === 'reserve' || action === 'settle') && method === 'POST';
   }
-  if (section === 'documents') return method === 'POST';
   return false;
 }
 
@@ -1049,19 +1044,6 @@ export class RoomDO extends DurableObject {
       return forbidden();
     }
 
-    /*
-     * Embedded documents (spec/EMBEDDED_DOCUMENTS_SPEC.md §3): every server
-     * write path is the owner's alone. Upload, manifest lookup, and manifest
-     * creation are all parts of the owner-only upload flow, so the whole
-     * section is owner-gated; editors and viewers are refused here before any
-     * handler runs. The surface flag is a Worker concern and never weakens
-     * this check.
-     */
-    if (section === 'documents') {
-      if (guest) return forbidden();
-      return owner ? null : forbidden();
-    }
-
     return forbidden();
   }
 
@@ -1370,31 +1352,6 @@ export class RoomDO extends DurableObject {
         }
 
         return Promise.resolve(Response.json({ error: 'Not found' }, { status: 404 }));
-      }
-      case 'documents': {
-        const action = segments[2] ?? '';
-
-        // Same canonical-path rule as the files case: the Worker sends exactly
-        // /room/documents/<action>, and anything else is refused before any
-        // side effect.
-        if (url.pathname !== `/room/documents/${action}`) {
-          return Promise.resolve(Response.json({ error: 'Not found' }, { status: 404 }));
-        }
-
-        if (action === 'authorize-upload') {
-          return Promise.resolve(Response.json({ ok: true }, { status: 200 }));
-        }
-        if (action === 'find' && method === 'POST') {
-          return handleDocumentsFindRequest(this.db, roomId, request);
-        }
-        if (action === 'create' && method === 'POST') {
-          // The uploader is always the Worker-stamped account; the body is
-          // never allowed to name one.
-          const accountId = url.searchParams.get('accountId');
-          if (!accountId) return Promise.resolve(forbidden('Account required'));
-          return handleDocumentsCreateRequest(this.db, roomId, accountId, request);
-        }
-        break;
       }
       case 'requests': {
         const requestId = segments[2];

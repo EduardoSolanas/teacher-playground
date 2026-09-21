@@ -148,8 +148,6 @@ describe('serializeBackup over the room schema', () => {
       'waiting_peers',
       'kicked_peers',
       'room_members',
-      'room_documents',
-      'room_document_jobs',
     ]);
   });
 
@@ -385,6 +383,40 @@ describe('restoreBackup guards', () => {
     };
     expect(() => restoreBackup(db as unknown as RoomDatabase, dump))
       .toThrow(/cannot restore unknown table/);
+    const survivors = db.prepare(`SELECT COUNT(*) AS n FROM rooms`).get() as { n: number };
+    expect(survivors.n).toBe(1);
+  });
+
+  it('restores a backup taken before the document tables were retired', () => {
+    seedRoom('room-1');
+    const current = serializeBackup(db as unknown as RoomDatabase, ROOM_BACKUP_TABLES);
+    const legacy: BackupDump = {
+      ...current,
+      tables: [
+        ...current.tables,
+        { name: 'room_documents', rows: [] },
+        { name: 'room_document_jobs', rows: [] },
+      ],
+    };
+    const fresh = new Database(':memory:');
+    applySchema(fresh as unknown as RoomDatabase);
+    restoreBackup(fresh as unknown as RoomDatabase, legacy);
+    const restored = fresh.prepare(`SELECT room_id FROM rooms`).all();
+    expect(restored).toEqual([{ room_id: 'room-1' }]);
+  });
+
+  it('refuses a retired document table that still carries rows', () => {
+    seedRoom('room-1');
+    const dump: BackupDump = {
+      version: BACKUP_VERSION,
+      createdAt: T0,
+      tables: [
+        { name: 'rooms', rows: [] },
+        { name: 'room_documents', rows: [{ document_id: 'doc-1' }] },
+      ],
+    };
+    expect(() => restoreBackup(db as unknown as RoomDatabase, dump))
+      .toThrow(/cannot restore retired table "room_documents" with rows/);
     const survivors = db.prepare(`SELECT COUNT(*) AS n FROM rooms`).get() as { n: number };
     expect(survivors.n).toBe(1);
   });
