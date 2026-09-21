@@ -50,15 +50,19 @@ page text is not selectable, and the original file is not kept.
   file, 250 MiB per room, reserve/settle quota, and the "bytes are ready" signal
   to peers.
 - `src/lib/whiteboard/authz.ts` — `canWriteBoard` already decides who may add an
-  image. The same role may import a PDF, because importing a PDF is adding
-  images; no new permission exists.
+  image, and the server applies it to every page upload. Importing a PDF is
+  adding images, so no new permission exists; the owner-only entry points are a
+  product choice, not the security boundary.
 - The `worker-src 'self'` CSP directive in `src/lib/worker/requestGuard.ts` — the
   PDF.js worker is served as a same-origin bundle chunk, so no header changes.
 
 ## 3. User flow
 
-1. A user who can write to the board chooses **Insert PDF** beside the image
-   tool, or (milestone 2) drops a `.pdf` file on the board.
+1. The room owner chooses **Insert PDF** in the board footer or **Insert PDF…**
+   in the room title menu — the menu is the route at phone widths, where
+   Excalidraw draws no footer — or (milestone 2) drops a `.pdf` file on the
+   board. Editors can already add images, but the first release keeps the
+   action with the teacher's controls.
 2. The file is opened locally. A dialog shows the file name, the page count, and
    a page range defaulting to all pages when the document has at most
    `MAX_PAGES_PER_IMPORT` pages, otherwise to the first `MAX_PAGES_PER_IMPORT`.
@@ -92,6 +96,11 @@ with every other element on the board.
 | Page raster | longest side 2000 px, never upscaled beyond 3x | Readable when zoomed on a projector; at most 4 million pixels per page follows from the side limit |
 | Encoding | WebP at quality 0.85 when `canvas.toBlob` returns `image/webp`, else JPEG at 0.9 | Safari cannot encode WebP; the result type is checked, not assumed |
 | File id | SHA-1 hex of the encoded bytes | Content-addressed and within the existing `[A-Za-z0-9_-]{1,64}` id rule |
+
+Each page is drawn on white with a slate hairline (`#cbd5e1`, about one page
+unit wide, at least 2 px) around its edge, so a white page is visible on the
+white board and stacked pages are told apart; the frame is part of the image,
+so every peer sees it.
 
 Rendering is sequential; each canvas is released (`width = height = 0`) after
 encoding, and the PDF document is destroyed when the import ends, fails, or is

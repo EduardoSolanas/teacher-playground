@@ -21,6 +21,7 @@ import { shouldCollapsePresenceForViewport } from '@/lib/whiteboard/presenceView
 import { shouldOverlayConnectingScreen } from '@/lib/whiteboard/connectingOverlay';
 import { shouldExpandForArrival } from '@/lib/whiteboard/waitingArrival';
 import ClearBoardModal from '@/components/whiteboard/ClearBoardModal';
+import PdfImportDialog from '@/components/whiteboard/PdfImportDialog';
 import BoardTabs from '@/components/whiteboard/BoardTabs';
 import RoomTopNav from '@/components/whiteboard/RoomTopNav';
 import { PreJoinCheck } from '@/components/av/PreJoinCheck';
@@ -400,6 +401,9 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
   const [guestHost, setGuestHost] = useState(false);
   const [guestHostReady, setGuestHostReady] = useState(false);
   const [clearModalOpen, setClearModalOpen] = useState(false);
+  /** The PDF the teacher picked for Insert PDF; the dialog is open while set. */
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const pdfInputRef = useRef<HTMLInputElement>(null);
   const [clearFailed, setClearFailed] = useState(false);
   // The store is the single source of truth for the active tool: keyboard
   // shortcuts write to it directly, so deriving from it keeps the sidebar
@@ -842,6 +846,23 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
       </button>
       <button
         type="button"
+        data-testid="whiteboard-insert-pdf"
+        onClick={() => pdfInputRef.current?.click()}
+        className="ToolIcon_type_button ToolIcon_size_medium ToolIcon_type_button--show ToolIcon"
+        aria-label="Insert PDF"
+        title="Insert PDF"
+      >
+        <div className="ToolIcon__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+            <path d="M14 3v5h5" />
+            <path d="M12 12v6" />
+            <path d="M9 15h6" />
+          </svg>
+        </div>
+      </button>
+      <button
+        type="button"
         data-testid="whiteboard-clear-btn"
         onClick={() => setClearModalOpen(true)}
         className="ToolIcon_type_button ToolIcon_size_medium ToolIcon_type_button--show ToolIcon tp-board-footer__button--danger"
@@ -1103,6 +1124,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
               onRename={handleRenameRoom}
               onSaveAs={handleSaveAs}
               onOpenLibrary={handleOpenLibrary}
+              onInsertPdf={() => pdfInputRef.current?.click()}
             />
             {shouldShowStartCall({
               isHost: isLocalHost,
@@ -1243,6 +1265,35 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         </div>
       )}
       {shouldOverlayConnectingScreen({ boardEverShown, isSynced }) && <LoadingScreen />}
+      {/*
+        * The picker behind Insert PDF, opened from the board footer and from
+        * the title menu. Outside the footer on purpose: Excalidraw does not
+        * draw the footer at phone widths, and the picker would go with it.
+        * Choosing a file only reads it into this browser; the dialog renders
+        * it and nothing but page images is sent.
+        */}
+      {isRoomOwner && (
+        <input
+          ref={pdfInputRef}
+          type="file"
+          accept="application/pdf,.pdf"
+          className="hidden"
+          data-testid="whiteboard-insert-pdf-input"
+          onChange={(event) => {
+            const chosen = event.target.files?.[0] ?? null;
+            // Cleared so choosing the same file again still fires a change.
+            event.target.value = '';
+            if (chosen) setPdfFile(chosen);
+          }}
+        />
+      )}
+      {pdfFile && (
+        <PdfImportDialog
+          file={pdfFile}
+          onInsert={(pages) => boardActionsRef.current?.insertPages(pages)}
+          onClose={() => setPdfFile(null)}
+        />
+      )}
       {/* Stacked above the mobile tool bar; centred on its own row from sm: up. */}
       <ClearBoardModal
         isOpen={clearModalOpen}

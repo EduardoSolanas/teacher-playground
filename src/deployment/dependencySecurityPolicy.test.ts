@@ -87,4 +87,15 @@ describe('development dependency security policy', () => {
       expectAtLeast(version, [1, 8, 5], 'GHSA-w7jw-789q-3m8p / GHSA-395f-4hp3-45gv');
     }
   });
+
+  it('pins pdfjs-dist past the font-driven script execution fix (spec/PDF_IMPORT_SPEC.md)', () => {
+    const versions = dependencyVersions(readPackageLock(), 'pdfjs-dist');
+
+    // PDF import renders untrusted files in the teacher's browser, so the
+    // renderer must be present and patched, not merely patched if present.
+    expect(versions.length, 'pdfjs-dist must be installed for PDF import').toBeGreaterThan(0);
+    for (const version of versions) {
+      expectAtLeast(version, [4, 2, 67], 'CVE-2024-4367 / GHSA-wgrm-67xf-hhpq');
+    }
+  });
 });

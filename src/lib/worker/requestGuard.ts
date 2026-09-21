@@ -214,6 +214,14 @@ export function isRouteAllowedOnHost(
     return method === 'GET' || method === 'HEAD';
   }
 
+  // GET/HEAD PDF.js's runtime data (spec/PDF_IMPORT_SPEC.md §4), copied into
+  // /pdfjs/ at build. Teacher host only: inserting a PDF is the room owner's
+  // action, and the owner is never on the guest host. Not a public path either
+  // -- PDF.js fetches same-origin with the Access cookie.
+  if (pathname.startsWith('/pdfjs/')) {
+    return hostKind === 'teacher' && (method === 'GET' || method === 'HEAD');
+  }
+
   // GET/HEAD /favicon.ico on both hosts
   if (pathname === '/favicon.ico') {
     return method === 'GET' || method === 'HEAD';

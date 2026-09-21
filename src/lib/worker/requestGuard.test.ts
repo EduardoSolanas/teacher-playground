@@ -279,6 +279,26 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(isRouteAllowedOnHost('/fonts/Xiaolai/Xiaolai-Regular.woff2', 'POST', 'guest')).toBe(false);
     });
 
+    it('GET/HEAD PDF.js runtime data is allowed on the teacher host only', () => {
+      expect(isRouteAllowedOnHost('/pdfjs/standard_fonts/FoxitSans.pfb', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/pdfjs/cmaps/UniJIS-UTF16-H.bcmap', 'HEAD', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/pdfjs/wasm/openjpeg.wasm', 'GET', 'teacher')).toBe(true);
+      // Only the room owner inserts a PDF, and the owner is on the teacher host.
+      expect(isRouteAllowedOnHost('/pdfjs/standard_fonts/FoxitSans.pfb', 'GET', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/pdfjs/standard_fonts/FoxitSans.pfb', 'GET', 'marketing')).toBe(false);
+    });
+
+    it('PDF.js runtime data refuses writes and look-alike prefixes', () => {
+      expect(isRouteAllowedOnHost('/pdfjs/wasm/openjpeg.wasm', 'POST', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/pdfjs/wasm/openjpeg.wasm', 'PUT', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/pdfjsx/secret', 'GET', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/pdfjs', 'GET', 'teacher')).toBe(false);
+    });
+
+    it('PDF.js runtime data stays behind Access', () => {
+      expect(isPublicPath('/pdfjs/standard_fonts/FoxitSans.pfb')).toBe(false);
+    });
+
     it('GET/HEAD /favicon.ico is allowed on both hosts', () => {
       expect(isRouteAllowedOnHost('/favicon.ico', 'GET', 'teacher')).toBe(true);
       expect(isRouteAllowedOnHost('/favicon.ico', 'GET', 'guest')).toBe(true);
