@@ -21,7 +21,6 @@ import { shouldCollapsePresenceForViewport } from '@/lib/whiteboard/presenceView
 import { shouldOverlayConnectingScreen } from '@/lib/whiteboard/connectingOverlay';
 import { shouldExpandForArrival } from '@/lib/whiteboard/waitingArrival';
 import ClearBoardModal from '@/components/whiteboard/ClearBoardModal';
-import PdfImportDialog from '@/components/whiteboard/PdfImportDialog';
 import BoardTabs from '@/components/whiteboard/BoardTabs';
 import RoomTopNav from '@/components/whiteboard/RoomTopNav';
 import { PreJoinCheck } from '@/components/av/PreJoinCheck';
@@ -107,6 +106,17 @@ const ExcalidrawWrapper = dynamic(
     ssr: false,
     loading: () => <div className={EXCALIDRAW_LOADING_CLASS} />,
   },
+);
+
+/*
+ * The PDF dialog carries the pdf.js renderer with it (PERF-S2), so it loads
+ * when a teacher actually picks a file -- never as part of opening the room.
+ * No loading placeholder: until its chunk lands nothing is open yet, and the
+ * dialog's own "opening" stage is the first thing worth showing.
+ */
+const PdfImportDialog = dynamic(
+  () => import('@/components/whiteboard/PdfImportDialog'),
+  { ssr: false },
 );
 
 /**

@@ -22,6 +22,15 @@ const SRC_ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
 const ENTRY = path.join(import.meta.dirname, 'RoomClient.tsx');
 
 const LIVEKIT_SPECIFIERS = ['livekit-client', '@livekit/components-react'];
+/*
+ * PERF-S2: the PDF importer opens from a footer button, so its dialog (and the
+ * pdf.js renderer it mounts) may load on first use, not with the room. The
+ * walk must never reach PdfImportDialog.tsx or the pdfjs-dist package through
+ * static imports; next/dynamic is the only boundary that keeps them out of the
+ * entry graph.
+ */
+const PDF_ENTRY_SPECIFIERS = ['pdfjs-dist'];
+const PDF_ENTRY_FILES = ['PdfImportDialog.tsx'];
 
 function stripComments(source: string): string {
   return source
@@ -70,9 +79,14 @@ function resolveSpecifier(specifier: string, fromDir: string): string | null {
 }
 
 describe('RoomClient static import graph', () => {
-  it('keeps livekit-client and @livekit/components-react out of the room entry chunk', () => {
-    const offenders: { file: string; specifiers: string[] }[] = [];
+  /**
+   * The entry's static closure: every file reachable through value imports,
+   * plus every bare-package specifier those files import. Test files are not
+   * followed. Type-only imports are erased, dynamic `import()` not followed.
+   */
+  function staticClosure(): { files: string[]; bareSpecifiers: Map<string, string[]> } {
     const visited = new Set<string>();
+    const bareSpecifiers = new Map<string, string[]>();
     const queue = [ENTRY];
 
     while (queue.length > 0) {
@@ -82,20 +96,47 @@ describe('RoomClient static import graph', () => {
       if (/(?:^|[\\/])[^\\/]*\.test\.(?:ts|tsx)$/.test(file)) continue;
 
       const fromDir = path.dirname(file);
+      const bare: string[] = [];
       for (const specifier of staticImports(file)) {
         const resolved = resolveSpecifier(specifier, fromDir);
-        if (resolved === null) continue;
-        const source = readFileSync(resolved, 'utf8');
-        const livekit = staticImports(resolved).filter((spec) =>
-          LIVEKIT_SPECIFIERS.includes(spec),
-        );
-        if (livekit.length > 0) {
-          offenders.push({ file: path.relative(SRC_ROOT, resolved), specifiers: livekit });
+        if (resolved === null) {
+          bare.push(specifier);
+          continue;
         }
         queue.push(resolved);
       }
+      if (bare.length > 0) bareSpecifiers.set(path.relative(SRC_ROOT, file), bare);
     }
 
+    return { files: [...visited], bareSpecifiers };
+  }
+
+  it('keeps livekit-client and @livekit/components-react out of the room entry chunk', () => {
+    const offenders: { file: string; specifiers: string[] }[] = [];
+    const { files, bareSpecifiers } = staticClosure();
+
+    for (const [file, specifiers] of bareSpecifiers) {
+      const livekit = specifiers.filter((spec) => LIVEKIT_SPECIFIERS.includes(spec));
+      if (livekit.length > 0) offenders.push({ file, specifiers: livekit });
+    }
+    expect(files.length).toBeGreaterThan(1); // the walk itself must not go stale
     expect(offenders).toEqual([]);
+  });
+
+  it('keeps PdfImportDialog and pdfjs-dist out of the room entry chunk (PERF-S2)', () => {
+    const { files, bareSpecifiers } = staticClosure();
+
+    const pdfFiles = files
+      .map((file) => path.relative(SRC_ROOT, file))
+      .filter((file) => PDF_ENTRY_FILES.some((name) => file.endsWith(name)));
+
+    const pdfSpecifiers: { file: string; specifiers: string[] }[] = [];
+    for (const [file, specifiers] of bareSpecifiers) {
+      const pdf = specifiers.filter((spec) => PDF_ENTRY_SPECIFIERS.includes(spec));
+      if (pdf.length > 0) pdfSpecifiers.push({ file, specifiers: pdf });
+    }
+
+    expect(pdfFiles).toEqual([]);
+    expect(pdfSpecifiers).toEqual([]);
   });
 });
