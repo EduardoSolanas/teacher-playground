@@ -44,7 +44,6 @@ import { whiteboardRoomHref } from '@/lib/whiteboard/roomPath';
 import { collaboratorsFromPresence } from '@/lib/whiteboard/collaborators';
 import type { CanvasElement, RemoteCursor, WhiteboardUser } from '@/types/whiteboard';
 import type { FollowMessage } from '@/lib/whiteboard/followMessage';
-import type { BoardFileEntry } from '@/lib/whiteboard/boardExport';
 import { columnLayout } from '@/lib/documents/pdfImport';
 import { randomHexId } from '@/lib/crypto/randomId';
 import type { RenderedPage } from './pdfRenderer';
@@ -97,8 +96,6 @@ const PRE_SYNC_FLUSH_ESCAPE_MS = 1000;
  * and a type import from the caller would quietly undo it.
  */
 export interface BoardActions {
-  /** The scene as it stands, for the room to write to a file. */
-  readScene: () => { elements: readonly unknown[]; files: readonly BoardFileEntry[] };
   /** Opens Excalidraw's library, which used to have a button floating on the canvas. */
   openLibrary: () => void;
   /**
@@ -1110,11 +1107,6 @@ export default function ExcalidrawWrapper({
     setLibraryApi(api);
 
     onBoardActionsRef.current?.({
-      readScene: () => ({
-        elements: api.getSceneElements() as readonly unknown[],
-        // Excalidraw keys its files by id; the exporter takes a list.
-        files: Object.values(api.getFiles() ?? {}) as readonly BoardFileEntry[],
-      }),
       /*
        * The library is a tab of the default sidebar, not a sidebar of its own.
        * Asking for one called "library" is not an error -- nothing opens, and

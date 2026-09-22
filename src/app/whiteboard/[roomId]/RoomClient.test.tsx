@@ -776,15 +776,11 @@ describe('RoomContent room title', () => {
     expect(screen.getByTestId('room-name').textContent).toBe('Geometry');
   });
 
-  it('leaves Save as and the library to the editor when no board actions exist', async () => {
+  it('leaves the library to the editor when no board actions exist', async () => {
     storeUserName();
     await renderRoom();
 
     const trigger = await screen.findByTestId('room-title-trigger');
-    fireEvent.click(trigger);
-    fireEvent.click(screen.getByTestId('room-menu-save'));
-    expect(screen.queryByTestId('room-title-menu')).toBeNull();
-
     fireEvent.click(trigger);
     fireEvent.click(screen.getByTestId('room-menu-library'));
     expect(screen.queryByTestId('room-title-menu')).toBeNull();

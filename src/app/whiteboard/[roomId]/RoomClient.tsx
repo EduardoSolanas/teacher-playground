@@ -30,7 +30,7 @@ import ConnectionLostNotice from '@/components/whiteboard/ConnectionLostNotice';
 import SyncDegradedNotice from '@/components/whiteboard/SyncDegradedNotice';
 import RoomTitleMenu from '@/components/whiteboard/RoomTitleMenu';
 import { saveBlob } from '@/lib/whiteboard/saveBlob';
-import { boardFileName, buildExcalidrawContainer } from '@/lib/whiteboard/boardExport';
+import { boardFileName } from '@/lib/whiteboard/boardExport';
 import { exportFailureMessage } from '@/lib/documents/pdfExport';
 import type { RoomStorage } from '@/lib/documents/roomStorage';
 import type { BoardActions } from '@/components/whiteboard/ExcalidrawWrapper';
@@ -930,19 +930,9 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
    */
   const boardActionsRef = useRef<BoardActions | null>(null);
 
-  const handleSaveAs = useCallback(() => {
-    const scene = boardActionsRef.current?.readScene();
-    if (!scene) return;
-    const container = buildExcalidrawContainer(scene.elements, scene.files, 'teacher-playground');
-    saveBlob(
-      new Blob([JSON.stringify(container)], { type: 'application/json' }),
-      boardFileName(roomId, roomName, 'excalidraw', Date.now()),
-    );
-  }, [roomId, roomName]);
-
   /**
    * Download as PDF (spec/PDF_EXPORT_SPEC.md). The file is built from the scene
-   * this browser already holds and saved through the same path as Save as; a
+   * this browser already holds and written to disk with saveBlob; a
    * failure says which one it was and writes nothing.
    */
   const [pdfExportError, setPdfExportError] = useState<string | null>(null);
@@ -1180,7 +1170,6 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
               onSeatsChanged={setRoomCapacity}
               request={request}
               onRename={handleRenameRoom}
-              onSaveAs={handleSaveAs}
               onOpenLibrary={handleOpenLibrary}
               onInsertPdf={() => pdfInputRef.current?.click()}
               onDownloadPdf={() => { void handleDownloadPdf(); }}

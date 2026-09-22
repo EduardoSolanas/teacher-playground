@@ -704,7 +704,7 @@ test.describe('Waiting Room', () => {
     await expect(peerPage.getByTestId('room-name')).toBeVisible();
 
     await hostPage.getByTestId('room-title-trigger').click();
-    await expect(hostPage.getByTestId('room-menu-save')).toBeVisible();
+    await expect(hostPage.getByTestId('room-menu-download-pdf')).toBeVisible();
     await expect(hostPage.getByTestId('room-menu-rename')).toBeVisible();
     await expect(hostPage.getByTestId('room-menu-library')).toBeVisible();
     await hostPage.keyboard.press('Escape');
