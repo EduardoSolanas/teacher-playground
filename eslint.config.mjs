@@ -13,6 +13,8 @@ const config = [
       ".claude/worktrees/**",
       "coverage/**",
       "coverage-e2e/**",
+      // PDF.js runtime data copied in at build by scripts/copy-pdfjs-assets.mjs.
+      "public/pdfjs/**",
     ],
   },
   {

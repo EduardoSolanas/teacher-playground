@@ -58,6 +58,7 @@ tmp/
 # Excalidraw runtime assets, copied from node_modules by prebuild.
 /public/fonts
 /public/data
+/public/pdfjs
 
 # e2e flake baseline reports
 flake-baseline/

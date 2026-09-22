@@ -135,48 +135,14 @@ export function applySchema(db: RoomDatabase): void {
   `);
 
   /*
-   * Embedded-document manifests and conversion jobs (milestone 2 of
-   * spec/EMBEDDED_DOCUMENTS_SPEC.md). Additive and idempotent: both tables are
-   * created when missing and never altered destructively. One manifest per
-   * (room, idempotency key) is enforced by a partial unique index, so a
-   * retried upload can never create a second identity or double-charge quota.
+   * The server-side document converter was retired before it ever shipped
+   * (spec/PDF_IMPORT_SPEC.md §1.1): documents are now rendered in the
+   * uploading browser and stored as ordinary board files. Its two tables were
+   * only ever written with the surface flag on, which production never set,
+   * so they are empty wherever they exist and are dropped here.
    */
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS room_documents (
-      document_id TEXT PRIMARY KEY,
-      room_id TEXT NOT NULL,
-      state TEXT NOT NULL CHECK (state IN ('uploading','queued','converting','ready','failed','cancelled','deleting')),
-      original_filename TEXT,
-      media_type TEXT NOT NULL,
-      byte_length INTEGER NOT NULL,
-      content_digest TEXT,
-      uploader_account_id TEXT NOT NULL,
-      page_count INTEGER NOT NULL DEFAULT 0,
-      render_revision INTEGER NOT NULL DEFAULT 0,
-      manifest_json TEXT,
-      safe_error_code TEXT,
-      idempotency_key TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    )
-  `);
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS room_document_jobs (
-      job_id TEXT PRIMARY KEY,
-      document_id TEXT NOT NULL,
-      room_id TEXT NOT NULL,
-      state TEXT NOT NULL,
-      attempt INTEGER NOT NULL DEFAULT 0,
-      lease_owner TEXT,
-      lease_expires_at INTEGER,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    )
-  `);
-  db.exec(`
-    CREATE UNIQUE INDEX IF NOT EXISTS room_documents_idempotency
-      ON room_documents(room_id, idempotency_key) WHERE idempotency_key IS NOT NULL
-  `);
+  db.exec(`DROP TABLE IF EXISTS room_document_jobs`);
+  db.exec(`DROP TABLE IF EXISTS room_documents`);
 
   migrateRoomMembers(db);
   db.exec(
@@ -259,8 +225,6 @@ export const ROOM_SCOPED_TABLES = [
   'waiting_peers',
   'kicked_peers',
   'room_members',
-  'room_documents',
-  'room_document_jobs',
   'rooms',
 ] as const;
 

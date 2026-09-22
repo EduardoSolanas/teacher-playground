@@ -196,6 +196,16 @@ try {
 
     let buildDone;
     if (!skipBuild) {
+      /*
+       * `next build` is spawned directly, so npm's prebuild never runs here --
+       * and CI builds nothing else first. PDF import needs PDF.js's fonts and
+       * decoders under public/pdfjs, and without them PDF.js falls back quietly:
+       * the suite would pass while proving less.
+       */
+      const pdfjsAssets = spawnSync(process.execPath, [resolve(process.cwd(), 'scripts/copy-pdfjs-assets.mjs')], {
+        stdio: 'inherit',
+      });
+      if (pdfjsAssets.status !== 0) throw new Error('copying the PDF.js assets failed');
       buildProcess = spawn(process.execPath, [resolve(process.cwd(), 'node_modules/next/dist/bin/next'), 'build', '--webpack'], {
         stdio: 'inherit',
         env: {

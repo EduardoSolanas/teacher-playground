@@ -7,7 +7,13 @@ import { livePointCount, strokeCommitIntervalMs } from '@/lib/whiteboard/strokeC
 // MUST stay above the Excalidraw import: it sets EXCALIDRAW_ASSET_PATH, and ES
 // module imports are evaluated in order, before this module's own body runs.
 import '@/lib/whiteboard/excalidrawAssetPath';
-import { CaptureUpdateAction, Excalidraw, Footer, useHandleLibrary } from '@teacher-playground/excalidraw';
+import {
+  CaptureUpdateAction,
+  Excalidraw,
+  Footer,
+  convertToExcalidrawElements,
+  useHandleLibrary,
+} from '@teacher-playground/excalidraw';
 import type {
   ExcalidrawImperativeAPI,
   ExcalidrawProps,
@@ -39,6 +45,8 @@ import { collaboratorsFromPresence } from '@/lib/whiteboard/collaborators';
 import type { CanvasElement, RemoteCursor, WhiteboardUser } from '@/types/whiteboard';
 import type { FollowMessage } from '@/lib/whiteboard/followMessage';
 import type { BoardFileEntry } from '@/lib/whiteboard/boardExport';
+import { columnLayout } from '@/lib/documents/pdfImport';
+import type { RenderedPage } from './pdfRenderer';
 import {
   isWhiteboardLatencyProbeEnabled,
   recordWhiteboardLatencyEvent,
@@ -91,6 +99,12 @@ export interface BoardActions {
   readScene: () => { elements: readonly unknown[]; files: readonly BoardFileEntry[] };
   /** Opens Excalidraw's library, which used to have a button floating on the canvas. */
   openLibrary: () => void;
+  /**
+   * Places rendered PDF pages on the board being shown (spec/PDF_IMPORT_SPEC.md
+   * §3): one locked image per page, stacked in order, in a single undoable
+   * scene update. The bytes upload through the ordinary image path.
+   */
+  insertPages: (pages: readonly RenderedPage[]) => void;
 }
 type ExcalidrawSubscriptionsAPI = ExcalidrawImperativeAPI & {
   onToolChange?: (callback: (tool: { type: string }) => void) => () => void;
@@ -1100,6 +1114,41 @@ export default function ExcalidrawWrapper({
        * nothing says why.
        */
       openLibrary: () => api.toggleSidebar({ name: 'default', tab: 'library' }),
+      insertPages: (pages) => {
+        if (pages.length === 0) return;
+        const created = Date.now();
+        api.addFiles(pages.map((page) => ({
+          id: page.id as never,
+          mimeType: page.mimeType,
+          dataURL: page.dataURL as never,
+          created,
+        })));
+
+        // The first page is centred in the view; the rest follow below it.
+        const appState = api.getAppState();
+        const zoom = appState.zoom.value;
+        const centreX = appState.width / 2 / zoom - appState.scrollX;
+        const centreY = appState.height / 2 / zoom - appState.scrollY;
+        const placements = columnLayout(pages, {
+          x: centreX - pages[0].width / 2,
+          y: centreY - pages[0].height / 2,
+        });
+        const images = convertToExcalidrawElements(placements.map((placement, index) => ({
+          type: 'image' as const,
+          fileId: pages[index].id as never,
+          ...placement,
+        })))
+          // Locked so writing on a page does not drag it -- a convenience, not
+          // an access control: an editor can unlock it like anything else.
+          .map((element) => ({ ...element, locked: true }));
+
+        api.updateScene({
+          elements: [...api.getSceneElementsIncludingDeleted(), ...images],
+          // One history entry, so a single undo takes the whole import away.
+          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+        });
+        api.scrollToContent(images[0], { fitToViewport: true, viewportZoomFactor: 0.9 });
+      },
     });
 
     if (typeof api.onUserFollow === 'function') {

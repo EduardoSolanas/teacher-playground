@@ -96,44 +96,27 @@ stop-camera and share controls acting on accounts. Their evidence is in
 - Each integration records what data flows to the provider and joins the data
   inventory before launch.
 
-## Embedded paginated documents (PDF, PPTX, DOCX)
+## PDF import
 
-The implementation contract is in [the embedded documents specification](spec/EMBEDDED_DOCUMENTS_SPEC.md).
+The implementation contract is in [the PDF import specification](spec/PDF_IMPORT_SPEC.md).
 These requirements describe an unbuilt feature, not verified controls.
 
-- Documents are first-party room assets, not arbitrary iframe or URL embeds.
-  Existing third-party embed restrictions remain in force. Only the owner may
-  import, remove, or publish a shared page change; annotation writes follow
-  existing editor grants. Local page browsing does not grant shared-write rights.
-- Authorize every original, manifest, thumbnail, page, range request and conversion
-  status read against current room membership. Waiting, revoked, suspended and
-  cross-room callers cannot read them. Private caching must not bypass these
-  checks; revocation cannot erase bytes a participant already downloaded.
-- Validate file signatures and package contents as well as declared MIME types.
-  Bound compressed and expanded sizes, archive entries, page counts, pixels,
-  conversion time and concurrent jobs. Disable macros, external relationships,
-  scripts and converter network access. Reject encrypted or unsupported inputs
-  explicitly. Do not render source Office HTML or active PDF content in the app.
-- Render Office documents and PDF previews in an isolated, resource-limited
-  conversion boundary; serve validated page images to participants. Any future
-  client PDF renderer needs a separately verified sanitization contract under
-  the teaching-content-import requirement above. Original downloads are
-  authenticated attachments, never inline active content.
-- Reserve quota atomically for originals, previews, thumbnails and intermediate
-  outputs; settle actual usage and release failed reservations. Do not weaken
-  existing image upload validation or quotas to admit documents. Conversion
-  completion must recheck document existence and room lifecycle so late jobs
-  cannot recreate deleted data.
-- Scope assets and deduplication to a room. Validate document references and
-  annotation page bindings on the server; a scene payload cannot confer access
-  to another room's assets. Job completion is authenticated, idempotent and bound
-  to an immutable document version.
-- Define retention, undo grace, reference-aware deletion, abandoned-job cleanup,
-  room/account erasure, export and backup behavior before shipping. Erasure
-  overrides undo grace and removes originals, derived pages and temporary data.
-  Register these objects in SECURITY_ROUTE_REVIEW.md and
-  SECURITY_DATA_PROTECTION.md before launch, with negative worker/e2e tests and
-  guard mutation evidence required by AGENTS.md.
+- The PDF is parsed and rendered only in the importing browser, by a pinned
+  `pdfjs-dist` at or above 4.2.67 (CVE-2024-4367); the pinned 6.x has no eval
+  path at all and the CSP has no `'unsafe-eval'`. No scripting, no XFA, and no text or annotation layer. The PDF bytes are never
+  uploaded, stored, or served.
+- Pages reach the server only as raster images through the existing board-file
+  route. That route's authorization (`canWriteBoard`), media-type allowlist,
+  per-file and per-room caps, and quota accounting are not widened for PDF
+  import; anything the route refuses for an image it refuses for a page.
+- The PDF.js worker, standard fonts, and CMaps are served from this origin. No
+  CSP directive is relaxed to load them.
+- Import grants nothing: a user who cannot add an image cannot import a PDF, and
+  the `locked` flag on placed pages is an editing convenience, not an access
+  control.
+- Page images are ordinary board files and inherit their retention, erasure,
+  export, and backup behaviour. A later feature that keeps the original PDF, or
+  imports from Drive or OneDrive, must return here with its own requirements.
 
 ## Third-party embeds
 

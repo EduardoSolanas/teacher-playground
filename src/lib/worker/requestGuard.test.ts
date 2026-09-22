@@ -15,9 +15,8 @@ import {
   isPublicPath,
   MARKETING_PAGES,
   stripForwardedIdentityHeaders,
-    readBoundedJsonBody,
-    readBoundedText,
-    readBoundedBytes,
+  readBoundedJsonBody,
+  readBoundedText,
   routeHostKind,
   isRouteAllowedOnHost,
   isOriginGuardedPath,
@@ -280,6 +279,26 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       expect(isRouteAllowedOnHost('/fonts/Xiaolai/Xiaolai-Regular.woff2', 'POST', 'guest')).toBe(false);
     });
 
+    it('GET/HEAD PDF.js runtime data is allowed on the teacher host only', () => {
+      expect(isRouteAllowedOnHost('/pdfjs/standard_fonts/FoxitSans.pfb', 'GET', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/pdfjs/cmaps/UniJIS-UTF16-H.bcmap', 'HEAD', 'teacher')).toBe(true);
+      expect(isRouteAllowedOnHost('/pdfjs/wasm/openjpeg.wasm', 'GET', 'teacher')).toBe(true);
+      // Only the room owner inserts a PDF, and the owner is on the teacher host.
+      expect(isRouteAllowedOnHost('/pdfjs/standard_fonts/FoxitSans.pfb', 'GET', 'guest')).toBe(false);
+      expect(isRouteAllowedOnHost('/pdfjs/standard_fonts/FoxitSans.pfb', 'GET', 'marketing')).toBe(false);
+    });
+
+    it('PDF.js runtime data refuses writes and look-alike prefixes', () => {
+      expect(isRouteAllowedOnHost('/pdfjs/wasm/openjpeg.wasm', 'POST', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/pdfjs/wasm/openjpeg.wasm', 'PUT', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/pdfjsx/secret', 'GET', 'teacher')).toBe(false);
+      expect(isRouteAllowedOnHost('/pdfjs', 'GET', 'teacher')).toBe(false);
+    });
+
+    it('PDF.js runtime data stays behind Access', () => {
+      expect(isPublicPath('/pdfjs/standard_fonts/FoxitSans.pfb')).toBe(false);
+    });
+
     it('GET/HEAD /favicon.ico is allowed on both hosts', () => {
       expect(isRouteAllowedOnHost('/favicon.ico', 'GET', 'teacher')).toBe(true);
       expect(isRouteAllowedOnHost('/favicon.ico', 'GET', 'guest')).toBe(true);
@@ -492,75 +511,11 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
       }
     });
 
-      it('reads an empty body as empty text', async () => {
-        const request = new Request('https://example.com/api', { method: 'POST' });
-        expect(await readBoundedText(request, 25)).toEqual({ ok: true, text: '' });
-      });
+    it('reads an empty body as empty text', async () => {
+      const request = new Request('https://example.com/api', { method: 'POST' });
+      expect(await readBoundedText(request, 25)).toEqual({ ok: true, text: '' });
     });
-
-    describe('readBoundedBytes (SEC-C2)', () => {
-      function streamed(chunks: readonly Uint8Array[], headers: Record<string, string> = {}) {
-        let pulls = 0;
-        let index = 0;
-        const body = new ReadableStream<Uint8Array>({
-          pull(controller) {
-            if (index >= chunks.length) {
-              controller.close();
-              return;
-            }
-            pulls += 1;
-            controller.enqueue(chunks[index]);
-            index += 1;
-          },
-          // highWaterMark 0: pull only when the reader asks, so `pulls` counts
-          // exactly what was consumed rather than the queue's read-ahead.
-        }, { highWaterMark: 0 });
-        const request = new Request('https://example.com/api/whiteboard/room/r/documents', {
-          method: 'POST',
-          headers,
-          body,
-          duplex: 'half',
-        } as RequestInit);
-        return { request, pulls: () => pulls };
-      }
-
-      it('returns the whole body as bytes when it is at or under the cap', async () => {
-        const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 1, 2, 3]);
-        const { request } = streamed([bytes.slice(0, 5), bytes.slice(5)]);
-        expect(await readBoundedBytes(request, bytes.byteLength)).toEqual({ ok: true, bytes });
-      });
-
-      it('stops pulling the stream as soon as the cap is passed', async () => {
-        const chunk = new Uint8Array(10).fill(0x61);
-        const { request, pulls } = streamed(Array.from({ length: 100 }, () => chunk));
-        expect(await readBoundedBytes(request, 25)).toEqual({ ok: false, status: 413 });
-        // 25 bytes is passed on the third 10-byte chunk; nothing after it is read.
-        expect(pulls()).toBe(3);
-      });
-
-      it('refuses a declared length over the cap before reading anything', async () => {
-        const { request, pulls } = streamed([new Uint8Array(1)], { 'content-length': '26' });
-        expect(await readBoundedBytes(request, 25)).toEqual({ ok: false, status: 413 });
-        expect(pulls()).toBe(0);
-      });
-
-      it('accepts a declared length exactly at the cap', async () => {
-        const bytes = new Uint8Array(25).fill(0x62);
-        const { request } = streamed([bytes], { 'content-length': '25' });
-        expect(await readBoundedBytes(request, 25)).toEqual({ ok: true, bytes });
-      });
-
-      it('refuses an unparseable declared length with 400', async () => {
-        const { request, pulls } = streamed([new Uint8Array(1)], { 'content-length': 'not-a-number' });
-        expect(await readBoundedBytes(request, 25)).toEqual({ ok: false, status: 400 });
-        expect(pulls()).toBe(0);
-      });
-
-      it('reads an empty body as zero bytes', async () => {
-        const request = new Request('https://example.com/api', { method: 'POST' });
-        expect(await readBoundedBytes(request, 25)).toEqual({ ok: true, bytes: new Uint8Array(0) });
-      });
-    });
+  });
 
   describe('readBoundedJsonBody', () => {
     function postWithoutContentLength(body: string): Request {

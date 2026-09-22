@@ -214,6 +214,14 @@ export function isRouteAllowedOnHost(
     return method === 'GET' || method === 'HEAD';
   }
 
+  // GET/HEAD PDF.js's runtime data (spec/PDF_IMPORT_SPEC.md §4), copied into
+  // /pdfjs/ at build. Teacher host only: inserting a PDF is the room owner's
+  // action, and the owner is never on the guest host. Not a public path either
+  // -- PDF.js fetches same-origin with the Access cookie.
+  if (pathname.startsWith('/pdfjs/')) {
+    return hostKind === 'teacher' && (method === 'GET' || method === 'HEAD');
+  }
+
   // GET/HEAD /favicon.ico on both hosts
   if (pathname === '/favicon.ico') {
     return method === 'GET' || method === 'HEAD';
@@ -408,7 +416,8 @@ const CONTENT_LENGTH_RE = /^\d+$/;
  * itself is counted and cancelled the moment it passes the cap, so a chunked
  * request is bounded by what was read rather than by what was sent.
  */
-export async function readBoundedText(request: Request, maxBytes: number): Promise<BoundedText> {  const declared = request.headers.get('content-length');
+export async function readBoundedText(request: Request, maxBytes: number): Promise<BoundedText> {
+  const declared = request.headers.get('content-length');
   if (declared !== null) {
     if (!CONTENT_LENGTH_RE.test(declared)) return { ok: false, status: 400 };
     if (Number(declared) > maxBytes) return { ok: false, status: 413 };
@@ -435,50 +444,10 @@ export async function readBoundedText(request: Request, maxBytes: number): Promi
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-    return { ok: true, text: new TextDecoder().decode(bytes) };
-  }
+  return { ok: true, text: new TextDecoder().decode(bytes) };
+}
 
-  export type BoundedBytes =
-    | { ok: true; bytes: Uint8Array }
-    | { ok: false; status: number };
-
-  /**
-   * Binary sibling of {@link readBoundedText} (SEC-C2): streams the body and
-   * stops pulling the moment the cap is passed, so a forged Content-Length
-   * cannot buffer an oversized original into the isolate. The caller owns the
-   * magic-byte check and the digest — this only bounds memory.
-   */
-  export async function readBoundedBytes(request: Request, maxBytes: number): Promise<BoundedBytes> {    const declared = request.headers.get('content-length');
-    if (declared !== null) {
-      if (!CONTENT_LENGTH_RE.test(declared)) return { ok: false, status: 400 };
-      if (Number(declared) > maxBytes) return { ok: false, status: 413 };
-    }
-    if (request.body === null) return { ok: true, bytes: new Uint8Array(0) };
-
-    const reader = request.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => undefined);
-        return { ok: false, status: 413 };
-      }
-      chunks.push(value);
-    }
-
-    const bytes = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return { ok: true, bytes };
-  }
-
-  /** JSON API mutations must declare a JSON content type. */
+/** JSON API mutations must declare a JSON content type. */
 export function isJsonContentType(contentType: string | null): boolean {
   if (contentType === null) return false;
   const normalized = contentType.toLowerCase();
