@@ -20,7 +20,13 @@ import {
  * -- only exist here.
  */
 
-type SceneImage = { fileId: string; y: number; locked: boolean; isDeleted: boolean };
+type SceneImage = {
+  fileId: string;
+  y: number;
+  locked: boolean;
+  isDeleted: boolean;
+  stamp: { importId?: unknown; index?: unknown } | null;
+};
 
 async function sceneImages(page: Page): Promise<SceneImage[]> {
   return page.evaluate(() => {
@@ -33,6 +39,7 @@ async function sceneImages(page: Page): Promise<SceneImage[]> {
         y: element.y,
         locked: element.locked === true,
         isDeleted: element.isDeleted === true,
+        stamp: element.customData?.pdfPage ?? null,
       }))
       .sort((a, b) => a.y - b.y);
   });
@@ -87,6 +94,12 @@ test.describe('PDF import', () => {
 
       await choosePdf(page, 'worksheet.pdf', makePdf(3));
       await expect(page.getByTestId('pdf-import-range')).toHaveValue('1-3');
+      /*
+       * The room's remaining space, read from the owner-only settings surface.
+       * Without it the 250 MB cap announced itself as an upload failing in the
+       * middle of an import.
+       */
+      await expect(page.getByTestId('pdf-import-storage')).toHaveText(/free in this room$/);
       await page.getByTestId('pdf-import-insert').click();
       await expect(page.getByTestId('pdf-import-dialog')).toHaveCount(0, { timeout: 30000 });
 
@@ -94,6 +107,14 @@ test.describe('PDF import', () => {
       expect(hostImages).toHaveLength(3);
       expect(hostImages.every((image) => image.locked)).toBe(true);
       expect(new Set(hostImages.map((image) => image.fileId)).size).toBe(3);
+
+      /*
+       * Each page carries the import it came from and its place in it, which is
+       * what Download as PDF reads back (spec/PDF_EXPORT_SPEC.md §3).
+       */
+      const stamps = hostImages.map((image) => image.stamp as { importId: string; index: number });
+      expect(stamps.map((stamp) => stamp.index)).toEqual([0, 1, 2]);
+      expect(new Set(stamps.map((stamp) => stamp.importId)).size).toBe(1);
 
       // Each page reaches the room's file store as an image, never as a PDF.
       for (const image of hostImages) {

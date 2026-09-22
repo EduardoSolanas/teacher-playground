@@ -284,3 +284,46 @@ describe('atomic file quota reserve and settle', () => {
     expect(await total(roomId)).toBe(0);
   });
 });
+
+/*
+ * The teacher cannot see the 250 MB cap coming: a lesson of imported worksheets
+ * fills a room in ten or so, and the first sign used to be an upload failing
+ * mid-import. The owner-only settings surface carries the two numbers so the
+ * room can say how much room is left before an import starts.
+ */
+describe('room storage on the owner settings surface', () => {
+  it('tells the owner how much of the room is used and what the cap is', async () => {
+    const roomId = `quota-settings-${crypto.randomUUID()}`;
+    const owner = await createOwnedRoom(roomId);
+    await setTotal(roomId, 7 * 1024 * 1024);
+
+    const response = await authenticatedFetch(`/api/whiteboard/room/${roomId}/settings`, owner);
+    expect(response.status).toBe(200);
+    const body = await response.json() as { fileBytesUsed?: unknown; fileBytesLimit?: unknown };
+    expect(body.fileBytesUsed).toBe(7 * 1024 * 1024);
+    expect(body.fileBytesLimit).toBe(MAX_ROOM_FILE_BYTES_TOTAL);
+  });
+
+  it('reports a fresh room as empty rather than leaving the figure out', async () => {
+    const roomId = `quota-settings-fresh-${crypto.randomUUID()}`;
+    const owner = await createOwnedRoom(roomId);
+
+    const response = await authenticatedFetch(`/api/whiteboard/room/${roomId}/settings`, owner);
+    const body = await response.json() as { fileBytesUsed?: unknown };
+    expect(body.fileBytesUsed).toBe(0);
+  });
+
+  it('keeps the figures away from an editor, who cannot read the settings at all', async () => {
+    const roomId = `quota-settings-editor-${crypto.randomUUID()}`;
+    await createOwnedRoom(roomId);
+    const editor = await bootstrapLocalSession(`quota-settings-editor-peer-${crypto.randomUUID()}`);
+    const editorAccount = await runInDurableObject(roomStub(roomId), (instance) => (
+      instance.db.prepare(`SELECT account_id FROM room_members WHERE role = 'owner'`).get() as { account_id: string }
+    ));
+    expect(editorAccount.account_id).toBeTruthy();
+
+    const response = await authenticatedFetch(`/api/whiteboard/room/${roomId}/settings`, editor);
+    expect(response.status).toBe(403);
+    expect(await response.text()).not.toContain('fileBytes');
+  });
+});

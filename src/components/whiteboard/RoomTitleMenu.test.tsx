@@ -16,6 +16,7 @@ function make(overrides: Partial<Parameters<typeof RoomTitleMenu>[0]> = {}) {
     onSaveAs: vi.fn(),
     onOpenLibrary: vi.fn(),
     onInsertPdf: () => {},
+    onDownloadPdf: () => {},
     onSeatsChanged: vi.fn(),
     // A real async function returning real Response objects, the same seam the
     // room list uses; no test doubles.
@@ -95,11 +96,26 @@ describe('RoomTitleMenu', () => {
     expect(screen.getByTestId('room-title-trigger').getAttribute('aria-expanded')).toBe('false');
   });
 
+  it('offers Download as PDF, which is how a lesson reaches a parent', () => {
+    // Save as writes an .excalidraw file that only this application opens; the
+    // PDF is the copy somebody outside it can read.
+    let downloaded = 0;
+    render(<RoomTitleMenu {...make({ onDownloadPdf: () => { downloaded += 1; } })} />);
+    fireEvent.click(screen.getByTestId('room-title-trigger'));
+
+    const item = screen.getByTestId('room-menu-download-pdf');
+    expect(item.textContent).toBe('Download as PDF…');
+    fireEvent.click(item);
+
+    expect(downloaded).toBe(1);
+    expect(screen.getByTestId('room-title-trigger').getAttribute('aria-expanded')).toBe('false');
+  });
+
   it('gives every menu item the 14px inline icon the menu contract calls for (UX-B19)', () => {
     render(<RoomTitleMenu {...make()} />);
     fireEvent.click(screen.getByTestId('room-title-trigger'));
 
-    for (const id of ['room-menu-share', 'room-menu-save', 'room-menu-rename', 'room-menu-library', 'room-menu-insert-pdf']) {
+    for (const id of ['room-menu-share', 'room-menu-save', 'room-menu-rename', 'room-menu-library', 'room-menu-insert-pdf', 'room-menu-download-pdf']) {
       const icon = screen.getByTestId(id).querySelector('svg');
       expect(icon, `${id} has no icon`).toBeTruthy();
       expect(icon?.getAttribute('width'), `${id} icon width`).toBe('14');
@@ -406,6 +422,7 @@ describe('RoomTitleMenu', () => {
     const rename = screen.getByTestId('room-menu-rename');
     const library = screen.getByTestId('room-menu-library');
     const insertPdf = screen.getByTestId('room-menu-insert-pdf');
+    const downloadPdf = screen.getByTestId('room-menu-download-pdf');
     const seats = screen.getByTestId('room-menu-seats');
     expect(document.activeElement).toBe(share);
 
@@ -417,6 +434,8 @@ describe('RoomTitleMenu', () => {
     expect(document.activeElement).toBe(library);
     await user.keyboard('{ArrowDown}');
     expect(document.activeElement).toBe(insertPdf);
+    await user.keyboard('{ArrowDown}');
+    expect(document.activeElement).toBe(downloadPdf);
     await user.keyboard('{ArrowDown}');
     expect(document.activeElement).toBe(seats);
     // Wraps at the end rather than falling out of the menu.

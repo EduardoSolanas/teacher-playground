@@ -37,6 +37,7 @@ export default function RoomTitleMenu({
   onSaveAs,
   onOpenLibrary,
   onInsertPdf,
+  onDownloadPdf,
   request = ajaxFetch,
 }: {
   readonly name: string | null;
@@ -54,6 +55,8 @@ export default function RoomTitleMenu({
    * because Excalidraw does not draw its footer at phone widths.
    */
   readonly onInsertPdf: () => void;
+  /** Writes the board being looked at to a PDF file (spec/PDF_EXPORT_SPEC.md). */
+  readonly onDownloadPdf: () => void;
   /** Injected so tests can drive the share panel with real responses. */
   readonly request?: AjaxFetch;
 }) {
@@ -580,6 +583,24 @@ export default function RoomTitleMenu({
                   <path d="M9 15h6" />
                 </svg>
                 Insert PDF…
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="room-menu-download-pdf"
+                className={item}
+                onClick={() => {
+                  setOpen(false);
+                  onDownloadPdf();
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="h-3.5 w-3.5 shrink-0">
+                  <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+                  <path d="M14 3v5h5" />
+                  <path d="M12 11v6" />
+                  <path d="m9 14 3 3 3-3" />
+                </svg>
+                Download as PDF…
               </button>
               <button
                 type="button"

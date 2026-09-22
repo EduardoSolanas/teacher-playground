@@ -46,7 +46,9 @@ import type { CanvasElement, RemoteCursor, WhiteboardUser } from '@/types/whiteb
 import type { FollowMessage } from '@/lib/whiteboard/followMessage';
 import type { BoardFileEntry } from '@/lib/whiteboard/boardExport';
 import { columnLayout } from '@/lib/documents/pdfImport';
+import { randomHexId } from '@/lib/crypto/randomId';
 import type { RenderedPage } from './pdfRenderer';
+import { buildBoardPdf, type ExportResult } from './pdfExporter';
 import {
   isWhiteboardLatencyProbeEnabled,
   recordWhiteboardLatencyEvent,
@@ -105,6 +107,11 @@ export interface BoardActions {
    * scene update. The bytes upload through the ordinary image path.
    */
   insertPages: (pages: readonly RenderedPage[]) => void;
+  /**
+   * Builds the board being shown into a PDF (spec/PDF_EXPORT_SPEC.md). Returns
+   * the file, or why it could not be made; nothing is written to disk here.
+   */
+  buildPdf: () => Promise<ExportResult>;
 }
 type ExcalidrawSubscriptionsAPI = ExcalidrawImperativeAPI & {
   onToolChange?: (callback: (tool: { type: string }) => void) => () => void;
@@ -1114,6 +1121,14 @@ export default function ExcalidrawWrapper({
        * nothing says why.
        */
       openLibrary: () => api.toggleSidebar({ name: 'default', tab: 'library' }),
+      /*
+       * Only what this board shows: the scene Excalidraw holds is already the
+       * active board's elements, which is the same thing the tabs switch.
+       */
+      buildPdf: () => buildBoardPdf({
+        elements: api.getSceneElements() as unknown as Record<string, unknown>[],
+        files: (api.getFiles() ?? {}) as Record<string, unknown>,
+      }),
       insertPages: (pages) => {
         if (pages.length === 0) return;
         const created = Date.now();
@@ -1133,6 +1148,15 @@ export default function ExcalidrawWrapper({
           x: centreX - pages[0].width / 2,
           y: centreY - pages[0].height / 2,
         });
+        /*
+         * One id for this import, and the page's own index within it. Download
+         * as PDF reads these back (spec/PDF_EXPORT_SPEC.md): they are what say
+         * which images are worksheet pages, which import they belong to and in
+         * what order, after the board has been moved around for a lesson.
+         * `customData` survives both sync paths -- the serializer deep-clones
+         * elements and the HTTP scene schema passes unknown keys through.
+         */
+        const importId = randomHexId(8);
         const images = convertToExcalidrawElements(placements.map((placement, index) => ({
           type: 'image' as const,
           fileId: pages[index].id as never,
@@ -1140,7 +1164,11 @@ export default function ExcalidrawWrapper({
         })))
           // Locked so writing on a page does not drag it -- a convenience, not
           // an access control: an editor can unlock it like anything else.
-          .map((element) => ({ ...element, locked: true }));
+          .map((element, index) => ({
+            ...element,
+            locked: true,
+            customData: { pdfPage: { importId, index } },
+          }));
 
         api.updateScene({
           elements: [...api.getSceneElementsIncludingDeleted(), ...images],
