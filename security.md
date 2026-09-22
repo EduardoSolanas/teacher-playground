@@ -1793,3 +1793,104 @@ These held up under the sweep and are worth not regressing:
 - **Re-run this sweep when the checkout and portal routes land.** SEC-A27 is
   recorded against code that has no caller; the finding's whole value is that it
   is cheap to close now and expensive to notice later.
+
+### SEC-A29 - Medium - Cross-tenant read of room error ring via public API (2026-09-22 audit)
+
+**Component:** `src/worker.ts` ROOM_API subpath handling; `src/do/RoomDO.ts:568` `/room/errors`
+**Status:** Fixed; verified by independent verifier APPROVE on `296beb2`
+**CWE:** CWE-862 (missing authorization), CWE-284
+
+The OPS-01 error-ring read was reachable through the public room API: subpath
+`/errors` was not in the public refusal list, and the RoomDO branch served the
+ring before any authorize/tombstone/roomExists check, so any session (teacher or
+post-PIN guest) could read any room's internal failure log by id. The admin path
+(`/api/admin/errors`, namespace binding) was always safe; only the front door
+leaked.
+
+- Resolution (2026-09-22): `/errors` added to the ROOM_API public refusal list
+  (404 before forward); admin route proved unaffected.
+  - Evidence: verifier APPROVE on `296beb2`; mutation-tested - deleting the
+    refusal fails `refuses a cross-tenant read...` at
+    `src/worker.access.workers.test.ts:1758` (killed by implementer, orchestrator
+    and verifier independently).
+
+### SEC-A30 - Medium - Email accepted on the access-request path against the privacy invariant (2026-09-22 audit)
+
+**Component:** `src/lib/whiteboard/requestSchemas.ts`, `membership.ts`,
+`handlers/requests.ts`, `roomSchema.ts`
+**Status:** Fixed; verifier APPROVE on `296beb2`
+**CWE:** CWE-359 (exposure of private personal information)
+
+`public/privacy.html` promises no student email can be stored, but
+`requestsPostSchema` accepted optional `email` and persisted it on
+`room_members` for signed-in requesters. Field removed from schema, handler and
+membership reads/writes; legacy DB column kept (additive-only migration
+discipline), never written non-NULL, nulled on erasure.
+
+- Resolution (2026-09-22): invariant tests assert absence of `email` at schema,
+  handler, membership list and DO level.
+  - Evidence: verifier APPROVE; mutation-tested - re-adding the field fails two
+    invariant tests (killed by implementer and verifier).
+
+### SEC-A31 - Medium - BAK-01 R2 backups never purged or expired (2026-09-22 audit)
+
+**Component:** `src/worker.ts` purge paths; `src/lib/backup/backup.ts`;
+`infra/cloudflare/r2.tf`
+**Status:** Fixed; verifier APPROVE on `296beb2`
+**CWE:** CWE-404 (improper resource shutdown), data-retention violation of the
+privacy 30-day promise
+
+Room delete and account erasure removed only `rooms/{id}/files/`; full-row
+`backups/` dumps (emails, plaintext guest_pin) lived forever with no lifecycle
+rule.
+
+- Resolution (2026-09-22): `purgeRoomBackups` on room DELETE and
+  `purgeIdentityBackups` on erasure; `cloudflare_r2_bucket_lifecycle` expires
+  `backups/` at 30 days.
+  - Evidence: verifier APPROVE; mutation-tested (erasure purge mutants fail
+    `head(ownedKey)` tests). Note: `terraform fmt -check` not run locally
+    (binary absent) - hand-formatted; CI/drift check confirms.
+
+### SEC-A32 - Medium - LiveKit participant identity disclosed raw accountId (2026-09-22 audit)
+
+**Component:** `src/lib/av/participantIdentity.ts`, `handleAvToken.ts`,
+`livekitToken.ts`, `RoomDO.ts` mint path, `RoomClient.tsx` roster join
+**Status:** Fixed; verifier APPROVE on `296beb2`
+**CWE:** CWE-200 (information exposure)
+
+The A/V layer contradicted the HTTP redaction boundary: presence strips
+accountId from non-owner views, but every call participant saw every peer's
+stable accountId as the LiveKit identity. Identity is now
+HMAC-SHA256(apiSecret, [roomId, accountId]) truncated to 32 hex chars
+(per-room pseudonym); roster/moderation join runs on a server-minted
+`peerId` JWT metadata claim (looked up from `room_presence` inside RoomDO,
+never client-supplied; accountId never appears in metadata).
+
+- Resolution (2026-09-22): opaque identity + peerId metadata join; screen-share,
+  mute and roster e2e green.
+  - Evidence: verifier APPROVE (explicit review: no accountId in metadata, no
+    client input into identity/metadata); mutation-tested - dropping the
+    metadata claim fails `livekitToken.test.ts:168` (killed by implementer and
+    verifier); Stryker zero survivors on changed lines.
+
+### SEC-A33 - Low/Info - Throttling, origin-guard and supply-chain gaps (2026-09-22 audit)
+
+**Component:** `src/worker.ts` limiters; `src/lib/worker/requestGuard.ts`;
+`package.json`
+**Status:** Fixed; verifier APPROVE on `296beb2`
+**CWE:** CWE-770 (unrestricted resource allocation), CWE-352, CWE-1104
+
+- `POST /auth/session`, `POST /api/av/token`, board-file PUT and
+  `GET /auth/account/export` had no rate limiters - all four added per-account
+  (10/min, 10/min, 60/min, 5/min).
+- Origin guard listed exact `/auth/session` while the host allowlist admitted
+  `/auth/session/*` - now prefix-guarded for future subpaths.
+- Unused `y-webrtc` production dependency (dead branch in shipped bundle) -
+  removed; `securityScan.test.ts` asserts its absence; build output confirmed
+  clean.
+- Operator routes skip local session by design (break-glass, Access-only) -
+  reviewed, intentionally unchanged.
+  - Evidence: verifier APPROVE; mutation-tested - all four limiter guards and
+    the origin-guard prefix fail their tests when weakened (killed by
+    implementer and verifier; requestGuard Stryker zero survivors on changed
+    lines).
