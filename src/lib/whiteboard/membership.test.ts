@@ -12,6 +12,7 @@ import {
   purgeExpiredRoomLifecycle,
   KICKED_PEER_TTL_MS,
   WAITING_REQUEST_TTL_MS,
+  listPending,
   requestAccess,
   resolveModerationTarget,
   enqueueWaitingPeer,
@@ -81,8 +82,30 @@ describe('room membership state machine', () => {
     expect(getMembership(db, 'r', 'a1')?.role).toBe('banned');
   });
 
+  it('never returns a stored email on the pending list', () => {
+    db.prepare(`INSERT INTO rooms (room_id, created_at, updated_at) VALUES ('r', 1, 1)`).run();
+    db.prepare(
+      `INSERT INTO room_members (
+         room_id, account_id, role, display_name, email,
+         requested_at, created_at, updated_at, expires_at
+       ) VALUES ('r', 'a1', 'pending', 'Ada', 'ada@example.com', 1, 1, 1, NULL)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO room_members (
+         room_id, account_id, role, display_name, email,
+         requested_at, created_at, updated_at, expires_at
+       ) VALUES ('r', 'a2', 'pending', NULL, NULL, 2, 1, 1, NULL)`,
+    ).run();
+
+    const pending = listPending(db, 'r');
+    expect(pending).toHaveLength(2);
+    expect(pending[0]).not.toHaveProperty('email');
+    expect(pending[1]).not.toHaveProperty('email');
+    expect(pending[1].userName).toBe('');
+  });
+
   it('does not select request PII when resolving a grant role', () => {
-    requestAccess(db, { roomId: 'r', accountId: 'a1', userName: 'Ada', email: 'ada@example.com' });
+    requestAccess(db, { roomId: 'r', accountId: 'a1', userName: 'Ada' });
     expect(getGrantRole(db, 'r', 'a1')).toBe('pending');
     expect(getGrantRole(db, 'r', 'missing')).toBeNull();
   });
@@ -375,7 +398,7 @@ describe('account erasure from a room', () => {
   it('removes a non-owner membership, presence, and waiting without touching another room', () => {
     const now = 5_000;
     insertOwner(db, 'r1', 'owner', now);
-    requestAccess(db, { roomId: 'r1', accountId: 'editor', userName: 'Ed', email: 'ed@example.com', now });
+    requestAccess(db, { roomId: 'r1', accountId: 'editor', userName: 'Ed', now });
     approveAccount(db, 'r1', 'editor', { role: 'editor', now });
     db.prepare(
       `INSERT INTO room_presence (room_id, peer_id, user_name, color, first_seen, last_seen, account_id)
@@ -391,7 +414,7 @@ describe('account erasure from a room', () => {
     });
 
     insertOwner(db, 'r2', 'other-owner', now);
-    requestAccess(db, { roomId: 'r2', accountId: 'other-editor', userName: 'Pat', email: 'pat@example.com', now });
+    requestAccess(db, { roomId: 'r2', accountId: 'other-editor', userName: 'Pat', now });
     approveAccount(db, 'r2', 'other-editor', { role: 'editor', now });
     db.prepare(
       `INSERT INTO room_presence (room_id, peer_id, user_name, color, first_seen, last_seen, account_id)
@@ -411,7 +434,6 @@ describe('account erasure from a room', () => {
     expect(getMembership(db, 'r2', 'other-editor')).toMatchObject({
       accountId: 'other-editor',
       displayName: 'Pat',
-      email: 'pat@example.com',
     });
     expect(
       (db.prepare(`SELECT user_name AS userName FROM room_presence WHERE room_id = 'r2'`).get() as { userName: string }).userName,

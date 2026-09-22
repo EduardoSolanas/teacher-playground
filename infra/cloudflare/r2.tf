@@ -30,6 +30,35 @@ resource "cloudflare_r2_bucket" "board_files" {
   }
 }
 
+# Object lifecycle on the same bucket: backup dumps written under `backups/`
+# (backupObjectKey in src/lib/backup/backup.ts) are restore points, not pupil
+# uploads. Room deletion and account erasure purge the prefixes directly, but
+# neither path catches dumps orphaned by a crashed cycle or an abandoned room,
+# so the bucket itself expires them. 30 days matches the promise in
+# public/privacy.html: copies in backups are "gone within 30 days".
+#
+# max_age is measured in seconds (provider v5 schema), so 30 days.
+resource "cloudflare_r2_bucket_lifecycle" "backup_expiry" {
+  account_id  = local.account_id
+  bucket_name = cloudflare_r2_bucket.board_files.name
+
+  rules = [
+    {
+      id      = "expire-backup-dumps-after-30-days"
+      enabled = true
+      conditions = {
+        prefix = "backups/"
+      }
+      delete_objects_transition = {
+        condition = {
+          max_age = 30 * 24 * 60 * 60
+          type    = "Age"
+        }
+      }
+    },
+  ]
+}
+
 # There is deliberately NO cloudflare_r2_managed_domain and NO
 # cloudflare_r2_custom_domain for this bucket. Either one would serve every
 # pupil's uploaded picture on the open internet behind a guessable path,

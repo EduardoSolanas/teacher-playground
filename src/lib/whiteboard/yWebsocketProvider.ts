@@ -3,7 +3,7 @@ import { WebsocketProvider } from 'y-websocket';
 import { Awareness } from 'y-protocols/awareness';
 import { Decoder } from 'lib0/decoding';
 import { Encoder } from 'lib0/encoding';
-import { getSignalingUrls } from './ywebrtcProvider';
+import { getSignalingUrls } from './signalingUrls';
 import { PRESENCE_MESSAGE_TYPE, readPresenceBody } from './presenceMessage';
 import {
   FOLLOW_MESSAGE_TYPE,

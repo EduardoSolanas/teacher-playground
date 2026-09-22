@@ -2,11 +2,13 @@ import {
   buildLiveKitRoomServiceToken,
   parseLiveKitConfig,
 } from './livekitToken';
+import { deriveLiveKitIdentity } from './participantIdentity';
 
 export interface RemoveLiveKitParticipantInput {
   readonly env: unknown;
   readonly roomId: string;
-  readonly identity: string;
+  /** The server-verified account; the LiveKit identity is derived from it (audit M4). */
+  readonly accountId: string;
 }
 
 export type RemoveLiveKitParticipantResult =
@@ -51,6 +53,7 @@ export async function removeLiveKitParticipant(
       apiSecret: config.apiSecret,
       room: input.roomId,
     });
+    const identity = await deriveLiveKitIdentity(config.apiSecret, input.roomId, input.accountId);
 
     const response = await fetch(url, {
       method: 'POST',
@@ -60,7 +63,7 @@ export async function removeLiveKitParticipant(
       },
       body: JSON.stringify({
         room: input.roomId,
-        identity: input.identity,
+        identity,
       }),
     });
 
@@ -76,7 +79,8 @@ export async function removeLiveKitParticipant(
 export interface MuteLiveKitParticipantInput {
   readonly env: unknown;
   readonly roomId: string;
-  readonly identity: string;
+  /** The server-verified account; the LiveKit identity is derived from it (audit M4). */
+  readonly accountId: string;
   readonly kind?: 'audio' | 'video';
 }
 
@@ -110,6 +114,7 @@ export async function muteLiveKitParticipant(
     });
 
     const targetKind = input.kind === 'video' ? 'video' : 'audio';
+    const identity = await deriveLiveKitIdentity(config.apiSecret, input.roomId, input.accountId);
 
     // First call: GetParticipant to find the requested published track.
     const getResponse = await fetch(getParticipantUrl, {
@@ -120,7 +125,7 @@ export async function muteLiveKitParticipant(
       },
       body: JSON.stringify({
         room: input.roomId,
-        identity: input.identity,
+        identity,
       }),
     });
 
@@ -155,7 +160,7 @@ export async function muteLiveKitParticipant(
       },
       body: JSON.stringify({
         room: input.roomId,
-        identity: input.identity,
+        identity,
         track_sid: targetTrack.sid,
         muted: true,
       }),
@@ -173,7 +178,8 @@ export async function muteLiveKitParticipant(
 export interface SetLiveKitScreenShareInput {
   readonly env: unknown;
   readonly roomId: string;
-  readonly identity: string;
+  /** The server-verified account; the LiveKit identity is derived from it (audit M4). */
+  readonly accountId: string;
   /** True lets the participant share their screen on this call; false takes it back. */
   readonly allowed: boolean;
 }
@@ -211,6 +217,7 @@ export async function setLiveKitScreenShare(
       apiSecret: config.apiSecret,
       room: input.roomId,
     });
+    const identity = await deriveLiveKitIdentity(config.apiSecret, input.roomId, input.accountId);
     const response = await fetch(`${host}/twirp/livekit.RoomService/UpdateParticipant`, {
       method: 'POST',
       headers: {
@@ -219,7 +226,7 @@ export async function setLiveKitScreenShare(
       },
       body: JSON.stringify({
         room: input.roomId,
-        identity: input.identity,
+        identity,
         permission: {
           can_subscribe: true,
           can_publish: true,

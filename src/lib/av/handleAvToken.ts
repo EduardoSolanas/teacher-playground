@@ -14,6 +14,7 @@ import {
   parseLiveKitConfig,
   type LiveKitConfig,
 } from './livekitToken';
+import { deriveLiveKitIdentity } from './participantIdentity';
 
 export interface IssueAvTokenInput {
   readonly db: RoomDatabase;
@@ -21,6 +22,12 @@ export interface IssueAvTokenInput {
   readonly roomId: string;
   readonly accountId: string;
   readonly name?: string;
+  /**
+   * The caller's presence peerId, looked up by the server (RoomDO) from
+   * presence state. Never a client-supplied value: a forged peerId here would
+   * let a participant label their own A/V state onto another roster row.
+   */
+  readonly peerId?: string;
 }
 
 function isWaitingAccount(
@@ -77,17 +84,20 @@ async function mintTokenResponse(
   input: IssueAvTokenInput,
   role: RoomRole,
 ): Promise<Response> {
-  // The LiveKit identity is always the server-verified account. LiveKit
-  // enforces one live session per identity by disconnecting the previous
-  // holder, so accepting a caller-chosen identity would let one admitted
-  // participant bump another off the call.
-  const identity = input.accountId;
+  // The LiveKit identity is always derived by the server from the verified
+  // account. LiveKit enforces one live session per identity by disconnecting
+  // the previous holder, so accepting a caller-chosen identity would let one
+  // admitted participant bump another off the call; and because LiveKit shows
+  // every participant every other participant's identity, the value must not
+  // be the accountId itself (audit M4).
+  const identity = await deriveLiveKitIdentity(config.apiSecret, input.roomId, input.accountId);
   const token = await buildLiveKitToken({
     apiKey: config.apiKey,
     apiSecret: config.apiSecret,
     room: input.roomId,
     identity,
     name: input.name,
+    peerId: input.peerId,
     grant: {
       canPublish: role !== 'viewer',
       canPublishData: role !== 'viewer',

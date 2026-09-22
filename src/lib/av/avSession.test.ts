@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createAvSession,
   mapProviderError,
+  peerIdFromParticipantMetadata,
   type AvProvider,
   type AvProviderEvents,
   type AvSessionListener,
@@ -503,5 +504,56 @@ describe('mapProviderError', () => {
   });
   it('defaults unknown errors to unknown', () => {
     expect(mapProviderError(new Error('something else entirely')).kind).toBe('unknown');
+  });
+});
+
+describe('peerIdFromParticipantMetadata', () => {
+  it('reads the peerId the server put in the participant metadata claim', () => {
+    // LiveKit copies the token's `metadata` claim onto each participant; this
+    // is the value the roster joins on instead of the opaque identity (M4).
+    expect(peerIdFromParticipantMetadata(JSON.stringify({ peerId: 'p-9' }))).toBe('p-9');
+  });
+
+  it('returns undefined for malformed or missing metadata without throwing', () => {
+    // Participant metadata crosses a wire we do not control here: any junk
+    // must degrade to "no peerId" (row shows no A/V state) rather than break
+    // the session's participant event handling.
+    expect(peerIdFromParticipantMetadata(undefined)).toBeUndefined();
+    expect(peerIdFromParticipantMetadata(null)).toBeUndefined();
+    expect(peerIdFromParticipantMetadata('')).toBeUndefined();
+    expect(peerIdFromParticipantMetadata('not-json')).toBeUndefined();
+    expect(peerIdFromParticipantMetadata('{')).toBeUndefined();
+    expect(peerIdFromParticipantMetadata('null')).toBeUndefined();
+    expect(peerIdFromParticipantMetadata('[]')).toBeUndefined();
+    expect(peerIdFromParticipantMetadata('"p-9"')).toBeUndefined();
+    expect(peerIdFromParticipantMetadata('42')).toBeUndefined();
+    expect(peerIdFromParticipantMetadata('true')).toBeUndefined();
+    expect(peerIdFromParticipantMetadata('{}')).toBeUndefined();
+    expect(peerIdFromParticipantMetadata(JSON.stringify({ other: 'x' }))).toBeUndefined();
+    expect(peerIdFromParticipantMetadata(JSON.stringify({ peerId: 9 }))).toBeUndefined();
+    expect(peerIdFromParticipantMetadata(JSON.stringify({ peerId: '' }))).toBeUndefined();
+    expect(peerIdFromParticipantMetadata(JSON.stringify({ peerId: ['a'] }))).toBeUndefined();
+    expect(peerIdFromParticipantMetadata(JSON.stringify({ peerId: { id: 'x' } }))).toBeUndefined();
+  });
+
+  it('rejects non-string inputs before JSON.parse can coerce them', () => {
+    // JSON.parse ToString-coerces its argument, so a boxed String carrying a
+    // full claim would parse into a peerId if the typeof guard were skipped.
+    // The claim must only ever come from the server's own JSON string.
+    expect(peerIdFromParticipantMetadata(new String('{"peerId":"p-9"}'))).toBeUndefined();
+  });
+
+  it('does not adopt a peerId inherited from Object.prototype', () => {
+    // A polluted prototype must not be able to mint a roster identity for a
+    // participant whose own claim has no peerId key.
+    Object.defineProperty(Object.prototype, 'peerId', {
+      value: 'polluted',
+      configurable: true,
+    });
+    try {
+      expect(peerIdFromParticipantMetadata(JSON.stringify({ other: 'x' }))).toBeUndefined();
+    } finally {
+      delete (Object.prototype as { peerId?: unknown }).peerId;
+    }
   });
 });

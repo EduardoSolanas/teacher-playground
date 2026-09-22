@@ -689,12 +689,20 @@ describe('requestSchemas hardening (SEC-005)', () => {
   });
 
   describe('requestsPostSchema', () => {
-    it('accepts a valid email', () => {
-      expect(requestsPostSchema.safeParse({ userName: 'Alice', email: 'alice@example.com' }).success).toBe(true);
+    it('strips an email field instead of carrying it into the parsed body', () => {
+      const result = requestsPostSchema.safeParse({ userName: 'Alice', email: 'alice@example.com' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data).not.toHaveProperty('email');
+      }
     });
 
-    it('rejects an invalid email', () => {
-      expect(requestsPostSchema.safeParse({ userName: 'Alice', email: 'not-an-email' }).success).toBe(false);
+    it('ignores an invalid email field because the field does not exist', () => {
+      const result = requestsPostSchema.safeParse({ userName: 'Alice', email: 'not-an-email' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data).not.toHaveProperty('email');
+      }
     });
 
     it('rejects an oversized user name', () => {

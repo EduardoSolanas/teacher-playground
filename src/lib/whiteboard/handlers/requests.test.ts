@@ -84,6 +84,26 @@ describe('access request API', () => {
       expect(getMembership(getRoomDb(), roomId, accountId)?.role).toBe('pending');
     });
 
+    it('never persists an email field posted with a request', async () => {
+      const roomId = `requests-email-stripped-${crypto.randomUUID()}`;
+      const accountId = `acc-${crypto.randomUUID()}`;
+      const response = await handleRequestsPost(
+        getRoomDb(),
+        roomId,
+        new Request(roomUrl(roomId, '/requests', accountId), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userName: 'Alice', email: 'alice@example.com' }),
+        }),
+      );
+      expect(response.status).toBe(201);
+
+      const row = getRoomDb().prepare(
+        `SELECT email FROM room_members WHERE room_id = ? AND account_id = ?`,
+      ).get(roomId, accountId) as { email: string | null } | undefined;
+      expect(row?.email ?? null).toBeNull();
+    });
+
     it('returns 429 and does not persist when pending requests reach maxUsers', async () => {
       const roomId = `requests-queue-cap-${crypto.randomUUID()}`;
       const owner = `acc-owner-${crypto.randomUUID()}`;
@@ -285,10 +305,10 @@ describe('access request API', () => {
       );
 
       expect(response.status).toBe(200);
-      const data = await response.json() as { requests: Array<{ userName: string; email: string; requestId: string }> };
+      const data = await response.json() as { requests: Array<{ userName: string; requestId: string }> };
       expect(data.requests).toHaveLength(1);
       expect(data.requests[0].userName).toBe('Alice');
-      expect(data.requests[0].email).toBe('alice@example.com');
+      expect(data.requests[0]).not.toHaveProperty('email');
       expect(data.requests[0].requestId).toBe(requester);
     });
 

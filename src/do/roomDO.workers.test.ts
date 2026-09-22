@@ -22,6 +22,7 @@ import {
   type LocalAuthSession,
 } from '../test/workerAuth';
 import { withLiveKitConfigured } from '../test/workerLiveKit';
+import { AV_TOKEN_RATE_MAX } from '../lib/worker/rateLimits';
 /*
  * How long a socket event may take before the test gives up.
  *
@@ -1540,7 +1541,7 @@ describe('revocation closes live signaling sockets', () => {
       instance.evictLiveKitParticipant = async (input) => {
         instance.liveKitEvictCalls!.push({
           roomId: input.roomId,
-          identity: input.identity,
+          accountId: input.accountId,
         });
         return { ok: true };
       };
@@ -1558,7 +1559,7 @@ describe('revocation closes live signaling sockets', () => {
         roomStub(roomId),
         (instance: RoomDO) => [...(instance.liveKitEvictCalls ?? [])],
       );
-      expect(calls).toEqual([{ roomId, identity: subject.accountId }]);
+      expect(calls).toEqual([{ roomId, accountId: subject.accountId }]);
     }, { timeout: SOCKET_EVENT_DEADLINE_MS, interval: 25 });
   });
 
@@ -1706,7 +1707,7 @@ describe('kick closes live signaling sockets', () => {
 });
 
 describe('kick and suspend evict LiveKit participant', () => {
-  type LiveKitEvictCall = { roomId: string; identity: string };
+  type LiveKitEvictCall = { roomId: string; accountId: string };
 
   function roomStub(roomId: string) {
     return env.ROOMS.get(env.ROOMS.idFromName(roomId));
@@ -1718,7 +1719,7 @@ describe('kick and suspend evict LiveKit participant', () => {
       instance.evictLiveKitParticipant = async (input) => {
         instance.liveKitEvictCalls!.push({
           roomId: input.roomId,
-          identity: input.identity,
+          accountId: input.accountId,
         });
         return { ok: true };
       };
@@ -1772,7 +1773,7 @@ describe('kick and suspend evict LiveKit participant', () => {
     expect(kick.status).toBe(200);
 
     expect(await readEvictCalls(roomId)).toEqual([
-      { roomId, identity: editor.accountId },
+      { roomId, accountId: editor.accountId },
     ]);
   });
 
@@ -1795,7 +1796,7 @@ describe('kick and suspend evict LiveKit participant', () => {
     expect(suspend.status).toBe(200);
 
     expect(await readEvictCalls(roomId)).toEqual([
-      { roomId, identity: editor.accountId },
+      { roomId, accountId: editor.accountId },
     ]);
   });
 
@@ -1822,7 +1823,7 @@ describe('kick and suspend evict LiveKit participant', () => {
 });
 
 describe('A/V mute endpoint', () => {
-  type LiveKitMuteCall = { roomId: string; identity: string; kind?: 'audio' | 'video' };
+  type LiveKitMuteCall = { roomId: string; accountId: string; kind?: 'audio' | 'video' };
   const GUEST = 'https://join.example.com';
 
   function roomStub(roomId: string) {
@@ -1835,7 +1836,7 @@ describe('A/V mute endpoint', () => {
       instance.muteLiveKitParticipantHook = async (input) => {
         instance.liveKitMuteCalls!.push({
           roomId: input.roomId,
-          identity: input.identity,
+          accountId: input.accountId,
           kind: input.kind,
         });
         return { ok: true };
@@ -1889,7 +1890,7 @@ describe('A/V mute endpoint', () => {
     expect(mute.status).toBe(200);
 
     expect(await readMuteCalls(roomId)).toEqual([
-      { roomId, identity: editor.accountId, kind: 'audio' },
+      { roomId, accountId: editor.accountId, kind: 'audio' },
     ]);
   });
 
@@ -1911,7 +1912,7 @@ describe('A/V mute endpoint', () => {
     expect(mute.status).toBe(200);
 
     expect(await readMuteCalls(roomId)).toEqual([
-      { roomId, identity: editor.accountId, kind: 'video' },
+      { roomId, accountId: editor.accountId, kind: 'video' },
     ]);
   });
 
@@ -2054,6 +2055,37 @@ describe('A/V mute endpoint', () => {
       expect(tokenRes.status).toBe(200);
       const tokenData = await tokenRes.json() as { token?: string };
       expect(tokenData.token).toBeDefined();
+    });
+  });
+
+  it('embeds the caller\'s presence peerId as the token metadata claim, and no accountId', async () => {
+    const owner = await bootstrapLocalSession('av-token-meta-owner');
+    const editor = await bootstrapLocalSession('av-token-meta-editor');
+    const roomId = 'av-token-meta-room';
+
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+    await grantEditor(owner, editor, roomId);
+    const editorPeerId = await joinEditorPeer(editor, roomId);
+
+    await withLiveKitConfigured(true, async () => {
+      const tokenRes = await authenticatedFetch(`/api/whiteboard/room/${roomId}/av`, editor, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      expect(tokenRes.status).toBe(200);
+      const tokenData = await tokenRes.json() as { token?: string };
+      expect(tokenData.token).toBeDefined();
+
+      const payloadSegment = tokenData.token!.split('.')[1]!;
+      const normalized = payloadSegment.replaceAll('-', '+').replaceAll('_', '/');
+      const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4));
+      const payload = JSON.parse(atob(normalized + padding)) as { metadata?: unknown };
+      // The claim is the presence peerId the DO looked up server-side: it
+      // joins roster rows client-side, and it must never be the accountId
+      // (that would undo M4's opaque identity).
+      expect(payload.metadata).toBe(JSON.stringify({ peerId: editorPeerId }));
+      expect(payload.metadata).not.toContain(editor.accountId);
     });
   });
 });
@@ -3306,8 +3338,10 @@ describe('room authorization matrix', () => {
 
     const requests = await authenticatedFetch(`/api/whiteboard/room/${roomId}/requests`, owner);
     expect(requests.status).toBe(200);
-    const listed = await requests.json() as { requests: Array<{ email: string | null; requestId: string }> };
-    expect(listed.requests.some((row) => row.requestId === outsider.accountId)).toBe(true);
+    const listed = await requests.json() as { requests: Array<{ requestId: string }> };
+    const outsiderRow = listed.requests.find((row) => row.requestId === outsider.accountId);
+    expect(outsiderRow).toBeDefined();
+    expect(outsiderRow).not.toHaveProperty('email');
 
     const presence = await authenticatedFetch(`/api/whiteboard/room/${roomId}/presence`, owner);
     const data = await presence.json() as { waitingPeers: Array<{ peerId: string }> };
@@ -3805,6 +3839,33 @@ describe('A/V token route (/api/av/token)', () => {
     );
     expect(waitingToken.status).toBe(403);
   });
+
+  it('rate-limits A/V token mints per account with 429 and Retry-After', async () => {
+    // Join tokens were minted with no cap: one admitted account could sign
+    // LiveKit JWTs as fast as the DO answered.
+    const roomId = 'av-room-rate';
+    await createRoom(roomId);
+
+    const mint = () => authenticatedFetch(`/api/av/token?roomId=${roomId}`, session, {
+      method: 'POST',
+      headers: { 'x-test-strict-rate-limit': '1' },
+    });
+
+    // AV_TOKEN_RATE_MAX is 30 per account per minute; under the cap the
+    // route still answers (LiveKit state decides 200 vs 503, never 429).
+    for (let index = 0; index < AV_TOKEN_RATE_MAX; index += 1) {
+      const response = await mint();
+      expect(response.status, `mint ${index}`).not.toBe(429);
+    }
+
+    const limited = await mint();
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('cache-control')).toBe('no-store');
+    const retryAfter = limited.headers.get('retry-after');
+    expect(retryAfter).not.toBeNull();
+    expect(Number(retryAfter)).toBeGreaterThan(0);
+    expect(await limited.json()).toEqual({ error: 'Too many requests' });
+  }, 30_000);
 });
 
 describe('SEC-005 room existence before persist', () => {
@@ -4431,11 +4492,17 @@ describe('guest authorization matrix', () => {
   });
 
   describe('guest permissions', () => {
-    it('allows POST /requests (self) and stores email as NULL', async () => {
-      const res = await guestFetch('/requests', 'POST', { userName: 'Guest User' });
+    it('strips an email posted with POST /requests (self) and stores none', async () => {
+      const res = await guestFetch('/requests', 'POST', {
+        userName: 'Guest User',
+        email: 'guest@example.com',
+      });
       expect(res.status).toBe(201);
+      const payload = await res.json() as Record<string, unknown>;
+      expect(payload).not.toHaveProperty('email');
+      expect(JSON.stringify(payload)).not.toContain('guest@example.com');
 
-      // Verify email is NULL in the database
+      // The legacy column may still exist, but the request path never writes it.
       const roomStub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
       const row = await runInDurableObject(roomStub, (instance: RoomDO) => {
         return instance.db.prepare(

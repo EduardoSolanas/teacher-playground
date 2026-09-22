@@ -459,7 +459,7 @@ describe('RoomDO account erasure', () => {
       };
       expect(row).toEqual({
         displayName: 'Other',
-        email: 'other@example.com',
+        email: null,
         role: 'editor',
       });
     });

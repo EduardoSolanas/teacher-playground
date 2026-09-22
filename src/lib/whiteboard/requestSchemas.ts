@@ -284,7 +284,6 @@ export const waitingPostSchema = z.object({
 
 export const requestsPostSchema = z.object({
   userName: normalizedNameBase,
-  email: z.email().optional(),
 });
 
 export const requestActionPostSchema = z.object({

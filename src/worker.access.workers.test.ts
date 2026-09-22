@@ -4,6 +4,7 @@ import { runInDurableObject, SELF } from 'cloudflare:test';
 import { getIdentityObject, type IdentityDO } from './do/IdentityDO';
 import { MAX_BODY_BYTES } from './lib/worker/requestGuard';
 import { MAX_ROOM_FILE_BYTES_TOTAL, MAX_BOARD_FILE_BYTES } from './lib/whiteboard/boardFileRoutes';
+import { backupObjectKey } from './lib/backup/backup';
 import { DESTRUCTIVE_FRESH_MS, SESSION_COOKIE_NAME } from './lib/identity/sessionStore';
 import { accessFetch, authenticatedFetch, bootstrapLocalSession, localAccessToken } from './test/workerAuth';
 import { withLiveKitConfigured } from './test/workerLiveKit';
@@ -28,6 +29,9 @@ import {
   PRESENCE_POST_RATE_MAX,
   ROOM_CREATE_RATE_MAX,
   SCENE_WRITE_RATE_MAX,
+  SESSION_ISSUE_RATE_MAX,
+  BOARD_FILE_PUT_RATE_MAX,
+  ACCOUNT_EXPORT_RATE_MAX,
 } from './lib/worker/rateLimits';
 
 const BASE = 'https://example.com';
@@ -208,6 +212,32 @@ describe('real local Access boundary through workerd', () => {
       other.token,
     );
     expect(mixed.status).toBe(401);
+  });
+
+  it('rate-limits account export per account with 429 and Retry-After', async () => {
+    // Export serializes the whole account out of the identity DO: the
+    // heaviest read a single caller can ask for, previously uncapped.
+    const session = await bootstrapLocalSession('export-rate');
+    const attempt = () => authenticatedFetch('/auth/account/export', session, {
+      headers: { 'x-test-strict-rate-limit': '1' },
+    });
+
+    // ACCOUNT_EXPORT_RATE_MAX is 5 per account per minute.
+    for (let index = 0; index < ACCOUNT_EXPORT_RATE_MAX; index += 1) {
+      const response = await attempt();
+      expect(response.status, `export ${index}`).toBe(200);
+    }
+
+    const limited = await attempt();
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('cache-control')).toBe('no-store');
+    const retryAfter = limited.headers.get('retry-after');
+    expect(retryAfter).not.toBeNull();
+    expect(Number(retryAfter)).toBeGreaterThan(0);
+    expect(await limited.json()).toEqual({ error: 'Too many requests' });
+
+    // The cap is this route only: the same account still reads its session.
+    expect((await authenticatedFetch('/auth/session/current', session)).status).toBe(200);
   });
 
   it('rejects a cross-origin-looking account erase with no Origin header', async () => {
@@ -437,6 +467,54 @@ describe('real local Access boundary through workerd', () => {
     expect(await env.BOARD_FILES.get(key)).toBeNull();
   });
 
+  it('purges identity-DO and owned-room R2 backups along with the account (M3-purge)', async () => {
+    /*
+     * R2 backup dumps (`backups/{doClass}/{doId}/{ISO}.json`) are not rolled
+     * back by an erasure, so an erased account would live on in the identity
+     * export and in every room export it owns unless the fan-out deletes them
+     * alongside the board files it already purges.
+     */
+    const owner = await bootstrapLocalSession('erase-backups-owner');
+    const other = await bootstrapLocalSession('erase-backups-other');
+    const ownedRoomId = `erase-backups-owned-${crypto.randomUUID()}`;
+    const otherRoomId = `erase-backups-other-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${ownedRoomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+    expect((await authenticatedFetch(`/api/whiteboard/room/${otherRoomId}`, other, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const ownedKey = backupObjectKey('rooms', ownedRoomId, Date.now());
+    const identityKey = backupObjectKey('identity', 'global', Date.now());
+    const otherKey = backupObjectKey('rooms', otherRoomId, Date.now());
+    await env.BOARD_FILES.put(ownedKey, JSON.stringify({ dump: 'owned-room' }));
+    await env.BOARD_FILES.put(identityKey, JSON.stringify({ dump: 'identity' }));
+    await env.BOARD_FILES.put(otherKey, JSON.stringify({ dump: 'other-room' }));
+
+    await runInDurableObject(
+      getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>),
+      (instance: IdentityDO) => {
+        instance.db
+          .prepare(
+            `UPDATE sessions SET created_at = created_at - ?
+             WHERE account_id = ? AND revoked_at IS NULL`,
+          )
+          .run(DESTRUCTIVE_FRESH_MS + 60_000, owner.accountId);
+      },
+    );
+    expect((await authenticatedFetch('/auth/session/confirm', owner, { method: 'POST' })).status).toBe(200);
+    expect((await authenticatedFetch('/auth/account', owner, { method: 'DELETE' })).status).toBe(200);
+
+    expect(await env.BOARD_FILES.head(ownedKey)).toBeNull();
+    expect(await env.BOARD_FILES.head(identityKey)).toBeNull();
+    expect(await env.BOARD_FILES.head(otherKey)).not.toBeNull();
+  });
+
   it('purges rooms the caller owned and leaves another account room intact', async () => {
     const owner = await bootstrapLocalSession('erase-owned-rooms');
     const other = await bootstrapLocalSession('erase-other-rooms');
@@ -471,6 +549,34 @@ describe('real local Access boundary through workerd', () => {
     expect(gone.status).toBe(410);
     const kept = await authenticatedFetch(`/api/whiteboard/room/${otherRoomId}`, other);
     expect(kept.status).toBe(200);
+  });
+
+  it('deletes the room DO R2 backups when the room is deleted (M3-purge)', async () => {
+    /*
+     * Room deletion purged only `rooms/{roomId}/files/`. The backup cycle
+     * writes `backups/rooms/{roomId}/{ISO}.json` under the same bucket, so a
+     * deleted room's full SQLite export survived the delete.
+     */
+    const owner = await bootstrapLocalSession('delete-room-backups');
+    const roomId = `delete-backups-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const backupKey = backupObjectKey('rooms', roomId, Date.now());
+    await env.BOARD_FILES.put(backupKey, JSON.stringify({ dump: 'deleted-room' }));
+
+    const deleted = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'DELETE',
+    });
+    expect(deleted.status).toBe(200);
+
+    // The purge rides ctx.waitUntil, so poll rather than sampling once.
+    await expect
+      .poll(async () => env.BOARD_FILES.head(backupKey), { timeout: 5_000 })
+      .toBeNull();
   });
 
   it('accepts an empty browser-style POST body for session bootstrap', async () => {
@@ -1054,6 +1160,39 @@ describe('real local Access boundary through workerd', () => {
     expect(createStillAllowed.status).toBe(200);
   }, 60_000);
 
+  it('rate-limits session issue per account with 429 and Retry-After', async () => {
+    // Session issue was the one auth write with no limiter: one Access token
+    // could mint sessions as fast as the identity object answered.
+    const subject = `session-issue-rate-${crypto.randomUUID()}`;
+    const token = await localAccessToken(subject);
+    const attempt = () => SELF.fetch(`${BASE}/auth/session`, {
+      method: 'POST',
+      headers: {
+        Origin: BASE,
+        'Cf-Access-Jwt-Assertion': token,
+        'x-test-strict-rate-limit': '1',
+      },
+    });
+
+    // SESSION_ISSUE_RATE_MAX is 10 per account per minute.
+    for (let index = 0; index < SESSION_ISSUE_RATE_MAX; index += 1) {
+      const response = await attempt();
+      expect(response.status, `issue ${index}`).toBe(201);
+    }
+
+    const limited = await attempt();
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('cache-control')).toBe('no-store');
+    const retryAfter = limited.headers.get('retry-after');
+    expect(retryAfter).not.toBeNull();
+    expect(Number(retryAfter)).toBeGreaterThan(0);
+    expect(await limited.json()).toEqual({ error: 'Too many requests' });
+
+    // The cap is this route only: the same account still reads its session.
+    const session = await bootstrapLocalSession(subject);
+    expect((await authenticatedFetch('/auth/session/current', session)).status).toBe(200);
+  });
+
   it('logs auth_failure without tokens when the local session is missing', async () => {
     const lines: string[] = [];
     setAuthEventWriterForTests((line) => lines.push(line));
@@ -1586,6 +1725,40 @@ describe('real local Access boundary through workerd', () => {
     expect(response.status).toBe(401);
   });
 
+  it('refuses a cross-tenant read of the room error ring on the public API', async () => {
+    /*
+     * GET /api/whiteboard/room/{id}/errors used to forward to the RoomDO's
+     * /room/errors branch before any room-level authorize, so any signed-in
+     * session could pull any room's internal error ring through the front
+     * door. The admin surface reaches the ring over the namespace binding;
+     * the public ROOM_API path must answer the same bodyless 404 as /backup.
+     */
+    const reader = await bootstrapLocalSession('errors-ring-reader');
+    const ownedRoomId = `errors-ring-owner-${crypto.randomUUID()}`;
+    expect((await authenticatedFetch(`/api/whiteboard/room/${ownedRoomId}`, reader, {
+      method: 'POST',
+      headers: { Origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ elements: [] }),
+    })).status).toBe(200);
+
+    const ringRoomId = `errors-ring-victim-${crypto.randomUUID()}`;
+    await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(ringRoomId)),
+      (instance: RoomDO) => {
+        instance.db
+          .prepare(`INSERT INTO error_ring (at, scope, message) VALUES (?, ?, ?)`)
+          .run(Date.now(), 'crossTenantProbe', 'ring-secret-m1');
+      },
+    );
+
+    const response = await authenticatedFetch(
+      `/api/whiteboard/room/${ringRoomId}/errors`,
+      reader,
+    );
+    expect(response.status).toBe(404);
+    expect(await response.text()).not.toContain('ring-secret-m1');
+  });
+
   it('allows other room subpaths to work as before (regression test)', async () => {
     const owner = await bootstrapLocalSession('guest-verify-regression');
     const roomId = 'guest-verify-room';
@@ -1955,6 +2128,56 @@ describe('real local Access boundary through workerd', () => {
       expect(download.headers.get('cache-control')).toBe('no-store');
       expect(Array.from(new Uint8Array(await download.arrayBuffer()))).toEqual(Array.from(bytes));
     });
+
+    it('rate-limits board-file PUTs per account with 429 and Retry-After', async () => {
+      // Every new image is a 25 MiB-capable buffered write: PUTs were the
+      // one board surface with no request cap (the byte quota bounds storage,
+      // not request rate).
+      const owner = await bootstrapLocalSession('board-file-rate');
+      const roomId = 'board-file-rate-room';
+      expect((await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+        method: 'POST',
+        headers: { Origin: BASE, 'content-type': 'application/json' },
+        body: JSON.stringify({ elements: [] }),
+      })).status).toBe(200);
+
+      const bytes = new Uint8Array([9, 8, 7, 6]);
+      const put = (index: number) => authenticatedFetch(
+        `/api/whiteboard/room/${roomId}/files/rate-file-${index}`,
+        owner,
+        {
+          method: 'PUT',
+          headers: {
+            Origin: BASE,
+            'content-type': 'image/png',
+            'content-length': String(bytes.length),
+            'x-test-strict-rate-limit': '1',
+          },
+          body: bytes,
+        },
+      );
+
+      // BOARD_FILE_PUT_RATE_MAX is 60 per account per minute.
+      for (let index = 0; index < BOARD_FILE_PUT_RATE_MAX; index += 1) {
+        const response = await put(index);
+        expect(response.status, `put ${index}`).toBe(201);
+      }
+
+      const limited = await put(BOARD_FILE_PUT_RATE_MAX);
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get('cache-control')).toBe('no-store');
+      const retryAfter = limited.headers.get('retry-after');
+      expect(retryAfter).not.toBeNull();
+      expect(Number(retryAfter)).toBeGreaterThan(0);
+      expect(await limited.json()).toEqual({ error: 'Too many requests' });
+
+      // The cap is this route only: reads still work for the same account.
+      const download = await authenticatedFetch(
+        `/api/whiteboard/room/${roomId}/files/rate-file-0`,
+        owner,
+      );
+      expect(download.status).toBe(200);
+    }, 60_000);
 
     it('refuses a file to an account with no grant in that room', async () => {
       const owner = await bootstrapLocalSession('board-file-owner-iso');

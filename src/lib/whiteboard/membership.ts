@@ -15,7 +15,6 @@ export interface Membership {
   accountId: string;
   role: MembershipRole;
   displayName: string | null;
-  email: string | null;
   createdAt: number;
   updatedAt: number;
   requestedAt: number | null;
@@ -78,7 +77,7 @@ export function getMembership(
   if (!accountId) return null;
   const row = db.prepare(
     `SELECT room_id AS roomId, account_id AS accountId, role,
-            display_name AS displayName, email,
+            display_name AS displayName,
             created_at AS createdAt, updated_at AS updatedAt,
             requested_at AS requestedAt, expires_at AS expiresAt
      FROM room_members
@@ -191,7 +190,6 @@ export function requestAccess(
     roomId: string;
     accountId: string;
     userName: string;
-    email?: string | null;
     now?: number;
   },
 ): RequestAccessResult {
@@ -218,21 +216,19 @@ export function requestAccess(
 
   db.prepare(
     `INSERT INTO room_members (
-       room_id, account_id, role, display_name, email,
+       room_id, account_id, role, display_name,
        requested_at, created_at, updated_at, expires_at
-     ) VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, NULL)
+     ) VALUES (?, ?, 'pending', ?, ?, ?, ?, NULL)
      ON CONFLICT(room_id, account_id) DO UPDATE SET
        role = CASE WHEN room_members.role IN ('owner', 'editor', 'viewer', 'banned')
          THEN room_members.role ELSE 'pending' END,
        display_name = excluded.display_name,
-       email = excluded.email,
        requested_at = COALESCE(room_members.requested_at, excluded.requested_at),
        updated_at = excluded.updated_at`,
   ).run(
     params.roomId,
     params.accountId,
     params.userName,
-    params.email ?? null,
     now,
     now,
     now,
@@ -300,11 +296,10 @@ export function listPending(
   requestId: string;
   roomId: string;
   userName: string;
-  email: string | null;
   requestedAt: number;
 }> {
   const rows = db.prepare(
-    `SELECT account_id AS requestId, display_name AS userName, email,
+    `SELECT account_id AS requestId, display_name AS userName,
             requested_at AS requestedAt
      FROM room_members
      WHERE room_id = ? AND role = 'pending'
@@ -312,7 +307,6 @@ export function listPending(
   ).all(roomId) as Array<{
     requestId: string;
     userName: string | null;
-    email: string | null;
     requestedAt: number | null;
   }>;
 
@@ -320,7 +314,6 @@ export function listPending(
     requestId: row.requestId,
     roomId,
     userName: row.userName ?? '',
-    email: row.email,
     requestedAt: row.requestedAt ?? 0,
   }));
 }

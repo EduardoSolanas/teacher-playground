@@ -438,9 +438,9 @@ describe('RoomDO method and lifecycle guards', () => {
     expect((await writeRoom(roomId, owner)).status).toBe(200);
 
     const outcome = await runInDurableObject(stub(roomId), async (instance: RoomDO, state) => {
-      const evicted: { roomId: string; identity: string }[] = [];
+      const evicted: { roomId: string; accountId: string }[] = [];
       instance.evictLiveKitParticipant = async (input) => {
-        evicted.push({ roomId: input.roomId, identity: input.identity });
+        evicted.push({ roomId: input.roomId, accountId: input.accountId });
         return { ok: true };
       };
       const grantVersion = (instance as unknown as { db: { prepare(sql: string): { get(...args: unknown[]): unknown } } })
@@ -481,7 +481,7 @@ describe('RoomDO method and lifecycle guards', () => {
 
     expect(outcome.ungrantedOpen).toBe(false);
     expect(outcome.staleOwnerOpen).toBe(false);
-    expect(outcome.evicted).toEqual([{ roomId, identity: 'account-without-a-grant' }]);
+    expect(outcome.evicted).toEqual([{ roomId, accountId: 'account-without-a-grant' }]);
   });
 
   it('refuses a signaling upgrade that carries no session, before accepting a socket', async () => {

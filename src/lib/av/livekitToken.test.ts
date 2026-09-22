@@ -152,6 +152,31 @@ describe('buildLiveKitToken', () => {
     });
   });
 
+  it('carries the presence peerId as a JSON metadata claim only when one is given', async () => {
+    // LiveKit copies the JWT `metadata` claim onto the participant, so this is
+    // how a roster row's peerId travels to every call client without putting
+    // the accountId back on the wire (M4). The claim is exact: a JSON object
+    // with the single server-provided peerId key, or no claim at all.
+    const withPeer = await buildLiveKitToken({
+      apiKey: API_KEY,
+      apiSecret: SECRET,
+      room: 'room-meta',
+      identity: 'user-meta',
+      peerId: 'p-9',
+    });
+    const withPeerPayload = (await verifyLiveKitToken(withPeer, SECRET)).payload;
+    expect(withPeerPayload.metadata).toBe(JSON.stringify({ peerId: 'p-9' }));
+
+    const withoutPeer = await buildLiveKitToken({
+      apiKey: API_KEY,
+      apiSecret: SECRET,
+      room: 'room-meta',
+      identity: 'user-meta',
+    });
+    const withoutPeerPayload = (await verifyLiveKitToken(withoutPeer, SECRET)).payload;
+    expect(withoutPeerPayload).not.toHaveProperty('metadata');
+  });
+
   it('carries the display name only when one is given', async () => {
     const named = await buildLiveKitToken({
       apiKey: API_KEY,

@@ -143,7 +143,7 @@ test.describe('video calling panel', () => {
     await expect(guestPage.getByTestId('av-session-panel')).toHaveCount(0);
   });
 
-  test('host sees admitted peer roster state and owner-only controls while peer sees none, and host mute targets the peer account identity', async ({ browser }) => {
+  test('host sees admitted peer roster state and owner-only controls while peer sees none, and host mute targets the peer account, not the call identity', async ({ browser }) => {
     const host = await newAuthenticatedContext(browser, 'av-owner');
     const peer = await newAuthenticatedContext(browser, 'av-peer');
     const hostPage = await host.newPage();
@@ -160,7 +160,7 @@ test.describe('video calling panel', () => {
     await confirmPeerPreJoin(peerPage);
     // Awaited together so a failure on one side does not leave the other wait
     // pending past the end of the test.
-    const [hostAccountId, peerAccountId] = await identities;
+    const [hostTokenIdentity, peerTokenIdentity] = await identities;
     await waitForJoinedCall(hostPage);
     await waitForJoinedCall(peerPage);
 
@@ -189,18 +189,30 @@ test.describe('video calling panel', () => {
     );
     await peerRow.getByRole('button', { name: 'Mute Peer microphone' }).click();
     const muteRequest = await muteRequestPromise;
-    expect(muteRequest.postDataJSON()).toEqual({ target: peerAccountId });
-    expect(peerAccountId).not.toBe(hostAccountId);
+    // Mute addresses the peer's account from the owner's presence roster,
+    // never the opaque per-room LiveKit identity minted for the call (M4).
+    const muteTarget = (muteRequest.postDataJSON() as { target: string }).target;
+    expect(muteTarget).not.toBe(peerTokenIdentity);
+    expect(muteTarget).not.toBe(hostTokenIdentity);
 
+    // Collected through an array so TypeScript does not narrow the
+    // closure-assigned variable to null before these assertions run.
+    const rosterPeers: Array<{ peerId?: string; userName?: string; accountId?: string }> = [];
     await expect
       .poll(async () => {
         const response = await hostPage.request.get(appUrl(`/api/whiteboard/room/${roomId}/presence`));
-        if (!response.ok()) return null;
-        const body = (await response.json()) as { users?: Array<{ peerId: string; userName: string }> };
-        const peerUser = body.users?.find((user) => user.userName === 'Peer');
-        return peerUser?.peerId ?? null;
+        if (!response.ok) return null;
+        const body = (await response.json()) as { users?: Array<{ peerId: string; userName: string; accountId?: string }> };
+        const found = body.users?.find((user) => user.userName === 'Peer') ?? null;
+        if (found) rosterPeers.push(found);
+        return found?.accountId ?? null;
       }, { timeout: 15000, message: 'peer never appeared in the host roster payload' })
-      .not.toBe(peerAccountId);
+      .toBe(muteTarget);
+    const rosterPeer = rosterPeers[rosterPeers.length - 1] ?? null;
+    expect(rosterPeer?.peerId).toBeTruthy();
+    expect(rosterPeer?.peerId).not.toBe(muteTarget);
+    expect(rosterPeer?.peerId).not.toBe(peerTokenIdentity);
+    expect(peerTokenIdentity).not.toBe(muteTarget);
   });
 
   test('ending the call for everyone tells the peers the teacher ended it', async ({ browser }) => {

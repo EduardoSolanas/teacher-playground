@@ -418,6 +418,22 @@ describe('requestGuard hardening (SEC-005 / SEC-012)', () => {
         expect(isOriginGuardedPath(pathname, method), `${method} ${pathname}`).toBe(false);
       }
     });
+
+    it('guards every /auth/session subpath on mutating methods (M3)', () => {
+      // The old guard listed logout and confirm by name: any other subpath
+      // under /auth/session fell through unguarded.
+      expect(isOriginGuardedPath('/auth/session/anything', 'POST')).toBe(true);
+      expect(isOriginGuardedPath('/auth/session/anything', 'DELETE')).toBe(true);
+      expect(isOriginGuardedPath('/auth/session/anything', 'PATCH')).toBe(true);
+      expect(isOriginGuardedPath('/auth/session/', 'POST')).toBe(true);
+      expect(isOriginGuardedPath('/auth/session/deep/nested', 'POST')).toBe(true);
+
+      // Reads stay reachable without an Origin header, as before.
+      expect(isOriginGuardedPath('/auth/session/anything', 'GET')).toBe(false);
+      expect(isOriginGuardedPath('/auth/session/anything', 'HEAD')).toBe(false);
+      // The prefix is the session tree only, not a lookalike.
+      expect(isOriginGuardedPath('/auth/sessions', 'POST')).toBe(false);
+    });
   });
 
   describe('isValidRoomId', () => {

@@ -173,11 +173,11 @@ describe('mapAvPeerIds', () => {
       mapAvPeerIds(
         [
           { identity: '__local__', micMuted: false, micPresent: true, camOn: true, isSpeaking: true },
-          { identity: 'peer-2', micMuted: true, micPresent: true, camOn: false, isSpeaking: false },
+          { identity: 'hmac-opaque-2', peerId: 'peer-2', micMuted: true, micPresent: true, camOn: false, isSpeaking: false },
         ],
         [
           makeUser({ peerId: 'peer-local' }),
-          makeUser({ peerId: 'peer-2', accountId: 'peer-2' }),
+          makeUser({ peerId: 'peer-2', accountId: 'acct-2' }),
         ],
         'peer-local',
         (participant) => participant.isSpeaking,
@@ -185,12 +185,16 @@ describe('mapAvPeerIds', () => {
     ).toEqual(new Set(['peer-local']));
   });
 
-  it('maps remote av account identities onto roster peer ids and skips stale identities', () => {
+  it('maps remote participants by the metadata peerId, not the opaque identity, and skips unmatched ones', () => {
+    // Since M4 the LiveKit identity is an opaque HMAC, so it can never equal
+    // a roster accountId; the join rides the peerId from the token metadata,
+    // which presence already discloses to every room member.
     expect(
       mapAvPeerIds(
         [
-          { identity: 'acct-student', micMuted: true, micPresent: true, camOn: false, isSpeaking: true },
-          { identity: 'acct-stale', micMuted: false, micPresent: true, camOn: true, isSpeaking: true },
+          { identity: 'hmac-a1b2c3', peerId: 'peer-student', micMuted: true, micPresent: true, camOn: false, isSpeaking: true },
+          { identity: 'hmac-stale', peerId: 'peer-ghost', micMuted: false, micPresent: true, camOn: true, isSpeaking: true },
+          { identity: 'hmac-nometa', micMuted: false, micPresent: true, camOn: true, isSpeaking: true },
         ],
         [
           makeUser({ peerId: 'peer-owner', accountId: 'acct-owner', userName: 'Teacher', isHost: true }),
@@ -209,11 +213,11 @@ describe('mapAvPeerStateByPeerId', () => {
       mapAvPeerStateByPeerId(
         [
           { identity: '__local__', micMuted: false, micPresent: true, camOn: true, isSpeaking: true },
-          { identity: 'peer-2', micMuted: true, micPresent: true, camOn: false, isSpeaking: false },
+          { identity: 'hmac-opaque-2', peerId: 'peer-2', micMuted: true, micPresent: true, camOn: false, isSpeaking: false },
         ],
         [
           makeUser({ peerId: 'peer-local' }),
-          makeUser({ peerId: 'peer-2', accountId: 'peer-2' }),
+          makeUser({ peerId: 'peer-2', accountId: 'acct-2' }),
         ],
         'peer-local',
       ),
@@ -223,16 +227,18 @@ describe('mapAvPeerStateByPeerId', () => {
     ]));
   });
 
-  it('maps remote av account identities onto roster peer ids and drops unmatched state', () => {
+  it('maps remote participants by the metadata peerId onto roster rows and drops unmatched state', () => {
     expect(
       mapAvPeerStateByPeerId(
         [
-          { identity: 'acct-student', micMuted: true, micPresent: true, camOn: false, isSpeaking: true, quality: 'poor' },
-          { identity: 'acct-stale', micMuted: false, micPresent: true, camOn: true, isSpeaking: false, quality: 'good' },
+          { identity: 'hmac-a1b2c3', peerId: 'peer-student', micMuted: true, micPresent: true, camOn: false, isSpeaking: true, quality: 'poor' },
+          { identity: 'hmac-stale', peerId: 'peer-ghost', micMuted: false, micPresent: true, camOn: true, isSpeaking: false, quality: 'good' },
+          { identity: 'acct-legacy-match', micMuted: false, micPresent: true, camOn: true, isSpeaking: false, quality: 'good' },
         ],
         [
           makeUser({ peerId: 'peer-owner', accountId: 'acct-owner', userName: 'Teacher', isHost: true }),
           makeUser({ peerId: 'peer-student', accountId: 'acct-student', userName: 'Student' }),
+          makeUser({ peerId: 'peer-legacy', accountId: 'acct-legacy-match', userName: 'Legacy' }),
         ],
         'peer-owner',
       ),
@@ -244,8 +250,8 @@ describe('mapAvPeerStateByPeerId', () => {
   it('carries whether each participant may share their screen (Phase 10)', () => {
     const states = mapAvPeerStateByPeerId(
       [
-        { identity: 'acct-allowed', micMuted: false, micPresent: true, camOn: true, isSpeaking: false, canScreenShare: true },
-        { identity: 'acct-refused', micMuted: false, micPresent: true, camOn: true, isSpeaking: false, canScreenShare: false },
+        { identity: 'hmac-allowed', peerId: 'peer-allowed', micMuted: false, micPresent: true, camOn: true, isSpeaking: false, canScreenShare: true },
+        { identity: 'hmac-refused', peerId: 'peer-refused', micMuted: false, micPresent: true, camOn: true, isSpeaking: false, canScreenShare: false },
       ],
       [
         makeUser({ peerId: 'peer-allowed', accountId: 'acct-allowed' }),
@@ -257,11 +263,11 @@ describe('mapAvPeerStateByPeerId', () => {
     expect(states.get('peer-refused')?.canScreenShare).toBe(false);
   });
 
-  it('maps poor account-linked av quality onto the roster peer id', () => {
+  it('maps poor av quality onto the roster peer id', () => {
     expect(
       mapAvPeerStateByPeerId(
         [
-          { identity: 'acct-student', micMuted: false, micPresent: true, camOn: true, isSpeaking: false, quality: 'poor' },
+          { identity: 'hmac-a1b2c3', peerId: 'peer-student', micMuted: false, micPresent: true, camOn: true, isSpeaking: false, quality: 'poor' },
         ],
         [
           makeUser({ peerId: 'peer-owner', accountId: 'acct-owner', userName: 'Teacher', isHost: true }),

@@ -27,12 +27,11 @@ export async function handleRequestsPost(
       return Response.json({ error: parseResult.error }, { status: 400 });
     }
 
-    const { userName, email } = parseResult.data;
+    const { userName } = parseResult.data;
     const result = requestAccess(db, {
       roomId,
       accountId,
       userName: userName.trim(),
-      email,
     });
 
     if (!result.ok) {

@@ -6,8 +6,8 @@
  * media websocket dials. Its TLS+TCP handshake can start while the room is
  * still loading, so the first token fetch and the socket connect meet a warm
  * connection instead of a cold one. The signaling socket is same-origin
- * (/signaling, see ywebrtcProvider.ts) -- a page is already connected to its
- * own origin, so hinting for it would be a no-op and there is none.
+ * (/signaling) -- a page is already connected to its own origin, so hinting
+ * for it would be a no-op and there is none.
  *
  * The client cannot know the LiveKit origin before the token response hands
  * it over, and a same-document <link> can only hint origins known at render

@@ -45,7 +45,6 @@
     "react-dom": "^18.3.1",
     "tailwindcss": "^4.1.18",
     "uuid": "^14.0.0",
-    "y-webrtc": "^10.3.0",
     "y-websocket": "^3.0.0",
     "yjs": "^13.6.0",
     "zod": "^4.4.3"

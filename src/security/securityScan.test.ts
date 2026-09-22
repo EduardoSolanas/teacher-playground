@@ -93,13 +93,21 @@ describe('tracked-tree security scan', () => {
     const productionModules = [
       'src/lib/av/livekitRoomService.ts',
       'src/lib/whiteboard/yWebsocketProvider.ts',
-      'src/lib/whiteboard/ywebrtcProvider.ts',
+      'src/lib/whiteboard/signalingUrls.ts',
     ];
 
     for (const relativePath of productionModules) {
       const source = readFileSync(join(repositoryRoot, relativePath), 'utf8');
       expect(source, relativePath).not.toMatch(/ws:\/\//);
     }
+  });
+
+  it('does not declare the unused y-webrtc production dependency', () => {
+    const packageJson = JSON.parse(
+      readFileSync(join(repositoryRoot, 'package.json'), 'utf8'),
+    ) as { dependencies?: Record<string, string> };
+
+    expect(packageJson.dependencies).not.toHaveProperty('y-webrtc');
   });
 
   it('does not skip forbidden content when a tracked file contains NUL bytes', () => {

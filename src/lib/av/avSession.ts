@@ -41,6 +41,46 @@ export interface ParticipantState {
   readonly quality?: 'excellent' | 'good' | 'poor' | 'lost' | 'unknown';
   /** May share their screen now; null until the permissions arrive (Phase 10). */
   readonly canScreenShare?: boolean | null;
+  /**
+   * The roster peerId the server embedded in this participant's LiveKit
+   * metadata claim. Absent when the claim is missing or malformed; the opaque
+   * `identity` alone cannot be joined to a presence row (M4).
+   */
+  readonly peerId?: string;
+}
+
+/**
+ * Reads the presence peerId out of a LiveKit participant's `metadata` claim.
+ *
+ * The claim is minted server-side as `JSON.stringify({ peerId })`; anything
+ * else — missing, malformed JSON, a non-object, a non-string peerId — is
+ * treated as "no peerId" rather than an error, because a junk value must not
+ * break participant event handling.
+ */
+export function peerIdFromParticipantMetadata(metadata: unknown): string | undefined {
+  if (typeof metadata !== 'string') return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(metadata);
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || Array.isArray(parsed)) return undefined;
+  // Only plain objects can carry the claim. `undefined` is not a JSON value,
+  // so reaching here with one means the catch above fell through: let it (and
+  // any primitive that slips through) hit the `in` check below, which throws
+  // rather than let a bad parse read as "no peerId".
+  if (typeof parsed === 'string' || typeof parsed === 'number' || typeof parsed === 'boolean') {
+    return undefined;
+  }
+  // `in` first so a non-object throws before hasOwn could coerce it; hasOwn so
+  // an inherited peerId (Object.prototype pollution) is never adopted as the
+  // participant's claim.
+  if (!('peerId' in (parsed as object)) || !Object.hasOwn(parsed as object, 'peerId')) {
+    return undefined;
+  }
+  const peerId = (parsed as { peerId?: unknown }).peerId;
+  return typeof peerId === 'string' && peerId.length > 0 ? peerId : undefined;
 }
 
 export interface LocalState {

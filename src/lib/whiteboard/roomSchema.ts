@@ -170,6 +170,14 @@ export function applySchema(db: RoomDatabase): void {
   }
 }
 
+/*
+ * `email` is a legacy column: the access-request path never writes it (M2
+ * privacy invariant — see public/privacy.html). It stays in the DDL because
+ * this schema only migrates additively (CREATE IF NOT EXISTS / guarded ALTERs;
+ * no DROP COLUMN), so deployed databases keep the column while all writes to
+ * it are gone. insertOwner/banAccount write NULL; eraseAccountFromRoom nulls
+ * leftover values.
+ */
 const MEMBERSHIP_DDL = `
   CREATE TABLE room_members (
     room_id TEXT NOT NULL,

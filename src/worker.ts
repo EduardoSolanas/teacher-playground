@@ -32,6 +32,10 @@ import {
   ROOM_CREATE_RATE_MAX,
   SCENE_WRITE_RATE_MAX,
   BILLING_WEBHOOK_RATE_MAX,
+  SESSION_ISSUE_RATE_MAX,
+  AV_TOKEN_RATE_MAX,
+  BOARD_FILE_PUT_RATE_MAX,
+  ACCOUNT_EXPORT_RATE_MAX,
 } from './lib/worker/rateLimits';
 import {
   bodyTooLarge,
@@ -362,6 +366,78 @@ function guestAuthRateKey(request: Request): string {
   return ip && ip.length > 0 ? ip : 'unknown';
 }
 
+/** Session-issue POSTs per account within a one-minute window (M3). */
+const SESSION_ISSUE_RATE_WINDOW_MS = RATE_WINDOW_MS;
+const productionSessionIssueLimiter = createRateLimiter({
+  windowMs: SESSION_ISSUE_RATE_WINDOW_MS,
+  max: SESSION_ISSUE_RATE_MAX,
+});
+const strictLocalTestSessionIssueLimiter = createRateLimiter({
+  windowMs: SESSION_ISSUE_RATE_WINDOW_MS,
+  max: SESSION_ISSUE_RATE_MAX,
+});
+
+function sessionIssueLimiterFor(env: Env) {
+  return env.ENVIRONMENT === 'local-test'
+    ? strictLocalTestSessionIssueLimiter
+    : productionSessionIssueLimiter;
+}
+
+function sessionIssueRateKey(principal: VerifiedAccessPrincipal): string {
+  return `${principal.issuer}|${principal.subject}`;
+}
+
+/** A/V token POSTs per account within a one-minute window (M3). */
+const AV_TOKEN_RATE_WINDOW_MS = RATE_WINDOW_MS;
+const productionAvTokenLimiter = createRateLimiter({
+  windowMs: AV_TOKEN_RATE_WINDOW_MS,
+  max: AV_TOKEN_RATE_MAX,
+});
+const strictLocalTestAvTokenLimiter = createRateLimiter({
+  windowMs: AV_TOKEN_RATE_WINDOW_MS,
+  max: AV_TOKEN_RATE_MAX,
+});
+
+function avTokenLimiterFor(env: Env) {
+  return env.ENVIRONMENT === 'local-test'
+    ? strictLocalTestAvTokenLimiter
+    : productionAvTokenLimiter;
+}
+
+/** Board-file PUTs per account within a one-minute window (M3). */
+const BOARD_FILE_PUT_RATE_WINDOW_MS = RATE_WINDOW_MS;
+const productionBoardFilePutLimiter = createRateLimiter({
+  windowMs: BOARD_FILE_PUT_RATE_WINDOW_MS,
+  max: BOARD_FILE_PUT_RATE_MAX,
+});
+const strictLocalTestBoardFilePutLimiter = createRateLimiter({
+  windowMs: BOARD_FILE_PUT_RATE_WINDOW_MS,
+  max: BOARD_FILE_PUT_RATE_MAX,
+});
+
+function boardFilePutLimiterFor(env: Env) {
+  return env.ENVIRONMENT === 'local-test'
+    ? strictLocalTestBoardFilePutLimiter
+    : productionBoardFilePutLimiter;
+}
+
+/** Account-export GETs per account within a one-minute window (M3). */
+const ACCOUNT_EXPORT_RATE_WINDOW_MS = RATE_WINDOW_MS;
+const productionAccountExportLimiter = createRateLimiter({
+  windowMs: ACCOUNT_EXPORT_RATE_WINDOW_MS,
+  max: ACCOUNT_EXPORT_RATE_MAX,
+});
+const strictLocalTestAccountExportLimiter = createRateLimiter({
+  windowMs: ACCOUNT_EXPORT_RATE_WINDOW_MS,
+  max: ACCOUNT_EXPORT_RATE_MAX,
+});
+
+function accountExportLimiterFor(env: Env) {
+  return env.ENVIRONMENT === 'local-test'
+    ? strictLocalTestAccountExportLimiter
+    : productionAccountExportLimiter;
+}
+
 function shouldRateLimitRoomCreate(env: Env, request: Request): boolean {
   if (env.ENVIRONMENT !== 'local-test') return true;
   return request.headers.get('x-test-strict-rate-limit') === '1';
@@ -602,6 +678,10 @@ async function issueSession(
   // not a reliable empty-body check here.
   if (request.method !== 'POST') {
     return withSecurityHeaders(Response.json({ error: 'Method not allowed' }, { status: 405, headers: { Allow: 'POST' } }));
+  }
+  if (shouldRateLimitRoomCreate(env, request)) {
+    const limit = sessionIssueLimiterFor(env).take(sessionIssueRateKey(principal));
+    if (!limit.ok) return rateLimited(env, limit.retryAfterMs);
   }
   const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
   const result = await identity.fetch(
@@ -1766,6 +1846,10 @@ async function accountExport(
   }
   const outcome = await sessionAuthorized(env, request, principal);
   if (outcome.denied) return outcome.denied;
+  if (shouldRateLimitRoomCreate(env, request)) {
+    const limit = accountExportLimiterFor(env).take(outcome.session.accountId);
+    if (!limit.ok) return rateLimited(env, limit.retryAfterMs);
+  }
   const identity = getIdentityObject(env.IDENTITY as DurableObjectNamespace<IdentityDO>);
   const result = await identity.fetch(new Request('https://identity/accounts/export', {
     method: 'GET',
@@ -1850,6 +1934,8 @@ async function accountErase(
        * destroy stayed exactly where they were.
        */
       await purgeBoardFiles(env, roomId);
+      await purgeRoomBackups(env, roomId);
+
       // Cleanup succeeded, remove from pending_erasures
       await identity.fetch(new Request('https://identity/accounts/clear-erasure', {
         method: 'POST',
@@ -1879,6 +1965,13 @@ async function accountErase(
       );
     }
   }
+
+  /*
+   * The identity Durable Object's own backup exports, awaited like the room
+   * purges above: R2 is not rolled back by a point-in-time restore, so the
+   * erased account would otherwise remain readable from a pre-erasure dump.
+   */
+  await purgeIdentityBackups(env);
 
   const headers = new Headers();
   headers.set('Cache-Control', 'no-store');
@@ -1989,20 +2082,52 @@ async function purgeRoomGuests(
 
 async function purgeBoardFiles(env: Env, roomId: string): Promise<void> {
   try {
-    const prefix = `rooms/${roomId}/files/`;
-    // List all objects with the room's file prefix, then delete them.
-    // R2 list is paginated; handle cursors for continuation.
-    let cursor: string | undefined;
-    for (;;) {
-      const list = await env.BOARD_FILES.list({ prefix, cursor });
-      for (const object of list.objects) {
-        await env.BOARD_FILES.delete(object.key);
-      }
-      if (!list.truncated) break;
-      cursor = list.cursor;
-    }
+    await purgeR2Prefix(env, `rooms/${roomId}/files/`);
   } catch {
     console.error('board files purge failed');
+  }
+}
+
+/**
+ * Deletes every object under an R2 prefix, following list cursors (M3-purge).
+ * Throws to the caller so each purge site can log its own failure.
+ */
+async function purgeR2Prefix(env: Env, prefix: string): Promise<void> {
+  // R2 list is paginated; handle cursors for continuation.
+  let cursor: string | undefined;
+  for (;;) {
+    const list = await env.BOARD_FILES.list({ prefix, cursor });
+    for (const object of list.objects) {
+      await env.BOARD_FILES.delete(object.key);
+    }
+    if (!list.truncated) break;
+    cursor = list.cursor;
+  }
+}
+
+/**
+ * One room's backup history: `backups/rooms/{roomId}/…`, the layout
+ * backupObjectKey in src/lib/backup/backup.ts writes under. A deleted or
+ * erased room must not leave its SQLite exports in the bucket.
+ */
+async function purgeRoomBackups(env: Env, roomId: string): Promise<void> {
+  try {
+    await purgeR2Prefix(env, `backups/rooms/${roomId}/`);
+  } catch {
+    console.error('room backups purge failed');
+  }
+}
+
+/**
+ * The identity Durable Object's backup history: `backups/identity/global/…`
+ * (GLOBAL_IDENTITY_OBJECT_NAME). Purged on account erasure so the erased
+ * account does not survive in a restore point R2 keeps past the erasure.
+ */
+async function purgeIdentityBackups(env: Env): Promise<void> {
+  try {
+    await purgeR2Prefix(env, 'backups/identity/global/');
+  } catch {
+    console.error('identity backups purge failed');
   }
 }
 
@@ -3512,6 +3637,10 @@ const worker = {
       if (!roomId || !isValidRoomId(roomId)) {
         return withSecurityHeaders(Response.json({ error: 'Missing or invalid roomId' }, { status: 400 }));
       }
+      if (shouldRateLimitRoomCreate(env, request) && session) {
+        const limit = avTokenLimiterFor(env).take(session.accountId);
+        if (!limit.ok) return rateLimited(env, limit.retryAfterMs);
+      }
       return forward(env, roomId, '/room/av', request, url, session, guestCaller);
     }
 
@@ -3550,6 +3679,13 @@ const worker = {
         const mimeType = request.headers.get('content-type');
         if (!isAllowedMimeType(mimeType)) {
           return withSecurityHeaders(new Response('Unsupported media type', { status: 415 }));
+        }
+
+        // SEC-C1 sibling: PUTs are buffered in-isolate before R2, so the
+        // byte quota alone left request rate unbounded. Keyed per account.
+        if (shouldRateLimitRoomCreate(env, request) && session) {
+          const limit = boardFilePutLimiterFor(env).take(session.accountId);
+          if (!limit.ok) return rateLimited(env, limit.retryAfterMs);
         }
 
         // Ask RoomDO for write authorization before streaming to R2.
@@ -3744,6 +3880,13 @@ const worker = {
       if (subpath === '/backup' || subpath.startsWith('/backup/')) {
         return withSecurityHeaders(new Response(null, { status: 404 }));
       }
+      // Refuse the internal error-ring route from the public API (OPS-01 /
+      // M1). The admin surface reads the ring over the namespace binding in
+      // adminErrorsRoute; nothing else needs this branch, and forwarding it
+      // let any session pull any room's internal errors before authorize.
+      if (subpath === '/errors' || subpath.startsWith('/errors/')) {
+        return withSecurityHeaders(new Response(null, { status: 404 }));
+      }
       if (
         request.method === 'DELETE'
         && subpath === ''
@@ -3843,6 +3986,10 @@ const worker = {
           await releaseOwnedRoomSlot(env, cookie, roomId);
           await purgeRoomGuests(env, cookie, roomId);
           ctx.waitUntil(purgeBoardFiles(env, roomId));
+          // The room's SQLite exports live in the same bucket under
+          // backups/rooms/{roomId}/… and outlive the delete unless purged
+          // alongside the board files (M3-purge).
+          ctx.waitUntil(purgeRoomBackups(env, roomId));
         }
       }
       if (session && settingsClone && response.ok) {

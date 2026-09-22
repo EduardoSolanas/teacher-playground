@@ -39,6 +39,16 @@ export interface BuildLiveKitTokenInput {
   readonly room: string;
   readonly identity: string;
   readonly name?: string;
+  /**
+   * The caller's current presence peerId, embedded as the `metadata` claim so
+   * every call client can join the participant to its roster row. Presence
+   * already discloses peerIds to all room members, so this adds no leak; it
+   * must never be the accountId (audit M4). Derived server-side only.
+   *
+   * A snapshot: presence can re-mint a peerId mid-session, and this claim
+   * keeps the value minted until the next token issues.
+   */
+  readonly peerId?: string;
   readonly ttlSeconds?: number;
   readonly grant?: LiveKitGrant;
 }
@@ -54,7 +64,7 @@ function utf8(text: string): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(text) as Uint8Array<ArrayBuffer>;
 }
 
-async function hmacSha256(
+export async function hmacSha256(
   secret: Uint8Array<ArrayBuffer>,
   data: Uint8Array<ArrayBuffer>,
 ): Promise<Uint8Array<ArrayBuffer>> {
@@ -104,6 +114,10 @@ export async function buildLiveKitToken(
     video,
   };
   if (input.name) payload.name = input.name;
+  // LiveKit copies this claim onto the participant as its metadata. Exact
+  // JSON: a single peerId key, or no claim at all when presence had no row
+  // to snapshot (never an empty object, never the accountId).
+  if (input.peerId) payload.metadata = JSON.stringify({ peerId: input.peerId });
 
   const encodedHeader = base64url(utf8(JSON.stringify(header)));
   const encodedPayload = base64url(utf8(JSON.stringify(payload)));

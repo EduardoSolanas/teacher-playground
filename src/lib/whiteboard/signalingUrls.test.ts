@@ -1,12 +1,9 @@
-import * as Y from 'yjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  createYWebRTCProvider,
-  destroyProvider,
   getSignalingUrls,
   isWhiteboardDebugEnabled,
   sanitizeSignalingUrl,
-} from './ywebrtcProvider';
+} from './signalingUrls';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -90,18 +87,6 @@ describe('getSignalingUrls', () => {
     ]);
   });
 
-  it('does not initialize WebRTC on the server', () => {
-    vi.stubGlobal('window', undefined);
-
-    const entry = createYWebRTCProvider(new Y.Doc(), 'server-render-room');
-
-    expect(entry.provider.connected).toBe(false);
-    expect(entry.provider.shouldConnect).toBe(false);
-    expect(() => entry.provider.connect()).not.toThrow();
-
-    destroyProvider('server-render-room');
-  });
-
   it('falls back to the local signaling server when there is no window', () => {
     vi.stubGlobal('window', undefined);
     vi.stubEnv('NODE_ENV', 'development');
@@ -109,31 +94,11 @@ describe('getSignalingUrls', () => {
     expect(getSignalingUrls()).toEqual(['ws://localhost:3001/signaling']);
   });
 
-  it('caches one provider entry per room and rebuilds it after destroy', () => {
-    vi.stubGlobal('window', undefined);
-    const doc = new Y.Doc();
-
-    const first = createYWebRTCProvider(doc, 'cache-room');
-    const second = createYWebRTCProvider(doc, 'cache-room');
-
-    expect(second).toBe(first);
-    expect(first.status).toBe('connecting');
-    expect(first.synced).toBe(false);
-
-    destroyProvider('cache-room');
-    const third = createYWebRTCProvider(doc, 'cache-room');
-    expect(third).not.toBe(first);
-  });
-
   it('returns no signaling URLs on a production server', () => {
     vi.stubGlobal('window', undefined);
     vi.stubEnv('NODE_ENV', 'production');
 
     expect(getSignalingUrls()).toEqual([]);
-  });
-
-  it('destroyProvider ignores a room that was never created', () => {
-    expect(() => destroyProvider('never-created')).not.toThrow();
   });
 });
 
@@ -167,6 +132,22 @@ describe('production signaling URL policy', () => {
         pageHost: 'whiteboard.example.com',
       }),
     ).toBe('wss://whiteboard.example.com/signaling');
+  });
+
+  it('trims Unicode whitespace the URL parser does not strip', () => {
+    vi.stubEnv('NEXT_PUBLIC_YWEBRTC_SIGNALING_ALLOWED_HOSTS', '');
+
+    expect(
+      sanitizeSignalingUrl('\u00A0wss://whiteboard.example.com/signaling', {
+        production: true,
+        pageHost: 'whiteboard.example.com',
+      }),
+    ).toBe('wss://whiteboard.example.com/signaling');
+  });
+
+  it('returns null when the input cannot be parsed as a URL', () => {
+    expect(() => sanitizeSignalingUrl('not a url', { production: false })).not.toThrow();
+    expect(sanitizeSignalingUrl('not a url', { production: false })).toBeNull();
   });
 
   it('accepts an allowlisted host that carries an explicit port', () => {

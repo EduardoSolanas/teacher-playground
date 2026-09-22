@@ -1,6 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import Database from 'better-sqlite3';
+
+import { applySchema } from '../whiteboard/roomSchema';
+import {
+  approveAccount,
+  insertOwner,
+  requestAccess,
+} from '../whiteboard/membership';
+import type { RoomDatabase } from '../whiteboard/db';
+import { issueAvTokenResponse } from './handleAvToken';
 import { verifyLiveKitToken } from './livekitToken';
+import { deriveLiveKitIdentity } from './participantIdentity';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { liveKitHttpHost, removeLiveKitParticipant, muteLiveKitParticipant, setLiveKitScreenShare } from './livekitRoomService';
 
@@ -9,6 +20,11 @@ const LIVEKIT_ENV = {
   LIVEKIT_API_KEY: 'key_abc',
   LIVEKIT_API_SECRET: 'secret_xyz',
 };
+
+/** The identity the server derives for an account in a room (audit M4). */
+function identityFor(roomId: string, accountId: string): Promise<string> {
+  return deriveLiveKitIdentity(LIVEKIT_ENV.LIVEKIT_API_SECRET, roomId, accountId);
+}
 
 describe('liveKitHttpHost', () => {
   it('converts wss LiveKit URLs to https and ws URLs to http', () => {
@@ -38,7 +54,7 @@ describe('removeLiveKitParticipant', () => {
     const result = await removeLiveKitParticipant({
       env: {},
       roomId: 'room-1',
-      identity: 'acct-1',
+      accountId: 'acct-1',
     });
 
     expect(result).toEqual({ ok: true, skipped: true });
@@ -51,7 +67,7 @@ describe('removeLiveKitParticipant', () => {
     await removeLiveKitParticipant({
       env: LIVEKIT_ENV,
       roomId: 'room-alpha',
-      identity: 'acct-user',
+      accountId: 'acct-user',
     });
 
     expect(fetchMock).toHaveBeenCalledOnce();
@@ -66,7 +82,7 @@ describe('removeLiveKitParticipant', () => {
     });
     expect(JSON.parse(init.body as string)).toEqual({
       room: 'room-alpha',
-      identity: 'acct-user',
+      identity: await identityFor('room-alpha', 'acct-user'),
     });
   });
 
@@ -76,7 +92,7 @@ describe('removeLiveKitParticipant', () => {
     await removeLiveKitParticipant({
       env: LIVEKIT_ENV,
       roomId: 'room-alpha',
-      identity: 'acct-user',
+      accountId: 'acct-user',
     });
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -99,7 +115,7 @@ describe('removeLiveKitParticipant', () => {
     const result = await removeLiveKitParticipant({
       env: LIVEKIT_ENV,
       roomId: 'room-1',
-      identity: 'acct-1',
+      accountId: 'acct-1',
     });
 
     expect(result).toEqual({ ok: true });
@@ -111,7 +127,7 @@ describe('removeLiveKitParticipant', () => {
     const result = await removeLiveKitParticipant({
       env: LIVEKIT_ENV,
       roomId: 'room-1',
-      identity: 'acct-missing',
+      accountId: 'acct-missing',
     });
 
     expect(result).toEqual({ ok: false, status: 404 });
@@ -123,7 +139,7 @@ describe('removeLiveKitParticipant', () => {
     const result = await removeLiveKitParticipant({
       env: LIVEKIT_ENV,
       roomId: 'room-1',
-      identity: 'acct-1',
+      accountId: 'acct-1',
     });
 
     expect(result).toEqual({ ok: false, status: 0 });
@@ -146,7 +162,7 @@ describe('muteLiveKitParticipant', () => {
     const result = await muteLiveKitParticipant({
       env: {},
       roomId: 'room-1',
-      identity: 'acct-1',
+      accountId: 'acct-1',
     });
 
     expect(result).toEqual({ ok: true, skipped: true });
@@ -170,7 +186,7 @@ describe('muteLiveKitParticipant', () => {
     await muteLiveKitParticipant({
       env: LIVEKIT_ENV,
       roomId: 'room-alpha',
-      identity: 'acct-user',
+      accountId: 'acct-user',
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -181,7 +197,7 @@ describe('muteLiveKitParticipant', () => {
     expect(getInit.method).toBe('POST');
     expect(JSON.parse(getInit.body as string)).toEqual({
       room: 'room-alpha',
-      identity: 'acct-user',
+      identity: await identityFor('room-alpha', 'acct-user'),
     });
   });
 
@@ -202,7 +218,7 @@ describe('muteLiveKitParticipant', () => {
     await muteLiveKitParticipant({
       env: LIVEKIT_ENV,
       roomId: 'room-beta',
-      identity: 'acct-user',
+      accountId: 'acct-user',
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -213,7 +229,7 @@ describe('muteLiveKitParticipant', () => {
     expect(muteInit.method).toBe('POST');
     expect(JSON.parse(muteInit.body as string)).toEqual({
       room: 'room-beta',
-      identity: 'acct-user',
+      identity: await identityFor('room-beta', 'acct-user'),
       track_sid: 'audio-sid-123',
       muted: true,
     });
@@ -236,14 +252,14 @@ describe('muteLiveKitParticipant', () => {
     await muteLiveKitParticipant({
       env: LIVEKIT_ENV,
       roomId: 'room-video',
-      identity: 'acct-user',
+      accountId: 'acct-user',
       kind: 'video',
     });
 
     const [, muteInit] = fetchMock.mock.calls[1] as [string, RequestInit];
     expect(JSON.parse(muteInit.body as string)).toEqual({
       room: 'room-video',
-      identity: 'acct-user',
+      identity: await identityFor('room-video', 'acct-user'),
       track_sid: 'video-sid-456',
       muted: true,
     });
@@ -267,7 +283,7 @@ describe('muteLiveKitParticipant', () => {
     await muteLiveKitParticipant({
       env: LIVEKIT_ENV,
       roomId: 'room-gamma',
-      identity: 'acct-user',
+      accountId: 'acct-user',
     });
 
     const [muteUrl, muteInit] = fetchMock.mock.calls[1] as [string, RequestInit];
@@ -290,7 +306,7 @@ describe('muteLiveKitParticipant', () => {
     const result = await muteLiveKitParticipant({
       env: LIVEKIT_ENV,
       roomId: 'room-1',
-      identity: 'acct-1',
+      accountId: 'acct-1',
     });
 
     expect(result).toEqual({ ok: true, skipped: true });
@@ -311,7 +327,7 @@ describe('muteLiveKitParticipant', () => {
     const result = await muteLiveKitParticipant({
       env: LIVEKIT_ENV,
       roomId: 'room-1',
-      identity: 'acct-1',
+      accountId: 'acct-1',
       kind: 'video',
     });
 
@@ -325,7 +341,7 @@ describe('muteLiveKitParticipant', () => {
     const result = await muteLiveKitParticipant({
       env: LIVEKIT_ENV,
       roomId: 'room-1',
-      identity: 'acct-missing',
+      accountId: 'acct-missing',
     });
 
     expect(result).toEqual({ ok: false, status: 404 });
@@ -348,7 +364,7 @@ describe('muteLiveKitParticipant', () => {
     const result = await muteLiveKitParticipant({
       env: LIVEKIT_ENV,
       roomId: 'room-1',
-      identity: 'acct-1',
+      accountId: 'acct-1',
     });
 
     expect(result).toEqual({ ok: false, status: 500 });
@@ -370,7 +386,7 @@ describe('muteLiveKitParticipant', () => {
     const result = await muteLiveKitParticipant({
       env: LIVEKIT_ENV,
       roomId: 'room-1',
-      identity: 'acct-1',
+      accountId: 'acct-1',
     });
 
     expect(result).toEqual({ ok: true });
@@ -382,7 +398,7 @@ describe('muteLiveKitParticipant', () => {
     const result = await muteLiveKitParticipant({
       env: LIVEKIT_ENV,
       roomId: 'room-1',
-      identity: 'acct-1',
+      accountId: 'acct-1',
     });
 
     expect(result).toEqual({ ok: false, status: 0 });
@@ -404,7 +420,7 @@ describe('muteLiveKitParticipant', () => {
     await muteLiveKitParticipant({
       env: LIVEKIT_ENV,
       roomId: 'room-alpha',
-      identity: 'acct-user',
+      accountId: 'acct-user',
     });
 
     const [, getInit] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -457,7 +473,7 @@ describe('setLiveKitScreenShare', () => {
   const envFor = () => ({ ...LIVEKIT_ENV, LIVEKIT_URL: `ws://127.0.0.1:${port}` });
 
   it('grants screen share on the live call with UpdateParticipant, keeping camera and microphone', async () => {
-    const result = await setLiveKitScreenShare({ env: envFor(), roomId: 'room-share', identity: 'acct-student', allowed: true });
+    const result = await setLiveKitScreenShare({ env: envFor(), roomId: 'room-share', accountId: 'acct-student', allowed: true });
 
     expect(result).toEqual({ ok: true });
     expect(received).toHaveLength(1);
@@ -466,7 +482,7 @@ describe('setLiveKitScreenShare', () => {
     expect(received[0].contentType).toBe('application/json');
     expect(received[0].body).toEqual({
       room: 'room-share',
-      identity: 'acct-student',
+      identity: await identityFor('room-share', 'acct-student'),
       permission: {
         can_subscribe: true,
         can_publish: true,
@@ -480,8 +496,41 @@ describe('setLiveKitScreenShare', () => {
     expect(verified.payload.video).toMatchObject({ roomAdmin: true, room: 'room-share' });
   });
 
+  it('targets the exact identity the join token was minted with for that account and room', async () => {
+    // The mint path and the Room Service path are separate code paths that
+    // must land on the same value, or UpdateParticipant widens nobody and the
+    // owner's screen-share grant silently does nothing. Real objects end to
+    // end: a real room database, the real token mint, a real HTTP server.
+    const db = new Database(':memory:') as unknown as RoomDatabase;
+    applySchema(db);
+    insertOwner(db, 'room-share', 'acct-owner');
+    requestAccess(db, { roomId: 'room-share', accountId: 'acct-student', userName: 'Student' });
+    approveAccount(db, 'room-share', 'acct-student', { role: 'editor' });
+
+    const mintResponse = await issueAvTokenResponse({
+      db,
+      env: envFor(),
+      roomId: 'room-share',
+      accountId: 'acct-student',
+    });
+    expect(mintResponse.status).toBe(200);
+    const minted = (await mintResponse.json()) as { identity: string };
+    expect(minted.identity).not.toBe('acct-student');
+
+    const result = await setLiveKitScreenShare({
+      env: envFor(),
+      roomId: 'room-share',
+      accountId: 'acct-student',
+      allowed: true,
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(received).toHaveLength(1);
+    expect((received[0].body as { identity: string }).identity).toBe(minted.identity);
+  });
+
   it('withdraws screen share by narrowing the sources back to camera and microphone', async () => {
-    const result = await setLiveKitScreenShare({ env: envFor(), roomId: 'room-share', identity: 'acct-student', allowed: false });
+    const result = await setLiveKitScreenShare({ env: envFor(), roomId: 'room-share', accountId: 'acct-student', allowed: false });
 
     expect(result).toEqual({ ok: true });
     expect((received[0].body as { permission: { can_publish_sources: string[] } }).permission.can_publish_sources)
@@ -490,10 +539,10 @@ describe('setLiveKitScreenShare', () => {
 
   it('reports the status when LiveKit refuses, and skips when LiveKit is not configured', async () => {
     status = 404;
-    expect(await setLiveKitScreenShare({ env: envFor(), roomId: 'room-share', identity: 'gone', allowed: true }))
+    expect(await setLiveKitScreenShare({ env: envFor(), roomId: 'room-share', accountId: 'gone', allowed: true }))
       .toEqual({ ok: false, status: 404 });
 
-    const unconfigured = await setLiveKitScreenShare({ env: {}, roomId: 'room-share', identity: 'acct', allowed: true });
+    const unconfigured = await setLiveKitScreenShare({ env: {}, roomId: 'room-share', accountId: 'acct', allowed: true });
     expect(unconfigured).toEqual({ ok: true, skipped: true });
     expect(received).toHaveLength(1);
   });
@@ -505,7 +554,7 @@ describe('setLiveKitScreenShare', () => {
     const result = await setLiveKitScreenShare({
       env: { ...LIVEKIT_ENV, LIVEKIT_URL: `ws://127.0.0.1:${closedPort}` },
       roomId: 'room-share',
-      identity: 'acct',
+      accountId: 'acct',
       allowed: true,
     });
     expect(result).toEqual({ ok: false, status: 0 });

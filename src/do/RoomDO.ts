@@ -391,7 +391,7 @@ export class RoomDO extends DurableObject {
   ) => Promise<RemoveLiveKitParticipantResult> = removeLiveKitParticipant;
 
   /** Populated by tests when {@link evictLiveKitParticipant} is replaced with a spy. */
-  liveKitEvictCalls?: { roomId: string; identity: string }[];
+  liveKitEvictCalls?: { roomId: string; accountId: string }[];
 
   /** Injectable hook; defaults to {@link setLiveKitScreenShare}. */
   setLiveKitScreenShareHook: (
@@ -404,7 +404,7 @@ export class RoomDO extends DurableObject {
   ) => Promise<MuteLiveKitParticipantResult> = muteLiveKitParticipant;
 
   /** Populated by tests when {@link muteLiveKitParticipantHook} is replaced with a spy. */
-  liveKitMuteCalls?: { roomId: string; identity: string; kind?: 'audio' | 'video' }[];
+  liveKitMuteCalls?: { roomId: string; accountId: string; kind?: 'audio' | 'video' }[];
 
   /** Test-only override for the per-room socket cap; production always uses 32. */
   static signalingMaxSocketsPerRoomForTests: number | null = null;
@@ -1184,7 +1184,7 @@ export class RoomDO extends DurableObject {
           const result = await this.muteLiveKitParticipantHook({
             env: this.roomEnv,
             roomId,
-            identity: target,
+            accountId: target,
             kind,
           });
 
@@ -1209,7 +1209,7 @@ export class RoomDO extends DurableObject {
           const result = await this.setLiveKitScreenShareHook({
             env: this.roomEnv,
             roomId,
-            identity: target,
+            accountId: target,
             allowed: action === 'allow-screen-share',
           });
           if (!result.ok) return Response.json({ ok: false }, { status: 502 });
@@ -1225,7 +1225,7 @@ export class RoomDO extends DurableObject {
           const result = await this.setLiveKitScreenShareHook({
             env: this.roomEnv,
             roomId,
-            identity: accountId,
+            accountId,
             allowed: false,
           });
           if (!result.ok) return Response.json({ ok: false }, { status: 502 });
@@ -1238,12 +1238,28 @@ export class RoomDO extends DurableObject {
         // participant's live session off the call (LiveKit enforces one
         // session per identity by disconnecting the earlier one).
         const name = url.searchParams.get('name') ?? undefined;
+        /*
+         * The roster peerId rides the token's metadata claim so every call
+         * client can join this participant to its presence row. Looked up
+         * here from presence state, never read from the request: a
+         * client-supplied peerId would let a participant label their own A/V
+         * state onto another roster row. No presence row simply omits the
+         * claim (the row then shows no A/V state until a fresh mint).
+         */
+        const presencePeer = this.db
+          .prepare(
+            `SELECT peer_id AS peerId FROM room_presence
+             WHERE room_id = ? AND account_id = ?
+             ORDER BY last_seen DESC LIMIT 1`,
+          )
+          .get(roomId, accountId) as { peerId: string } | undefined;
         return issueAvTokenResponse({
           db: this.db,
           env: this.roomEnv,
           roomId,
           accountId,
           name,
+          peerId: presencePeer?.peerId,
         });
       }
       case 'files': {
@@ -1479,7 +1495,7 @@ export class RoomDO extends DurableObject {
     const promise = this.evictLiveKitParticipant({
       env: this.roomEnv,
       roomId,
-      identity: accountId,
+      accountId,
     });
     this.ctx.waitUntil(promise);
   }

@@ -369,6 +369,26 @@ describe('Task 8c — guest API forwarding', () => {
     expect(response.status).toBe(404);
   });
 
+  it('still 404s the room error ring on the guest host even with a guest session', async () => {
+    // The ring is admin-only diagnostics. A guest session bound to the room
+    // must not read it through the public ROOM_API path either.
+    const { roomId } = await createTeacherRoom('guest-api-errors-404');
+    await runInDurableObject(
+      env.ROOMS.get(env.ROOMS.idFromName(roomId)),
+      (instance: RoomDO) => {
+        instance.db
+          .prepare(`INSERT INTO error_ring (at, scope, message) VALUES (?, ?, ?)`)
+          .run(Date.now(), 'guestProbe', 'guest-ring-secret-m1');
+      },
+    );
+    const cookie = await issueGuestCookie(roomId);
+    const response = await SELF.fetch(`${GUEST}/api/whiteboard/room/${roomId}/errors`, {
+      headers: { Cookie: cookie },
+    });
+    expect(response.status).toBe(404);
+    expect(await response.text()).not.toContain('guest-ring-secret-m1');
+  });
+
   it('binds an A/V token request to the room named on the query string', async () => {
     // The room travels as ?roomId= here, not in the path. Deriving the guest
     // session's room from the path alone rejected every guest call for a

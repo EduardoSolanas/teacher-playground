@@ -122,7 +122,7 @@ test.describe('real-media voice calling', () => {
     await hostPage.getByTestId('av-start-call').click();
     await hostPage.getByTestId('av-pre-join-confirm').click();
     await confirmPeerPreJoin(peerPage);
-    const peerAccountId = await peerIdentityPromise;
+    const peerTokenIdentity = await peerIdentityPromise;
     await hostIdentityPromise;
 
     await waitForJoinedCall(hostPage);
@@ -138,11 +138,22 @@ test.describe('real-media voice calling', () => {
     // Mute the peer
     await peerRow.getByRole('button', { name: 'Mute MutePeer microphone' }).click();
 
-    // Verify peer mute request was sent with correct account identity
+    // Mute must target the peer's account from the owner's roster, never the
+    // opaque per-room LiveKit identity minted for the call (M4).
     const muteRequest = await hostPage.waitForRequest((candidate) =>
       candidate.method() === 'POST' && candidate.url().includes('/api/av/mute?'),
     );
-    expect(muteRequest.postDataJSON()).toEqual({ target: peerAccountId });
+    const muteTarget = (muteRequest.postDataJSON() as { target: string }).target;
+    expect(muteTarget).not.toBe(peerTokenIdentity);
+    await expect
+      .poll(async () => {
+        const response = await hostPage.request.get(appUrl(`/api/whiteboard/room/${roomId}/presence`));
+        if (!response.ok()) return null;
+        const body = (await response.json()) as { users?: Array<{ userName: string; accountId?: string }> };
+        const peerUser = body.users?.find((user) => user.userName === 'MutePeer');
+        return peerUser?.accountId ?? null;
+      }, { timeout: 15000, message: 'peer accountId never appeared in the owner presence payload' })
+      .toBe(muteTarget);
 
     // Close contexts
     await host.close();

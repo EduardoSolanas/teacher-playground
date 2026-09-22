@@ -37,7 +37,7 @@ import SupportButton from '@/components/whiteboard/SupportButton';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import * as store from '@/lib/whiteboard/store';
 import { cleanupStaleRooms } from '@/lib/whiteboard/persistence';
-import { isWhiteboardDebugEnabled } from '@/lib/whiteboard/ywebrtcProvider';
+import { isWhiteboardDebugEnabled } from '@/lib/whiteboard/signalingUrls';
 import { ajaxFetch } from '@/lib/http/ajaxFetch';
 import { resolveJoinDisplayName } from '@/lib/access/accessDisplayName';
 import { roomIdFromWhiteboardPath } from '@/lib/whiteboard/roomPath';
@@ -190,6 +190,25 @@ export function roomCanvasTopClass(guestHost: boolean): string {
   return guestHost ? 'top-0 sm:top-12' : 'top-[calc(3rem+env(safe-area-inset-top))] sm:top-12';
 }
 
+/**
+ * The roster peerId a LiveKit participant maps onto, or null.
+ *
+ * The local placeholder resolves through the room's own peer id. A remote
+ * participant resolves through the peerId the server embedded in its token
+ * metadata (presence already discloses peerIds to every room member) — never
+ * through the identity, which since M4 is an opaque per-room HMAC that equals
+ * no roster accountId. A peerId that matches no current roster row yields
+ * null: stale or absent metadata must not paint state onto the wrong row.
+ */
+function avParticipantPeerId(
+  participant: ParticipantState,
+  users: readonly WhiteboardUser[],
+  localPeerId: string,
+): string | null {
+  if (participant.identity === '__local__') return localPeerId;
+  return users.find((user) => user.peerId === participant.peerId)?.peerId ?? null;
+}
+
 export function mapAvPeerIds(
   participants: readonly ParticipantState[],
   users: readonly WhiteboardUser[],
@@ -200,9 +219,7 @@ export function mapAvPeerIds(
     participants
       .filter(include)
       .flatMap((participant) => {
-        const peerId = participant.identity === '__local__'
-          ? localPeerId
-          : users.find((user) => user.accountId === participant.identity)?.peerId;
+        const peerId = avParticipantPeerId(participant, users, localPeerId);
         return peerId ? [peerId] : [];
       }),
   );
@@ -215,9 +232,7 @@ export function mapAvPeerStateByPeerId(
 ): ReadonlyMap<string, { micMuted: boolean; micPresent: boolean; camOn: boolean; quality?: ParticipantState['quality']; canScreenShare?: boolean | null }> {
   return new Map(
     participants.flatMap((participant) => {
-      const peerId = participant.identity === '__local__'
-        ? localPeerId
-        : users.find((user) => user.accountId === participant.identity)?.peerId;
+      const peerId = avParticipantPeerId(participant, users, localPeerId);
       return peerId
         ? [[peerId, {
           micMuted: participant.micMuted,

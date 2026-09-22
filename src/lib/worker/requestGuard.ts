@@ -259,7 +259,9 @@ export function isRouteAllowedOnHost(
  *
  * `/auth/account` and its subpaths are included (SEC-A09): a forged
  * cross-origin `DELETE /auth/account` erases the account, and it was missing
- * from the guarded set.
+ * from the guarded set. The session tree matches by prefix for the same
+ * reason (M3): listing `logout` and `confirm` by name left any other
+ * `/auth/session/...` subpath unguarded on mutating methods.
  */
 export function isOriginGuardedPath(pathname: string, method: string): boolean {
   if (pathname === '/signaling') return true;
@@ -267,8 +269,7 @@ export function isOriginGuardedPath(pathname: string, method: string): boolean {
   if (method === 'GET' || method === 'HEAD') return false;
 
   return pathname === '/auth/session'
-    || pathname === '/auth/session/logout'
-    || pathname === '/auth/session/confirm'
+    || pathname.startsWith('/auth/session/')
     || pathname === '/auth/account'
     || pathname.startsWith('/auth/account/')
     || pathname === '/auth/guest'

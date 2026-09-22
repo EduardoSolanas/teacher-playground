@@ -29,6 +29,9 @@ const livekit = vi.hoisted(() => {
 
   const remoteParticipant = {
     identity: 'peer-2',
+    // The JWT metadata claim LiveKit copies onto the participant; the roster
+    // join reads the peerId from it.
+    metadata: undefined as string | undefined,
     isMicrophoneEnabled: true,
     isCameraEnabled: true,
     isSpeaking: false,
@@ -132,6 +135,7 @@ describe('LiveKitProvider speaking state', () => {
     livekit.remoteParticipant.isCameraEnabled = true;
     livekit.remoteParticipant.isSpeaking = false;
     livekit.remoteParticipant.connectionQuality = 'excellent';
+    livekit.remoteParticipant.metadata = undefined;
     livekit.localParticipant.on.mockReset();
     livekit.remoteParticipant.on.mockReset();
     livekit.localParticipant.getTrackPublication.mockReset();
@@ -268,6 +272,37 @@ describe('LiveKitProvider speaking state', () => {
       // No permissions on this participant yet: unknown, not refused.
       canScreenShare: null,
     });
+  });
+
+  it('surfaces a remote participant metadata peerId as ParticipantState.peerId', async () => {
+    // The roster joins remote participants by the peerId the server put in
+    // the token's metadata claim, not by the opaque identity (M4).
+    livekit.roomOn.mockImplementation(() => livekit.room);
+    livekit.remoteParticipant.getTrackPublication.mockReturnValue({ track: {} });
+    livekit.remoteParticipant.metadata = JSON.stringify({ peerId: 'p-9' });
+    livekit.room.remoteParticipants.set(livekit.remoteParticipant.identity, livekit.remoteParticipant);
+
+    const provider = new LiveKitProvider();
+    const seen: ParticipantState[] = [];
+    provider.onEvents({ onParticipant: (participant) => seen.push(participant) });
+    await provider.connect('token', 'wss://livekit.test');
+
+    expect(seen[seen.length - 1]).toMatchObject({ identity: 'peer-2', peerId: 'p-9' });
+  });
+
+  it('leaves ParticipantState.peerId undefined when metadata is malformed, without throwing', async () => {
+    livekit.roomOn.mockImplementation(() => livekit.room);
+    livekit.remoteParticipant.getTrackPublication.mockReturnValue({ track: {} });
+    livekit.remoteParticipant.metadata = 'not-json{{';
+    livekit.room.remoteParticipants.set(livekit.remoteParticipant.identity, livekit.remoteParticipant);
+
+    const provider = new LiveKitProvider();
+    const seen: ParticipantState[] = [];
+    provider.onEvents({ onParticipant: (participant) => seen.push(participant) });
+    await provider.connect('token', 'wss://livekit.test');
+
+    expect(seen[seen.length - 1]).toMatchObject({ identity: 'peer-2' });
+    expect(seen[seen.length - 1].peerId).toBeUndefined();
   });
 
   it('reports a refused camera as a soft error instead of swallowing it', async () => {

@@ -27,7 +27,7 @@ import type {
   DeviceKind,
   ParticipantState,
 } from './avSession';
-import { mapProviderError } from './avSession';
+import { mapProviderError, peerIdFromParticipantMetadata } from './avSession';
 import { readDevicePreference } from './devicePreferences';
 import { mayShareScreen } from './screenSharePermission';
 
@@ -57,6 +57,7 @@ function participantState(participant: Participant): ParticipantState {
     isSpeaking: participant.isSpeaking,
     quality: mapConnectionQuality(participant.connectionQuality),
     canScreenShare: mayShareScreen(participant.permissions),
+    peerId: peerIdFromParticipantMetadata(participant.metadata),
   };
 }
 
