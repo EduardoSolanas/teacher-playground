@@ -11,14 +11,14 @@ rewritten drawing editor.
 | Working copy | `excalidraw/` in this checkout (see [Open risks](#open-risks)) |
 | Release branch | `teacher-playground/release-v0.18.1` |
 | Package identity | `@teacher-playground/excalidraw` |
-| Current release | `teacher-playground-v0.18.1-tp.11` |
+| Current release | `teacher-playground-v0.18.1-tp.12` |
 | Upstream base | `v0.18.1` |
 
 The application consumes the immutable release tarball, pinned in
 `package.json` and `package-lock.json`:
 
 ```text
-https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.11/package.tgz
+https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.12/package.tgz
 ```
 
 **The fork is on the current upstream release.** `@excalidraw/excalidraw@0.18.1`
@@ -32,7 +32,7 @@ The fork owns its R2 bucket (`teacher-playground-excalidraw`), CORS, custom
 domain, release objects, and release metadata, published by its own GitHub
 Actions workflow using the `prod` environment's `CLOUDFLARE_API_TOKEN` secret
 and `CLOUDFLARE_ACCOUNT_ID` variable. The application consumes the immutable
-base `https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.11/dist/prod/`.
+base `https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.12/dist/prod/`.
 Versioned objects carry one-year immutable cache headers.
 
 ## What the fork actually contains
@@ -50,16 +50,20 @@ roughly 2,950 deletions against 13 insertions**. Almost all of it is removal:
 
 Beyond that there are **three single-line source edits** — in `App.tsx`,
 `TTDDialog/common.ts` and a `welcome-screen` stylesheet — the additive
-increment and tool-change API described below, and four deliberate behavioural
+increment and tool-change API described below, and six deliberate behavioural
 divergences: **`MAX_ALLOWED_FILE_BYTES` is 12MB rather than upstream's 4MB**
 (tp.8), **an inserted image is re-encoded to WebP at ingest** (tp.9),
-**an image may be saved into the library** (tp.10), and **the editor listens
-for `pagehide` rather than `unload`** (tp.11). Those four are the
+**an image may be saved into the library** (tp.10), **the editor listens
+for `pagehide` rather than `unload`** (tp.11), and, both opt-in props that
+change nothing unless the host passes them, **the host may hide elements from
+drawing and pointer interaction** and **the image tool may hand a picked PDF to
+the host** (tp.12). Those six are the
 fork's changes to what the editor *does* rather than how it is packaged,
 and they are justified in [Image size](#image-size),
 [Image format conversion to WebP at ingest](#image-format-conversion-to-webp-at-ingest),
-[Images in the library](#images-in-the-library) and
-[Page teardown](#page-teardown).
+[Images in the library](#images-in-the-library),
+[Page teardown](#page-teardown) and
+[Paged documents](#paged-documents).
 
 That is the fork's defining property and the thing to protect: it changes
 essentially no editor behaviour, so nothing custom can rot, and adopting a
@@ -282,6 +286,31 @@ event, and not deprecated.
 
 Upstream will almost certainly make this change itself, at which point the
 divergence disappears on the next rebase.
+
+### Paged documents
+
+`spec/PAGED_DOCUMENTS_SPEC.md` shows one page of an imported PDF at a time. The
+pages are ordinary image elements, so everything the board already does keeps
+working; the editor only needs to be told to leave some of them alone. tp.12
+adds two optional props, and without them the editor behaves exactly as
+upstream:
+
+- **`isElementHidden(element)`** — an element it returns `true` for is not
+  drawn, not hit-tested (click, hover, eraser, context menu, double-click to
+  add text to a shape), not box-selected and not selected by select-all. It
+  stays in the scene, so it still syncs, saves and exports. The seams are
+  `Renderer.getRenderableElements` (memoised on the prop's identity, so a new
+  function re-renders), `App.getElementsAtPosition`,
+  `App.getTextBindableContainerAtPosition`, `getElementsWithinSelection` and
+  `actionSelectAll`.
+- **`onDocumentFile(file)`** — when set, the image tool's picker also offers
+  PDF files; a picked PDF creates no element and is handed to the host, which
+  is how a teacher on a phone or tablet, where files cannot be dragged onto a
+  page, adds a PDF. Any other picked file is the upstream image path.
+
+The alternative, a custom element type, touches about fourteen files and every
+upstream rebase; per-viewer locking touches about fifteen reads of
+`element.locked`. Both were rejected for this reason.
 
 ### Asset loading
 
