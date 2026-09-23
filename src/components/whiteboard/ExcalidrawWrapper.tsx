@@ -13,6 +13,7 @@ import {
   Footer,
   convertToExcalidrawElements,
   useHandleLibrary,
+  viewportCoordsToSceneCoords,
 } from '@teacher-playground/excalidraw';
 import type {
   ExcalidrawImperativeAPI,
@@ -101,9 +102,18 @@ export interface BoardActions {
   /**
    * Places rendered PDF pages on the board being shown (spec/PDF_IMPORT_SPEC.md
    * §3): one locked image per page, stacked in order, in a single undoable
-   * scene update. The bytes upload through the ordinary image path.
+   * scene update. The bytes upload through the ordinary image path. When
+   * given, `targetCentre` (scene coordinates, see `sceneCoordsFromClient`) is
+   * where the first page is centred -- the drop point; without one, the view
+   * centre is used, as a paste has no drop point.
    */
-  insertPages: (pages: readonly RenderedPage[]) => void;
+  insertPages: (pages: readonly RenderedPage[], targetCentre?: { x: number; y: number }) => void;
+  /**
+   * Converts a viewport point -- `event.clientX`/`clientY` from a drop -- into
+   * the scene coordinates `insertPages` places pages at, using the board's
+   * current pan and zoom.
+   */
+  sceneCoordsFromClient: (clientX: number, clientY: number) => { x: number; y: number };
   /**
    * Builds the board being shown into a PDF (spec/PDF_EXPORT_SPEC.md). Returns
    * the file, or why it could not be made; nothing is written to disk here.
@@ -1121,7 +1131,20 @@ export default function ExcalidrawWrapper({
         elements: api.getSceneElements() as unknown as Record<string, unknown>[],
         files: (api.getFiles() ?? {}) as Record<string, unknown>,
       }),
-      insertPages: (pages) => {
+      sceneCoordsFromClient: (clientX, clientY) => {
+        const appState = api.getAppState();
+        return viewportCoordsToSceneCoords(
+          { clientX, clientY },
+          {
+            zoom: appState.zoom,
+            offsetLeft: appState.offsetLeft,
+            offsetTop: appState.offsetTop,
+            scrollX: appState.scrollX,
+            scrollY: appState.scrollY,
+          },
+        );
+      },
+      insertPages: (pages, targetCentre) => {
         if (pages.length === 0) return;
         const created = Date.now();
         api.addFiles(pages.map((page) => ({
@@ -1131,14 +1154,22 @@ export default function ExcalidrawWrapper({
           created,
         })));
 
-        // The first page is centred in the view; the rest follow below it.
+        /*
+         * The first page is centred on `targetCentre` -- the drop point, in
+         * scene coordinates -- when one is given (spec/PDF_IMPORT_SPEC.md
+         * §3); a paste has no drop point, so it falls back to the view centre,
+         * as every insert did before drop/paste existed. The rest follow
+         * below the first page either way.
+         */
         const appState = api.getAppState();
         const zoom = appState.zoom.value;
-        const centreX = appState.width / 2 / zoom - appState.scrollX;
-        const centreY = appState.height / 2 / zoom - appState.scrollY;
+        const centre = targetCentre ?? {
+          x: appState.width / 2 / zoom - appState.scrollX,
+          y: appState.height / 2 / zoom - appState.scrollY,
+        };
         const placements = columnLayout(pages, {
-          x: centreX - pages[0].width / 2,
-          y: centreY - pages[0].height / 2,
+          x: centre.x - pages[0].width / 2,
+          y: centre.y - pages[0].height / 2,
         });
         /*
          * One id for this import, and the page's own index within it. Download

@@ -172,6 +172,38 @@ describe('ExcalidrawWrapper rendering', () => {
       expect(onSidebarOpenChange).toHaveBeenCalledWith(true);
     });
   });
+
+  it('centres the first inserted page on a given target point, not the view centre', async () => {
+    setFetchHandler(() => new Response(null, { status: 404 }));
+    const onBoardActions = vi.fn();
+
+    const { api } = await renderWrapper({ onBoardActions });
+    const actions = onBoardActions.mock.calls.at(-1)?.[0];
+
+    await act(async () => {
+      actions.insertPages(
+        [
+          {
+            id: 'page-1',
+            mimeType: 'image/webp',
+            dataURL: 'data:image/webp;base64,aGVsbG8=',
+            width: 200,
+            height: 100,
+          },
+        ],
+        { x: 5000, y: 3000 },
+      );
+    });
+
+    await waitFor(() => {
+      const elements = api.getSceneElements() as unknown as { fileId?: string }[];
+      expect(elements.some((element) => element.fileId === 'page-1')).toBe(true);
+    });
+    const elements = api.getSceneElements() as unknown as { fileId?: string; x: number; y: number }[];
+    const image = elements.find((element) => element.fileId === 'page-1')!;
+    expect(image.x).toBe(5000 - 200 / 2);
+    expect(image.y).toBe(3000 - 100 / 2);
+  });
 });
 
 describe('ExcalidrawWrapper scene sync', () => {
