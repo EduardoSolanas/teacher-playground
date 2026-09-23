@@ -276,11 +276,49 @@ server, on the staged sync path, for every writer whose role is not owner:
 
 "Refused" means the change never reaches the room's document or any peer, and
 the writer's other changes in the same frame still apply. The owner is
-unaffected; the whole-room and per-board clear are unaffected. The implementer
-reads `stageSyncUpdate` / `buildCleanDoc` first and writes the approach into
-this section before code; if the staged path cannot restore a single element's
-prior state without discarding the rest of the frame, stop and report rather
-than weaken the rule.
+unaffected; the whole-room and per-board clear are unaffected. "Carries
+`customData.pdfPage`" means the key is present and not null, whatever its
+shape: a malformed stamp is protected like a valid one, and a column page is
+protected like a stacked one.
+
+### 7.1 Approach (reviewed design)
+
+There are two write paths for a non-owner who can draw (`canWriteBoard`: an
+editor, or a guest with draw permission), and both enforce the rule through one
+pure decision in `src/lib/whiteboard/documentPageGuard.ts`, which works on
+plain element objects keyed by id and returns what to restore, re-insert or
+remove:
+
+- **The WebSocket sync path** (`RoomDO` `MESSAGE_SYNC` branch). The existing
+  staging step (`stageSyncUpdate`) applies the client update to an empty
+  document, so it cannot see edits to elements that already exist; the guard
+  does not live there. It runs on the **room's own document**: while
+  `handleSyncFrame` applies the frame, an `observeDeep` listener on the
+  `elements` array records only what that frame touched — each changed
+  element's keys with their `oldValue`s, each newly inserted element, and each
+  element removed from the array (its content read inside the listener, before
+  the transaction's garbage collection). The listener is attached for that call
+  only, so the server's own sanitize transactions are never recorded. Nothing
+  is snapshotted up front: a class drawing sends several frames a second each,
+  and the cost must scale with what a frame changed, not with how many pages
+  the room holds. After the two existing sanitize passes and before the relay
+  diff is computed, a writer who is not the owner has every refused change
+  undone in one `page-guard` transaction: changed keys set back to their old
+  values (or deleted when they were added), created page elements removed, and
+  page elements removed from the array re-inserted with their old content.
+  Setting `isDeleted` is an ordinary key change and needs nothing special.
+- **The HTTP scene route** (`handleRoomPost` in
+  `src/lib/whiteboard/handlers/room.ts`), which is open to `canWriteBoard` and
+  overwrites the stored `elements`. For a writer who is not the owner it reads
+  the stored elements, runs the same decision against the submitted array, and
+  writes the corrected array. (It already races the live document the way every
+  scene POST does; the guard adds nothing to that.)
+
+**Known limit, inherited:** the server never sends the writer a correction,
+exactly as for today's sanitize removals; the writer's own screen keeps the
+refused change until it resyncs (on reconnect). An honest client never makes
+these changes — pages are locked and it has no page controls — so only a
+modified client sees the divergence.
 
 As a consequence editors can no longer import a PDF; the entry points are
 already owner-only, so no visible behaviour changes.
@@ -341,11 +379,19 @@ commit per milestone at a clean checkpoint.
 5. **Export of stacked documents.** §6.4 in `pdfExport.ts` (unit + mutation) and
    the export e2e: a three-page stacked import with a stroke on page 2 exports
    three pages with the stroke only on the second.
-6. **Server guard.** §7 in `src/do/roomDocumentGuard.workers.test.ts`:
-   **negative:** an editor's frame that moves, unlocks, deletes, re-stamps or
-   creates a page is refused while the same frame's ordinary stroke still
-   lands; the owner's identical frame applies. Manual mutants: drop the role
-   check; drop each of the three refusal rules one at a time.
+6. **Server guard.** §7 in `src/lib/whiteboard/documentPageGuard.test.ts`
+   (the pure decision, with real `Y.Doc`s for the Yjs adapter) and
+   `src/do/roomDocumentGuard.workers.test.ts`. **Negative, on the socket:** an
+   editor's frame that moves, unlocks, sets `isDeleted` on, re-stamps, or
+   removes from the array a page, that creates an element carrying `pdfPage`,
+   or that adds `pdfPage` to an unstamped element, is refused while the same
+   frame's ordinary stroke still lands, and a second peer never sees the
+   refused change; a guest with draw permission is refused the same way; the
+   owner's identical frames apply. **Negative, over HTTP:** the same editor
+   changes through the scene route are refused and the rest of the save is
+   written; the owner's apply. Manual mutants: drop the role check (socket,
+   then HTTP); drop the created-page rule; drop the changed-key rule; drop the
+   re-insert of a removed page.
 
 Run `npm test`, `npm run test:workers`, `npm run typecheck`, and
 `npm run test:e2e` through `scripts/run-e2e.mjs` for milestones 2–6.
