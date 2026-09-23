@@ -132,6 +132,16 @@ const ExcalidrawWrapper = dynamic(
  * in only by the render path this dialog never touches) loads on first drop,
  * never as part of opening the room (PERF-S2).
  */
+/**
+ * Where the board's short notices sit (a failed clear, the PDF export and
+ * import lines, the drop hint), so they never cover what someone is working
+ * with: just under the board tabs from 640px up, where Excalidraw's toolbar is
+ * at the bottom, and above the bottom bar on a phone, where the toolbar is at
+ * the top instead. `w-max` sizes the notice to its text, so a short line never
+ * wraps; the max width keeps a long one inside the screen.
+ */
+const BOARD_NOTICE_CLASS = 'fixed left-1/2 bottom-24 sm:bottom-auto sm:top-24 z-[1450] -translate-x-1/2 w-max max-w-[calc(100vw-2rem)] rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-[0.8rem] text-amber-300 shadow-xl shadow-slate-950/40';
+
 const PdfImportDialog = dynamic(
   () => import('@/components/whiteboard/PdfImportDialog'),
   { ssr: false },
@@ -473,6 +483,12 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
   >([]);
   const pdfProcessingRef = useRef(false);
   const pdfCancelRef = useRef(false);
+  /**
+   * A note about the drop itself ("Only the PDF was added…"), said once the
+   * queue has finished rather than when the drop arrives: the progress line
+   * would otherwise replace it before anyone could read it.
+   */
+  const pdfNoteRef = useRef<string | null>(null);
   const canvasAreaRef = useRef<HTMLDivElement>(null);
   const [clearFailed, setClearFailed] = useState(false);
   // The store is the single source of truth for the active tool: keyboard
@@ -1079,6 +1095,10 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         setPdfStatus(null);
         pdfQueueRef.current.shift();
       }
+      const note = pdfNoteRef.current;
+      pdfNoteRef.current = null;
+      // A failure already on the line matters more than the note; keep it.
+      if (note) setPdfStatus((current) => current ?? { kind: 'message', text: note });
     } finally {
       pdfProcessingRef.current = false;
     }
@@ -1099,9 +1119,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         setPdfStatus({ kind: 'message', text: NOT_OWNER_MESSAGE });
         return true;
       }
-      if (someNonPdf(files)) {
-        setPdfStatus({ kind: 'message', text: MIXED_DROP_MESSAGE });
-      }
+      if (someNonPdf(files)) pdfNoteRef.current = MIXED_DROP_MESSAGE;
       const batch = { centre, sizes: [] as { width: number; height: number }[] };
       for (const file of pdfFiles) pdfQueueRef.current.push({ file, batch });
       void processPdfQueue();
@@ -1526,7 +1544,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         <div
           role="status"
           data-testid="whiteboard-clear-failed"
-          className="fixed left-1/2 top-16 z-[1450] -translate-x-1/2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-[0.8rem] text-amber-300 shadow-xl shadow-slate-950/40"
+          className={BOARD_NOTICE_CLASS}
         >
           Couldn&rsquo;t clear this board. Check your connection and try again.
         </div>
@@ -1535,7 +1553,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         <div
           role="status"
           data-testid="whiteboard-pdf-export-notice"
-          className="fixed left-1/2 top-16 z-[1450] -translate-x-1/2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-[0.8rem] text-amber-300 shadow-xl shadow-slate-950/40"
+          className={BOARD_NOTICE_CLASS}
         >
           {pdfExporting ? 'Building the PDF…' : pdfExportError}
         </div>
@@ -1551,7 +1569,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         <div
           role="status"
           data-testid="whiteboard-pdf-drop-hint"
-          className="fixed left-1/2 top-16 z-[1450] -translate-x-1/2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-[0.8rem] text-amber-300 shadow-xl shadow-slate-950/40"
+          className={BOARD_NOTICE_CLASS}
         >
           Drop to add this PDF
         </div>
@@ -1560,7 +1578,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         <div
           role="status"
           data-testid="whiteboard-pdf-import-notice"
-          className="fixed left-1/2 top-16 z-[1450] -translate-x-1/2 flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-[0.8rem] text-amber-300 shadow-xl shadow-slate-950/40"
+          className={`${BOARD_NOTICE_CLASS} flex items-center gap-3`}
         >
           <span>{pdfStatus.kind === 'progress' ? pdfStatus.message : pdfStatus.text}</span>
           {pdfStatus.kind === 'progress' && (
@@ -1568,7 +1586,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
               type="button"
               data-testid="pdf-import-cancel"
               onClick={() => { pdfCancelRef.current = true; }}
-              className="underline"
+              className="-my-2 -mr-3 min-h-11 min-w-11 px-3 underline"
             >
               Cancel
             </button>

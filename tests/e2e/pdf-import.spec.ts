@@ -182,6 +182,50 @@ test.describe('PDF import', () => {
     expect(await sceneImages(page)).toEqual([]);
   });
 
+  test('Cancel is a full-size touch target on a phone', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await createRoomWithMaxUsers(page, 'PdfCancelTouch', 2);
+    await waitForExcalidrawApi(page);
+
+    await dropPdfOnBoard(page, 'long.pdf', makePdf(50));
+    const cancel = page.getByTestId('pdf-import-cancel');
+    await expect(cancel).toBeVisible();
+    const box = await cancel.boundingBox();
+    expect(box?.width ?? 0).toBeGreaterThanOrEqual(44);
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+    await cancel.click();
+  });
+
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 768, height: 1024 },
+    { width: 390, height: 844 },
+  ]) {
+    test(`the status line covers neither the board tabs nor the toolbar, on one line, at ${viewport.width}px`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await createRoomWithMaxUsers(page, `PdfStatusPlace${viewport.width}`, 2);
+      await waitForExcalidrawApi(page);
+
+      await dropPdfOnBoard(page, 'long.pdf', makePdf(50));
+      const notice = page.getByTestId('whiteboard-pdf-import-notice');
+      await expect(notice).toContainText('Adding page');
+      const box = await notice.boundingBox();
+      if (!box) throw new Error('status line has no box');
+      for (const locator of [page.getByTestId('board-tabs'), page.locator('.App-toolbar').first()]) {
+        const other = await locator.boundingBox();
+        if (!other) throw new Error('missing a surface to compare against');
+        const overlaps = box.x < other.x + other.width && other.x < box.x + box.width
+          && box.y < other.y + other.height && other.y < box.y + box.height;
+        expect(overlaps).toBe(false);
+      }
+      // One line of text: the Cancel target is 44px tall, so a wrap shows as more.
+      expect(box.height).toBeLessThanOrEqual(48);
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+      await page.getByTestId('pdf-import-cancel').click();
+    });
+  }
+
   test('a corrupt .pdf shows the message and changes nothing', async ({ page }) => {
     await createRoomWithMaxUsers(page, 'PdfBroken', 2);
     await waitForExcalidrawApi(page);
@@ -258,11 +302,14 @@ test.describe('PDF import', () => {
       { name: 'photo.png', bytes: makePhotoPng(40, 30), mimeType: 'image/png' },
     );
 
-    await expect(page.getByTestId('whiteboard-pdf-import-notice')).toBeVisible();
     await expect.poll(async () => (await sceneImages(page)).length, { timeout: 30000 }).toBe(1);
     // The picture was left for Excalidraw to skip -- only the PDF's page landed.
     const files = await page.evaluate(() => Object.keys((window as any).__debugExcalidrawApi?.getFiles?.() ?? {}));
     expect(files).toHaveLength(1);
+    // The note outlives the progress line: it is said once the PDF is in, so a
+    // fast import cannot replace it before anyone could read it.
+    await expect(page.getByTestId('whiteboard-pdf-import-notice'))
+      .toHaveText('Only the PDF was added. Drop pictures on their own.');
   });
 
   test('two PDFs dropped together each get their own place, beside the other', async ({ page }) => {
