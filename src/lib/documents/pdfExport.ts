@@ -147,13 +147,17 @@ export function leftoverElements(
   elements: readonly SceneElement[],
   pages: readonly Rect[],
 ): SceneElement[] {
+  const liveDocuments = stackedDocuments(elements);
   return elements.filter((element) => {
     // stampOf matches any well-formed `{importId, index}` pdfPage stamp,
     // stacked or column alike, so a stacked page is already excluded here.
-    // An onPage-stamped annotation is excluded too (spec §6.4: "never fall
-    // into the leftover page, even if they sit outside every page
-    // rectangle"), regardless of whether its document still has live pages.
-    if (!live(element) || stampOf(element) || onPageStampOf(element)) return false;
+    // An onPage-stamped annotation prints with its page (spec §6.4), so it is
+    // never a leftover -- while that page's document still exists. Once the
+    // document is removed the board shows the annotation on its own (§3.4),
+    // and the file must print it too, so it is ordinary drawing again.
+    if (!live(element) || stampOf(element)) return false;
+    const annotation = onPageStampOf(element);
+    if (annotation && liveDocuments.has(annotation.importId)) return false;
     const rect = rectOf(element);
     if (!rect) return false;
     return !pages.some((page) => overlaps(rect, page));
@@ -233,12 +237,16 @@ export function documentPages(elements: readonly SceneElement[]): ExportPage[] {
 export function exportPageElements(elements: readonly SceneElement[], page: ExportPage): SceneElement[] {
   if (page.kind === 'column') return pageElements(elements, page.rect);
 
+  const liveDocuments = stackedDocuments(elements);
   return elements.filter((element) => {
     if (!live(element)) return false;
     if (element.id === page.id) return true;
     const annotation = onPageStampOf(element);
-    if (annotation) return annotation.importId === page.importId && annotation.index === page.index;
-    if (hasAnyPageStamp(element)) return false;
+    // Writing whose own document was removed is ordinary drawing again, as it
+    // is on the board (§3.4), so it falls through to the overlap rule below.
+    const orphaned = annotation !== null && !liveDocuments.has(annotation.importId);
+    if (annotation && !orphaned) return annotation.importId === page.importId && annotation.index === page.index;
+    if (!orphaned && hasAnyPageStamp(element)) return false;
     const rect = rectOf(element);
     return rect !== null && overlaps(rect, page.rect);
   });

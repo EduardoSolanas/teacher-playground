@@ -363,6 +363,33 @@ describe('documentPages and exportPageElements (stacked documents, spec/PAGED_DO
     expect(leftoverElements(elements, rects).map((element) => element.id)).toEqual([]);
   });
 
+  it('prints writing whose document was removed, as the board still shows it', () => {
+    // Its pages are gone, so the stamp no longer ties it to any page: it is
+    // ordinary drawing again and lands on the leftover page.
+    const elements = [
+      { ...stackedPage('p0', IMPORT_A, 0, 1), isDeleted: true },
+      onPage('orphan', IMPORT_A, 0, 5000, 5000),
+    ];
+    const rects = documentPages(elements).map((found) => found.rect);
+    expect(leftoverElements(elements, rects).map((element) => element.id)).toEqual(['orphan']);
+  });
+
+  it('prints writing from a removed document on every page of a document it lies over', () => {
+    // Document A is gone; its stroke sits on document B, where the board
+    // shows it on every page, like any other unstamped drawing there.
+    const elements = [
+      { ...stackedPage('a0', IMPORT_A, 0, 1), isDeleted: true },
+      stackedPage('b0', IMPORT_B, 0, 2),
+      stackedPage('b1', IMPORT_B, 1, 2),
+      onPage('orphan', IMPORT_A, 0, 100, 100),
+    ];
+    const pages = documentPages(elements);
+    expect(pages.map((found) => exportPageElements(elements, found).map((element) => element.id))).toEqual([
+      ['b0', 'orphan'],
+      ['b1', 'orphan'],
+    ]);
+  });
+
   it('skips a deleted page: its index is simply missing, the surviving pages still export', () => {
     const elements = [
       stackedPage('p0', IMPORT_A, 0, 3),
@@ -465,6 +492,8 @@ describe('documentPages and exportPageElements (stacked documents, spec/PAGED_DO
   it('excludes a deleted annotation, an annotation for a different import, an element that does not overlap, and one with no usable geometry from a stacked page', () => {
     const elements = [
       stackedPage('p1', IMPORT_A, 1, 3),
+      // Document B lives elsewhere, so its annotation is still tied to it.
+      stackedPage('other', IMPORT_B, 1, 2, 10000, 0),
       { ...onPage('gone', IMPORT_A, 1, 100, 100), isDeleted: true },
       onPage('wrong-import', IMPORT_B, 1, 100, 100),
       stroke('far', 5000, 5000),
