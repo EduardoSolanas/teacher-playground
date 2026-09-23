@@ -2,6 +2,7 @@ import type { RoomDatabase } from '../db';
 import { verifiedAccountId } from '../authz';
 import { issueGuestPin, revokeGuestAccess } from '../guestPin';
 import { canWriteBoard, eraseAccountFromRoom, getGrantRole, getMembership, insertOwner, isOwnerRole } from '../membership';
+import { applyFrameDecisionToList, decideFrame, frameFromElementLists, type ElementRecord } from '../documentPageGuard';
 import {
   hasRoomSceneIntent,
   hasRoomSettingsIntent,
@@ -233,8 +234,33 @@ export async function handleRoomPost(
       const columns: string[] = [];
       const values: unknown[] = [];
       if (elements !== undefined) {
+        /*
+         * spec/PAGED_DOCUMENTS_SPEC.md §7.1: this route is open to any
+         * `canWriteBoard` writer and overwrites the stored elements wholesale.
+         * A writer who is not the owner has their submission corrected
+         * against what is already stored before it is written, so they
+         * cannot create, change or remove a document page element -- the
+         * same rule the socket sync path enforces.
+         */
+        let correctedElements: ReadonlyArray<ElementRecord> = elements;
+        if (!isOwnerRole(role)) {
+          const storedRow = db.prepare(
+            `SELECT elements FROM rooms WHERE room_id = ?`,
+          ).get(roomId) as { elements: string | null } | undefined;
+          let storedElements: ElementRecord[] = [];
+          if (storedRow?.elements) {
+            try {
+              const parsed = JSON.parse(storedRow.elements);
+              if (Array.isArray(parsed)) storedElements = parsed as ElementRecord[];
+            } catch {
+              storedElements = [];
+            }
+          }
+          const decision = decideFrame(frameFromElementLists(storedElements, elements as ElementRecord[]));
+          correctedElements = applyFrameDecisionToList(elements as ElementRecord[], decision);
+        }
         columns.push('elements = ?');
-        values.push(elementsJson);
+        values.push(JSON.stringify(correctedElements));
       }
       if (viewport !== undefined) {
         columns.push('viewport = ?');

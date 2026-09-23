@@ -89,6 +89,7 @@ import * as encoding from 'lib0/encoding';
 import * as syncProtocol from 'y-protocols/sync';
 import { encodeUpdateFrame, handleSyncFrame, MESSAGE_SYNC } from '../lib/whiteboard/serverSync';
 import { buildCleanDoc, sanitizeSceneDoc, sanitizeSharedDoc } from '../lib/whiteboard/sceneGuard';
+import { recordPageGuardFrame, decideFrame, applyPageGuardDecision } from '../lib/whiteboard/documentPageGuard';
 import { replaceSharedElements, getElementsFromArray, pruneTombstonedElements } from '../lib/whiteboard/yjsDoc';
 import { snapshotElements } from '../lib/whiteboard/sceneSnapshot';
 import { snapshotBudgetState, SNAPSHOT_WARN_BYTES } from '../lib/whiteboard/snapshotBudget';
@@ -3158,9 +3159,28 @@ export class RoomDO extends DurableObject {
       if (messageType === MESSAGE_SYNC) {
         try {
           const doc = await this.getRoomDoc(attachment.roomId);
+          const elementsArray = doc.getArray<Y.Map<unknown>>('elements');
           const before = Y.encodeStateVector(doc);
+          const isOwnerWriter = isOwnerRole(role);
 
-          const replies = handleSyncFrame(doc, this.stageSyncUpdate(attachment.roomId, bytes), ws);
+          /*
+           * spec/PAGED_DOCUMENTS_SPEC.md §7.1: the recorder is attached only
+           * around this one call, so the server's own sanitize transactions
+           * below are never recorded, and cost scales with what the frame
+           * touched rather than with how many pages the room holds. Owner
+           * frames are never undone, so an owner writer skips recording
+           * entirely.
+           */
+          let replies: Uint8Array[];
+          let pageGuardFrame: ReturnType<typeof recordPageGuardFrame> | null = null;
+          if (isOwnerWriter) {
+            replies = handleSyncFrame(doc, this.stageSyncUpdate(attachment.roomId, bytes), ws);
+          } else {
+            replies = [];
+            pageGuardFrame = recordPageGuardFrame(elementsArray, () => {
+              replies = handleSyncFrame(doc, this.stageSyncUpdate(attachment.roomId, bytes), ws);
+            });
+          }
           for (const reply of replies) {
             try {
               ws.send(reply);
@@ -3175,6 +3195,13 @@ export class RoomDO extends DurableObject {
 
           sanitizeSceneDoc(doc, { maxElements: RoomDO.maxElementsForTests ?? undefined });
           sanitizeSharedDoc(doc);
+
+          // §7: only the owner moves, changes or removes a document page
+          // element. Applied after the sanitize passes and before the relay
+          // diff is computed, so a refused change never reaches a peer.
+          if (pageGuardFrame) {
+            applyPageGuardDecision(doc, elementsArray, decideFrame(pageGuardFrame));
+          }
 
           const diff = Y.encodeStateAsUpdate(doc, before);
           if (!isEmptyUpdate(diff)) {
