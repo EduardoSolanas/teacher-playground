@@ -171,7 +171,25 @@ not rendered (renderable list), not hit at a point inside both, not
 box-selected, not selected by select-all; with the prop absent everything
 behaves as upstream. A prop identity change re-renders.
 
-`FORK_EXCALIDRAW.md` records the fifth behavioural divergence (tp.12) with this
+### 4.1 PDFs in the image tool's picker (same release)
+
+A second optional prop:
+
+```ts
+onDocumentFile?: (file: File) => void;
+```
+
+When it is set, the image tool's file picker (`App.tsx` `onImageAction`) also
+offers PDF files (`.pdf`, `application/pdf`) beside the image types. If the
+chosen file is a PDF — by type, or by a `.pdf` name when the type is empty —
+the editor creates no image element, calls `onDocumentFile(file)`, and returns
+to the selection tool. Any other chosen file follows the upstream image path
+unchanged. When the prop is absent the picker offers images only, exactly as
+upstream. Fork tests: with the prop, a picked PDF calls it once and adds no
+element; a picked PNG still becomes an image element and does not call it;
+without the prop, behaviour is upstream's.
+
+`FORK_EXCALIDRAW.md` records the fifth and sixth behavioural divergences (tp.12) with this
 justification, and the application pins the tp.12 tarball and asset base.
 Publishing the release (pushing the tag) is an outward-facing action and needs
 the owner's go-ahead.

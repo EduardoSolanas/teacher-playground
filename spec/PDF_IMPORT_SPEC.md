@@ -102,9 +102,13 @@ Rules at the edges:
 - **Room storage:** before rendering, the room's free space is read from the
   owner-only settings as today; if the rendered pages would not fit, nothing
   is inserted and the status line shows `importTooLargeMessage`.
-- **Phones and most tablets** cannot drag files onto a web page, so a teacher
-  on one cannot add a PDF in this release. Accepting PDFs in Excalidraw's own
-  image tool is the follow-up if that matters.
+- **The image tool accepts PDFs too.** Phones and most tablets cannot drag
+  files onto a web page, so Excalidraw's own image tool (toolbar, and the
+  image shortcut) offers PDF files in its picker alongside pictures. A picked
+  PDF goes through this same flow, placed at the centre of the view; a picked
+  picture is Excalidraw's as today. This needs the fork's `onDocumentFile`
+  prop (`PAGED_DOCUMENTS_SPEC.md` §4, release tp.12); until the application
+  pins tp.12, the picker offers pictures only.
 
 The drop and paste are caught on the element wrapping the editor in the
 **capture** phase, so Excalidraw never sees a PDF (it would otherwise report an
@@ -193,7 +197,9 @@ check at desktop, 640–900 px, and 390×844 for every visual change.
    nothing; a corrupt `.pdf` shows the message and changes nothing; a
    61-page PDF asks for pages and the default adds 50; a student's drop adds
    nothing and shows the message; a drop of only a picture still adds the
-   picture as today; the room title menu and footer carry no PDF entry. A
+   picture as today; the room title menu and footer carry no PDF entry; once
+   tp.12 is pinned, choosing the fixture PDF in the image tool's picker adds it
+   at the view centre, and choosing a picture there still adds the picture. A
    UX-expert check covers the drag hint and the status line at desktop,
    640–900 px and 390×844.
 
