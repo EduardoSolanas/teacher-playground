@@ -86,7 +86,7 @@ customData.pdfPage = {
 ```
 
 All pages of one import share `x`, `y`, `width` and `height`: the first page's
-rectangle, centred in the view as today. A page whose PDF size differs from the
+rectangle, placed where the file was dropped (`PDF_IMPORT_SPEC.md` §3). A page whose PDF size differs from the
 first is fitted inside that rectangle, centred, keeping its aspect ratio; the
 fit is decided at render time in `pdfImport.ts` (`stackedPageRect`). Pages stay
 `locked: true`.
