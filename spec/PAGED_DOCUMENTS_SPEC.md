@@ -269,7 +269,16 @@ the document is off screen.
 
 Keyboard: every control is a real button with an accessible name ("Previous
 page", "Next page", "Move document", "Remove document") and a visible focus
-ring; targets are at least 44×44 px at phone width.
+ring.
+
+Responsive (required at desktop, 640–900 px and 390×844, like every surface in
+this app): every control is at least 44×44 px on a phone; the pager never
+overlaps Excalidraw's toolbar, the room top nav or the PDF status line, and
+when the page's bottom edge is off screen it pins to the bottom of the
+viewport above the toolbar instead of disappearing; at 390 px it fits on one
+row with no horizontal scroll (Remove may collapse into a small overflow
+button there). Moving uses pointer events, so the grip drags with a finger as
+well as a mouse; nothing is hover-only.
 
 ### 6.4 Download as PDF
 
@@ -389,7 +398,9 @@ commit per milestone at a clean checkpoint.
    teacher imports and a student sees page 1 of n; the teacher turns forward
    and back and the student follows; the student draws on page 2, the teacher
    turns to page 3 and the stroke is gone for both, then back to page 2 and it
-   is there; a student has no page or move controls; a student's click on the
+   is there; a student has no page or move controls; at 390×844 every pager
+   control is at least 44×44 px, the pager does not overlap the toolbar, and
+   the teacher can turn pages and drag the grip with touch input; a student's click on the
    page selects nothing; the teacher moves the document and the student sees
    pages and annotations moved together; one undo reverts the move; Remove
    deletes pages and their annotations and undo restores them; a late joiner
