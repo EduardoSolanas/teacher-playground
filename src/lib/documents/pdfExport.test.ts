@@ -1,8 +1,28 @@
 /*
- * Mutation note (AGENTS.md): one survivor on this module is equivalent and
- * cannot be killed. Dropping `stamp === null` from the stamp reader changes
- * nothing observable -- destructuring a string or a number yields an undefined
- * importId, which the very next check refuses anyway.
+ * Mutation note (AGENTS.md): four survivors on this module are equivalent and
+ * cannot be killed.
+ *
+ * - Dropping `stamp === null` from the original stamp reader (`stampOf`)
+ *   changes nothing observable -- destructuring a string or a number yields
+ *   an undefined importId, which the very next check refuses anyway.
+ * - `isStackedPageStamp`'s two `return false` defaults (for `customData` and
+ *   for `pdfPage` being null or a non-object) cannot be flipped to `true`
+ *   observably. Its only caller, `columnPagesByImport`, always follows it
+ *   with `stampOf(element)`, which re-reads the exact same `customData` and
+ *   `pdfPage` values and applies the identical null/non-object guard before
+ *   accepting a stamp. Whenever `isStackedPageStamp` would wrongly claim
+ *   "stacked" for malformed input, `stampOf` still (correctly) rejects it one
+ *   line later, so the element is excluded from the column grouping either
+ *   way -- claiming it early or claiming it late produces the same result.
+ * - `firstAppearance`'s `typeof importId !== 'string'` guard: an importId
+ *   that fails this check is never a real, looked-up key. Every id actually
+ *   queried against the returned map (`order.get(importId)` in
+ *   `documentPages`) comes from `columnPagesByImport` or `stackedDocuments`,
+ *   both of which already validate their importId as a genuine string before
+ *   using it as a Map key. A stray non-string key recorded by a weakened
+ *   guard is simply never read, so removing the guard cannot change any
+ *   `documentPages` output -- the same reasoning `pagedDocuments.test.ts`
+ *   already documents for its own numeric-importId case.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -11,7 +31,9 @@ import {
   MAX_EXPORT_SIDE,
   boundingBox,
   cropInCanvas,
+  documentPages,
   exportFailureMessage,
+  exportPageElements,
   exportRenderScale,
   leftoverElements,
   pageElements,
@@ -19,6 +41,9 @@ import {
 } from './pdfExport';
 
 type Element = Record<string, unknown>;
+
+const IMPORT_A = '0123456789abcdef';
+const IMPORT_B = 'fedcba9876543210';
 
 function page(id: string, importId: string, index: number, x: number, y: number): Element {
   return {
@@ -34,6 +59,29 @@ function page(id: string, importId: string, index: number, x: number, y: number)
 
 function stroke(id: string, x: number, y: number, width = 50, height = 50): Element {
   return { id, type: 'freedraw', x, y, width, height };
+}
+
+function stackedPage(
+  id: string,
+  importId: string,
+  index: number,
+  pageCount: number,
+  x = 0,
+  y = 0,
+): Element {
+  return {
+    id,
+    type: 'image',
+    x,
+    y,
+    width: 612,
+    height: 792,
+    customData: { pdfPage: { importId, index, pageCount, stacked: true } },
+  };
+}
+
+function onPage(id: string, importId: string, index: number, x: number, y: number, width = 50, height = 50): Element {
+  return { id, type: 'freedraw', x, y, width, height, customData: { onPage: { importId, index } } };
 }
 
 describe('pinned export constants', () => {
@@ -285,6 +333,147 @@ describe('cropInCanvas', () => {
       { x: -100, y: 0, width: 200, height: 100 },
       1,
     )).toEqual({ x: 0, y: 50, width: 200, height: 100 });
+  });
+});
+
+describe('documentPages and exportPageElements (stacked documents, spec/PAGED_DOCUMENTS_SPEC.md §6.4)', () => {
+  it('exports a three-page stacked import as three pages: the onPage-stamped stroke only on its own page, the unstamped stroke on all three', () => {
+    const elements = [
+      stackedPage('p0', IMPORT_A, 0, 3),
+      stackedPage('p1', IMPORT_A, 1, 3),
+      stackedPage('p2', IMPORT_A, 2, 3),
+      onPage('stamped', IMPORT_A, 1, 100, 100),
+      stroke('unstamped', 200, 200),
+    ];
+    const pages = documentPages(elements);
+    expect(pages).toHaveLength(3);
+    expect(pages.map((found) => exportPageElements(elements, found).map((element) => element.id))).toEqual([
+      ['p0', 'unstamped'],
+      ['p1', 'stamped', 'unstamped'],
+      ['p2', 'unstamped'],
+    ]);
+  });
+
+  it('never puts an onPage-stamped element on the leftover page, even far from every page rectangle', () => {
+    const elements = [
+      stackedPage('p0', IMPORT_A, 0, 1),
+      onPage('far', IMPORT_A, 0, 5000, 5000),
+    ];
+    const rects = documentPages(elements).map((found) => found.rect);
+    expect(leftoverElements(elements, rects).map((element) => element.id)).toEqual([]);
+  });
+
+  it('skips a deleted page: its index is simply missing, the surviving pages still export', () => {
+    const elements = [
+      stackedPage('p0', IMPORT_A, 0, 3),
+      { ...stackedPage('p1', IMPORT_A, 1, 3), isDeleted: true },
+      stackedPage('p2', IMPORT_A, 2, 3),
+    ];
+    const pages = documentPages(elements);
+    expect(pages.map((found) => found.id)).toEqual(['p0', 'p2']);
+    expect(pages.map((found) => (found.kind === 'stacked' ? found.index : -1))).toEqual([0, 2]);
+  });
+
+  it('keeps a stacked and a column import in the order their first page appears on the board', () => {
+    const stackedFirst = [
+      stackedPage('stacked-1', IMPORT_A, 0, 1, 900, 0),
+      page('column-1', IMPORT_B, 0, 0, 0),
+    ];
+    expect(documentPages(stackedFirst).map((found) => found.id)).toEqual(['stacked-1', 'column-1']);
+
+    const columnFirst = [
+      page('column-1', IMPORT_B, 0, 0, 0),
+      stackedPage('stacked-1', IMPORT_A, 0, 1, 900, 0),
+    ];
+    expect(documentPages(columnFirst).map((found) => found.id)).toEqual(['column-1', 'stacked-1']);
+  });
+
+  it('uses each import\'s earliest appearance, not a later one, to order it against another import', () => {
+    // Both imports' first pages come after a filler element with no stamp, so
+    // neither import's true position is 0 -- otherwise a bug that always
+    // treated a nonzero position as "very late" could coincidentally land on
+    // the right answer by luck of 0 sorting first anyway.
+    const columnFirst = [
+      stroke('filler', 0, 0),
+      page('column-1', IMPORT_B, 0, 0, 0),
+      stackedPage('stacked-1', IMPORT_A, 0, 1, 900, 0),
+    ];
+    expect(documentPages(columnFirst).map((found) => found.id)).toEqual(['column-1', 'stacked-1']);
+
+    const stackedFirst = [
+      stroke('filler', 0, 0),
+      stackedPage('stacked-1', IMPORT_A, 0, 1, 900, 0),
+      page('column-1', IMPORT_B, 0, 0, 0),
+    ];
+    expect(documentPages(stackedFirst).map((found) => found.id)).toEqual(['stacked-1', 'column-1']);
+  });
+
+  it('orders an import by its earliest page, not a later one that happens to set the position last', () => {
+    const elements = [
+      stackedPage('x0', IMPORT_A, 0, 2, 0, 0),
+      page('y0', IMPORT_B, 0, 900, 0),
+      stackedPage('x1', IMPORT_A, 1, 2, 0, 0),
+    ];
+    expect(documentPages(elements).map((found) => found.id)).toEqual(['x0', 'x1', 'y0']);
+  });
+
+  it('ignores a deleted element when computing an import\'s first-appearance position', () => {
+    const elements = [
+      { ...stackedPage('deleted-early', IMPORT_A, 0, 1, 0, 0), isDeleted: true },
+      page('col1', IMPORT_B, 0, 900, 0),
+      stackedPage('real-a', IMPORT_A, 0, 1, 0, 0),
+    ];
+    expect(documentPages(elements).map((found) => found.id)).toEqual(['col1', 'real-a']);
+  });
+
+  it('ignores an element with malformed customData or an unusable pdfPage stamp when computing order', () => {
+    const elements = [
+      { id: 'null-custom-data', type: 'image', x: 0, y: 0, width: 10, height: 10, customData: null },
+      { id: 'null-stamp', type: 'image', x: 0, y: 0, width: 10, height: 10, customData: { pdfPage: null } },
+      page('col1', IMPORT_B, 0, 0, 0),
+    ];
+    expect(documentPages(elements).map((found) => found.id)).toEqual(['col1']);
+  });
+
+  it('orders a stacked document\'s pages by their stamped index, not by scene order', () => {
+    const elements = [
+      stackedPage('p2', IMPORT_A, 2, 3),
+      stackedPage('p0', IMPORT_A, 0, 3),
+      stackedPage('p1', IMPORT_A, 1, 3),
+    ];
+    expect(documentPages(elements).map((found) => found.id)).toEqual(['p0', 'p1', 'p2']);
+  });
+
+  it('builds a column page\'s elements through the same rule pageElements uses, not the stacked rule', () => {
+    // An onPage-stamped element has no `pdfPage` stamp, so `pageElements`
+    // (the real column rule) treats it as ordinary overlapping content and
+    // keeps it -- unlike the stacked rule, which only keeps an onPage
+    // annotation whose importId/index match the page. This element's
+    // importId ('nobody') never matches anything, so if `exportPageElements`
+    // ever ran the stacked rule for a column page, it would wrongly drop it.
+    const elements = [
+      page('a', IMPORT_B, 0, 0, 0),
+      stroke('on', 100, 100),
+      onPage('marked', 'nobody-imports-this', 0, 150, 150),
+      stroke('off', 5000, 5000),
+    ];
+    const [columnPage] = documentPages(elements);
+    expect(columnPage.kind).toBe('column');
+    expect(exportPageElements(elements, columnPage).map((element) => element.id)).toEqual(['a', 'on', 'marked']);
+  });
+
+  it('excludes a deleted annotation, an annotation for a different import, an element that does not overlap, and one with no usable geometry from a stacked page', () => {
+    const elements = [
+      stackedPage('p1', IMPORT_A, 1, 3),
+      { ...onPage('gone', IMPORT_A, 1, 100, 100), isDeleted: true },
+      onPage('wrong-import', IMPORT_B, 1, 100, 100),
+      stroke('far', 5000, 5000),
+      { id: 'bad', type: 'freedraw' },
+      stroke('near', 100, 100),
+      onPage('mine', IMPORT_A, 1, 200, 200),
+    ];
+    const target = documentPages(elements).find((found) => found.kind === 'stacked' && found.index === 1)!;
+    expect(exportPageElements(elements, target).map((element) => element.id)).toEqual(['p1', 'near', 'mine']);
   });
 });
 

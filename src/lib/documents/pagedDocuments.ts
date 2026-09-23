@@ -77,7 +77,7 @@ function pdfPageStampOf(element: SceneElement): PageStamp | null {
  * particular document here -- an annotation's page is only ever compared
  * against a document's own live pages in `isHidden`/`showingIndex`.
  */
-function onPageStampOf(element: SceneElement): AnnotationStamp | null {
+export function onPageStampOf(element: SceneElement): AnnotationStamp | null {
   const customData = element.customData;
   if (customData === null || typeof customData !== 'object') return null;
   const stamp = (customData as { onPage?: unknown }).onPage;
@@ -95,7 +95,7 @@ function onPageStampOf(element: SceneElement): AnnotationStamp | null {
  * present stamp still counts as already stamped -- the drawing client never
  * overwrites it.
  */
-function hasAnyPageStamp(element: SceneElement): boolean {
+export function hasAnyPageStamp(element: SceneElement): boolean {
   const customData = element.customData;
   if (customData === null || typeof customData !== 'object') return false;
   const data = customData as { pdfPage?: unknown; onPage?: unknown };
