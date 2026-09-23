@@ -64,8 +64,9 @@ control (§6.3), which never unlocks anything.
   before the Yjs path, dropped for any other role, never relayed as Yjs
   updates. Call state is persisted under `RoomDO.ACTIVE_CALL_KEY` and sent to
   each socket on connect. Page state copies this shape exactly.
-- `src/lib/whiteboard/sceneGuard.ts` and the staged sync path in `RoomDO`
-  (`stageSyncUpdate`, `buildCleanDoc`) — where §7's page guard lives.
+- `src/lib/whiteboard/sceneGuard.ts`, the sync path in `RoomDO`
+  (`handleSyncFrame` and the sanitize passes after it) and the HTTP scene route
+  (`handleRoomPost`) — where §7's page guard lives (§7.1).
 - `src/lib/crypto/randomId.ts` — `randomHexId(8)` makes the 16-hex-character
   `importId`.
 
