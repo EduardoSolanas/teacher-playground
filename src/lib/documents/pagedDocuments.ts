@@ -10,6 +10,7 @@
  * the fork's `isElementHidden` hook so the logic can be tested without a
  * canvas.
  */
+import { MAX_PAGES_PER_IMPORT } from './pdfImport';
 
 /** Every page of one import shares this rectangle (spec §3.1). */
 export type Rect = { x: number; y: number; width: number; height: number };
@@ -38,8 +39,8 @@ export type AnnotationStamp = { importId: string; index: number };
  */
 export type PageState = Readonly<Record<string, number>>;
 
-const IMPORT_ID_PATTERN = /^[0-9a-f]{16}$/;
-const MAX_PAGES_PER_IMPORT = 50;
+/** What `randomHexId(8)` makes at import: 16 lowercase hex characters. */
+export const IMPORT_ID_PATTERN = /^[0-9a-f]{16}$/;
 
 type PageStamp = { importId: string; index: number; pageCount: number };
 

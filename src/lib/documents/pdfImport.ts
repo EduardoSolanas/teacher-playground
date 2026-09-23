@@ -114,7 +114,7 @@ export type StackedRect = { x: number; y: number; width: number; height: number 
  * Fits a page of size `pageSize` inside `firstPageRect`, centred, keeping its
  * own aspect ratio (spec/PAGED_DOCUMENTS_SPEC.md §3.1): every page of a
  * stacked import shares the first page's rectangle, but a page whose PDF
- * size differs is shown scaled down (never up) to fit inside it rather than
+ * size differs is scaled, up or down, to fit inside it rather than being
  * stretched or cropped. The binding dimension -- the one that would reach the
  * rectangle's edge first -- is whichever gives the smaller scale.
  */

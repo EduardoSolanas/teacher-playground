@@ -3,12 +3,12 @@
  * and cannot be killed.
  *
  * - `pdfPageStampOf`'s `(pageCount as number) < 1` clause (pagedDocuments.ts
- *   line 66): dropping it changes nothing observable. Whenever pageCount is
+ *   line 67): dropping it changes nothing observable. Whenever pageCount is
  *   <= 0, the later `(index as number) >= (pageCount as number)` check
  *   rejects every possible index anyway, since index is already validated as
  *   a non-negative integer and a non-negative number is never smaller than a
  *   non-positive pageCount.
- * - `onPageStampOf`'s `typeof importId !== 'string'` clause (line 85):
+ * - `onPageStampOf`'s `typeof importId !== 'string'` clause (line 86):
  *   dropping it (while keeping the pattern check) cannot be observed either.
  *   The only way to exploit a missing type check is to pass a non-string
  *   whose `String(...)` form matches the 16-hex pattern (e.g. a 16-digit
@@ -17,16 +17,16 @@
  *   `===` in `idsFor` -- uses strict, type-sensitive equality, so it can
  *   never match a real (string-keyed) document.
  * - `showingIndex`'s `document.pages.has(requested)` early return (line
- *   179): removing it still finds the same page, because an exact match
+ *   180): removing it still finds the same page, because an exact match
  *   always has distance 0 in the nearest-page search loop below it, and 0 is
  *   always the unique minimum (Map keys are distinct), so the loop and the
  *   early return can never disagree.
- * - `showingIndex`'s `nearest === null` clause (line 185): `bestDistance`
+ * - `showingIndex`'s `nearest === null` clause (line 186): `bestDistance`
  *   starts at `Infinity`, so `distance < bestDistance` is provably true on
  *   the very first loop iteration regardless of `nearest`, making the
  *   `nearest === null` clause redundant with it in every reachable case.
  * - `showingIndex`'s tie-break `index < nearest` vs `index <= nearest` (line
- *   185): `nearest` only ever holds a key already visited, and the current
+ *   186): `nearest` only ever holds a key already visited, and the current
  *   loop `index` is always a different Map key (keys are unique), so `index`
  *   can never equal `nearest` at the point of comparison -- `<=` and `<`
  *   agree on every input that can occur.

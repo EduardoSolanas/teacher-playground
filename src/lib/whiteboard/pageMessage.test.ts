@@ -1,7 +1,7 @@
 /*
  * Mutation note (AGENTS.md): five survivors in `isValidPageMessage`'s first
  * guard (`!value || typeof value !== 'object' || Array.isArray(value)`,
- * pageMessage.ts line 27) are equivalent and cannot be killed, for reasons
+ * pageMessage.ts line 24) are equivalent and cannot be killed, for reasons
  * specific to how this function is reached. It is private, called only from
  * `decodePageMessagePayload`, whose value always comes from
  * `JSON.parse(readVarString(...))` -- so it can only ever be null, a

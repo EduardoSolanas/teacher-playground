@@ -6,13 +6,10 @@
  */
 import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
+import { IMPORT_ID_PATTERN } from '../documents/pagedDocuments';
+import { MAX_PAGES_PER_IMPORT } from '../documents/pdfImport';
 
 export const PAGE_MESSAGE_TYPE = 103;
-
-/** Largest import a page frame may name (mirrors `pdfImport.ts`). */
-const MAX_PAGES_PER_IMPORT = 50;
-
-const IMPORT_ID_PATTERN = /^[0-9a-f]{16}$/;
 
 export type PageMessage = { importId: string; index: number };
 
