@@ -12,6 +12,7 @@ import {
   pageFrame,
   parsePageRange,
   rasterScale,
+  stackedPageRect,
 } from './pdfImport';
 
 describe('pinned limits', () => {
@@ -147,6 +148,39 @@ describe('pageEncodingFor', () => {
   it('falls back to JPEG when the canvas ignored the WebP request', () => {
     expect(pageEncodingFor('image/png')).toBe('image/jpeg');
     expect(pageEncodingFor('')).toBe('image/jpeg');
+  });
+});
+
+describe('stackedPageRect', () => {
+  const firstPageRect = { x: 100, y: 200, width: 612, height: 792 };
+
+  it('keeps a page of the same size and aspect ratio exactly where the first page is', () => {
+    expect(stackedPageRect({ width: 612, height: 792 }, firstPageRect)).toEqual(firstPageRect);
+  });
+
+  it('shrinks a taller-aspect page to fit the height, centring it horizontally', () => {
+    // A 612x1000 page is narrower for its height than the 612x792 slot, so
+    // height is the binding dimension: scale = 792/1000 = 0.792.
+    const rect = stackedPageRect({ width: 612, height: 1000 }, firstPageRect);
+    expect(rect.height).toBeCloseTo(792, 10);
+    expect(rect.width).toBeCloseTo(612 * 0.792, 10);
+    expect(rect.y).toBeCloseTo(200, 10);
+    expect(rect.x).toBeCloseTo(100 + (612 - rect.width) / 2, 10);
+  });
+
+  it('shrinks a wider-aspect (landscape) page to fit the width, centring it vertically', () => {
+    // An 842x595 landscape page inside a 612x792 slot: scale = 612/842.
+    const rect = stackedPageRect({ width: 842, height: 595 }, firstPageRect);
+    const scale = 612 / 842;
+    expect(rect.width).toBeCloseTo(612, 10);
+    expect(rect.height).toBeCloseTo(595 * scale, 10);
+    expect(rect.x).toBeCloseTo(100, 10);
+    expect(rect.y).toBeCloseTo(200 + (792 - rect.height) / 2, 10);
+  });
+
+  it('keeps the aspect ratio of the fitted page', () => {
+    const rect = stackedPageRect({ width: 300, height: 900 }, firstPageRect);
+    expect(rect.width / rect.height).toBeCloseTo(300 / 900, 10);
   });
 });
 

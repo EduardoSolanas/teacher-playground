@@ -108,6 +108,28 @@ export function columnLayout(sizes: readonly PageSize[], origin: { x: number; y:
   return placements;
 }
 
+export type StackedRect = { x: number; y: number; width: number; height: number };
+
+/**
+ * Fits a page of size `pageSize` inside `firstPageRect`, centred, keeping its
+ * own aspect ratio (spec/PAGED_DOCUMENTS_SPEC.md §3.1): every page of a
+ * stacked import shares the first page's rectangle, but a page whose PDF
+ * size differs is shown scaled down (never up) to fit inside it rather than
+ * stretched or cropped. The binding dimension -- the one that would reach the
+ * rectangle's edge first -- is whichever gives the smaller scale.
+ */
+export function stackedPageRect(pageSize: PageSize, firstPageRect: StackedRect): StackedRect {
+  const scale = Math.min(firstPageRect.width / pageSize.width, firstPageRect.height / pageSize.height);
+  const width = pageSize.width * scale;
+  const height = pageSize.height * scale;
+  return {
+    x: firstPageRect.x + (firstPageRect.width - width) / 2,
+    y: firstPageRect.y + (firstPageRect.height - height) / 2,
+    width,
+    height,
+  };
+}
+
 /**
  * The encoding to keep for a page. A canvas that cannot encode WebP (Safari)
  * silently returns PNG instead, so the produced type decides, never the
