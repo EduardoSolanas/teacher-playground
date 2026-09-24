@@ -11,6 +11,7 @@ import {
   type LocalAuthSession,
 } from '../test/workerAuth';
 import { ROOM_SETTINGS_KEYS } from '../lib/whiteboard/requestSchemas';
+import { TOMBSTONE_TTL_MS, ROOM_IDLE_TTL_MS } from '../lib/whiteboard/roomSchema';
 
 /*
  * A separate file rather than the end of roomDO.workers.test.ts, for the same
@@ -232,5 +233,91 @@ describe('room call lifecycle', () => {
     editorWs.close();
     otherWs.close();
     lateWs.close();
+  });
+
+  it('forgets an active call when the room is deleted, even after the room id is reused', async () => {
+    const owner = await bootstrapLocalSession('call-delete-owner');
+    const roomId = 'call-delete-room';
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    /*
+     * Seeded directly rather than started over a live socket: any socket close
+     * already clears the call once the room empties (handleSocketGone), so
+     * that path can never leave a stale entry behind. What actually leaks is
+     * a call left in storage when a room is torn down with no socket open at
+     * all to trigger that cleanup -- the DELETE route, account erasure, and
+     * the idle-purge alarm all reach deleteBoardState this way.
+     */
+    await runInDurableObject(roomStub(roomId), (_instance, state) => (
+      state.storage.put('call:active', { active: true, hostAccountId: owner.accountId, startedAt: Date.now() })
+    ));
+    const stored = await runInDurableObject(roomStub(roomId), (_instance, state) => (
+      state.storage.get('call:active')
+    ));
+    expect(stored).toMatchObject({ active: true, hostAccountId: owner.accountId });
+
+    const del = await authenticatedFetch(`/api/whiteboard/room/${roomId}`, owner, {
+      method: 'DELETE',
+    });
+    expect(del.status).toBe(200);
+
+    // The tombstone left by DELETE blocks recreation until it expires. Age it
+    // past TOMBSTONE_TTL_MS and let the alarm purge it, the same way a room id
+    // becomes reusable in production.
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      instance.db.prepare(`UPDATE room_tombstones SET deleted_at = ? WHERE room_id = ?`)
+        .run(Date.now() - TOMBSTONE_TTL_MS - 60_000, roomId);
+    });
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => instance.alarm());
+
+    expect((await runInDurableObject(roomStub(roomId), (instance: RoomDO) => (
+      instance.db.prepare(`SELECT 1 FROM room_tombstones WHERE room_id = ?`).get(roomId)
+    )))).toBeUndefined();
+
+    const recreated = await writeRoom(roomId, owner);
+    expect(recreated.status).toBe(200);
+
+    const newWs = await connectGranted(owner, roomId);
+    expect(await nextCallState(newWs)).toBeNull();
+
+    const storedAfter = await runInDurableObject(roomStub(roomId), (_instance, state) => (
+      state.storage.get('call:active')
+    ));
+    expect(storedAfter).toBeUndefined();
+
+    newWs.close();
+  });
+
+  it('drops the in-memory call cache too, not just storage, when a board is purged idle', async () => {
+    const owner = await bootstrapLocalSession('call-idle-purge-owner');
+    const roomId = 'call-idle-purge-room';
+    expect((await writeRoom(roomId, owner)).status).toBe(200);
+
+    const hostWs = await connectGranted(owner, roomId);
+    startCall(hostWs, owner.accountId);
+    const sawStored = await runInDurableObject(roomStub(roomId), async (_instance, state) => (
+      state.storage.get('call:active')
+    ));
+    // Confirms the frame was processed and stored before ageing the room.
+    expect(sawStored).toMatchObject({ active: true, hostAccountId: owner.accountId });
+
+    /*
+     * The socket stays open on purpose: idle purge is driven purely by the
+     * room row's updated_at, not by whether a socket is attached, so this
+     * exercises deleteBoardState without going through the "last socket
+     * closed" cleanup that would otherwise reset the cache on its own.
+     */
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => {
+      instance.db.prepare(`UPDATE rooms SET updated_at = ? WHERE room_id = ?`)
+        .run(Date.now() - ROOM_IDLE_TTL_MS - 60_000, roomId);
+    });
+    await runInDurableObject(roomStub(roomId), (instance: RoomDO) => instance.alarm());
+
+    const cachedAfterPurge = await runInDurableObject(roomStub(roomId), (instance: RoomDO) => (
+      (instance as unknown as { activeCall: CallState | null }).activeCall
+    ));
+    expect(cachedAfterPurge).toBeNull();
+
+    hostWs.close();
   });
 });

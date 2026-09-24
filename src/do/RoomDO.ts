@@ -1985,6 +1985,16 @@ export class RoomDO extends DurableObject {
     // Always lists: a deleted room must leave nothing behind, no matter what
     // this instance thinks the previous chunk count was.
     await this.deleteSnapshotChunks(roomId);
+    /*
+     * A room deleted with no socket open never runs handleSocketGone's
+     * "room emptied" cleanup, so a call left active in storage would
+     * otherwise survive the delete and get replayed to whoever connects to
+     * this id next -- a re-created room, or the same instance after
+     * hibernation.
+     */
+    await this.ctx.storage.delete(RoomDO.ACTIVE_CALL_KEY);
+    this.activeCall = null;
+    this.activeCallLoaded = false;
   }
 
   /** Rehydrates projection retry markers that survived a Durable Object eviction. */
