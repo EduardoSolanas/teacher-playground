@@ -1611,6 +1611,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         <div
           role="status"
           data-testid="whiteboard-clear-failed"
+          data-board-notice="true"
           className={BOARD_NOTICE_CLASS}
         >
           Couldn&rsquo;t clear this board. Check your connection and try again.
@@ -1620,6 +1621,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         <div
           role="status"
           data-testid="whiteboard-pdf-export-notice"
+          data-board-notice="true"
           className={BOARD_NOTICE_CLASS}
         >
           {pdfExporting ? 'Building the PDF…' : pdfExportError}
@@ -1636,6 +1638,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         <div
           role="status"
           data-testid="whiteboard-pdf-drop-hint"
+          data-board-notice="true"
           className={BOARD_NOTICE_CLASS}
         >
           Drop to add this PDF
@@ -1645,6 +1648,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         <div
           role="status"
           data-testid="whiteboard-pdf-import-notice"
+          data-board-notice="true"
           className={`${BOARD_NOTICE_CLASS} flex items-center gap-3`}
         >
           <span>{pdfStatus.kind === 'progress' ? pdfStatus.message : pdfStatus.text}</span>

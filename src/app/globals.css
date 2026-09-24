@@ -169,7 +169,24 @@ textarea {
    one's full-height `position: absolute; inset: 0` wrapper intercepted clicks
    meant for the desktop one's "Insert image" button. Keying off the same
    class Excalidraw itself flips lets this rule and Excalidraw's own mobile
-   layout agree on which mode the editor is in, at every width. */
+   layout agree on which mode the editor is in, at every width.
+
+   A second regression followed this one: a toolbar simply centred on the
+   board -- with the people panel narrowing it -- could still overlap the
+   room's own footer (zoom, undo, Guide/Clear) on one side, or the support
+   button's corner on the other, once the board was wide enough that a
+   centred toolbar reached back over them. Neither a window-centred nor a
+   board-centred toolbar clears both at every width on its own, so the
+   `left` (and `top`/`bottom`) below are only this rule's own fallback, for
+   the instant before ExcalidrawWrapper.tsx's measurement effect (a
+   ResizeObserver on its own root) has run once. That effect measures the
+   real geometry every time the board resizes and sets `left`/`top`/`bottom`
+   inline every time it recomputes -- centred when that is clear of every
+   obstacle, shifted between them when centring is not, or moved above the
+   canvas (Excalidraw's own top-of-board slot) when even shifting does not
+   fit -- which always wins over this rule without needing `!important`. See
+   `toolbarPlacement` (src/lib/whiteboard/toolbarPlacement.ts) for the
+   geometry itself. */
 .excalidraw:not(.excalidraw--mobile) .App-toolbar-container {
   /*
    * Fixed, not absolute. Its own ancestors collapse to zero height near the
@@ -177,12 +194,7 @@ textarea {
    * back where it started and clipped it under the room's bar. The viewport
    * is the only containing block that means what it says here.
    *
-   * `left` used to be Excalidraw's own inherited `50%`, which centred the
-   * toolbar on the *window* -- harmless while nothing docked on the right,
-   * but once the presence panel started reserving a strip of the board
-   * (RoomClient's roomCanvasRightClass), the window's centre was no longer
-   * the board's centre and the toolbar drifted toward, and partly behind,
-   * the panel. Centred on the board area instead, the same
+   * Centred on the board area, not the window, in the meantime: the same
    * --call-rail-w/--presence-w variables the canvas itself reserves space
    * with (set on the room shell, inherited down to here), each with a 0px
    * fallback so this still resolves to plain 50% when neither is open.

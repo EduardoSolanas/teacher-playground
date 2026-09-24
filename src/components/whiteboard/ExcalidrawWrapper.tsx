@@ -4,6 +4,7 @@ import { useCallback, useRef, useEffect, useMemo, useState, type ReactNode } fro
 import { withRenderableGeometry } from '@/lib/whiteboard/renderableElements';
 import { diffScene, shouldPublish, elementsToPublish } from '@/lib/whiteboard/scenePublish';
 import { livePointCount, strokeCommitIntervalMs } from '@/lib/whiteboard/strokeCadence';
+import { toolbarPlacement } from '@/lib/whiteboard/toolbarPlacement';
 // MUST stay above the Excalidraw import: it sets EXCALIDRAW_ASSET_PATH, and ES
 // module imports are evaluated in order, before this module's own body runs.
 import '@/lib/whiteboard/excalidrawAssetPath';
@@ -307,6 +308,8 @@ export default function ExcalidrawWrapper({
   onDocumentFile,
 }: ExcalidrawWrapperProps) {
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
+  /** The root of this editor's own DOM, for the toolbar-placement measurement below. */
+  const boardRootRef = useRef<HTMLDivElement | null>(null);
   const [isClient, setIsClient] = useState(false);
   const [apiReady, setApiReady] = useState(false);
   const isPointerDownRef = useRef(false);
@@ -592,6 +595,178 @@ export default function ExcalidrawWrapper({
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
+
+  /*
+   * The constant strip the support button keeps clear at the board's own
+   * right edge, whatever is docked (SupportButton.tsx, RoomClient.tsx): the
+   * button sits at `right: max(0.75rem, safe-area)` normally, or that same
+   * 0.75rem plus exactly the width the canvas itself reserves for the
+   * panel/rail (roomCanvasRightClass) while either is docked. Since the
+   * canvas's own right edge steps in by that same reserved width, the
+   * button's distance from the *board's* right edge -- 0.75rem plus its own
+   * ~2.25rem, rounded up for a border -- is the same constant in every one
+   * of those states, by construction. Reserving it here as a constant, not
+   * a measurement, sidesteps the button living in a different component
+   * (RoomClient.tsx, a sibling of this one) and its own CSS transition.
+   */
+  const SUPPORT_BUTTON_CLEARANCE_PX = 56;
+
+  /**
+   * The bottom toolbar's placement (globals.css's `.App-toolbar-container`
+   * rule, regression from 90e7a6b): centred on the board, shifted clear of
+   * the room's own footer (zoom, undo, and -- for the owner -- Guide class
+   * / Clear board) and the support button's reserved strip when centring
+   * would overlap either, or moved above the canvas entirely -- Excalidraw's
+   * own top-of-board slot, computed the same way -- when nothing on the
+   * bottom row clears both at once. See `toolbarPlacement`
+   * (src/lib/whiteboard/toolbarPlacement.ts) for the geometry itself; this
+   * only measures and applies it, setting `top`/`bottom`/`left` inline every
+   * time (which always wins over globals.css's rule, no `!important`
+   * needed).
+   *
+   * Measured DOM, not the --call-rail-w/--presence-w calc the board notice
+   * uses (BOARD_NOTICE_CLASS, RoomClient.tsx): the toolbar's own width and
+   * the footer's own width (an owner's Guide+Clear widen it; a student's
+   * does not) are real rendered geometry, not values a formula can assume.
+   *
+   * A `ResizeObserver` on this editor's own root re-fires whenever it is
+   * resized -- including by the people panel or the call rail docking,
+   * since both narrow this element through `roomCanvasRightClass`
+   * (RoomClient.tsx) -- and every obstacle rect is re-read live each time,
+   * so nothing needs its own separate observer. Excalidraw mounts its own
+   * toolbar DOM an instant after this component's first render, so the
+   * initial placement is applied on the first animation frame it exists,
+   * bounded rather than polled forever.
+   */
+  useEffect(() => {
+    const root = boardRootRef.current;
+    if (!root || typeof ResizeObserver === 'undefined') return undefined;
+    let cancelled = false;
+
+    const recompute = () => {
+      const excalidrawRoot = root.querySelector<HTMLElement>('.excalidraw');
+      const toolbarEl = root.querySelector<HTMLElement>('.App-toolbar-container');
+      if (!excalidrawRoot || !toolbarEl) return;
+
+      // Below Excalidraw's own mobile threshold it owns the bottom edge
+      // with its own toolbar (globals.css's UX-V8 comment); this placement
+      // does not apply there, and any earlier override has to be undone.
+      if (excalidrawRoot.classList.contains('excalidraw--mobile')) {
+        toolbarEl.style.removeProperty('left');
+        toolbarEl.style.removeProperty('top');
+        toolbarEl.style.removeProperty('bottom');
+        toolbarEl.style.removeProperty('transform');
+        return;
+      }
+
+      const boardRect = root.getBoundingClientRect();
+      const toolbarRect = toolbarEl.getBoundingClientRect();
+      const obstacles: { x: number; width: number }[] = [];
+
+      const footerLeft = root.querySelector<HTMLElement>('.layer-ui__wrapper__footer-left');
+      if (footerLeft) {
+        const rect = footerLeft.getBoundingClientRect();
+        obstacles.push({ x: rect.left, width: rect.width });
+      }
+      const roomFooter = root.querySelector<HTMLElement>('.tp-board-footer');
+      if (roomFooter) {
+        const rect = roomFooter.getBoundingClientRect();
+        obstacles.push({ x: rect.left, width: rect.width });
+      }
+      obstacles.push({
+        x: boardRect.right - SUPPORT_BUTTON_CLEARANCE_PX,
+        width: SUPPORT_BUTTON_CLEARANCE_PX,
+      });
+
+      const placement = toolbarPlacement({
+        board: { x: boardRect.left, width: boardRect.width },
+        toolbarWidth: toolbarRect.width,
+        obstacles,
+      });
+
+      /*
+       * `native` does not mean "let Excalidraw's own stylesheet decide" --
+       * tried that first, and in practice Excalidraw's own default still
+       * centres the toolbar on this same narrowed container, reproducing
+       * the very overlap this mode exists to avoid, rather than reliably
+       * moving it to the top the way its class name (`FixedSideContainer_
+       * side_top`) suggests. Explicit top-of-board placement, computed the
+       * same way the bottom placement is, is the only way to be sure of it.
+       *
+       * The board's own top edge is not always clear either: the PDF
+       * import/export status line, the drop hint and the "couldn't clear"
+       * notice (RoomClient.tsx, all `data-board-notice`) sit `top-24` on
+       * top of the board, and a toolbar landing where this mode used to put
+       * it -- a fixed 16px below the board's own top edge -- could land
+       * right on top of one (tests/e2e/pdf-import.spec.ts's 768px status-
+       * line test). Queried globally, not through `root`: RoomClient.tsx
+       * renders these as the canvas's own siblings, not its descendants.
+       */
+      if (placement.mode === 'native') {
+        let nativeTop = boardRect.top + 16;
+        const notice = document.querySelector<HTMLElement>('[data-board-notice]');
+        if (notice) {
+          const noticeRect = notice.getBoundingClientRect();
+          if (noticeRect.width > 0 && noticeRect.height > 0) {
+            nativeTop = Math.max(nativeTop, noticeRect.bottom + 12);
+          }
+        }
+        toolbarEl.style.left = `${placement.left}px`;
+        toolbarEl.style.top = `${nativeTop}px`;
+        toolbarEl.style.bottom = 'auto';
+        toolbarEl.style.transform = 'none';
+        return;
+      }
+      toolbarEl.style.left = `${placement.left}px`;
+      toolbarEl.style.top = 'auto';
+      toolbarEl.style.bottom = '1rem';
+      toolbarEl.style.transform = 'none';
+    };
+
+    const observer = new ResizeObserver(recompute);
+    observer.observe(root);
+
+    /*
+     * A board notice mounting or unmounting (RoomClient.tsx) does not
+     * resize `root` -- it is an overlay, not part of this element's own
+     * box -- so the ResizeObserver above never re-fires for it on its own,
+     * and the very first placement (computed before any notice exists)
+     * would stick even after one appeared. `childList` on the document
+     * catches that mount/unmount directly; not `subtree` on `root` alone,
+     * because these notices are the canvas's siblings (RoomClient.tsx),
+     * not its descendants. Structural mutations only (no `attributes`), so
+     * a collaborator's cursor moving -- a style/transform change, not a
+     * node added or removed -- does not thrash this on every pointer move.
+     */
+    const mutationObserver = new MutationObserver(recompute);
+    mutationObserver.observe(document.body, { childList: true, subtree: true });
+
+    let frame = 0;
+    const waitForToolbar = () => {
+      if (cancelled) return;
+      if (root.querySelector('.App-toolbar-container')) {
+        recompute();
+        return;
+      }
+      frame += 1;
+      if (frame > 60) return;
+      requestAnimationFrame(waitForToolbar);
+    };
+    waitForToolbar();
+
+    return () => {
+      cancelled = true;
+      observer.disconnect();
+      mutationObserver.disconnect();
+    };
+    /*
+     * Depends on `isClient`, not `[]`: this component renders a ref-less
+     * placeholder div until `isClient` flips true (below), so a mount-only
+     * effect would run once against that placeholder -- find
+     * `boardRootRef.current` null, and never run again once the real
+     * editor (and its ref) exists.
+     */
+  }, [isClient]);
 
   /**
    * The page state this editor is rendering with, for the same reason
@@ -2117,6 +2292,7 @@ export default function ExcalidrawWrapper({
 
   return (
     <div
+      ref={boardRootRef}
       className="w-full h-full min-h-0"
       data-whiteboard-role={isLocalHost ? 'host' : 'peer'}
     >
