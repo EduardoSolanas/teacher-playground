@@ -154,23 +154,45 @@ textarea {
    thumb's reach from the zoom and the board controls, which is where every
    other control in this room already lives.
    Mobile is left alone: Excalidraw puts its own toolbar at the bottom there
-   already, and it is a different component. */
-@media (min-width: 640px) {
-  .excalidraw .App-toolbar-container {
-    /*
-     * Fixed, not absolute. Its own ancestors collapse to zero height near the
-     * top of the canvas, so `bottom` measured against them put the toolbar
-     * back where it started and clipped it under the room's bar. The viewport
-     * is the only containing block that means what it says here.
-     *
-     * `left: 50%` is Excalidraw's own; the translate is what centres it.
-     */
-    position: fixed;
-    top: auto;
-    bottom: 1rem;
-    transform: translateX(-50%);
-    z-index: 4;
-  }
+   already, and it is a different component.
+
+   Gated on `.excalidraw:not(.excalidraw--mobile)` -- Excalidraw's own class,
+   toggled from its own measured editor-container width against its own
+   MQ_MAX_WIDTH_PORTRAIT (730px, `@teacher-playground/excalidraw`'s
+   constants.ts) -- rather than a window `min-width` media query. Docking the
+   presence panel narrows the editor container itself (RoomClient's
+   roomCanvasRightClass), and at 768px window width with the panel open that
+   container is already below 730px: a `min-width: 640px` window query still
+   matched and kept forcing this fixed/centred desktop toolbar on top of
+   Excalidraw's own mobile bottom-bar markup, which it renders once its
+   container drops under the same threshold -- two toolbars, and the mobile
+   one's full-height `position: absolute; inset: 0` wrapper intercepted clicks
+   meant for the desktop one's "Insert image" button. Keying off the same
+   class Excalidraw itself flips lets this rule and Excalidraw's own mobile
+   layout agree on which mode the editor is in, at every width. */
+.excalidraw:not(.excalidraw--mobile) .App-toolbar-container {
+  /*
+   * Fixed, not absolute. Its own ancestors collapse to zero height near the
+   * top of the canvas, so `bottom` measured against them put the toolbar
+   * back where it started and clipped it under the room's bar. The viewport
+   * is the only containing block that means what it says here.
+   *
+   * `left` used to be Excalidraw's own inherited `50%`, which centred the
+   * toolbar on the *window* -- harmless while nothing docked on the right,
+   * but once the presence panel started reserving a strip of the board
+   * (RoomClient's roomCanvasRightClass), the window's centre was no longer
+   * the board's centre and the toolbar drifted toward, and partly behind,
+   * the panel. Centred on the board area instead, the same
+   * --call-rail-w/--presence-w variables the canvas itself reserves space
+   * with (set on the room shell, inherited down to here), each with a 0px
+   * fallback so this still resolves to plain 50% when neither is open.
+   */
+  left: calc(50% - var(--call-rail-w, 0px) / 2 - var(--presence-w, 0px) / 2);
+  transform: translateX(-50%);
+  position: fixed;
+  top: auto;
+  bottom: 1rem;
+  z-index: 4;
 }
 
 /* UX-V5: below ~900px there is not enough width for the fixed toolbar island

@@ -7,6 +7,18 @@ import { RaisedHandIcon } from './RaisedHandCue';
 import { DEFAULT_MAX_USERS } from '@/lib/plan/limits';
 import { contrastTextOn } from '@/lib/whiteboard/userColor';
 
+/**
+ * Width of the docked presence/roster panel, in one place.
+ *
+ * The panel itself still spells `13.75rem` directly in its own class (a
+ * static Tailwind arbitrary value, not an interpolated one -- see
+ * `callRail.ts`'s note on why that distinction matters for the purge scan).
+ * This export exists so the room shell can reserve the same width for the
+ * board area and for centring the board's own notices, without a second,
+ * independently-drifting copy of the number.
+ */
+export const PRESENCE_PANEL_WIDTH = '13.75rem';
+
 function accountNameDisc(accountId: string | null | undefined): string | null {
   if (!accountId) return null;
   const hex = accountId.replace(/[^0-9a-fA-F]/g, '');

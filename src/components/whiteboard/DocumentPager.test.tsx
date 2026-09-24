@@ -1,6 +1,6 @@
 ﻿import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import DocumentPager from './DocumentPager';
+import DocumentPager, { PAGER_OBSTACLE_SELECTOR } from './DocumentPager';
 
 /*
  * spec/PAGED_DOCUMENTS_SPEC.md §6.3: owner gets Previous / "Page n of m" /
@@ -371,5 +371,14 @@ describe('DocumentPager owner controls: Move and Remove', () => {
     const removeInMenu = screen.getByRole('menuitem', { name: 'Remove document' });
     fireEvent.click(removeInMenu);
     expect(onRemove).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats the docked presence panel as an obstacle, belt-and-braces alongside the container narrowing that keeps them apart', () => {
+    // The board area narrowing (RoomClient's roomCanvasRightClass) is the
+    // real fix -- Excalidraw's own toolbar, footer and this pager all lay
+    // out inside the remaining width. This selector is the second line of
+    // defence: even if a future obstacle escapes the narrowed container, the
+    // pager still refuses to sit under the roster.
+    expect(PAGER_OBSTACLE_SELECTOR).toContain('[data-testid="whiteboard-presence-panel"]');
   });
 });
