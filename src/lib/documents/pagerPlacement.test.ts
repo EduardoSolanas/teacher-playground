@@ -191,6 +191,70 @@ describe('pagerPlacement', () => {
     expect(placement!.y).toBe(730 - 8 - PAGER.height);
   });
 
+  it('moves above an obstacle that overlaps the anchored (under-the-page) position', () => {
+    // Base anchored case: doc bottom on screen, base y = 100+300+8 = 408,
+    // x centred at 400 (400..600), pager spans y 408..452.
+    const documentRect = { x: 300, y: 100, width: 400, height: 300 };
+    const obstacles = [
+      { x: 350, y: 440, width: 300, height: 60 }, // spans 440..500, overlaps 408..452
+    ];
+    const placement = pagerPlacement({ documentRect, viewport: VIEWPORT, pagerSize: PAGER, obstacles });
+    expect(placement).not.toBeNull();
+    expect(placement!.x).toBe(400); // horizontal position is unchanged
+    expect(placement!.y).toBe(440 - 8 - PAGER.height);
+  });
+
+  it('does not move the anchored position when an obstacle only touches its bottom edge', () => {
+    const documentRect = { x: 300, y: 100, width: 400, height: 300 }; // base y 408..452
+    const obstacles = [
+      { x: 350, y: 452, width: 300, height: 60 }, // top edge exactly at the candidate's bottom edge
+    ];
+    const placement = pagerPlacement({ documentRect, viewport: VIEWPORT, pagerSize: PAGER, obstacles });
+    expect(placement).not.toBeNull();
+    expect(placement!.y).toBe(408);
+  });
+
+  it('hides the anchored pager when moving above the overlapping obstacle would push it off the top of the viewport', () => {
+    const documentRect = { x: 300, y: 10, width: 400, height: 20 }; // base y = 10+20+8 = 38, spans 38..82
+    const obstacles = [
+      { x: 350, y: 50, width: 300, height: 60 }, // overlaps 38..82; ceiling 50, 50-8-44 = -2 < 0
+    ];
+    expect(pagerPlacement({ documentRect, viewport: VIEWPORT, pagerSize: PAGER, obstacles })).toBeNull();
+  });
+
+  it('moves above the highest (smallest y) of several obstacles overlapping the anchored position', () => {
+    const documentRect = { x: 300, y: 100, width: 400, height: 300 }; // base y 408..452
+    const obstacles = [
+      { x: 350, y: 445, width: 300, height: 20 }, // spans 445..465, overlaps 408..452
+      { x: 350, y: 420, width: 300, height: 20 }, // spans 420..440, higher up (smaller y), overlaps too
+    ];
+    const placement = pagerPlacement({ documentRect, viewport: VIEWPORT, pagerSize: PAGER, obstacles });
+    expect(placement).not.toBeNull();
+    expect(placement!.y).toBe(420 - 8 - PAGER.height);
+  });
+
+  it('places the anchored pager exactly at the top of the viewport rather than hiding it, when the repositioned box just reaches y=0', () => {
+    const documentRect = { x: 300, y: 1, width: 400, height: 1 }; // base y = 1+1+8 = 10, spans 10..54
+    const obstacles = [
+      { x: 350, y: 52, width: 300, height: 60 }, // overlaps 10..54; ceiling 52, 52-8-44 = 0 exactly
+    ];
+    const placement = pagerPlacement({ documentRect, viewport: VIEWPORT, pagerSize: PAGER, obstacles });
+    expect(placement).not.toBeNull();
+    expect(placement!.y).toBe(0);
+  });
+
+  it('hides the anchored pager when the repositioned box would land on another obstacle (e.g. the toolbar)', () => {
+    const documentRect = { x: 300, y: 100, width: 400, height: 300 }; // base y 408, spans 408..452
+    const obstacles = [
+      { x: 350, y: 440, width: 300, height: 60 }, // overlaps the base candidate (408..452); ceiling 440
+      // Repositioned candidate would be 440-8-44=388..432 -- this second
+      // obstacle (370..400) does not overlap the base candidate (408..452,
+      // since it ends at 400) but does overlap the repositioned one.
+      { x: 0, y: 370, width: 1000, height: 30 },
+    ];
+    expect(pagerPlacement({ documentRect, viewport: VIEWPORT, pagerSize: PAGER, obstacles })).toBeNull();
+  });
+
   it('uses a custom gutter and gap when given', () => {
     const documentRect = { x: 900, y: 100, width: 400, height: 200 };
     const placement = pagerPlacement({

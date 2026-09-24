@@ -1,7 +1,7 @@
 import { test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
 import { makePdf } from './pdfFixture';
-import { dropPdfAt } from './pdfDrop';
+import { dropPdfAt, dropPdfOnBoard } from './pdfDrop';
 import {
   appendElement,
   approveFirstWaitingPeer,
@@ -628,6 +628,70 @@ test.describe('Paged documents pager', () => {
     await setBoardView(page, { scrollY: -rect.y - 100000 });
     await expect(pager).not.toBeVisible();
   });
+
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 768, height: 1024 },
+    { width: 390, height: 844 },
+  ]) {
+    test(`the pager moves clear of a board notice that appears after it was placed, and returns once the notice is gone, at ${viewport.width}px`, async ({ page }) => {
+      test.setTimeout(120_000);
+      await page.setViewportSize(viewport);
+      await createRoomWithMaxUsers(page, `PagerNotice${viewport.width}`, 2);
+      await waitForExcalidrawApi(page);
+      const { importId, rect } = await importStackedPdf(page);
+
+      const pager = pagerLocator(page, importId);
+      await expect(pager).toBeVisible();
+
+      /*
+       * Board notices sit near the TOP of the viewport from 640px up
+       * (`sm:top-24`) and near the BOTTOM on a phone (`bottom-24`,
+       * RoomClient.tsx's `BOARD_NOTICE_CLASS`). A document dropped at the
+       * board's centre already anchors the pager into the bottom band at
+       * 390px, reproducing the real scenario this fix covers -- but at the
+       * wider breakpoints the pager needs panning so its anchored position
+       * sits near the top band instead, where a notice would appear.
+       */
+      if (viewport.width >= 640) {
+        // sceneCoordsToViewportCoords adds appState.offsetTop on top of
+        // scroll/zoom (the room's own chrome above the canvas), so the pan
+        // has to account for it directly rather than assuming the canvas
+        // starts at viewport y=0.
+        const offsetTop = await page.evaluate(
+          () => (window as any).__debugExcalidrawApi.getAppState().offsetTop as number,
+        );
+        await setBoardView(page, { scrollY: 100 - offsetTop - rect.y - rect.height, zoom: 1 });
+        await expect.poll(async () => pager.boundingBox()).not.toBeNull();
+      }
+
+      const before = await pager.boundingBox();
+      if (!before) throw new Error('pager has no box before the notice');
+
+      // A second, 50-page PDF renders slowly enough that its "Adding page…"
+      // status line stays up for the assertions below.
+      await dropPdfOnBoard(page, 'long.pdf', makePdf(50));
+      const notice = page.getByTestId('whiteboard-pdf-import-notice');
+      await expect(notice).toBeVisible();
+      await expect(notice).toContainText('Adding page');
+
+      await expect.poll(async () => {
+        const pagerBox = await pager.boundingBox();
+        const noticeBox = await notice.boundingBox();
+        if (!pagerBox || !noticeBox) return null;
+        return boxesOverlap(pagerBox, noticeBox);
+      }, { timeout: 15000 }).toBe(false);
+
+      await page.getByTestId('pdf-import-cancel').click();
+      await expect(notice).not.toBeVisible();
+
+      // Once the notice is gone, the pager returns to (about) where it was.
+      await expect.poll(async () => {
+        const box = await pager.boundingBox();
+        return box ? { x: Math.round(box.x), y: Math.round(box.y) } : null;
+      }, { timeout: 15000 }).toEqual({ x: Math.round(before.x), y: Math.round(before.y) });
+    });
+  }
 });
 
 /*

@@ -75,7 +75,24 @@ export function pagerPlacement(input: PagerPlacementInput): Rect | null {
 
   let y: number;
   if (documentBottomOnScreen) {
-    y = doc.y + doc.height + gap;
+    const baseY = doc.y + doc.height + gap;
+    const candidate: Rect = { x, y: baseY, width: pagerSize.width, height: pagerSize.height };
+    const overlapping = obstacles.filter((obstacle) => overlaps(candidate, obstacle));
+    if (overlapping.length === 0) {
+      y = baseY;
+    } else {
+      // Move to sit just above the highest (smallest y) overlapping
+      // obstacle, with the same gap used elsewhere.
+      const ceiling = Math.min(...overlapping.map((obstacle) => obstacle.y));
+      const movedY = ceiling - gap - pagerSize.height;
+      const moved: Rect = { x, y: movedY, width: pagerSize.width, height: pagerSize.height };
+      // Pushed off the top of the viewport, or the new spot itself lands on
+      // another obstacle (e.g. the toolbar): hide rather than overlap.
+      if (movedY < 0 || obstacles.some((obstacle) => overlaps(moved, obstacle))) {
+        return null;
+      }
+      y = movedY;
+    }
   } else {
     const pagerSpan = { x, width: pagerSize.width };
     let ceiling = viewport.height;

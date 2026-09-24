@@ -1,6 +1,6 @@
 'use client';
 
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { pagerPlacement, shouldCollapseRemove, type Rect } from '@/lib/documents/pagerPlacement';
 import { dragDeltaToScene, nudgeDeltaForKey } from '@/lib/documents/pagedDocuments';
 
@@ -73,6 +73,29 @@ export default function DocumentPager({
   /** The grip's own pointer position, while a drag is in progress; null otherwise. */
   const dragPointerRef = useRef<{ x: number; y: number } | null>(null);
   const [overflowOpen, setOverflowOpen] = useState(false);
+  /**
+   * Bumped whenever a potential obstacle (a board notice, most notably --
+   * `role="status"`, `RoomClient.tsx`'s `BOARD_NOTICE_CLASS`) is added,
+   * removed or changes size in the DOM. Placement is computed at layout
+   * time from a DOM query (`readObstacles`), not from a prop, so nothing
+   * else here re-renders when a notice appears or disappears after the
+   * pager was already placed -- this is the pager's own trigger to
+   * recompute when that happens.
+   */
+  const [obstacleTick, setObstacleTick] = useState(0);
+
+  useEffect(() => {
+    if (typeof MutationObserver === 'undefined') return;
+    const observer = new MutationObserver(() => setObstacleTick((tick) => tick + 1));
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style'],
+      characterData: true,
+    });
+    return () => observer.disconnect();
+  }, []);
 
   function handleGripPointerDown(event: React.PointerEvent<HTMLButtonElement>) {
     // Capture is a convenience -- it keeps later pointermove events routed
@@ -125,8 +148,10 @@ export default function DocumentPager({
     setPlacement(pagerPlacement({ documentRect, viewport: viewportSize, pagerSize, obstacles }));
     // index/pageCount/isOwner change the pager's own content, and so its
     // measured size, so they belong in the recompute even though they are
-    // not read directly here.
-  }, [documentRect, viewportSize, index, pageCount, isOwner, overflowOpen]);
+    // not read directly here. obstacleTick is not read directly either --
+    // it exists purely to force this recompute when a notice elsewhere in
+    // the DOM appears, disappears or changes size.
+  }, [documentRect, viewportSize, index, pageCount, isOwner, overflowOpen, obstacleTick]);
 
   if (!documentRect) return null;
 
