@@ -1415,6 +1415,9 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
               onRename={handleRenameRoom}
               onOpenLibrary={handleOpenLibrary}
               onDownloadPdf={() => { void handleDownloadPdf(); }}
+              isGuiding={isGuiding}
+              onToggleGuide={handleToggleGuide}
+              onClearBoard={() => setClearModalOpen(true)}
             />
             {shouldShowStartCall({
               isHost: isLocalHost,

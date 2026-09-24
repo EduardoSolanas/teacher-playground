@@ -16,6 +16,9 @@ function make(overrides: Partial<Parameters<typeof RoomTitleMenu>[0]> = {}) {
     onOpenLibrary: vi.fn(),
     onDownloadPdf: () => {},
     onSeatsChanged: vi.fn(),
+    isGuiding: false,
+    onToggleGuide: vi.fn(),
+    onClearBoard: vi.fn(),
     // A real async function returning real Response objects, the same seam the
     // room list uses; no test doubles.
     request: (async () => new Response(null, { status: 500 })) as AjaxFetch,
@@ -109,6 +112,54 @@ describe('RoomTitleMenu', () => {
 
     expect(downloaded).toBe(1);
     expect(screen.getByTestId('room-title-trigger').getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('offers Guide class and Clear board on the phone route, owner-only, below sm:', () => {
+    // Below 640px the board's own footer is hidden (Excalidraw owns the bottom
+    // edge there), so the title menu is the only reachable home for these two
+    // owner controls on a phone. They stay wrapped in `sm:hidden` because the
+    // footer already carries them from sm: up -- one home per width, not two.
+    let guided = 0;
+    let cleared = 0;
+    render(
+      <RoomTitleMenu
+        {...make({
+          onToggleGuide: () => { guided += 1; },
+          onClearBoard: () => { cleared += 1; },
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('room-title-trigger'));
+
+    const guideItem = screen.getByTestId('room-menu-guide');
+    const clearItem = screen.getByTestId('room-menu-clear');
+    expect(guideItem.textContent).toBe('Guide class');
+    expect(clearItem.textContent).toBe('Clear board…');
+    expect(guideItem.className).toContain('sm:hidden');
+    expect(clearItem.className).toContain('sm:hidden');
+
+    fireEvent.click(guideItem);
+    expect(guided).toBe(1);
+
+    fireEvent.click(screen.getByTestId('room-title-trigger'));
+    fireEvent.click(screen.getByTestId('room-menu-clear'));
+    expect(cleared).toBe(1);
+  });
+
+  it('flips the Guide class label to Stop guiding while guiding', () => {
+    render(<RoomTitleMenu {...make({ isGuiding: true })} />);
+    fireEvent.click(screen.getByTestId('room-title-trigger'));
+    expect(screen.getByTestId('room-menu-guide').textContent).toBe('Stop guiding');
+  });
+
+  it('carries neither Guide class nor Clear board for anybody who may not manage the room', () => {
+    // canManage is the same gate the trigger itself uses, so a student never
+    // sees a title menu at all -- but the phone items are asserted directly
+    // too, since that is exactly the pair a footer-based defect would leave
+    // unreachable.
+    render(<RoomTitleMenu {...make({ canManage: false })} />);
+    expect(screen.queryByTestId('room-menu-guide')).toBeNull();
+    expect(screen.queryByTestId('room-menu-clear')).toBeNull();
   });
 
   it('gives every menu item the 14px inline icon the menu contract calls for (UX-B19)', () => {

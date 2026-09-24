@@ -187,8 +187,10 @@ textarea {
 /* UX-V8: the phone control model, stated rather than implied. Below sm: the
    fork owns the bottom edge with its own toolbar, the board is pinch-zoom
    only, and the room's Clear/Guide footer is omitted rather than drawn under
-   the island where it cannot be reached. Clear is owner-only and remains on
-   the desktop layout. */
+   the island where it cannot be reached. Both stay owner-only and reachable
+   on a phone through the room title menu (RoomTitleMenu's "Guide class" /
+   "Stop guiding" and "Clear board…" items, sm:hidden so the footer keeps
+   them from sm: up instead of showing both at once). */
 @media (max-width: 639px) {
   .excalidraw .tp-board-footer {
     display: none;
