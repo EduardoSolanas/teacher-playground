@@ -97,7 +97,7 @@ export default function SupportButton({
         aria-haspopup="dialog"
         aria-expanded={open}
         title="Contact support"
-        className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-slate-700 bg-slate-900 text-slate-300 shadow-lg shadow-slate-950/30 transition-colors hover:bg-slate-800 hover:text-slate-100"
+        className="flex h-11 w-11 cursor-pointer items-center justify-center rounded-full border border-slate-700 bg-slate-900 text-slate-300 shadow-lg shadow-slate-950/30 transition-colors hover:bg-slate-800 hover:text-slate-100 sm:h-9 sm:w-9"
       >
         <svg
           aria-hidden="true"
@@ -134,7 +134,7 @@ export default function SupportButton({
                 triggerRef.current?.focus();
               }}
               aria-label="Close"
-              className="-mt-1 inline-flex cursor-pointer items-center border-none bg-transparent px-1 text-slate-400 hover:text-slate-100"
+              className="-mr-2 -mt-2 inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center border-none bg-transparent px-1 text-slate-400 hover:text-slate-100 sm:m-0 sm:min-h-0 sm:min-w-0"
             >
               <svg
                 aria-hidden="true"

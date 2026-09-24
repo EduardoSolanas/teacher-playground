@@ -326,7 +326,7 @@ export default function RoomTitleMenu({
           setSeatsOutcome(null);
           setOpen(true);
         }}
-        className="flex min-w-0 items-center gap-1 rounded-md px-2 py-1 text-[0.8125rem] font-medium text-slate-200 transition-colors hover:bg-slate-700"
+        className="flex min-h-11 min-w-0 items-center gap-1 rounded-md px-2 py-1 text-[0.8125rem] font-medium text-slate-200 transition-colors hover:bg-slate-700 sm:min-h-0"
       >
         {label}
         {/* Without this the title is a word, and a word is not a control. */}

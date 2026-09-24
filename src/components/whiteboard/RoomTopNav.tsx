@@ -63,7 +63,7 @@ export default function RoomTopNav({
           showDisplayName={false}
           plan={plan}
           company={company}
-          triggerClassName="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-600 bg-slate-800 text-sm font-semibold text-slate-100 transition-colors hover:border-slate-400 hover:bg-slate-700 active:bg-slate-600"
+          triggerClassName="inline-flex h-11 w-11 items-center justify-center rounded-full border border-slate-600 bg-slate-800 text-sm font-semibold text-slate-100 transition-colors hover:border-slate-400 hover:bg-slate-700 active:bg-slate-600 sm:h-9 sm:w-9"
         />
       </div>
     </nav>
