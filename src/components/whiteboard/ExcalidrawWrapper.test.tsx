@@ -45,6 +45,7 @@ function createProps(): WrapperProps {
     guideMessage: null,
     isGuiding: false,
     onGuideViewport: () => {},
+    pageState: {},
   };
 }
 
@@ -203,6 +204,193 @@ describe('ExcalidrawWrapper rendering', () => {
     const image = elements.find((element) => element.fileId === 'page-1')!;
     expect(image.x).toBe(5000 - 200 / 2);
     expect(image.y).toBe(3000 - 100 / 2);
+  });
+
+  it('stacks every page of an import on the first page\'s rectangle, stamped stacked with its pageCount', async () => {
+    setFetchHandler(() => new Response(null, { status: 404 }));
+    const onBoardActions = vi.fn();
+
+    const { api } = await renderWrapper({ onBoardActions });
+    const actions = onBoardActions.mock.calls.at(-1)?.[0];
+
+    await act(async () => {
+      actions.insertPages(
+        [
+          { id: 'page-a', mimeType: 'image/webp', dataURL: 'data:image/webp;base64,aGVsbG8=', width: 200, height: 100 },
+          // A page whose PDF size differs from the first is fitted inside the
+          // first page's rectangle rather than sharing its own size (spec §3.1).
+          { id: 'page-b', mimeType: 'image/webp', dataURL: 'data:image/webp;base64,aGVsbG8=', width: 100, height: 100 },
+          { id: 'page-c', mimeType: 'image/webp', dataURL: 'data:image/webp;base64,aGVsbG8=', width: 200, height: 100 },
+        ],
+        { x: 1000, y: 1000 },
+      );
+    });
+
+    await waitFor(() => {
+      const elements = api.getSceneElements() as unknown as { fileId?: string }[];
+      expect(elements.filter((element) => ['page-a', 'page-b', 'page-c'].includes(element.fileId ?? '')).length).toBe(3);
+    });
+
+    const elements = api.getSceneElements() as unknown as {
+      fileId?: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      customData?: { pdfPage?: { importId: string; index: number; pageCount: number; stacked: boolean } };
+    }[];
+    const byId = (id: string) => elements.find((element) => element.fileId === id)!;
+    const a = byId('page-a');
+    const b = byId('page-b');
+    const c = byId('page-c');
+
+    // Every page carries the first page's rectangle, whatever its own size --
+    // b is a square fitted inside a's 2:1 rectangle, not stretched to match it.
+    expect(a.x).toBe(1000 - 100);
+    expect(a.y).toBe(1000 - 50);
+    expect(a.width).toBe(200);
+    expect(a.height).toBe(100);
+    expect(c.x).toBe(a.x);
+    expect(c.y).toBe(a.y);
+    expect(c.width).toBe(200);
+    expect(c.height).toBe(100);
+    expect(b.width).toBe(100);
+    expect(b.height).toBe(100);
+    expect(b.x).toBe(a.x + (200 - 100) / 2);
+    expect(b.y).toBe(a.y);
+
+    const importId = a.customData?.pdfPage?.importId;
+    expect(typeof importId).toBe('string');
+    expect(a.customData?.pdfPage).toEqual({ importId, index: 0, pageCount: 3, stacked: true });
+    expect(b.customData?.pdfPage).toEqual({ importId, index: 1, pageCount: 3, stacked: true });
+    expect(c.customData?.pdfPage).toEqual({ importId, index: 2, pageCount: 3, stacked: true });
+  });
+
+  it('stamps a finished element overlapping the showing page with onPage, but not while it is still being drawn', async () => {
+    setFetchHandler(() => new Response(null, { status: 404 }));
+    const onBoardActions = vi.fn();
+    const { api } = await renderWrapper({ onBoardActions });
+    const actions = onBoardActions.mock.calls.at(-1)?.[0];
+
+    await act(async () => {
+      actions.insertPages(
+        [{ id: 'page-1', mimeType: 'image/webp', dataURL: 'data:image/webp;base64,aGVsbG8=', width: 200, height: 100 }],
+        { x: 1000, y: 1000 },
+      );
+    });
+    await waitFor(() => {
+      expect((api.getSceneElements() as unknown as { fileId?: string }[]).some((e) => e.fileId === 'page-1')).toBe(true);
+    });
+    const pageElement = (api.getSceneElements() as unknown as {
+      fileId?: string; x: number; y: number; customData?: { pdfPage?: { importId: string } };
+    }[]).find((e) => e.fileId === 'page-1')!;
+    const importId = pageElement.customData!.pdfPage!.importId;
+
+    const { convertToExcalidrawElements } = await loadExcalidrawPackage();
+    const [stroke] = convertToExcalidrawElements(
+      [{
+        type: 'rectangle' as const,
+        id: 'stroke-over-page',
+        x: pageElement.x + 10,
+        y: pageElement.y + 10,
+        width: 20,
+        height: 20,
+      }],
+      { regenerateIds: false },
+    );
+
+    // Still being drawn: appState.newElement refers to it, so it is not
+    // stamped yet (spec §3.2).
+    await act(async () => {
+      api.updateScene({
+        elements: [...api.getSceneElementsIncludingDeleted(), stroke],
+        appState: { newElement: stroke as never },
+      });
+    });
+    await waitFor(() => {
+      expect((api.getSceneElements() as unknown as { id: string }[]).some((e) => e.id === 'stroke-over-page')).toBe(true);
+    });
+    expect(
+      (api.getSceneElements() as unknown as { id: string; customData?: { onPage?: unknown } }[])
+        .find((e) => e.id === 'stroke-over-page')?.customData?.onPage,
+    ).toBeUndefined();
+
+    // Finished: appState no longer names it as the element being drawn.
+    await act(async () => {
+      api.updateScene({ appState: { newElement: null } });
+    });
+
+    await waitFor(() => {
+      const found = (api.getSceneElements() as unknown as {
+        id: string; customData?: { onPage?: { importId: string; index: number } };
+      }[]).find((e) => e.id === 'stroke-over-page');
+      expect(found?.customData?.onPage).toEqual({ importId, index: 0 });
+    });
+  });
+
+  it('does not re-stamp an already-stamped annotation restored from the initial shared scene, even when pageState has not replayed yet', async () => {
+    // Reproduces a late joiner seeing an annotation's onPage index flip to 0:
+    // the initial scene (3 stacked pages plus an annotation already stamped
+    // for page index 1) settles before this browser's own pageState prop has
+    // caught up with the page frame the server replays separately (spec
+    // §5.2) -- if stamping ran on that restore, it would see pageState={}
+    // (default index 0) and, if it also failed to recognise the annotation
+    // as already stamped, overwrite the owner's index 1 with 0.
+    setFetchHandler(() => new Response(null, { status: 404 }));
+    const { doc, array } = createYjsBoard();
+    const { convertToExcalidrawElements } = await loadExcalidrawPackage();
+    const importId = '0123456789abcdef';
+    const rect = { x: 100, y: 100, width: 200, height: 100 };
+    const pages = convertToExcalidrawElements(
+      [0, 1, 2].map((index) => ({ type: 'image' as const, id: `page-${index}`, fileId: `file-${index}` as never, ...rect })),
+      { regenerateIds: false },
+    ).map((element, index) => ({
+      ...element,
+      locked: true,
+      customData: { pdfPage: { importId, index, pageCount: 3, stacked: true } },
+    }));
+    const [annotation] = convertToExcalidrawElements(
+      [{ type: 'rectangle' as const, id: 'owner-mark', x: rect.x + 20, y: rect.y + 20, width: 20, height: 20 }],
+      { regenerateIds: false },
+    );
+    const stampedAnnotation = { ...annotation, customData: { onPage: { importId, index: 1 } } };
+    replaceSharedElements(doc, array, [...pages, stampedAnnotation], 'local');
+
+    const { api } = await renderWrapper({
+      yDoc: doc,
+      yElementsArray: array,
+      // The replay frame has not arrived yet: this browser still thinks
+      // every stacked document is on its default page.
+      pageState: {},
+    });
+
+    await waitFor(() => {
+      expect(api.getSceneElements().some((element) => element.id === 'owner-mark')).toBe(true);
+    });
+    // Give any (wrongly) queued re-stamp updateScene a moment to have applied.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const restored = api.getSceneElements() as unknown as {
+      id: string;
+      customData?: { onPage?: { importId: string; index: number } };
+    }[];
+    expect(restored.find((element) => element.id === 'owner-mark')?.customData?.onPage).toEqual({
+      importId,
+      index: 1,
+    });
+  });
+
+  it('forwards turnPage on BoardActions to onTurnPage', async () => {
+    setFetchHandler(() => new Response(null, { status: 404 }));
+    const onBoardActions = vi.fn();
+    const onTurnPage = vi.fn();
+
+    await renderWrapper({ onBoardActions, onTurnPage });
+    const actions = onBoardActions.mock.calls.at(-1)?.[0];
+
+    actions.turnPage('0123456789abcdef', 2);
+
+    expect(onTurnPage).toHaveBeenCalledWith('0123456789abcdef', 2);
   });
 });
 

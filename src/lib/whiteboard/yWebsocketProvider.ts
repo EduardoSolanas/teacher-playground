@@ -17,6 +17,12 @@ import {
   encodeCallMessage,
   type CallState,
 } from './callMessage';
+import {
+  PAGE_MESSAGE_TYPE,
+  decodePageMessagePayload,
+  encodePageMessage,
+  type PageMessage,
+} from './pageMessage';
 
 type WhiteboardProviderEventMap = {
   status: (event: { status?: string; connected?: boolean }) => void;
@@ -47,6 +53,7 @@ export interface WhiteboardProvider {
   destroy: () => void;
   sendFollowMessage?: (message: FollowMessage) => boolean;
   sendCallMessage?: (state: CallState) => boolean;
+  sendPageMessage?: (message: PageMessage) => boolean;
   on<K extends keyof WhiteboardProviderEventMap>(
     eventName: K,
     callback: WhiteboardProviderEventMap[K],
@@ -63,6 +70,7 @@ export type ProviderEntry = {
   synced: boolean;
   sendFollowMessage: (message: FollowMessage) => boolean;
   sendCallMessage: (state: CallState) => boolean;
+  sendPageMessage: (message: PageMessage) => boolean;
 };
 
 let providerCache: Map<string, ProviderEntry> = new Map();
@@ -118,6 +126,7 @@ class SignalingWebsocketProvider extends WebsocketProvider {
 export type PresenceCallback = (payload: unknown) => void;
 export type FollowCallback = (payload: FollowMessage) => void;
 export type CallCallback = (message: CallState) => void;
+export type PageCallback = (message: PageMessage) => void;
 
 /**
  * Registers message handlers on the provider. The handler slot assignments
@@ -130,6 +139,7 @@ function registerMessageHandlers(
   onPresence?: PresenceCallback,
   onFollow?: FollowCallback,
   onCall?: CallCallback,
+  onPage?: PageCallback,
 ): void {
   if (typeof window === 'undefined') return;
   if (!provider.messageHandlers || !Array.isArray(provider.messageHandlers)) return;
@@ -164,6 +174,15 @@ function registerMessageHandlers(
   } else {
     provider.messageHandlers[CALL_MESSAGE_TYPE] = undefined;
   }
+
+  if (onPage) {
+    provider.messageHandlers[PAGE_MESSAGE_TYPE] = (_encoder: unknown, decoder: any) => {
+      const payload = decodePageMessagePayload(decoder);
+      if (payload) onPage(payload);
+    };
+  } else {
+    provider.messageHandlers[PAGE_MESSAGE_TYPE] = undefined;
+  }
 }
 
 export function createYWebsocketProvider(
@@ -172,6 +191,7 @@ export function createYWebsocketProvider(
   onPresence?: PresenceCallback,
   onFollow?: FollowCallback,
   onCall?: CallCallback,
+  onPage?: PageCallback,
 ): ProviderEntry {
   const cacheKey = `whiteboard-${roomId}`;
 
@@ -182,7 +202,7 @@ export function createYWebsocketProvider(
     if (cached.provider.doc === doc) {
       // The cached provider keeps its socket, but not its consumers: a remount
       // passes fresh callbacks, and the handlers below close over the old ones.
-      registerMessageHandlers(cached.provider, onPresence, onFollow, onCall);
+      registerMessageHandlers(cached.provider, onPresence, onFollow, onCall, onPage);
       return cached;
     }
     // Doc mismatch: the cached provider is bound to a dead doc. Destroy it and
@@ -217,6 +237,13 @@ export function createYWebsocketProvider(
       ws.send(encodeCallMessage(state) as unknown as ArrayBuffer);
       return true;
     },
+    sendPageMessage: (message) => {
+      if (typeof window === 'undefined') return false;
+      const ws = provider.ws;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      ws.send(encodePageMessage(message) as unknown as ArrayBuffer);
+      return true;
+    },
   };
   providerCache.set(cacheKey, entry);
 
@@ -231,7 +258,7 @@ export function createYWebsocketProvider(
     if (synced) entry.status = 'synced';
   });
 
-  registerMessageHandlers(provider, onPresence, onFollow, onCall);
+  registerMessageHandlers(provider, onPresence, onFollow, onCall, onPage);
 
   if (typeof window !== 'undefined' && provider.shouldConnect !== false) {
     provider.connect();

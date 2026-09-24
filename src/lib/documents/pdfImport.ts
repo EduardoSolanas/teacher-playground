@@ -92,21 +92,6 @@ export function pageFrame(
 }
 
 export type PageSize = { width: number; height: number };
-export type PagePlacement = { x: number; y: number; width: number; height: number };
-
-/**
- * Stacks pages top to bottom from `origin`, each at its PDF size in board
- * units, so a page looks page-sized whatever resolution it was rendered at.
- */
-export function columnLayout(sizes: readonly PageSize[], origin: { x: number; y: number }): PagePlacement[] {
-  const placements: PagePlacement[] = [];
-  let y = origin.y;
-  for (const size of sizes) {
-    placements.push({ x: origin.x, y, width: size.width, height: size.height });
-    y += size.height + PAGE_GAP;
-  }
-  return placements;
-}
 
 export type StackedRect = { x: number; y: number; width: number; height: number };
 

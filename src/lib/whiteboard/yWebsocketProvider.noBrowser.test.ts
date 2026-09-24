@@ -15,9 +15,11 @@ describe('provider senders without a browser environment', () => {
     const entry = createYWebsocketProvider(new Y.Doc(), 'no-browser-send');
     const follow = { active: true as const, viewport: { x: 1, y: 2, zoom: 3 } };
     const call = { active: true as const, hostAccountId: 'acc-1', startedAt: 1 };
+    const page = { importId: '0123456789abcdef', index: 0 };
 
     expect(entry.sendFollowMessage(follow)).toBe(false);
     expect(entry.sendCallMessage(call)).toBe(false);
+    expect(entry.sendPageMessage(page)).toBe(false);
 
     destroyProvider('no-browser-send');
   });

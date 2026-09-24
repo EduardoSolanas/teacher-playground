@@ -31,7 +31,7 @@ type SceneImage = {
   height: number;
   locked: boolean;
   isDeleted: boolean;
-  stamp: { importId?: unknown; index?: unknown } | null;
+  stamp: { importId?: unknown; index?: unknown; pageCount?: unknown; stacked?: unknown } | null;
 };
 
 async function sceneImages(page: Page): Promise<SceneImage[]> {
@@ -50,7 +50,15 @@ async function sceneImages(page: Page): Promise<SceneImage[]> {
         isDeleted: element.isDeleted === true,
         stamp: element.customData?.pdfPage ?? null,
       }))
-      .sort((a, b) => a.y - b.y);
+      // Every page of a stacked import shares one rectangle now, so y no
+      // longer orders them; the stamped index does. A column import (no
+      // stamp, or one without an index) still sorts top to bottom.
+      .sort((a, b) => {
+        const ai = a.stamp?.index;
+        const bi = b.stamp?.index;
+        if (typeof ai === 'number' && typeof bi === 'number') return ai - bi;
+        return a.y - b.y;
+      });
   });
 }
 
@@ -123,13 +131,28 @@ test.describe('PDF import', () => {
       expect(first.x + first.width / 2).toBeCloseTo(expected.x, 0);
       expect(first.y + first.height / 2).toBeCloseTo(expected.y, 0);
 
+      // Every page of a stacked import shares the first page's rectangle
+      // (spec/PAGED_DOCUMENTS_SPEC.md §3.1) -- the fixture's pages are all the
+      // same size, so nothing here is fitted down.
+      for (const image of hostImages) {
+        expect(image.x).toBe(first.x);
+        expect(image.y).toBe(first.y);
+        expect(image.width).toBe(first.width);
+        expect(image.height).toBe(first.height);
+      }
+
       /*
        * Each page carries the import it came from and its place in it, which is
-       * what Download as PDF reads back (spec/PDF_EXPORT_SPEC.md §3).
+       * what Download as PDF reads back (spec/PDF_EXPORT_SPEC.md §3), and the
+       * stacked stamp with the import's page count (spec §3.1).
        */
-      const stamps = hostImages.map((image) => image.stamp as { importId: string; index: number });
+      const stamps = hostImages.map(
+        (image) => image.stamp as { importId: string; index: number; pageCount: number; stacked: boolean },
+      );
       expect(stamps.map((stamp) => stamp.index)).toEqual([0, 1, 2]);
       expect(new Set(stamps.map((stamp) => stamp.importId)).size).toBe(1);
+      expect(stamps.every((stamp) => stamp.pageCount === 3)).toBe(true);
+      expect(stamps.every((stamp) => stamp.stacked === true)).toBe(true);
 
       // Each page reaches the room's file store as an image, never as a PDF.
       for (const image of hostImages) {

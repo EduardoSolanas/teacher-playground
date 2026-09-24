@@ -289,6 +289,54 @@ export function elementsToRemove(elements: readonly SceneElement[], importId: st
   return idsFor(elements, importId);
 }
 
+/**
+ * Whether two `stackedDocuments` results describe the same set of documents:
+ * same imports, each with the same page count, the same shared rectangle and
+ * the same page id at each index. Used to decide whether the client needs a
+ * new `isElementHidden` function identity (spec §6.2) -- recomputing
+ * `stackedDocuments` on every scene change is cheap, but handing Excalidraw a
+ * new function on every stroke would defeat its own memoisation of
+ * `getRenderableElements`, so the caller only replaces its held document set,
+ * and so only gets a new identity, when this says the two actually differ.
+ */
+export function sameStackedDocuments(
+  a: ReadonlyMap<string, StackedDocument>,
+  b: ReadonlyMap<string, StackedDocument>,
+): boolean {
+  if (a.size !== b.size) return false;
+  for (const [importId, docA] of a) {
+    const docB = b.get(importId);
+    if (!docB) return false;
+    if (docA.pageCount !== docB.pageCount) return false;
+    if (
+      docA.rect.x !== docB.rect.x
+      || docA.rect.y !== docB.rect.y
+      || docA.rect.width !== docB.rect.width
+      || docA.rect.height !== docB.rect.height
+    ) {
+      return false;
+    }
+    if (docA.pages.size !== docB.pages.size) return false;
+    for (const [index, id] of docA.pages) {
+      if (docB.pages.get(index) !== id) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Folds one received page frame into the client's local page state (spec
+ * §6.2): the showing index for `message.importId` becomes `message.index`,
+ * every other entry is unchanged, and the input is never mutated -- callers
+ * hold `pageState` in React state, which is compared by identity.
+ */
+export function applyPageMessage(
+  pageState: PageState,
+  message: { importId: string; index: number },
+): PageState {
+  return { ...pageState, [message.importId]: message.index };
+}
+
 /** The index after Next, never past the last page. */
 export function nextPage(index: number, pageCount: number): number {
   return Math.min(index + 1, pageCount - 1);

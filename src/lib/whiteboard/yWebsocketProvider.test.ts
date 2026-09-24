@@ -51,6 +51,7 @@ import {
   encodeFollowMessage,
 } from './followMessage';
 import { CALL_MESSAGE_TYPE, decodeCallMessage, encodeCallMessage } from './callMessage';
+import { PAGE_MESSAGE_TYPE, decodePageMessage, encodePageMessage } from './pageMessage';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -532,19 +533,21 @@ describe('createYWebsocketProvider', () => {
       },
     };
 
-    it('clears the follow and call slots when a remount omits them', () => {
+    it('clears the follow, call and page slots when a remount omits them', () => {
       vi.stubGlobal('window', windowStub);
 
       const doc = new Y.Doc();
-      const entry = createYWebsocketProvider(doc, 'slot-room', undefined, vi.fn(), vi.fn());
+      const entry = createYWebsocketProvider(doc, 'slot-room', undefined, vi.fn(), vi.fn(), vi.fn());
       const provider = entry.provider;
       expect(provider.messageHandlers?.[FOLLOW_MESSAGE_TYPE]).toBeDefined();
       expect(provider.messageHandlers?.[CALL_MESSAGE_TYPE]).toBeDefined();
+      expect(provider.messageHandlers?.[PAGE_MESSAGE_TYPE]).toBeDefined();
 
       createYWebsocketProvider(doc, 'slot-room');
 
       expect(provider.messageHandlers?.[FOLLOW_MESSAGE_TYPE]).toBeUndefined();
       expect(provider.messageHandlers?.[CALL_MESSAGE_TYPE]).toBeUndefined();
+      expect(provider.messageHandlers?.[PAGE_MESSAGE_TYPE]).toBeUndefined();
 
       destroyProvider('slot-room');
     });
@@ -603,6 +606,33 @@ describe('createYWebsocketProvider', () => {
       expect(onCall).toHaveBeenCalledTimes(1);
 
       destroyProvider('call-room');
+    });
+
+    it('delivers page messages and ignores malformed page frames', () => {
+      vi.stubGlobal('window', windowStub);
+
+      const onPage = vi.fn();
+      const entry = createYWebsocketProvider(
+        new Y.Doc(),
+        'page-room',
+        undefined,
+        undefined,
+        undefined,
+        onPage,
+      );
+      const provider = entry.provider;
+      const message = { importId: '0123456789abcdef', index: 2 };
+      const decoder = decoding.createDecoder(encodePageMessage(message));
+      expect(decoding.readVarUint(decoder)).toBe(PAGE_MESSAGE_TYPE);
+
+      provider.messageHandlers?.[PAGE_MESSAGE_TYPE]?.(encoding.createEncoder(), decoder);
+      expect(onPage).toHaveBeenCalledWith(message);
+
+      const badDecoder2 = decoding.createDecoder(new Uint8Array([PAGE_MESSAGE_TYPE]));
+      provider.messageHandlers?.[PAGE_MESSAGE_TYPE]?.(encoding.createEncoder(), badDecoder2);
+      expect(onPage).toHaveBeenCalledTimes(1);
+
+      destroyProvider('page-room');
     });
   });
 
@@ -693,6 +723,37 @@ describe('createYWebsocketProvider', () => {
       expect(decoded).toEqual(state);
 
       destroyProvider('send-call-open');
+    });
+
+    it('refuses to send a page frame while the socket is absent or not open', () => {
+      vi.stubGlobal('window', windowStub);
+      const entry = createYWebsocketProvider(new Y.Doc(), 'send-page-closed');
+      const message = { importId: '0123456789abcdef', index: 1 };
+
+      expect(entry.sendPageMessage(message)).toBe(false);
+
+      const ws = { readyState: WebSocket.CONNECTING, send: vi.fn() };
+      entry.provider.ws = ws as unknown as WebSocket;
+      expect(entry.sendPageMessage(message)).toBe(false);
+      expect(ws.send).not.toHaveBeenCalled();
+
+      destroyProvider('send-page-closed');
+    });
+
+    it('sends a page frame that decodes back through the real decoder', () => {
+      vi.stubGlobal('window', windowStub);
+      const entry = createYWebsocketProvider(new Y.Doc(), 'send-page-open');
+      const { frames, ws } = openSendCollector();
+      entry.provider.ws = ws as unknown as WebSocket;
+      const message = { importId: '0123456789abcdef', index: 1 };
+
+      expect(entry.sendPageMessage(message)).toBe(true);
+      expect(frames).toHaveLength(1);
+
+      const decoded = decodePageMessage(frames[0]);
+      expect(decoded).toEqual(message);
+
+      destroyProvider('send-page-open');
     });
   });
 });

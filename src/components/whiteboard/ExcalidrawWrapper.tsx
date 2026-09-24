@@ -11,6 +11,7 @@ import {
   CaptureUpdateAction,
   Excalidraw,
   Footer,
+  bumpVersion,
   convertToExcalidrawElements,
   useHandleLibrary,
   viewportCoordsToSceneCoords,
@@ -45,7 +46,16 @@ import { whiteboardRoomHref } from '@/lib/whiteboard/roomPath';
 import { collaboratorsFromPresence } from '@/lib/whiteboard/collaborators';
 import type { CanvasElement, RemoteCursor, WhiteboardUser } from '@/types/whiteboard';
 import type { FollowMessage } from '@/lib/whiteboard/followMessage';
-import { columnLayout } from '@/lib/documents/pdfImport';
+import { stackedPageRect } from '@/lib/documents/pdfImport';
+import {
+  annotationStampFor,
+  isHidden,
+  sameStackedDocuments,
+  stackedDocuments,
+  type PageState,
+  type SceneElement as PagedSceneElement,
+  type StackedDocument,
+} from '@/lib/documents/pagedDocuments';
 import { randomHexId } from '@/lib/crypto/randomId';
 import type { RenderedPage } from './pdfRenderer';
 import { buildBoardPdf, type ExportResult } from './pdfExporter';
@@ -119,6 +129,13 @@ export interface BoardActions {
    * the file, or why it could not be made; nothing is written to disk here.
    */
   buildPdf: () => Promise<ExportResult>;
+  /**
+   * Turns a page of a stacked document (spec §5.1, §6.3): forwards to
+   * `onTurnPage`, which owns the owner check, the local `pageState` update
+   * and sending the frame. A thin passthrough so the pager (slice B), which
+   * lives in this editor's own coordinate space, has one place to call.
+   */
+  turnPage: (importId: string, index: number) => void;
 }
 type ExcalidrawSubscriptionsAPI = ExcalidrawImperativeAPI & {
   onToolChange?: (callback: (tool: { type: string }) => void) => () => void;
@@ -174,6 +191,8 @@ function toAppToolType(tool: string): string {
 declare global {
   interface Window {
     __debugExcalidrawApi?: ExcalidrawImperativeAPI;
+    __debugBoardActions?: BoardActions;
+    __debugPageState?: PageState;
   }
 }
 
@@ -222,6 +241,25 @@ type ExcalidrawWrapperProps = {
    * thing that can decide which of the two gets it.
    */
   onSidebarOpenChange?: (open: boolean) => void;
+  /**
+   * The server-held page state for stacked documents (spec §3.3, §6.2):
+   * importId -> showing index. Drives `isElementHidden` and the `onPage`
+   * stamp new annotations receive.
+   */
+  pageState?: PageState;
+  /**
+   * Turns a page (spec §5.1, §6.3): owns the owner check, the immediate local
+   * `pageState` update and sending the frame. Reached through `BoardActions`
+   * so the pager (slice B) has one function to call.
+   */
+  onTurnPage?: (importId: string, index: number) => void;
+  /**
+   * A PDF chosen through Excalidraw's own image tool picker
+   * (spec/PAGED_DOCUMENTS_SPEC.md §4.1): the fork calls this instead of
+   * adding an image element. Handed the same queue a drop or paste PDF goes
+   * through, at the view centre -- a picker choice has no drop point.
+   */
+  onDocumentFile?: (file: File) => void;
 };
 
 export default function ExcalidrawWrapper({
@@ -247,6 +285,9 @@ export default function ExcalidrawWrapper({
   footer,
   onBoardActions,
   onSidebarOpenChange,
+  pageState = {},
+  onTurnPage,
+  onDocumentFile,
 }: ExcalidrawWrapperProps) {
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const [isClient, setIsClient] = useState(false);
@@ -376,6 +417,10 @@ export default function ExcalidrawWrapper({
   const onBoardActionsRef = useRef(onBoardActions);
   useEffect(() => { onBoardActionsRef.current = onBoardActions; }, [onBoardActions]);
 
+  /** Latest onTurnPage, read from BoardActions.turnPage -- built once, at API mount. */
+  const onTurnPageRef = useRef(onTurnPage);
+  useEffect(() => { onTurnPageRef.current = onTurnPage; }, [onTurnPage]);
+
   /** Remote scenes coalesce into one React update rather than ~20 a second. */
   const REMOTE_STATE_FLUSH_MS = 200;
   const pendingRemoteStateRef = useRef<SharedSceneElement[] | null>(null);
@@ -403,6 +448,49 @@ export default function ExcalidrawWrapper({
     () => collaboratorsFromPresence(users, cursors, localPeerId),
     [users, cursors, localPeerId],
   );
+
+  /**
+   * The scene's stacked documents (spec §8 `stackedDocuments`), recomputed on
+   * every scene change but only ever replaced -- so `isElementHidden` below
+   * only ever gets a new identity -- when `sameStackedDocuments` says the set
+   * actually differs (spec §6.2).
+   */
+  const [documents, setDocuments] = useState<ReadonlyMap<string, StackedDocument>>(new Map());
+  const updateStackedDocuments = useCallback(
+    (elements: readonly PagedSceneElement[]): ReadonlyMap<string, StackedDocument> => {
+      const next = stackedDocuments(elements);
+      setDocuments((current) => (sameStackedDocuments(current, next) ? current : next));
+      return next;
+    },
+    [],
+  );
+
+  /**
+   * Passed to the fork's `isElementHidden` (spec §4, §6.2): a stacked page
+   * not on the showing index of its own import, or an annotation stamped for
+   * a page that is not showing, is hidden from drawing and pointer
+   * interaction for everyone -- the elements stay in the scene and still
+   * sync and export (spec §3.4).
+   */
+  const isElementHidden = useMemo(
+    () => (element: ExcalidrawElement) => isHidden(element as unknown as PagedSceneElement, documents, pageState),
+    [documents, pageState],
+  );
+
+  /**
+   * The page state this editor is rendering with, for the same reason
+   * `__debugExcalidrawApi`/`__debugBoardActions` exist: e2e has no other way
+   * to see it, and slice B's pager tests will want it too.
+   */
+  useEffect(() => {
+    const exposeDebugApi =
+      process.env.NODE_ENV !== 'production' || process.env.NEXT_PUBLIC_E2E === '1';
+    if (!exposeDebugApi || typeof window === 'undefined') return;
+    window.__debugPageState = pageState;
+    return () => {
+      if (window.__debugPageState === pageState) delete window.__debugPageState;
+    };
+  }, [pageState]);
 
   useEffect(() => {
     const api = apiRef.current;
@@ -795,6 +883,7 @@ export default function ExcalidrawWrapper({
       if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
         if (window.__debugExcalidrawApi === apiRef.current) {
           delete window.__debugExcalidrawApi;
+          delete window.__debugBoardActions;
         }
       }
 
@@ -1116,7 +1205,7 @@ export default function ExcalidrawWrapper({
     apiRef.current = api;
     setLibraryApi(api);
 
-    onBoardActionsRef.current?.({
+    const boardActions: BoardActions = {
       /*
        * The library is a tab of the default sidebar, not a sidebar of its own.
        * Asking for one called "library" is not an error -- nothing opens, and
@@ -1131,6 +1220,7 @@ export default function ExcalidrawWrapper({
         elements: api.getSceneElements() as unknown as Record<string, unknown>[],
         files: (api.getFiles() ?? {}) as Record<string, unknown>,
       }),
+      turnPage: (importId, index) => onTurnPageRef.current?.(importId, index),
       sceneCoordsFromClient: (clientX, clientY) => {
         const appState = api.getAppState();
         return viewportCoordsToSceneCoords(
@@ -1167,10 +1257,20 @@ export default function ExcalidrawWrapper({
           x: appState.width / 2 / zoom - appState.scrollX,
           y: appState.height / 2 / zoom - appState.scrollY,
         };
-        const placements = columnLayout(pages, {
+        /*
+         * Every page of a stacked import shares the first page's rectangle
+         * (spec §3.1): the first page is placed and sized at `centre`, and
+         * every other page is fitted inside that same rectangle, centred,
+         * keeping its own aspect ratio -- never stretched or cropped to match
+         * a first page of a different shape.
+         */
+        const firstPageRect = {
           x: centre.x - pages[0].width / 2,
           y: centre.y - pages[0].height / 2,
-        });
+          width: pages[0].width,
+          height: pages[0].height,
+        };
+        const placements = pages.map((page) => stackedPageRect(page, firstPageRect));
         /*
          * One id for this import, and the page's own index within it. Download
          * as PDF reads these back (spec/PDF_EXPORT_SPEC.md): they are what say
@@ -1180,6 +1280,7 @@ export default function ExcalidrawWrapper({
          * elements and the HTTP scene schema passes unknown keys through.
          */
         const importId = randomHexId(8);
+        const pageCount = pages.length;
         const images = convertToExcalidrawElements(placements.map((placement, index) => ({
           type: 'image' as const,
           fileId: pages[index].id as never,
@@ -1190,7 +1291,7 @@ export default function ExcalidrawWrapper({
           .map((element, index) => ({
             ...element,
             locked: true,
-            customData: { pdfPage: { importId, index } },
+            customData: { pdfPage: { importId, index, pageCount, stacked: true as const } },
           }));
 
         api.updateScene({
@@ -1200,7 +1301,8 @@ export default function ExcalidrawWrapper({
         });
         api.scrollToContent(images[0], { fitToViewport: true, viewportZoomFactor: 0.9 });
       },
-    });
+    };
+    onBoardActionsRef.current?.(boardActions);
 
     if (typeof api.onUserFollow === 'function') {
       followUnsubscribeRef.current = api.onUserFollow((payload) => {
@@ -1270,6 +1372,10 @@ export default function ExcalidrawWrapper({
         // A malformed stored scene must not stop the board from opening.
       }
       onElementsChangeRef.current(toCanvasElements(shared));
+      // A late joiner's first page state comes with this initial scene, not a
+      // later onChange -- computed here so isElementHidden is correct before
+      // the first stroke is ever drawn.
+      updateStackedDocuments(shared as unknown as readonly PagedSceneElement[]);
     }, 100);
 
     // E2E runs against a production build, so the handle is also exposed when
@@ -1278,6 +1384,9 @@ export default function ExcalidrawWrapper({
       process.env.NODE_ENV !== 'production' || process.env.NEXT_PUBLIC_E2E === '1';
     if (exposeDebugApi && typeof window !== 'undefined') {
       window.__debugExcalidrawApi = api;
+      // The pager is slice B; until it exists, e2e drives a page turn the
+      // same owner-only way it will, through BoardActions.turnPage.
+      window.__debugBoardActions = boardActions;
     }
 
     if (pendingElementsRef.current) {
@@ -1444,6 +1553,14 @@ export default function ExcalidrawWrapper({
   const onSidebarOpenChangeRef = useRef(onSidebarOpenChange);
   useEffect(() => { onSidebarOpenChangeRef.current = onSidebarOpenChange; }, [onSidebarOpenChange]);
 
+  /**
+   * The id `appState.newElement`/`editingTextElement` named on the previous
+   * onChange -- read once, to catch a just-finished element whose own
+   * version did not change (only `appState` did). See the stamping block
+   * below.
+   */
+  const previouslyInProgressIdRef = useRef<string | null>(null);
+
   const handleElementsChange = useCallback(
     (el: ExcalidrawChangeElements, appState: ExcalidrawChangeAppState, files?: ExcalidrawChangeFiles) => {
       const sidebarOpen = Boolean((appState as { openSidebar?: unknown } | null)?.openSidebar);
@@ -1460,6 +1577,83 @@ export default function ExcalidrawWrapper({
           if (!file) continue;
           uploadedFileIdsRef.current.add(fileId);
           void uploadBoardFile(fileId, file.dataURL as unknown as string);
+        }
+      }
+
+      /*
+       * Stamps a finished, genuinely local element overlapping a stacked
+       * document with onPage (spec §3.2). A candidate has to clear two
+       * independent checks, each guarding a different way this handler is
+       * reached for an element it must not touch:
+       *
+       * - It must be in `diffScene`'s changed set against
+       *   `publishedVersionsRef`. A remote or bootstrap scene load (a late
+       *   joiner's initial restore, another peer's finished stroke arriving
+       *   over the wire) moves that baseline to match what it just applied,
+       *   via `adoptVersionBaseline`, *before* that apply's own
+       *   `updateScene` call -- so a remote-origin element's version never
+       *   shows as changed here, only a locally-authored one's. Without
+       *   this, scanning every unstamped element on every change treats
+       *   "not yet carrying its onPage stamp" as "needs stamping" -- true
+       *   for a fresh local element, but also momentarily true for one
+       *   whose stamp is already on the wire and just has not arrived yet
+       *   relative to this element's own sync; a late joiner could then
+       *   stamp someone else's annotation for whatever page its own
+       *   not-yet-replayed pageState (spec §5.2) defaulted to, and publish
+       *   that back over the correct value.
+       * - It must not be the id `appState.newElement`/`editingTextElement`
+       *   names right now -- still being drawn. `diffScene` alone is not
+       *   enough here: finishing a shape can leave its own version
+       *   unchanged from the moment before (only `appState` moved), so an
+       *   in-progress id has to be excluded by name, not inferred from
+       *   whether anything about the element itself just changed.
+       */
+      const currentDocuments = updateStackedDocuments(el as unknown as readonly PagedSceneElement[]);
+      const inProgressId = (appState as { newElement?: { id?: unknown } } | null)?.newElement?.id;
+      const editingTextId = (appState as { editingTextElement?: { id?: unknown } } | null)
+        ?.editingTextElement?.id;
+      const justFinishedId = previouslyInProgressIdRef.current;
+      previouslyInProgressIdRef.current =
+        (typeof inProgressId === 'string' && inProgressId)
+        || (typeof editingTextId === 'string' && editingTextId)
+        || null;
+
+      if (currentDocuments.size > 0) {
+        const stampCandidateDiff = diffScene(publishedVersionsRef.current, el);
+        let stampedAny = false;
+        const stampedElements = el.map((element) => {
+          if (element.id === inProgressId || element.id === editingTextId) return element;
+          if (!stampCandidateDiff.changedIds.has(element.id) && element.id !== justFinishedId) {
+            return element;
+          }
+          const stamp = annotationStampFor(
+            element as unknown as PagedSceneElement,
+            currentDocuments,
+            pageState,
+          );
+          if (!stamp) return element;
+          stampedAny = true;
+          /*
+           * bumpVersion, not a bare spread: `diffScene`/`commitElements`
+           * decide what is worth publishing purely from `version`, and a
+           * stamp that left it untouched was indistinguishable from no
+           * change at all. The unstamped element -- already diff-changed
+           * a moment earlier in this same handler -- had by then already
+           * been queued for publish at its own version; a stamped copy at
+           * that identical version looked, to the very next diff, exactly
+           * like nothing had happened, and the stamp was silently dropped
+           * before it ever reached the shared document.
+           */
+          return bumpVersion({
+            ...element,
+            customData: { ...(element.customData ?? {}), onPage: stamp },
+          } as ExcalidrawElement);
+        });
+        if (stampedAny) {
+          apiRef.current?.updateScene({
+            elements: stampedElements as unknown as readonly ExcalidrawElement[],
+            captureUpdate: CaptureUpdateAction.NEVER,
+          });
         }
       }
 
@@ -1514,7 +1708,7 @@ export default function ExcalidrawWrapper({
         }, interval - since);
       }
     },
-    [commitElements, uploadBoardFile],
+    [commitElements, uploadBoardFile, updateStackedDocuments, pageState],
   );
 
   useEffect(() => {
@@ -1833,6 +2027,8 @@ export default function ExcalidrawWrapper({
         onLibraryChange={handleLibraryChange}
         onPointerDown={handlePointerDown}
         onPointerUp={handlePointerUp}
+        isElementHidden={isElementHidden}
+        onDocumentFile={onDocumentFile}
         UIOptions={{
           canvasActions: {
             /*

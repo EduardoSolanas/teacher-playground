@@ -37,6 +37,8 @@ import { shouldPollPresence } from '@/lib/whiteboard/presencePolling';
 import { cursorPublishDelay } from '@/lib/whiteboard/cursorPublishRate';
 import type { FollowMessage } from '@/lib/whiteboard/followMessage';
 import type { CallState } from '@/lib/whiteboard/callMessage';
+import type { PageMessage } from '@/lib/whiteboard/pageMessage';
+import { applyPageMessage, type PageState } from '@/lib/documents/pagedDocuments';
 import { moderationTargetBody } from '@/lib/whiteboard/moderationTarget';
 import { DEFAULT_MAX_USERS } from '@/lib/plan/limits';
 import {
@@ -89,6 +91,12 @@ export function useCollaboration(
   const [elements, setElements] = useState<CanvasElement[]>([]);
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const [guideMessage, setGuideMessage] = useState<FollowMessage | null>(null);
+  /**
+   * importId -> showing index (spec §3.3, §6.2), folded from received page
+   * frames -- including the ones the server replays on connect, which arrive
+   * on the same channel as any other page frame and need no special case.
+   */
+  const [pageState, setPageState] = useState<PageState>({});
   const [remoteCallActive, setRemoteCallActive] = useState(false);
   const [maxUsers, setMaxUsers] = useState(DEFAULT_MAX_USERS);
   /** What the room is called; null until the room has been read, or unnamed. */
@@ -178,8 +186,18 @@ export function useCollaboration(
           setRemoteCallActive(state.active);
         }
       };
+      const handlePage = (message: PageMessage) => {
+        setPageState((current) => applyPageMessage(current, message));
+      };
 
-      collaborationRef.current = createCollaboration(roomId, peerId, handlePresence, handleFollow, handleCall);
+      collaborationRef.current = createCollaboration(
+        roomId,
+        peerId,
+        handlePresence,
+        handleFollow,
+        handleCall,
+        handlePage,
+      );
       if (pendingUserNameRef.current) {
         collaborationRef.current.setLocalUserName(pendingUserNameRef.current);
       }
@@ -700,6 +718,21 @@ export function useCollaboration(
     collaborationRef.current?.sendCallMessage(state) ?? false
   ), []);
 
+  /**
+   * Turns a page (spec §5.1, §6.3): owner only. Updates this browser's own
+   * `pageState` immediately -- the owner sees the turn without waiting for
+   * its own frame to round-trip -- and sends the frame; a non-owner's call is
+   * a no-op on both counts, since the server would drop the frame silently
+   * anyway and a local-only change here would show a page nobody else has
+   * turned to.
+   */
+  const turnPage = useCallback((importId: string, index: number) => {
+    if (!isRoomOwner(grantRole)) return;
+    const message: PageMessage = { importId, index };
+    setPageState((current) => applyPageMessage(current, message));
+    collaborationRef.current?.sendPageMessage(message);
+  }, [grantRole]);
+
   useEffect(() => {
     if (!roomLoaded || !hasJoined) return;
 
@@ -1188,6 +1221,8 @@ export function useCollaboration(
     remoteCallActive,
     sendFollowMessage,
     sendCallMessage,
+    pageState,
+    turnPage,
     collaboration: collaborationEpoch >= 0 ? collaborationRef.current : null,
     waitingPeers,
     isWaiting,

@@ -34,11 +34,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   annotationStampFor,
+  applyPageMessage,
   elementsToMove,
   elementsToRemove,
   isHidden,
   nextPage,
   previousPage,
+  sameStackedDocuments,
   showingIndex,
   stackedDocuments,
   type StackedDocument,
@@ -512,6 +514,101 @@ describe('elementsToMove / elementsToRemove', () => {
     malformedId.id = 123;
     expect(elementsToMove([malformedId], IMPORT_A)).toEqual([]);
     expect(elementsToRemove([malformedId], IMPORT_A)).toEqual([]);
+  });
+});
+
+describe('applyPageMessage', () => {
+  it('sets the importId key to the message index in an empty state', () => {
+    expect(applyPageMessage({}, { importId: IMPORT_A, index: 2 })).toEqual({ [IMPORT_A]: 2 });
+  });
+
+  it('overwrites an existing entry for the same import', () => {
+    const state = { [IMPORT_A]: 0, [IMPORT_B]: 1 };
+    expect(applyPageMessage(state, { importId: IMPORT_A, index: 3 })).toEqual({
+      [IMPORT_A]: 3,
+      [IMPORT_B]: 1,
+    });
+  });
+
+  it('does not mutate the state passed in', () => {
+    const state = { [IMPORT_A]: 0 };
+    applyPageMessage(state, { importId: IMPORT_A, index: 5 });
+    expect(state).toEqual({ [IMPORT_A]: 0 });
+  });
+});
+
+describe('sameStackedDocuments', () => {
+  it('is true for the same instance', () => {
+    const docs = stackedDocuments([stackedPage('p0', IMPORT_A, 0, 1)]);
+    expect(sameStackedDocuments(docs, docs)).toBe(true);
+  });
+
+  it('is true for two independently built maps with the same content', () => {
+    const elements = [stackedPage('p0', IMPORT_A, 0, 2), stackedPage('p1', IMPORT_A, 1, 2)];
+    expect(sameStackedDocuments(stackedDocuments(elements), stackedDocuments([...elements]))).toBe(true);
+  });
+
+  it('is false when an import was added or removed', () => {
+    const before = stackedDocuments([stackedPage('p0', IMPORT_A, 0, 1)]);
+    const after = stackedDocuments([
+      stackedPage('p0', IMPORT_A, 0, 1),
+      stackedPage('q0', IMPORT_B, 0, 1),
+    ]);
+    expect(sameStackedDocuments(before, after)).toBe(false);
+    expect(sameStackedDocuments(after, before)).toBe(false);
+  });
+
+  it('is false when the import on one side is replaced by a different one of the same count', () => {
+    // Same size on both sides, so this only fails on the "does b have this
+    // importId at all" check, not the earlier size comparison.
+    const before = stackedDocuments([stackedPage('p0', IMPORT_A, 0, 1)]);
+    const after = stackedDocuments([stackedPage('q0', IMPORT_B, 0, 1)]);
+    expect(sameStackedDocuments(before, after)).toBe(false);
+  });
+
+  it('is false when a page is added to an existing import', () => {
+    const before = stackedDocuments([stackedPage('p0', IMPORT_A, 0, 2)]);
+    const after = stackedDocuments([
+      stackedPage('p0', IMPORT_A, 0, 2),
+      stackedPage('p1', IMPORT_A, 1, 2),
+    ]);
+    expect(sameStackedDocuments(before, after)).toBe(false);
+  });
+
+  it('is false when the declared pageCount changes with the same pages present', () => {
+    const before = stackedDocuments([stackedPage('p0', IMPORT_A, 0, 2)]);
+    const after = stackedDocuments([stackedPage('p0', IMPORT_A, 0, 3)]);
+    expect(sameStackedDocuments(before, after)).toBe(false);
+  });
+
+  it('is false when a page id changes', () => {
+    const before = stackedDocuments([stackedPage('p0', IMPORT_A, 0, 1)]);
+    const after = stackedDocuments([stackedPage('p0-replaced', IMPORT_A, 0, 1)]);
+    expect(sameStackedDocuments(before, after)).toBe(false);
+  });
+
+  it('is false when the shared rectangle\'s position moves', () => {
+    const before = stackedDocuments([stackedPage('p0', IMPORT_A, 0, 1, { x: 0, y: 0, width: 612, height: 792 })]);
+    expect(sameStackedDocuments(
+      before,
+      stackedDocuments([stackedPage('p0', IMPORT_A, 0, 1, { x: 10, y: 0, width: 612, height: 792 })]),
+    )).toBe(false);
+    expect(sameStackedDocuments(
+      before,
+      stackedDocuments([stackedPage('p0', IMPORT_A, 0, 1, { x: 0, y: 10, width: 612, height: 792 })]),
+    )).toBe(false);
+  });
+
+  it('is false when the shared rectangle\'s size changes', () => {
+    const before = stackedDocuments([stackedPage('p0', IMPORT_A, 0, 1, { x: 0, y: 0, width: 612, height: 792 })]);
+    expect(sameStackedDocuments(
+      before,
+      stackedDocuments([stackedPage('p0', IMPORT_A, 0, 1, { x: 0, y: 0, width: 600, height: 792 })]),
+    )).toBe(false);
+    expect(sameStackedDocuments(
+      before,
+      stackedDocuments([stackedPage('p0', IMPORT_A, 0, 1, { x: 0, y: 0, width: 612, height: 700 })]),
+    )).toBe(false);
   });
 });
 

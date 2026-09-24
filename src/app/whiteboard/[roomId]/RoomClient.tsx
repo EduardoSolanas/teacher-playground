@@ -587,6 +587,8 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
     remoteCallActive,
     sendFollowMessage,
     sendCallMessage,
+    pageState,
+    turnPage,
   } = useCollaboration(roomId, callLiveRef, undefined, request);
 
   const handleGuideViewport = useCallback((nextViewport: { x: number; y: number; zoom: number }) => {
@@ -1181,6 +1183,24 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
     [takePdfsFromFiles],
   );
 
+  /**
+   * A PDF picked through Excalidraw's own image tool
+   * (spec/PAGED_DOCUMENTS_SPEC.md §4.1): the fork hands it straight over
+   * instead of adding an image element. It takes the same queue a drop or
+   * paste PDF goes through -- a picker choice has no drop point, so it lands
+   * on the view centre, exactly like a paste.
+   */
+  const handlePickedDocumentFile = useCallback(
+    (file: File) => {
+      const rect = canvasAreaRef.current?.getBoundingClientRect();
+      const clientX = rect ? rect.left + rect.width / 2 : 0;
+      const clientY = rect ? rect.top + rect.height / 2 : 0;
+      const centre = boardActionsRef.current?.sceneCoordsFromClient(clientX, clientY) ?? { x: 0, y: 0 };
+      takePdfsFromFiles([file], centre);
+    },
+    [takePdfsFromFiles],
+  );
+
   /*
    * The roster gives up the right edge while Excalidraw's sidebar has it.
    *
@@ -1469,6 +1489,9 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
             footer={boardFooter}
             onBoardActions={(actions) => { boardActionsRef.current = actions; }}
             onSidebarOpenChange={handleSidebarOpenChange}
+            pageState={pageState}
+            onTurnPage={turnPage}
+            onDocumentFile={handlePickedDocumentFile}
           />
         </div>
       </div>
