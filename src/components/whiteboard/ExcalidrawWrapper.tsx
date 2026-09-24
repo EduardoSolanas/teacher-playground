@@ -13,6 +13,7 @@ import {
   Footer,
   bumpVersion,
   convertToExcalidrawElements,
+  sceneCoordsToViewportCoords,
   useHandleLibrary,
   viewportCoordsToSceneCoords,
 } from '@teacher-playground/excalidraw';
@@ -50,12 +51,17 @@ import { stackedPageRect } from '@/lib/documents/pdfImport';
 import {
   annotationStampFor,
   isHidden,
+  nextPage,
+  previousPage,
   sameStackedDocuments,
+  showingIndex,
   stackedDocuments,
   type PageState,
   type SceneElement as PagedSceneElement,
   type StackedDocument,
 } from '@/lib/documents/pagedDocuments';
+import type { Rect as PagerRect } from '@/lib/documents/pagerPlacement';
+import DocumentPager from './DocumentPager';
 import { randomHexId } from '@/lib/crypto/randomId';
 import type { RenderedPage } from './pdfRenderer';
 import { buildBoardPdf, type ExportResult } from './pdfExporter';
@@ -254,6 +260,14 @@ type ExcalidrawWrapperProps = {
    */
   onTurnPage?: (importId: string, index: number) => void;
   /**
+   * Whether this viewer is the room's owner (spec §6.3): drives the pager --
+   * Previous/Next buttons plus "Page n of m" for the owner, "Page n of m"
+   * only for everyone else. Not the same question as `isLocalHost`: a
+   * first-in-list fallback host is not the account the room belongs to, and
+   * a pager button that only fails is worse than none.
+   */
+  isRoomOwner?: boolean;
+  /**
    * A PDF chosen through Excalidraw's own image tool picker
    * (spec/PAGED_DOCUMENTS_SPEC.md §4.1): the fork calls this instead of
    * adding an image element. Handed the same queue a drop or paste PDF goes
@@ -287,6 +301,7 @@ export default function ExcalidrawWrapper({
   onSidebarOpenChange,
   pageState = {},
   onTurnPage,
+  isRoomOwner = false,
   onDocumentFile,
 }: ExcalidrawWrapperProps) {
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
@@ -476,6 +491,35 @@ export default function ExcalidrawWrapper({
     () => (element: ExcalidrawElement) => isHidden(element as unknown as PagedSceneElement, documents, pageState),
     [documents, pageState],
   );
+
+  /**
+   * Asks the pager layer (below) to recompute its own position. A ref, not a
+   * prop the layer reads reactively: the layer holds its own
+   * scroll/zoom/size state entirely to itself, so a scroll or a zoom never
+   * re-renders this editor -- or, transitively, `<Excalidraw>` -- itself.
+   * `onChange`/`onScrollChange` fire from inside Excalidraw's own
+   * `updateScene` (the follow-the-guide effect below calls it, and a page
+   * turn will too), and driving a state update on *this* component from
+   * there was observed to race that in-flight update and lose part of it.
+   */
+  const pagerRepositionRef = useRef<() => void>(() => {});
+  const registerPagerReposition = useCallback((reposition: () => void) => {
+    pagerRepositionRef.current = reposition;
+  }, []);
+  const getPagerAppState = useCallback(() => apiRef.current?.getAppState() ?? null, []);
+  const handleTurnPage = useCallback((importId: string, index: number) => {
+    onTurnPageRef.current?.(importId, index);
+  }, []);
+
+  // The viewport's own resize (rotating a phone, the room's chrome changing)
+  // moves every document's viewport rectangle without Excalidraw sending a
+  // scroll -- so the pager needs its own listener too.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onResize = () => pagerRepositionRef.current();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   /**
    * The page state this editor is rendering with, for the same reason
@@ -2007,12 +2051,16 @@ export default function ExcalidrawWrapper({
       <Excalidraw
         langCode="en"
         excalidrawAPI={handleAPI}
-        onChange={(el, appState, files) => { handleElementsChange(el, appState, files); }}
+        onChange={(el, appState, files) => {
+          handleElementsChange(el, appState, files);
+          pagerRepositionRef.current();
+        }}
         onPointerUpdate={handlePointerUpdate}
         onScrollChange={(scrollX, scrollY, zoom) => {
           const viewport = { x: scrollX, y: scrollY, zoom: zoom.value };
           latestViewportRef.current = viewport;
           onViewportChange(viewport);
+          pagerRepositionRef.current();
           if (isGuiding) {
             if (guideSendTimeoutRef.current) clearTimeout(guideSendTimeoutRef.current);
             guideSendTimeoutRef.current = setTimeout(() => {
@@ -2083,6 +2131,14 @@ export default function ExcalidrawWrapper({
           */}
         {footer && <Footer>{footer}</Footer>}
       </Excalidraw>
+      <DocumentPagerLayer
+        documents={documents}
+        pageState={pageState}
+        isOwner={isRoomOwner}
+        getAppState={getPagerAppState}
+        onTurnPage={handleTurnPage}
+        registerReposition={registerPagerReposition}
+      />
       {(pendingUploadCount > 0 || failedUploadIds.length > 0) && (
         <div
           data-testid="board-upload-status"
@@ -2111,5 +2167,118 @@ export default function ExcalidrawWrapper({
         </div>
       )}
     </div>
+  );
+}
+
+type PagerViewportGeometry = {
+  width: number;
+  height: number;
+  scrollX: number;
+  scrollY: number;
+  zoom: { value: NormalizedZoomValue };
+  offsetLeft: number;
+  offsetTop: number;
+};
+
+type DocumentPagerLayerProps = {
+  documents: ReadonlyMap<string, StackedDocument>;
+  pageState: PageState;
+  isOwner: boolean;
+  /** Reads the editor's current appState on demand -- never held as a prop, so this layer decides for itself when to re-read it. */
+  getAppState: () => PagerViewportGeometry | null;
+  onTurnPage: (importId: string, index: number) => void;
+  /** Called once, with a function the parent can call to ask this layer to recompute its own position. */
+  registerReposition: (reposition: () => void) => void;
+};
+
+/**
+ * Every stacked document's pager (spec §6.3), as one component whose
+ * scroll/zoom/size state stays entirely local to it.
+ *
+ * Kept apart from `ExcalidrawWrapper` on purpose: `<Excalidraw>` lives in
+ * that same component, and a state update there -- even one this layer's own
+ * position has nothing to do with -- re-renders it too. Driving a page's
+ * on-screen position from a state update in the editor's own component was
+ * observed to race `updateScene` calls made from inside `onChange`/
+ * `onScrollChange` (the follow-the-guide effect is one caller of those) and
+ * lose part of the update. A leaf component's own `useState` only re-renders
+ * that leaf, so `<Excalidraw>` never sees it.
+ */
+function DocumentPagerLayer({
+  documents,
+  pageState,
+  isOwner,
+  getAppState,
+  onTurnPage,
+  registerReposition,
+}: DocumentPagerLayerProps) {
+  const [viewportGeometry, setViewportGeometry] = useState<PagerViewportGeometry | null>(null);
+
+  const reposition = useCallback(() => {
+    const appState = getAppState();
+    if (!appState) return;
+    setViewportGeometry((current) => {
+      if (
+        current
+        && current.width === appState.width
+        && current.height === appState.height
+        && current.scrollX === appState.scrollX
+        && current.scrollY === appState.scrollY
+        && current.zoom.value === appState.zoom.value
+        && current.offsetLeft === appState.offsetLeft
+        && current.offsetTop === appState.offsetTop
+      ) {
+        return current;
+      }
+      return appState;
+    });
+  }, [getAppState]);
+
+  useEffect(() => {
+    registerReposition(reposition);
+    reposition();
+    return () => registerReposition(() => {});
+  }, [registerReposition, reposition]);
+
+  const documentPagerEntries = useMemo(() => {
+    if (!viewportGeometry) return [];
+    const entries: Array<{ importId: string; documentRect: PagerRect; index: number; pageCount: number }> = [];
+    for (const doc of documents.values()) {
+      const topLeft = sceneCoordsToViewportCoords({ sceneX: doc.rect.x, sceneY: doc.rect.y }, viewportGeometry);
+      const bottomRight = sceneCoordsToViewportCoords(
+        { sceneX: doc.rect.x + doc.rect.width, sceneY: doc.rect.y + doc.rect.height },
+        viewportGeometry,
+      );
+      entries.push({
+        importId: doc.importId,
+        documentRect: {
+          x: topLeft.x,
+          y: topLeft.y,
+          width: bottomRight.x - topLeft.x,
+          height: bottomRight.y - topLeft.y,
+        },
+        index: showingIndex(doc, pageState),
+        pageCount: doc.pageCount,
+      });
+    }
+    return entries;
+  }, [documents, pageState, viewportGeometry]);
+
+  return (
+    <>
+      {documentPagerEntries.map(({ importId, documentRect, index, pageCount }) => (
+        <DocumentPager
+          key={importId}
+          importId={importId}
+          documentRect={documentRect}
+          viewportSize={{ width: viewportGeometry?.width ?? 0, height: viewportGeometry?.height ?? 0 }}
+          index={index}
+          pageCount={pageCount}
+          isOwner={isOwner}
+          onPrevious={() => onTurnPage(importId, previousPage(index))}
+          onNext={() => onTurnPage(importId, nextPage(index, pageCount))}
+        />
+      ))}
+    </>
   );
 }

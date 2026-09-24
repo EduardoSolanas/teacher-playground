@@ -1491,6 +1491,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
             onSidebarOpenChange={handleSidebarOpenChange}
             pageState={pageState}
             onTurnPage={turnPage}
+            isRoomOwner={isRoomOwner}
             onDocumentFile={handlePickedDocumentFile}
           />
         </div>

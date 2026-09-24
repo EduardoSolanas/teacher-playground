@@ -137,6 +137,45 @@ async function turnPage(page: Page, importId: string, index: number): Promise<vo
   }, { importId, index });
 }
 
+/*
+ * Slice B: the pager UI itself (spec §6.3). `importStackedPdf` above already
+ * gives every test the import's rectangle in scene coordinates and its
+ * importId; these helpers are the pager's own surface -- its container
+ * (`data-testid="document-pager-<importId>"`, ExcalidrawWrapper.tsx /
+ * DocumentPager.tsx), its Previous/Next buttons and its "Page n of m" text.
+ */
+function pagerLocator(page: Page, importId: string) {
+  return page.getByTestId(`document-pager-${importId}`);
+}
+
+/** Whether two Playwright bounding boxes share any area. Touching edges do not count. */
+function boxesOverlap(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): boolean {
+  return a.x < b.x + b.width && b.x < a.x + a.width
+    && a.y < b.y + b.height && b.y < a.y + a.height;
+}
+
+/** Sets the board's scroll/zoom directly, the way a pan or a pinch would (whiteboard.spec.ts uses the same seam). */
+async function setBoardView(
+  page: Page,
+  view: { scrollX?: number; scrollY?: number; zoom?: number },
+): Promise<void> {
+  await page.evaluate((view) => {
+    const api = (window as any).__debugExcalidrawApi;
+    const current = api.getAppState();
+    api.updateScene({
+      appState: {
+        scrollX: view.scrollX ?? current.scrollX,
+        scrollY: view.scrollY ?? current.scrollY,
+        zoom: { value: view.zoom ?? current.zoom.value },
+      },
+      captureUpdate: 'IMMEDIATELY',
+    });
+  }, view);
+}
+
 test.describe('Paged documents', () => {
   test('a stacked import shares one rectangle across every page and carries the stacked stamp', async ({ page }) => {
     test.setTimeout(120_000);
@@ -400,5 +439,193 @@ test.describe('Paged documents', () => {
     await expect.poll(async () => page.evaluate(
       () => (window as any).__debugExcalidrawApi?.getAppState?.().activeTool?.type ?? null,
     )).toBe('selection');
+  });
+});
+
+/*
+ * Slice B: the pager UI (spec §6.3). Previous/"Page n of m"/Next for the
+ * owner, "Page n of m" only for everyone else; positioned under the
+ * document, clamped inside the viewport, never overlapping the room's
+ * furniture, at every width.
+ */
+test.describe('Paged documents pager', () => {
+  test('the owner turns pages with the pager buttons, the matching button disables at each end, and a student follows', async ({ page, browser }) => {
+    test.setTimeout(180_000);
+    const roomId = await createRoomWithMaxUsers(page, 'PagerButtons', 2);
+    await waitForExcalidrawApi(page);
+    const { importId } = await importStackedPdf(page);
+
+    const pager = pagerLocator(page, importId);
+    await expect(pager).toBeVisible();
+    const previous = pager.getByRole('button', { name: 'Previous page' });
+    const next = pager.getByRole('button', { name: 'Next page' });
+    await expect(pager).toContainText('Page 1 of 3');
+    await expect(previous).toBeDisabled();
+    await expect(next).toBeEnabled();
+
+    const peerContext = await newAuthenticatedContext(browser);
+    const peerPage = await peerContext.newPage();
+    try {
+      await joinExistingRoom(peerPage, roomId, 'PagerStudent');
+      await expectWaiting(peerPage);
+      await approveFirstWaitingPeer(page);
+      await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+      await waitForExcalidrawApi(peerPage);
+      const studentPager = pagerLocator(peerPage, importId);
+      await expect(studentPager).toBeVisible({ timeout: 15000 });
+      // A student sees the page label only -- no Previous/Next of its own.
+      await expect(studentPager.getByRole('button')).toHaveCount(0);
+      await expect(studentPager).toContainText('Page 1 of 3');
+
+      await next.click();
+      await expect(pager).toContainText('Page 2 of 3');
+      await expect(previous).toBeEnabled();
+      await expect(next).toBeEnabled();
+      await expect(studentPager).toContainText('Page 2 of 3', { timeout: 15000 });
+
+      await next.click();
+      await expect(pager).toContainText('Page 3 of 3');
+      await expect(next).toBeDisabled();
+      await expect(previous).toBeEnabled();
+      await expect(studentPager).toContainText('Page 3 of 3', { timeout: 15000 });
+
+      await previous.click();
+      await expect(pager).toContainText('Page 2 of 3');
+      await expect(previous).toBeEnabled();
+      await expect(next).toBeEnabled();
+      await expect(studentPager).toContainText('Page 2 of 3', { timeout: 15000 });
+    } finally {
+      await peerPage.close();
+      await peerContext.close();
+    }
+  });
+
+  test('a late joiner\'s pager shows the page the owner already turned to', async ({ page, browser }) => {
+    test.setTimeout(180_000);
+    const roomId = await createRoomWithMaxUsers(page, 'PagerLateJoin', 2);
+    await waitForExcalidrawApi(page);
+    const { importId } = await importStackedPdf(page);
+
+    const pager = pagerLocator(page, importId);
+    await pager.getByRole('button', { name: 'Next page' }).click();
+    await expect(pager).toContainText('Page 2 of 3');
+
+    const lateContext = await newAuthenticatedContext(browser);
+    const latePage = await lateContext.newPage();
+    try {
+      await joinExistingRoom(latePage, roomId, 'PagerLate');
+      await expectWaiting(latePage);
+      await approveFirstWaitingPeer(page);
+      await expect(latePage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+      await waitForExcalidrawApi(latePage);
+      await expect(pagerLocator(latePage, importId)).toContainText('Page 2 of 3', { timeout: 15000 });
+      await expect(pagerLocator(latePage, importId).getByRole('button')).toHaveCount(0);
+    } finally {
+      await latePage.close();
+      await lateContext.close();
+    }
+  });
+
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 768, height: 1024 },
+    { width: 390, height: 844 },
+  ]) {
+    test(`the pager's box stays inside the viewport and clear of the room's furniture, at ${viewport.width}px`, async ({ page }) => {
+      test.setTimeout(120_000);
+      await page.setViewportSize(viewport);
+      await createRoomWithMaxUsers(page, `PagerFit${viewport.width}`, 2);
+      await waitForExcalidrawApi(page);
+      const { importId } = await importStackedPdf(page);
+
+      const pager = pagerLocator(page, importId);
+      await expect(pager).toBeVisible();
+      const box = await pager.boundingBox();
+      if (!box) throw new Error('pager has no box');
+
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+      expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+
+      const obstacles = [
+        page.getByTestId('board-tabs'),
+        page.locator('.App-toolbar').first(),
+        page.getByTestId('button-undo'),
+        page.locator('.help-icon').first(),
+      ];
+      for (const obstacle of obstacles) {
+        if (!(await obstacle.isVisible().catch(() => false))) continue;
+        const other = await obstacle.boundingBox();
+        if (!other) continue;
+        expect(boxesOverlap(box, other)).toBe(false);
+      }
+
+      if (viewport.width === 390) {
+        for (const name of ['Previous page', 'Next page']) {
+          const buttonBox = await pager.getByRole('button', { name }).boundingBox();
+          if (!buttonBox) throw new Error(`${name} has no box`);
+          expect(buttonBox.width).toBeGreaterThanOrEqual(44);
+          expect(buttonBox.height).toBeGreaterThanOrEqual(44);
+        }
+      }
+    });
+  }
+
+  test('at 390x844, a touch tap on Next turns the page', async ({ browser }) => {
+    test.setTimeout(120_000);
+    const base = await newAuthenticatedContext(browser, `e2e-pager-touch-${crypto.randomUUID()}`);
+    const storageState = await base.storageState();
+    await base.close();
+    const context = await browser.newContext({
+      storageState,
+      viewport: { width: 390, height: 844 },
+      deviceScaleFactor: 3,
+      isMobile: true,
+      hasTouch: true,
+    });
+    const page = await context.newPage();
+    try {
+      await createRoomWithMaxUsers(page, 'PagerTouch', 2);
+      await waitForExcalidrawApi(page);
+      const { importId } = await importStackedPdf(page);
+
+      const pager = pagerLocator(page, importId);
+      await expect(pager).toContainText('Page 1 of 3');
+      await pager.getByRole('button', { name: 'Next page' }).tap();
+      await expect(pager).toContainText('Page 2 of 3');
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('the pager hides once the document pans fully off screen, and pins above the bottom bar when only the top of the page is on screen', async ({ page }) => {
+    test.setTimeout(120_000);
+    await createRoomWithMaxUsers(page, 'PagerPan', 2);
+    await waitForExcalidrawApi(page);
+    const { importId, rect } = await importStackedPdf(page);
+
+    const pager = pagerLocator(page, importId);
+    await expect(pager).toBeVisible();
+    const viewport = page.viewportSize();
+    if (!viewport) throw new Error('no viewport size');
+
+    // Zoomed well in and panned so the document's top sits just under the
+    // top chrome: at this zoom the document is certainly taller than the
+    // viewport, so its bottom edge is off screen and the pager must pin
+    // above the bottom instead of trying to sit under a bottom edge nobody
+    // can see.
+    const zoom = 6;
+    await setBoardView(page, { zoom, scrollX: -rect.x + 40 / zoom, scrollY: -rect.y + 140 / zoom });
+    await expect.poll(async () => pager.boundingBox()).not.toBeNull();
+    const pinnedBox = await pager.boundingBox();
+    if (!pinnedBox) throw new Error('pager has no box while pinned');
+    expect(pinnedBox.y + pinnedBox.height).toBeLessThanOrEqual(viewport.height);
+    expect(pinnedBox.y).toBeGreaterThan(0);
+
+    // Panning further still -- the whole document well past the bottom of
+    // the viewport -- hides the pager entirely.
+    await setBoardView(page, { scrollY: -rect.y - 100000 });
+    await expect(pager).not.toBeVisible();
   });
 });
