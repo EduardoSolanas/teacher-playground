@@ -271,6 +271,13 @@ type ExcalidrawWrapperProps = {
    */
   isRoomOwner?: boolean;
   /**
+   * How many board notices (RoomClient.tsx's `BOARD_NOTICE_CLASS` lines) are
+   * showing. They are the canvas's siblings, so nothing here resizes when
+   * one appears; the toolbar re-places itself whenever this changes, so its
+   * top-of-board fallback never lands on one.
+   */
+  boardNoticeCount?: number;
+  /**
    * A PDF chosen through Excalidraw's own image tool picker
    * (spec/PAGED_DOCUMENTS_SPEC.md §4.1): the fork calls this instead of
    * adding an image element. Handed the same queue a drop or paste PDF goes
@@ -305,8 +312,11 @@ export default function ExcalidrawWrapper({
   pageState = {},
   onTurnPage,
   isRoomOwner = false,
+  boardNoticeCount = 0,
   onDocumentFile,
 }: ExcalidrawWrapperProps) {
+  /** The toolbar placement's recompute, for effects outside the one that owns it. */
+  const recomputeToolbarRef = useRef<(() => void) | null>(null);
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   /** The root of this editor's own DOM, for the toolbar-placement measurement below. */
   const boardRootRef = useRef<HTMLDivElement | null>(null);
@@ -726,20 +736,10 @@ export default function ExcalidrawWrapper({
     const observer = new ResizeObserver(recompute);
     observer.observe(root);
 
-    /*
-     * A board notice mounting or unmounting (RoomClient.tsx) does not
-     * resize `root` -- it is an overlay, not part of this element's own
-     * box -- so the ResizeObserver above never re-fires for it on its own,
-     * and the very first placement (computed before any notice exists)
-     * would stick even after one appeared. `childList` on the document
-     * catches that mount/unmount directly; not `subtree` on `root` alone,
-     * because these notices are the canvas's siblings (RoomClient.tsx),
-     * not its descendants. Structural mutations only (no `attributes`), so
-     * a collaborator's cursor moving -- a style/transform change, not a
-     * node added or removed -- does not thrash this on every pointer move.
-     */
-    const mutationObserver = new MutationObserver(recompute);
-    mutationObserver.observe(document.body, { childList: true, subtree: true });
+    // A board notice appearing or going away does not resize `root` (it is
+    // the canvas's sibling), so the effect below re-runs this on
+    // `boardNoticeCount` instead of watching the whole document.
+    recomputeToolbarRef.current = recompute;
 
     let frame = 0;
     const waitForToolbar = () => {
@@ -757,7 +757,7 @@ export default function ExcalidrawWrapper({
     return () => {
       cancelled = true;
       observer.disconnect();
-      mutationObserver.disconnect();
+      recomputeToolbarRef.current = null;
     };
     /*
      * Depends on `isClient`, not `[]`: this component renders a ref-less
@@ -767,6 +767,12 @@ export default function ExcalidrawWrapper({
      * editor (and its ref) exists.
      */
   }, [isClient]);
+
+  // Re-place the toolbar when a board notice appears or goes away: the notice
+  // is already in the DOM by the time this effect runs, in the same commit.
+  useEffect(() => {
+    recomputeToolbarRef.current?.();
+  }, [boardNoticeCount]);
 
   /**
    * The page state this editor is rendering with, for the same reason

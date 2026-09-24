@@ -1535,6 +1535,10 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
             pageState={pageState}
             onTurnPage={turnPage}
             isRoomOwner={isRoomOwner}
+            boardNoticeCount={
+              [clearFailed, pdfExporting || pdfExportError !== null, pdfDragHint, pdfStatus !== null]
+                .filter(Boolean).length
+            }
             onDocumentFile={handlePickedDocumentFile}
           />
         </div>
