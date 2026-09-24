@@ -136,4 +136,23 @@ test.describe('Room phone controls', () => {
     expect(guideBox?.height ?? 0).toBeGreaterThanOrEqual(44);
     expect(clearBox?.height ?? 0).toBeGreaterThanOrEqual(44);
   });
+
+  test('the keyboard reaches Guide class and Clear board at 390px wide, like every other item', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await createRoomWithMaxUsers(page, 'PhoneKeyboardOwner', 2);
+
+    await page.getByTestId('room-title-trigger').click();
+    const menu = page.getByTestId('room-title-menu');
+    await expect(menu).toBeVisible();
+
+    // Walk the whole menu once with ArrowDown and note every item focused.
+    const itemCount = await menu.getByRole('menuitem').count();
+    const reached = new Set<string>();
+    for (let step = 0; step < itemCount; step += 1) {
+      await page.keyboard.press('ArrowDown');
+      reached.add(await page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset.testid ?? ''));
+    }
+    expect(reached).toContain('room-menu-guide');
+    expect(reached).toContain('room-menu-clear');
+  });
 });

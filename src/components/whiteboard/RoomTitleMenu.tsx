@@ -27,6 +27,10 @@ import {
  * Everything behind it is the owner's, so somebody who may not manage the room
  * sees the name and no menu at all rather than a menu that refuses them.
  */
+
+/** Where Tailwind's `sm:` starts; the phone-only items are shown below it. */
+const PHONE_ONLY_MEDIA = '(max-width: 639px)';
+
 export default function RoomTitleMenu({
   name,
   roomId,
@@ -153,15 +157,18 @@ export default function RoomTitleMenu({
     // While the share panel is showing there are no menu items to walk; its
     // own buttons keep their ordinary tab order.
     if (!showMenuItems) return;
-    // The phone-only pair (`data-phone-only`) sits below sm: as CSS
-    // `display: none` above it -- a real browser already leaves a hidden
-    // button out of the tab order, but this component walks the DOM itself
-    // for arrow/Home/End, so it has to leave them out by hand too. Without
-    // this, focusing a hidden item on a desktop-width menu is a silent
-    // `.focus()` no-op: `document.activeElement` never moves, and the cycle
-    // gets stuck rather than wrapping.
+    // The phone-only pair (`data-phone-only`) is shown below sm: and is CSS
+    // `display: none` above it. This component walks the DOM itself for
+    // arrow/Home/End, so it has to follow the same breakpoint by hand: on a
+    // phone the pair is walked like every other item (a keyboard user there
+    // must reach it), and above sm: it is left out, because focusing a hidden
+    // button is a silent `.focus()` no-op and the cycle would get stuck.
+    const phoneWidth = typeof window.matchMedia === 'function'
+      && window.matchMedia(PHONE_ONLY_MEDIA).matches;
     const items = Array.from(
-      event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]:not([data-phone-only])'),
+      event.currentTarget.querySelectorAll<HTMLElement>(
+        phoneWidth ? '[role="menuitem"]' : '[role="menuitem"]:not([data-phone-only])',
+      ),
     );
     if (items.length === 0) return;
     const current = items.indexOf(document.activeElement as HTMLElement);
