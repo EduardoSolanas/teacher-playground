@@ -92,20 +92,27 @@ export function pageFrame(
 }
 
 export type PageSize = { width: number; height: number };
-export type PagePlacement = { x: number; y: number; width: number; height: number };
+
+export type StackedRect = { x: number; y: number; width: number; height: number };
 
 /**
- * Stacks pages top to bottom from `origin`, each at its PDF size in board
- * units, so a page looks page-sized whatever resolution it was rendered at.
+ * Fits a page of size `pageSize` inside `firstPageRect`, centred, keeping its
+ * own aspect ratio (spec/PAGED_DOCUMENTS_SPEC.md §3.1): every page of a
+ * stacked import shares the first page's rectangle, but a page whose PDF
+ * size differs is scaled, up or down, to fit inside it rather than being
+ * stretched or cropped. The binding dimension -- the one that would reach the
+ * rectangle's edge first -- is whichever gives the smaller scale.
  */
-export function columnLayout(sizes: readonly PageSize[], origin: { x: number; y: number }): PagePlacement[] {
-  const placements: PagePlacement[] = [];
-  let y = origin.y;
-  for (const size of sizes) {
-    placements.push({ x: origin.x, y, width: size.width, height: size.height });
-    y += size.height + PAGE_GAP;
-  }
-  return placements;
+export function stackedPageRect(pageSize: PageSize, firstPageRect: StackedRect): StackedRect {
+  const scale = Math.min(firstPageRect.width / pageSize.width, firstPageRect.height / pageSize.height);
+  const width = pageSize.width * scale;
+  const height = pageSize.height * scale;
+  return {
+    x: firstPageRect.x + (firstPageRect.width - width) / 2,
+    y: firstPageRect.y + (firstPageRect.height - height) / 2,
+    width,
+    height,
+  };
 }
 
 /**

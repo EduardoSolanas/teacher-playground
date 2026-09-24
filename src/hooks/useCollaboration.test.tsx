@@ -10,6 +10,7 @@ import * as providerStatusModule from '@/lib/whiteboard/providerStatus';
 import { encodePresenceMessage, PRESENCE_MESSAGE_TYPE } from '@/lib/whiteboard/presenceMessage';
 import { encodeFollowMessage, FOLLOW_MESSAGE_TYPE } from '@/lib/whiteboard/followMessage';
 import { encodeCallMessage, CALL_MESSAGE_TYPE } from '@/lib/whiteboard/callMessage';
+import { encodePageMessage, PAGE_MESSAGE_TYPE } from '@/lib/whiteboard/pageMessage';
 import { publishCursor } from '@/lib/whiteboard/cursorAwareness';
 import type { CallCallback, WhiteboardProvider } from '@/lib/whiteboard/yWebsocketProvider';
 import type { CallState } from '@/lib/whiteboard/callMessage';
@@ -510,6 +511,90 @@ describe('useCollaboration with a real collaboration document', () => {
       deliverFrame(provider, CALL_MESSAGE_TYPE, encodeCallMessage({ active: false }));
     });
     await waitFor(() => expect(seen).toEqual([{ active: false }]));
+  });
+
+  it('folds received page frames, including the on-connect replay, into pageState', async () => {
+    const { result } = await renderJoined('real-pages');
+    const provider = result.current.provider as WhiteboardProvider;
+    expect(result.current.pageState).toEqual({});
+
+    act(() => {
+      deliverFrame(provider, PAGE_MESSAGE_TYPE, encodePageMessage({
+        importId: '0123456789abcdef',
+        index: 1,
+      }));
+    });
+    await waitFor(() => expect(result.current.pageState).toEqual({ '0123456789abcdef': 1 }));
+
+    // The connect replay is just more page frames on the same channel; a
+    // second import's entry does not disturb the first's.
+    act(() => {
+      deliverFrame(provider, PAGE_MESSAGE_TYPE, encodePageMessage({
+        importId: 'fedcba9876543210',
+        index: 0,
+      }));
+    });
+    await waitFor(() => expect(result.current.pageState).toEqual({
+      '0123456789abcdef': 1,
+      fedcba9876543210: 0,
+    }));
+  });
+
+  it('turnPage updates pageState at once and sends the frame for the owner', async () => {
+    const { result } = await renderJoined('real-turnpage-owner');
+    const provider = result.current.provider as WhiteboardProvider;
+    const sent: Uint8Array[] = [];
+    (provider as unknown as { ws: unknown }).ws = {
+      readyState: WebSocket.OPEN,
+      send: (frame: Uint8Array) => sent.push(frame),
+      close: () => {},
+    };
+
+    act(() => {
+      result.current.turnPage('0123456789abcdef', 2);
+    });
+
+    expect(result.current.pageState).toEqual({ '0123456789abcdef': 2 });
+    expect(sent).toHaveLength(1);
+    const decoder = decoding.createDecoder(sent[0]);
+    expect(decoding.readVarUint(decoder)).toBe(PAGE_MESSAGE_TYPE);
+  });
+
+  it('turnPage does nothing for a non-owner', async () => {
+    route = (url, init) => {
+      if (url.includes('/access')) return jsonResponse({ status: 'approved', role: 'editor' });
+      if (url.includes('/presence')) {
+        if (init.method === 'DELETE') return jsonResponse({});
+        return jsonResponse({ users: [], waitingPeers: [], isWaiting: false });
+      }
+      if (url.includes('/waiting')) return jsonResponse({});
+      if (url.includes('/room/')) {
+        return jsonResponse({
+          elements: [],
+          viewport: { x: 0, y: 0, zoom: 1 },
+          updated_at: 1,
+          maxUsers: 5,
+          name: 'Room',
+          hostPeerId: 'peer-host',
+        });
+      }
+      return jsonResponse({}, 404);
+    };
+    const { result } = await renderJoined('real-turnpage-editor');
+    const provider = result.current.provider as WhiteboardProvider;
+    const sent: Uint8Array[] = [];
+    (provider as unknown as { ws: unknown }).ws = {
+      readyState: WebSocket.OPEN,
+      send: (frame: Uint8Array) => sent.push(frame),
+      close: () => {},
+    };
+
+    act(() => {
+      result.current.turnPage('0123456789abcdef', 2);
+    });
+
+    expect(result.current.pageState).toEqual({});
+    expect(sent).toHaveLength(0);
   });
 
   it('loads a new room when the room read is missing', async () => {

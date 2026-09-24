@@ -505,6 +505,7 @@ describe('createCollaboration send helpers', () => {
 
     expect(collab.sendFollowMessage({ active: false })).toBe(false);
     expect(collab.sendCallMessage({ active: false })).toBe(false);
+    expect(collab.sendPageMessage({ importId: '0123456789abcdef', index: 0 })).toBe(false);
 
     collab.destroy();
   });

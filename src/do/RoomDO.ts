@@ -89,6 +89,7 @@ import * as encoding from 'lib0/encoding';
 import * as syncProtocol from 'y-protocols/sync';
 import { encodeUpdateFrame, handleSyncFrame, MESSAGE_SYNC } from '../lib/whiteboard/serverSync';
 import { buildCleanDoc, sanitizeSceneDoc, sanitizeSharedDoc } from '../lib/whiteboard/sceneGuard';
+import { recordPageGuardFrame, decideFrame, applyPageGuardDecision } from '../lib/whiteboard/documentPageGuard';
 import { replaceSharedElements, getElementsFromArray, pruneTombstonedElements } from '../lib/whiteboard/yjsDoc';
 import { snapshotElements } from '../lib/whiteboard/sceneSnapshot';
 import { snapshotBudgetState, SNAPSHOT_WARN_BYTES } from '../lib/whiteboard/snapshotBudget';
@@ -119,6 +120,13 @@ import {
   decodeCallMessagePayload,
   type CallState,
 } from '../lib/whiteboard/callMessage';
+import {
+  PAGE_MESSAGE_TYPE,
+  decodePageMessagePayload,
+  encodePageMessage,
+  type PageMessage,
+} from '../lib/whiteboard/pageMessage';
+import { MAX_STORED_PAGE_ENTRIES, withPageEntry } from '../lib/whiteboard/pageState';
 
 /**
  * How often live sockets are re-checked against the identity store. This is the
@@ -434,6 +442,18 @@ export class RoomDO extends DurableObject {
   private static readonly ACTIVE_CALL_KEY = 'call:active';
   private activeCall: CallState | null = null;
   private activeCallLoaded = false;
+
+  /**
+   * Server-held page state for stacked documents (spec/PAGED_DOCUMENTS_SPEC.md
+   * §5.2): which page each import is showing, owner-only writes. Same
+   * durability shape as the call state above -- read through storage after a
+   * hibernation, not just the in-memory copy -- and, like `ACTIVE_CALL_KEY`,
+   * not per-room-prefixed: production maps one room to one `RoomDO` instance
+   * via `idFromName(roomId)`, so the room is this object's storage.
+   */
+  private static readonly PAGE_STATE_KEY = 'documents:pages';
+  private pageEntries: readonly PageMessage[] = [];
+  private pageEntriesLoaded = false;
 
   /**
    * Rooms whose document has changed since it was last written. Flushed at most
@@ -1464,6 +1484,37 @@ export class RoomDO extends DurableObject {
     }
   }
 
+  private broadcastPage(message: PageMessage, exclude?: WebSocket): void {
+    const frame = encodePageMessage(message);
+    for (const peer of this.ctx.getWebSockets()) {
+      if (peer === exclude) continue;
+      const identity = peer.deserializeAttachment() as SocketIdentity | null;
+      if (!identity?.accountId || !isGrantedRole(getGrantRole(this.db, identity.roomId, identity.accountId))) continue;
+      try {
+        peer.send(frame);
+      } catch {
+        try { peer.close(); } catch { /* Already gone. */ }
+      }
+    }
+  }
+
+  private async loadPageEntries(): Promise<readonly PageMessage[]> {
+    if (!this.pageEntriesLoaded) {
+      this.pageEntries = (await this.ctx.storage.get<readonly PageMessage[]>(RoomDO.PAGE_STATE_KEY)) ?? [];
+      this.pageEntriesLoaded = true;
+    }
+    return this.pageEntries;
+  }
+
+  /** Applies a valid owner page frame: updates the capped map and persists it. */
+  private async recordPageEntry(message: PageMessage): Promise<void> {
+    const current = await this.loadPageEntries();
+    const next = withPageEntry(current, message, MAX_STORED_PAGE_ENTRIES);
+    this.pageEntries = next;
+    this.pageEntriesLoaded = true;
+    await this.ctx.storage.put(RoomDO.PAGE_STATE_KEY, next);
+  }
+
   private async loadActiveCall(): Promise<CallState | null> {
     if (!this.activeCallLoaded) {
       this.activeCall = (await this.ctx.storage.get<CallState>(RoomDO.ACTIVE_CALL_KEY)) ?? null;
@@ -1981,6 +2032,7 @@ export class RoomDO extends DurableObject {
       snapshotFormatKey(roomId),
       `ydoc-projection:${roomId}`,
       libraryStorageKey(roomId),
+      RoomDO.PAGE_STATE_KEY,
     ]);
     // Always lists: a deleted room must leave nothing behind, no matter what
     // this instance thinks the previous chunk count was.
@@ -1995,6 +2047,13 @@ export class RoomDO extends DurableObject {
     await this.ctx.storage.delete(RoomDO.ACTIVE_CALL_KEY);
     this.activeCall = null;
     this.activeCallLoaded = false;
+    // documents:pages follows the room's storage lifecycle exactly as
+    // ACTIVE_CALL_KEY does (spec §5.2): reset here so a room reused at
+    // the same id (or another room this instance still holds, in tests that
+    // put more than one behind a single object) never inherits a deleted
+    // room's page state from memory.
+    this.pageEntries = [];
+    this.pageEntriesLoaded = false;
   }
 
   /** Rehydrates projection retry markers that survived a Durable Object eviction. */
@@ -2549,6 +2608,13 @@ export class RoomDO extends DurableObject {
     if (this.activeCall) {
       try { server.send(encodeCallMessage(this.activeCall)); } catch { /* Best effort. */ }
     }
+    // After the call state (spec §5.2): one page frame per stored entry, in
+    // stored (insertion) order. Read through storage, not the in-memory
+    // copy, for the same hibernation reason as the call state above.
+    const storedPages = await this.loadPageEntries();
+    for (const entry of storedPages) {
+      try { server.send(encodePageMessage(entry)); } catch { /* Best effort. */ }
+    }
     // Awaited, not floating: a storage write racing the returned response
     // shows up as "database is locked: SQLITE_BUSY".
     await this.scheduleRevocationCheck();
@@ -3053,6 +3119,22 @@ export class RoomDO extends DurableObject {
         return;
       }
 
+      // Page-turn frames use the same private y-websocket message type
+      // strategy as the guide and call frames above: recognised here, never
+      // applied to the Yjs document or relayed as a Yjs update.
+      try {
+        const decoder3 = decoding.createDecoder(bytes);
+        if (decoding.readVarUint(decoder3) === PAGE_MESSAGE_TYPE) {
+          const message = decodePageMessagePayload(decoder3);
+          if (!message || !isOwnerRole(role)) return;
+          await this.recordPageEntry(message);
+          this.broadcastPage(message, ws);
+          return;
+        }
+      } catch {
+        return;
+      }
+
       if (!canWriteBoard(role)) {
         try {
           const doc = await this.getRoomDoc(attachment.roomId);
@@ -3077,9 +3159,28 @@ export class RoomDO extends DurableObject {
       if (messageType === MESSAGE_SYNC) {
         try {
           const doc = await this.getRoomDoc(attachment.roomId);
+          const elementsArray = doc.getArray<Y.Map<unknown>>('elements');
           const before = Y.encodeStateVector(doc);
+          const isOwnerWriter = isOwnerRole(role);
 
-          const replies = handleSyncFrame(doc, this.stageSyncUpdate(attachment.roomId, bytes), ws);
+          /*
+           * spec/PAGED_DOCUMENTS_SPEC.md §7.1: the recorder is attached only
+           * around this one call, so the server's own sanitize transactions
+           * below are never recorded, and cost scales with what the frame
+           * touched rather than with how many pages the room holds. Owner
+           * frames are never undone, so an owner writer skips recording
+           * entirely.
+           */
+          let replies: Uint8Array[];
+          let pageGuardFrame: ReturnType<typeof recordPageGuardFrame> | null = null;
+          if (isOwnerWriter) {
+            replies = handleSyncFrame(doc, this.stageSyncUpdate(attachment.roomId, bytes), ws);
+          } else {
+            replies = [];
+            pageGuardFrame = recordPageGuardFrame(elementsArray, () => {
+              replies = handleSyncFrame(doc, this.stageSyncUpdate(attachment.roomId, bytes), ws);
+            });
+          }
           for (const reply of replies) {
             try {
               ws.send(reply);
@@ -3094,6 +3195,13 @@ export class RoomDO extends DurableObject {
 
           sanitizeSceneDoc(doc, { maxElements: RoomDO.maxElementsForTests ?? undefined });
           sanitizeSharedDoc(doc);
+
+          // §7: only the owner moves, changes or removes a document page
+          // element. Applied after the sanitize passes and before the relay
+          // diff is computed, so a refused change never reaches a peer.
+          if (pageGuardFrame) {
+            applyPageGuardDecision(doc, elementsArray, decideFrame(pageGuardFrame));
+          }
 
           const diff = Y.encodeStateAsUpdate(doc, before);
           if (!isEmptyUpdate(diff)) {

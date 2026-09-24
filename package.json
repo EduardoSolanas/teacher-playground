@@ -36,7 +36,7 @@
   "dependencies": {
     "@livekit/components-react": "^2.9.24",
     "@tailwindcss/postcss": "^4.1.18",
-    "@teacher-playground/excalidraw": "https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.11/package.tgz",
+    "@teacher-playground/excalidraw": "https://github.com/EduardoSolanas/excalidraw/releases/download/teacher-playground-v0.18.1-tp.12/package.tgz",
     "better-sqlite3": "^12.10.0",
     "jspdf": "4.2.1",
     "livekit-client": "^2.22.0",

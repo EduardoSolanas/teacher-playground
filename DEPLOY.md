@@ -205,7 +205,7 @@ formats and is safe to roll back to.
 
 The production build points Excalidraw at the immutable release base:
 
-`https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.11/dist/prod/`
+`https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.12/dist/prod/`
 
 The fork repository is the sole owner of the R2 bucket, custom domain, release
 objects, and release metadata. This repository only consumes the pinned
@@ -227,7 +227,7 @@ history only and are not current workflow behavior. Historical release
 is 9,445,242 bytes. The parent production deployment at the time was green: run
 `32783092806` completed clean install, security scan, typecheck, unit tests,
 static export, real Worker tests, and Wrangler deployment while consuming
-`0.18.1-tp.6`. The pins have since moved to `0.18.1-tp.11`.
+`0.18.1-tp.6`. The pins have since moved to `0.18.1-tp.12`.
 
 #### The production asset host must exist before the first production deploy
 

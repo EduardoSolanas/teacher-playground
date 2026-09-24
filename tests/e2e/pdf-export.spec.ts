@@ -2,6 +2,7 @@ import { test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { makePdf } from './pdfFixture';
+import { dropPdfOnBoard } from './pdfDrop';
 import {
   appendElement,
   approveFirstWaitingPeer,
@@ -39,14 +40,13 @@ async function readPdf(path: string): Promise<PdfFacts> {
 }
 
 async function importPdf(page: Page, pageCount: number): Promise<void> {
-  await page.getByTestId('whiteboard-insert-pdf-input').setInputFiles({
-    name: 'worksheet.pdf',
-    mimeType: 'application/pdf',
-    buffer: makePdf(pageCount),
-  });
-  await expect(page.getByTestId('pdf-import-dialog')).toBeVisible();
-  await page.getByTestId('pdf-import-insert').click();
-  await expect(page.getByTestId('pdf-import-dialog')).toHaveCount(0, { timeout: 30000 });
+  await dropPdfOnBoard(page, 'worksheet.pdf', makePdf(pageCount));
+  await expect
+    .poll(async () => page.evaluate(() => {
+      const api = (window as any).__debugExcalidrawApi;
+      return (api?.getSceneElements?.() ?? []).filter((element: any) => element.type === 'image' && !element.isDeleted).length;
+    }), { timeout: 30000 })
+    .toBe(pageCount);
 }
 
 async function downloadPdf(page: Page): Promise<string> {

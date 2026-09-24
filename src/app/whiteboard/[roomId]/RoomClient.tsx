@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
+import type { ClipboardEvent, DragEvent } from 'react';
 import PeopleButton from '@/components/whiteboard/PeopleButton';
 import { CALL_RAIL_WIDTH } from '@/lib/av/callRail';
 import { useRouter } from 'next/navigation';
@@ -32,7 +33,21 @@ import RoomTitleMenu from '@/components/whiteboard/RoomTitleMenu';
 import { saveBlob } from '@/lib/whiteboard/saveBlob';
 import { boardFileName } from '@/lib/whiteboard/boardExport';
 import { exportFailureMessage } from '@/lib/documents/pdfExport';
+import { failureMessage } from '@/lib/documents/pdfImport';
 import type { RoomStorage } from '@/lib/documents/roomStorage';
+import { dataUrlBytes, importTooLargeMessage } from '@/lib/documents/roomStorage';
+import {
+  addingPageMessage,
+  documentOrigins,
+  dragOverHasPdf,
+  MIXED_DROP_MESSAGE,
+  needsPageRangeChoice,
+  NOT_OWNER_MESSAGE,
+  pdfsInDrop,
+  someNonPdf,
+} from '@/lib/documents/pdfIntake';
+import { openPdf, renderPage, type RenderedPage } from '@/components/whiteboard/pdfRenderer';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { BoardActions } from '@/components/whiteboard/ExcalidrawWrapper';
 import SupportButton from '@/components/whiteboard/SupportButton';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
@@ -111,11 +126,22 @@ const ExcalidrawWrapper = dynamic(
 );
 
 /*
- * The PDF dialog carries the pdf.js renderer with it (PERF-S2), so it loads
- * when a teacher actually picks a file -- never as part of opening the room.
- * No loading placeholder: until its chunk lands nothing is open yet, and the
- * dialog's own "opening" stage is the first thing worth showing.
+ * A PDF over MAX_PAGES_PER_IMPORT pages needs the teacher to choose which
+ * ones to add (spec/PDF_IMPORT_SPEC.md §3) -- the one thing dropping or
+ * pasting cannot decide by itself. Dynamic so the chunk (and pdf.js, pulled
+ * in only by the render path this dialog never touches) loads on first drop,
+ * never as part of opening the room (PERF-S2).
  */
+/**
+ * Where the board's short notices sit (a failed clear, the PDF export and
+ * import lines, the drop hint), so they never cover what someone is working
+ * with: just under the board tabs from 640px up, where Excalidraw's toolbar is
+ * at the bottom, and above the bottom bar on a phone, where the toolbar is at
+ * the top instead. `w-max` sizes the notice to its text, so a short line never
+ * wraps; the max width keeps a long one inside the screen.
+ */
+const BOARD_NOTICE_CLASS = 'fixed left-1/2 bottom-24 sm:bottom-auto sm:top-24 z-[1450] -translate-x-1/2 w-max max-w-[calc(100vw-2rem)] rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-[0.8rem] text-amber-300 shadow-xl shadow-slate-950/40';
+
 const PdfImportDialog = dynamic(
   () => import('@/components/whiteboard/PdfImportDialog'),
   { ssr: false },
@@ -428,16 +454,42 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
   const [guestHost, setGuestHost] = useState(false);
   const [guestHostReady, setGuestHostReady] = useState(false);
   const [clearModalOpen, setClearModalOpen] = useState(false);
-  /** The PDF the teacher picked for Insert PDF; the dialog is open while set. */
-  const [pdfFile, setPdfFile] = useState<File | null>(null);
-  const pdfInputRef = useRef<HTMLInputElement>(null);
   /**
-   * What the room's pictures weigh, read when a PDF is picked so the dialog can
-   * say how much is free and refuse an import that would not fit. Owner only,
-   * from the owner-only settings surface; null when it cannot be read, leaving
-   * the upload route as the only check, as before.
+   * A PDF comes in by drop or paste, not a picker (spec/PDF_IMPORT_SPEC.md
+   * §3): `pdfStatus` is the top-of-board status line ("Adding page n of m…",
+   * a refusal, a failure), `pdfDragHint` is the "Drop to add this PDF" hint
+   * shown while one is dragged over the board, and `pdfRangeChoice` opens the
+   * one dialog that survives -- the page-range choice for a PDF longer than
+   * `MAX_PAGES_PER_IMPORT`.
    */
-  const [roomStorage, setRoomStorage] = useState<RoomStorage | null>(null);
+  const [pdfStatus, setPdfStatus] = useState<
+    { kind: 'progress'; message: string } | { kind: 'message'; text: string } | null
+  >(null);
+  const [pdfDragHint, setPdfDragHint] = useState(false);
+  const [pdfRangeChoice, setPdfRangeChoice] = useState<{
+    pdf: PDFDocumentProxy;
+    fileName: string;
+    resolve: (pages: number[] | null) => void;
+  } | null>(null);
+  /**
+   * Documents queued to render, each carrying the batch it was dropped or
+   * pasted with -- the files of one gesture are placed beside each other
+   * (spec §3); a later gesture starts its own batch at its own point. A ref,
+   * not state: the queue drains inside an async loop that reads and mutates
+   * it directly rather than through re-renders.
+   */
+  const pdfQueueRef = useRef<
+    { file: File; batch: { centre: { x: number; y: number }; sizes: { width: number; height: number }[] } }[]
+  >([]);
+  const pdfProcessingRef = useRef(false);
+  const pdfCancelRef = useRef(false);
+  /**
+   * A note about the drop itself ("Only the PDF was added…"), said once the
+   * queue has finished rather than when the drop arrives: the progress line
+   * would otherwise replace it before anyone could read it.
+   */
+  const pdfNoteRef = useRef<string | null>(null);
+  const canvasAreaRef = useRef<HTMLDivElement>(null);
   const [clearFailed, setClearFailed] = useState(false);
   // The store is the single source of truth for the active tool: keyboard
   // shortcuts write to it directly, so deriving from it keeps the sidebar
@@ -535,6 +587,8 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
     remoteCallActive,
     sendFollowMessage,
     sendCallMessage,
+    pageState,
+    turnPage,
   } = useCollaboration(roomId, callLiveRef, undefined, request);
 
   const handleGuideViewport = useCallback((nextViewport: { x: number; y: number; zoom: number }) => {
@@ -880,23 +934,6 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
       </button>
       <button
         type="button"
-        data-testid="whiteboard-insert-pdf"
-        onClick={() => pdfInputRef.current?.click()}
-        className="ToolIcon_type_button ToolIcon_size_medium ToolIcon_type_button--show ToolIcon"
-        aria-label="Insert PDF"
-        title="Insert PDF"
-      >
-        <div className="ToolIcon__icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
-            <path d="M14 3v5h5" />
-            <path d="M12 12v6" />
-            <path d="M9 15h6" />
-          </svg>
-        </div>
-      </button>
-      <button
-        type="button"
         data-testid="whiteboard-clear-btn"
         onClick={() => setClearModalOpen(true)}
         className="ToolIcon_type_button ToolIcon_size_medium ToolIcon_type_button--show ToolIcon tp-board-footer__button--danger"
@@ -957,6 +994,212 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
   const handleOpenLibrary = useCallback(() => {
     boardActionsRef.current?.openLibrary();
   }, []);
+
+  /**
+   * What the room's pictures weigh right now, from the owner-only settings
+   * surface -- read fresh for each document rather than cached, so a room
+   * that filled up mid-lesson is measured accurately. Null when it cannot be
+   * read, leaving the upload route as the only check, as before.
+   */
+  const readRoomStorage = useCallback(async (): Promise<RoomStorage | null> => {
+    try {
+      const response = await request(`/api/whiteboard/room/${roomId}/settings`);
+      if (!response.ok) return null;
+      const body = (await response.json()) as { fileBytesUsed?: unknown; fileBytesLimit?: unknown };
+      if (typeof body.fileBytesUsed !== 'number' || typeof body.fileBytesLimit !== 'number') return null;
+      return { used: body.fileBytesUsed, limit: body.fileBytesLimit };
+    } catch {
+      return null;
+    }
+  }, [request, roomId]);
+
+  /**
+   * Drains the queue one document at a time (spec §3: "a second PDF ... waits
+   * its turn"). Only one call runs at once -- `pdfProcessingRef` guards
+   * against a drop landing while an earlier one is still draining the queue.
+   */
+  const processPdfQueue = useCallback(async () => {
+    if (pdfProcessingRef.current) return;
+    pdfProcessingRef.current = true;
+    try {
+      while (pdfQueueRef.current.length > 0) {
+        const item = pdfQueueRef.current[0];
+        pdfCancelRef.current = false;
+
+        const opened = await openPdf(item.file);
+        if (!opened.ok) {
+          setPdfStatus({ kind: 'message', text: failureMessage(opened.failure) });
+          pdfQueueRef.current.shift();
+          continue;
+        }
+
+        let pages: number[];
+        if (needsPageRangeChoice(opened.pdf.numPages)) {
+          const chosen = await new Promise<number[] | null>((resolve) => {
+            setPdfRangeChoice({ pdf: opened.pdf, fileName: item.file.name, resolve });
+          });
+          setPdfRangeChoice(null);
+          if (!chosen) {
+            void opened.destroy();
+            pdfQueueRef.current.shift();
+            continue;
+          }
+          pages = chosen;
+        } else {
+          pages = Array.from({ length: opened.pdf.numPages }, (_, index) => index + 1);
+        }
+
+        // Where this document lands: beside whatever else this gesture placed.
+        const firstPage = await opened.pdf.getPage(pages[0]);
+        const firstSize = firstPage.getViewport({ scale: 1 });
+        firstPage.cleanup();
+        item.batch.sizes.push({ width: firstSize.width, height: firstSize.height });
+        const origin = documentOrigins(item.batch.sizes, item.batch.centre).at(-1)!;
+        const targetCentre = { x: origin.x + firstSize.width / 2, y: origin.y + firstSize.height / 2 };
+
+        const rendered: RenderedPage[] = [];
+        let pageFailureMessage: string | null = null;
+        for (const [index, pageNumber] of pages.entries()) {
+          if (pdfCancelRef.current) break;
+          setPdfStatus({ kind: 'progress', message: addingPageMessage(index + 1, pages.length) });
+          try {
+            rendered.push(await renderPage(opened.pdf, pageNumber));
+          } catch {
+            pageFailureMessage = failureMessage({ kind: 'page', page: pageNumber });
+            break;
+          }
+        }
+        void opened.destroy();
+
+        if (pdfCancelRef.current) {
+          setPdfStatus(null);
+          pdfQueueRef.current.shift();
+          continue;
+        }
+        if (pageFailureMessage) {
+          setPdfStatus({ kind: 'message', text: pageFailureMessage });
+          pdfQueueRef.current.shift();
+          continue;
+        }
+
+        const storage = await readRoomStorage();
+        if (storage) {
+          const needed = rendered.reduce((total, page) => total + dataUrlBytes(page.dataURL), 0);
+          const tooLarge = importTooLargeMessage(needed, storage.used, storage.limit);
+          if (tooLarge) {
+            setPdfStatus({ kind: 'message', text: tooLarge });
+            pdfQueueRef.current.shift();
+            continue;
+          }
+        }
+
+        boardActionsRef.current?.insertPages(rendered, targetCentre);
+        setPdfStatus(null);
+        pdfQueueRef.current.shift();
+      }
+      const note = pdfNoteRef.current;
+      pdfNoteRef.current = null;
+      // A failure already on the line matters more than the note; keep it.
+      if (note) setPdfStatus((current) => current ?? { kind: 'message', text: note });
+    } finally {
+      pdfProcessingRef.current = false;
+    }
+  }, [readRoomStorage]);
+
+  /**
+   * The capture-phase entry point for a drop or paste that might hold a PDF
+   * (spec §3): PDFs are pulled out and queued, and the rest -- pictures, a
+   * drop with no PDF at all -- is left for Excalidraw to handle exactly as it
+   * does today. Returns whether this drop/paste was a PDF's to take, so the
+   * caller knows whether to stop the event reaching Excalidraw.
+   */
+  const takePdfsFromFiles = useCallback(
+    (files: File[], centre: { x: number; y: number }): boolean => {
+      const pdfFiles = pdfsInDrop(files);
+      if (pdfFiles.length === 0) return false;
+      if (!isRoomOwner) {
+        setPdfStatus({ kind: 'message', text: NOT_OWNER_MESSAGE });
+        return true;
+      }
+      if (someNonPdf(files)) pdfNoteRef.current = MIXED_DROP_MESSAGE;
+      const batch = { centre, sizes: [] as { width: number; height: number }[] };
+      for (const file of pdfFiles) pdfQueueRef.current.push({ file, batch });
+      void processPdfQueue();
+      return true;
+    },
+    [isRoomOwner, processPdfQueue],
+  );
+
+  // A refusal or a failure is read once, then clears itself; a progress line
+  // is replaced by the next status the queue sets, never by a timer.
+  useEffect(() => {
+    if (!pdfStatus || pdfStatus.kind !== 'message') return;
+    const shown = pdfStatus;
+    const timer = setTimeout(() => {
+      setPdfStatus((current) => (current === shown ? null : current));
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [pdfStatus]);
+
+  const handlePdfDropCapture = useCallback(
+    (event: DragEvent<HTMLDivElement>) => {
+      const files = Array.from(event.dataTransfer?.files ?? []);
+      setPdfDragHint(false);
+      if (files.length === 0) return;
+      const centre = boardActionsRef.current?.sceneCoordsFromClient(event.clientX, event.clientY) ?? { x: 0, y: 0 };
+      if (takePdfsFromFiles(files, centre)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+    [takePdfsFromFiles],
+  );
+
+  const handlePdfDragOverCapture = useCallback((event: DragEvent<HTMLDivElement>) => {
+    const items = Array.from(event.dataTransfer?.items ?? []).map((item) => ({ type: item.type }));
+    setPdfDragHint(dragOverHasPdf(items));
+  }, []);
+
+  const handlePdfDragLeaveCapture = useCallback((event: DragEvent<HTMLDivElement>) => {
+    const next = event.relatedTarget as Node | null;
+    if (next && event.currentTarget.contains(next)) return;
+    setPdfDragHint(false);
+  }, []);
+
+  const handlePdfPasteCapture = useCallback(
+    (event: ClipboardEvent<HTMLDivElement>) => {
+      const files = Array.from(event.clipboardData?.files ?? []);
+      if (files.length === 0) return;
+      // A paste has no drop point, so it lands on the centre of the view.
+      const rect = canvasAreaRef.current?.getBoundingClientRect();
+      const clientX = rect ? rect.left + rect.width / 2 : 0;
+      const clientY = rect ? rect.top + rect.height / 2 : 0;
+      const centre = boardActionsRef.current?.sceneCoordsFromClient(clientX, clientY) ?? { x: 0, y: 0 };
+      if (takePdfsFromFiles(files, centre)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+    [takePdfsFromFiles],
+  );
+
+  /**
+   * A PDF picked through Excalidraw's own image tool
+   * (spec/PAGED_DOCUMENTS_SPEC.md §4.1): the fork hands it straight over
+   * instead of adding an image element. It takes the same queue a drop or
+   * paste PDF goes through -- a picker choice has no drop point, so it lands
+   * on the view centre, exactly like a paste.
+   */
+  const handlePickedDocumentFile = useCallback(
+    (file: File) => {
+      const rect = canvasAreaRef.current?.getBoundingClientRect();
+      const clientX = rect ? rect.left + rect.width / 2 : 0;
+      const clientY = rect ? rect.top + rect.height / 2 : 0;
+      const centre = boardActionsRef.current?.sceneCoordsFromClient(clientX, clientY) ?? { x: 0, y: 0 };
+      takePdfsFromFiles([file], centre);
+    },
+    [takePdfsFromFiles],
+  );
 
   /*
    * The roster gives up the right edge while Excalidraw's sidebar has it.
@@ -1171,7 +1414,6 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
               request={request}
               onRename={handleRenameRoom}
               onOpenLibrary={handleOpenLibrary}
-              onInsertPdf={() => pdfInputRef.current?.click()}
               onDownloadPdf={() => { void handleDownloadPdf(); }}
             />
             {shouldShowStartCall({
@@ -1188,7 +1430,22 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
           </div>
         }
       />
-      <div className={`flex flex-col ${ROOM_CANVAS_CLASS} ${roomCanvasTopClass(guestHost)} ${roomCanvasRightClass(callRailVisible)}`} style={roomCanvasRailStyle(callRailVisible)} data-testid="whiteboard-canvas-area">
+      <div
+        ref={canvasAreaRef}
+        className={`flex flex-col ${ROOM_CANVAS_CLASS} ${roomCanvasTopClass(guestHost)} ${roomCanvasRightClass(callRailVisible)}`}
+        style={roomCanvasRailStyle(callRailVisible)}
+        data-testid="whiteboard-canvas-area"
+        /*
+         * Caught here, in the capture phase, so a PDF never reaches Excalidraw
+         * (spec/PDF_IMPORT_SPEC.md §3): it would otherwise report an
+         * unsupported file. Anything without a PDF is left alone -- the event
+         * is not stopped, so Excalidraw's own handling still runs.
+         */
+        onDropCapture={handlePdfDropCapture}
+        onDragOverCapture={handlePdfDragOverCapture}
+        onDragLeaveCapture={handlePdfDragLeaveCapture}
+        onPasteCapture={handlePdfPasteCapture}
+      >
         {/*
           * The boards of the room, one tab each. Owner, not host, for the
           * clear control -- the same split as the footer's clear above: the
@@ -1232,6 +1489,10 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
             footer={boardFooter}
             onBoardActions={(actions) => { boardActionsRef.current = actions; }}
             onSidebarOpenChange={handleSidebarOpenChange}
+            pageState={pageState}
+            onTurnPage={turnPage}
+            isRoomOwner={isRoomOwner}
+            onDocumentFile={handlePickedDocumentFile}
           />
         </div>
       </div>
@@ -1307,7 +1568,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         <div
           role="status"
           data-testid="whiteboard-clear-failed"
-          className="fixed left-1/2 top-16 z-[1450] -translate-x-1/2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-[0.8rem] text-amber-300 shadow-xl shadow-slate-950/40"
+          className={BOARD_NOTICE_CLASS}
         >
           Couldn&rsquo;t clear this board. Check your connection and try again.
         </div>
@@ -1316,53 +1577,52 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         <div
           role="status"
           data-testid="whiteboard-pdf-export-notice"
-          className="fixed left-1/2 top-16 z-[1450] -translate-x-1/2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-[0.8rem] text-amber-300 shadow-xl shadow-slate-950/40"
+          className={BOARD_NOTICE_CLASS}
         >
           {pdfExporting ? 'Building the PDF…' : pdfExportError}
         </div>
       )}
       {shouldOverlayConnectingScreen({ boardEverShown, isSynced }) && <LoadingScreen />}
       {/*
-        * The picker behind Insert PDF, opened from the board footer and from
-        * the title menu. Outside the footer on purpose: Excalidraw does not
-        * draw the footer at phone widths, and the picker would go with it.
-        * Choosing a file only reads it into this browser; the dialog renders
-        * it and nothing but page images is sent.
+        * A PDF comes in by drop or paste, with no picker (spec/PDF_IMPORT_SPEC.md
+        * §3): the hint while one is dragged over, and the status line while
+        * pages render or a refusal/failure is shown, styled like the PDF
+        * export notice above.
         */}
-      {isRoomOwner && (
-        <input
-          ref={pdfInputRef}
-          type="file"
-          accept="application/pdf,.pdf"
-          className="hidden"
-          data-testid="whiteboard-insert-pdf-input"
-          onChange={(event) => {
-            const chosen = event.target.files?.[0] ?? null;
-            // Cleared so choosing the same file again still fires a change.
-            event.target.value = '';
-            if (!chosen) return;
-            setRoomStorage(null);
-            setPdfFile(chosen);
-            void (async () => {
-              try {
-                const response = await request(`/api/whiteboard/room/${roomId}/settings`);
-                if (!response.ok) return;
-                const body = await response.json() as { fileBytesUsed?: unknown; fileBytesLimit?: unknown };
-                if (typeof body.fileBytesUsed !== 'number' || typeof body.fileBytesLimit !== 'number') return;
-                setRoomStorage({ used: body.fileBytesUsed, limit: body.fileBytesLimit });
-              } catch {
-                // The dialog simply says nothing about storage.
-              }
-            })();
-          }}
-        />
+      {pdfDragHint && (
+        <div
+          role="status"
+          data-testid="whiteboard-pdf-drop-hint"
+          className={BOARD_NOTICE_CLASS}
+        >
+          Drop to add this PDF
+        </div>
       )}
-      {pdfFile && (
+      {pdfStatus && (
+        <div
+          role="status"
+          data-testid="whiteboard-pdf-import-notice"
+          className={`${BOARD_NOTICE_CLASS} flex items-center gap-3`}
+        >
+          <span>{pdfStatus.kind === 'progress' ? pdfStatus.message : pdfStatus.text}</span>
+          {pdfStatus.kind === 'progress' && (
+            <button
+              type="button"
+              data-testid="pdf-import-cancel"
+              onClick={() => { pdfCancelRef.current = true; }}
+              className="-my-2 -mr-3 min-h-11 min-w-11 px-3 underline"
+            >
+              Cancel
+            </button>
+          )}
+        </div>
+      )}
+      {pdfRangeChoice && (
         <PdfImportDialog
-          file={pdfFile}
-          storage={roomStorage}
-          onInsert={(pages) => boardActionsRef.current?.insertPages(pages)}
-          onClose={() => setPdfFile(null)}
+          pdf={pdfRangeChoice.pdf}
+          fileName={pdfRangeChoice.fileName}
+          onChoose={(pages) => pdfRangeChoice.resolve(pages)}
+          onCancel={() => pdfRangeChoice.resolve(null)}
         />
       )}
       {/* Stacked above the mobile tool bar; centred on its own row from sm: up. */}

@@ -141,7 +141,7 @@
           "assetOrigin feeds the Worker's CSP font-src; assetBaseUrl is inlined into",
           "the static export at build time."
         ],
-        "assetBaseUrl": "https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.11/dist/prod/",
+        "assetBaseUrl": "https://excalidraw-assets.sen-tutor.co.uk/releases/0.18.1-tp.12/dist/prod/",
         "assetOrigin": "https://excalidraw-assets.sen-tutor.co.uk"
       }
     }

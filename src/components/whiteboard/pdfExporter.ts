@@ -3,10 +3,10 @@ import {
   EXPORT_JPEG_QUALITY,
   boundingBox,
   cropInCanvas,
+  documentPages,
+  exportPageElements,
   exportRenderScale,
   leftoverElements,
-  pageElements,
-  worksheetPages,
   type ExportFailure,
   type Rect,
   type SceneElement,
@@ -34,13 +34,17 @@ export type ExportResult = { ok: true; blob: Blob } | { ok: false; failure: Expo
 type PlannedPage = { box: Rect; elements: readonly SceneElement[] };
 
 function plan(elements: readonly SceneElement[]): PlannedPage[] {
-  const pages = worksheetPages(elements);
+  // documentPages covers both column worksheet pages and stacked-document
+  // pages (spec/PAGED_DOCUMENTS_SPEC.md §6.4), interleaved by the same
+  // first-appearance rule; exportPageElements knows which elements belong on
+  // each, by rectangle for a column page or by page id for a stacked one.
+  const pages = documentPages(elements);
   const planned: PlannedPage[] = pages.map((page) => ({
     // Rendered from the page's own rectangle, so the PDF page is the worksheet
     // page: an annotation hanging off the edge is cropped, as it looks on the
     // board. The bounding box of the drawn elements would grow the page instead.
     box: page.rect,
-    elements: pageElements(elements, page.rect),
+    elements: exportPageElements(elements, page),
   }));
 
   const leftover = leftoverElements(elements, pages.map((page) => page.rect));

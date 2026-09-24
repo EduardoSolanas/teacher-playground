@@ -13,8 +13,9 @@ selected page becomes an ordinary Excalidraw image element uploaded through the
 existing board-file path. Nothing new exists on the server: no route, no table,
 no job, no converter, and no new object family in R2.
 
-In scope: PDF files, a page-range choice, and placement of the pages as a column
-of locked images on the board being viewed.
+In scope: PDF files dropped or pasted on the board, a page-range choice only
+for very long PDFs, and placement of the pages as locked images on the board
+being viewed.
 
 Out of scope for this specification, each needing its own design note before
 implementation: PowerPoint and Word (teachers export to PDF first), Google Drive
@@ -58,24 +59,60 @@ page text is not selectable, and the original file is not kept.
 
 ## 3. User flow
 
-1. The room owner chooses **Insert PDF** in the board footer or **Insert PDF…**
-   in the room title menu — the menu is the route at phone widths, where
-   Excalidraw draws no footer — or (milestone 2) drops a `.pdf` file on the
-   board. Editors can already add images, but the first release keeps the
-   action with the teacher's controls.
-2. The file is opened locally. A dialog shows the file name, the page count, and
-   a page range defaulting to all pages when the document has at most
-   `MAX_PAGES_PER_IMPORT` pages, otherwise to the first `MAX_PAGES_PER_IMPORT`.
-3. On confirm, pages render one at a time with a visible "Rendering page n of m"
-   progress line and a Cancel button. Cancel stops rendering and inserts nothing.
+There is no menu item, footer button or file picker for PDFs. A PDF comes in
+the way a picture does: it is dropped on the board or pasted onto it, and the
+board recognises it and takes it in without asking anything it can decide for
+itself.
+
+1. The room owner **drops** a `.pdf` file anywhere on the board, or **pastes**
+   one (a PDF file copied in the file manager, then Ctrl/Cmd+V on the board).
+   While a PDF is dragged over the board, a hint reads "Drop to add this PDF".
+   A file counts as a PDF by its type `application/pdf` or, when the browser
+   reports no type, by a `.pdf` name; PDF.js then decides whether it really is
+   one (§5).
+2. Nothing is asked. The file is opened locally and every page is rendered —
+   up to `MAX_PAGES_PER_IMPORT`. Only a PDF with more pages than that opens a
+   small dialog asking which pages to add, defaulting to the first
+   `MAX_PAGES_PER_IMPORT`; that is the one choice the board cannot make.
+3. While pages render, a status line at the top of the board reads "Adding
+   page n of m…" with a Cancel button. Cancel stops rendering and inserts
+   nothing. Nothing else on the board is blocked while it runs.
 4. All rendered pages are inserted in **one** scene update, so a single undo
-   removes the whole import. Pages form a vertical column with a fixed gap, in
-   page order, on the board currently shown, with the first page centred in the
-   current view; the view then fits that page, so the teacher sees a whole page
-   at once. Each page element is `locked: true`.
+   removes the whole import. The first page is centred on the point where the
+   file was dropped (a paste uses the centre of the view), on the board
+   currently shown, and the view then fits that page. Placement after the
+   first page follows `PAGED_DOCUMENTS_SPEC.md` once that ships, and the column
+   with a fixed gap until then. Each page element is `locked: true`.
 5. Page bytes upload through the existing file path. Peers see the images arrive
    exactly as they see any other image arrive today, including the existing
    retry behaviour for a failed upload.
+
+Rules at the edges:
+
+- **Several files in one drop.** Each PDF is added in turn, as its own
+  document, each one placed beside the last. Anything that is not a PDF in a
+  drop that holds a PDF is left out, and the status line says so ("Only the
+  PDF was added. Drop pictures on their own."). A drop with no PDF in it is
+  Excalidraw's, untouched.
+- **Someone who is not the owner** drops or pastes a PDF: nothing is inserted
+  and the status line reads "Only the teacher can add a PDF." The server
+  refuses page elements from anyone else in any case
+  (`PAGED_DOCUMENTS_SPEC.md` §7).
+- **A second PDF arrives while one is still rendering:** it waits its turn.
+- **Room storage:** before rendering, the room's free space is read from the
+  owner-only settings as today; if the rendered pages would not fit, nothing
+  is inserted and the status line shows `importTooLargeMessage`.
+- **The image tool accepts PDFs too.** Phones and most tablets cannot drag
+  files onto a web page, so Excalidraw's own image tool (toolbar, and the
+  image shortcut) offers PDF files in its picker alongside pictures. A picked
+  PDF goes through this same flow, placed at the centre of the view; a picked
+  picture is Excalidraw's as today. This needs the fork's `onDocumentFile`
+  prop (`PAGED_DOCUMENTS_SPEC.md` §4, release tp.12); until the application
+  pins tp.12, the picker offers pictures only.
+
+The drop and paste are caught on the element wrapping the editor in the
+**capture** phase, so Excalidraw never sees a PDF (it would otherwise report an
+unsupported file); a drop or paste without a PDF passes through untouched.
 
 `locked` prevents accidental dragging while writing on a page. It is an editing
 convenience, **not** an access control: any editor can unlock an element, as
@@ -141,17 +178,30 @@ Every slice follows `AGENTS.md`: strict red → green → refactor, real objects
 only, targeted Stryker on changed `src/lib/**` files, and a UX-expert visual
 check at desktop, 640–900 px, and 390×844 for every visual change.
 
-1. **Insert PDF.** Pure logic lives in `src/lib/documents/pdfImport.ts` and is
-   unit-tested and mutation-tested: page-range parsing and clamping, the raster
-   scale for a page size, the column layout for n pages, the encoder fallback
-   decision, and the failure-to-message mapping. The dependency policy test
-   gains the `pdfjs-dist` minimum. `tests/e2e/pdf-import.spec.ts` uses a real
-   multi-page fixture PDF: a teacher inserts it and a second participant sees
-   one locked image per page in order; a single undo removes the import; a
-   corrupt file shows the message and changes nothing; a viewer has no Insert
-   PDF action; cancelling mid-render inserts nothing.
-2. **Drop a PDF on the board.** `pdf-import.spec.ts` gains a drop case that
-   opens the same dialog; a dropped non-PDF keeps today's behaviour.
+1. **Insert PDF (shipped).** Pure logic in `src/lib/documents/pdfImport.ts`:
+   page-range parsing and clamping, the raster scale, the column layout, the
+   encoder fallback and the failure-to-message mapping; the dependency policy
+   minimum for `pdfjs-dist`.
+2. **Drop and paste, no menu.** Pure decisions go in
+   `src/lib/documents/pdfIntake.ts`, unit- and mutation-tested: which files in
+   a drop or paste are PDFs (type, then name), whether the drop holds anything
+   else, whether a page range must be asked (more than `MAX_PAGES_PER_IMPORT`
+   pages), where each document of a multi-file drop goes, and the status-line
+   messages. The footer button, the title-menu item, the hidden file input and
+   the old dialog's opening/rendering stages are removed; the range dialog
+   remains only for the long-PDF case. `tests/e2e/pdf-import.spec.ts` is
+   rewritten around a real drop (a `DataTransfer` carrying the fixture PDF,
+   dispatched on the board) and a real paste: the teacher drops the fixture
+   and a second participant sees one locked image per page, the first centred
+   near the drop point; a single undo removes it; Cancel mid-render inserts
+   nothing; a corrupt `.pdf` shows the message and changes nothing; a
+   61-page PDF asks for pages and the default adds 50; a student's drop adds
+   nothing and shows the message; a drop of only a picture still adds the
+   picture as today; the room title menu and footer carry no PDF entry; once
+   tp.12 is pinned, choosing the fixture PDF in the image tool's picker adds it
+   at the view centre, and choosing a picture there still adds the picture. A
+   UX-expert check covers the drag hint and the status line at desktop,
+   640–900 px and 390×844.
 
 For every behaviour change run `npm test`, `npm run test:workers`, and
 `npm run typecheck`, and `npm run test:e2e` through `scripts/run-e2e.mjs`.
