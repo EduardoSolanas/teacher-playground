@@ -70,6 +70,13 @@ for (const viewport of [
   test(`at ${viewport.width}x${viewport.height}, the open panel docks beside the board and covers none of its furniture`, async ({ page, browser }) => {
     test.setTimeout(150_000);
     await page.setViewportSize(viewport);
+    // Chromium's File System Access picker cannot be driven by Playwright;
+    // without it the editor takes the <input type="file"> fallback, whose
+    // chooser the click below waits for (as paged-documents.spec.ts does).
+    await page.addInitScript(() => {
+      delete (window as { showOpenFilePicker?: unknown }).showOpenFilePicker;
+      delete (Window.prototype as { showOpenFilePicker?: unknown }).showOpenFilePicker;
+    });
     const roomId = await createRoomWithMaxUsers(page, `PanelDock${viewport.width}`, 3);
     await waitForExcalidrawApi(page);
 
@@ -90,6 +97,11 @@ for (const viewport of [
       await expect(panel).toBeVisible();
       const panelBox = await boxOf(page, 'whiteboard-presence-panel');
 
+      // Docked, not floating: the board itself ends where the panel begins,
+      // so no part of the drawing surface is under it.
+      const canvasBox = await boxOf(page, 'whiteboard-canvas-area');
+      expect(canvasBox.x + canvasBox.width).toBeLessThanOrEqual(panelBox.x + 1);
+
       // .App-toolbar lies entirely left of the panel.
       const toolbarBox = await page.locator('.App-toolbar').first().boundingBox();
       if (!toolbarBox) throw new Error('no toolbar box');
@@ -104,12 +116,13 @@ for (const viewport of [
       if (!imageToolBox) throw new Error('no image tool box');
       expect(boxesOverlap(panelBox, imageToolBox)).toBe(false);
       expect(imageToolBox.x + imageToolBox.width).toBeLessThanOrEqual(panelBox.x);
-      // Clickable: a real click lands on it and actually arms the tool,
-      // proving the panel is not silently swallowing the click.
+      // Clickable: a real click lands on it and opens the tool's file
+      // chooser, proving the panel is not silently swallowing the click.
+      // (Polling activeTool raced the picker being dismissed, which puts the
+      // editor straight back on the selection tool.)
+      const chooser = page.waitForEvent('filechooser', { timeout: 10000 });
       await imageToolLabel.click();
-      await expect.poll(async () => page.evaluate(
-        () => (window as any).__debugExcalidrawApi?.getAppState?.().activeTool?.type ?? null,
-      )).toBe('image');
+      await chooser;
       await page.keyboard.press('Escape');
 
       // The undo button.
@@ -125,7 +138,6 @@ for (const viewport of [
       expect(boxesOverlap(panelBox, pagerBox)).toBe(false);
 
       // A visible board notice (the PDF import progress line).
-      const canvasBox = await boxOf(page, 'whiteboard-canvas-area');
       await dropPdfAt(page, 'long.pdf', makePdf(50), canvasBox.x + canvasBox.width / 2, canvasBox.y + canvasBox.height / 2);
       const notice = page.getByTestId('whiteboard-pdf-import-notice');
       await expect(notice).toBeVisible();
