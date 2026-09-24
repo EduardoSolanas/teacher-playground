@@ -629,3 +629,271 @@ test.describe('Paged documents pager', () => {
     await expect(pager).not.toBeVisible();
   });
 });
+
+/*
+ * Slice C: the owner's Move and Remove controls (spec §6.3 Move/Remove). The
+ * grip drags with pointer events -- a mouse drag here, a real touch drag in
+ * the 390x844 test below -- and moves every page plus every onPage-stamped
+ * annotation of the import by the same delta, live for the owner and, once
+ * committed, for every peer. Remove deletes the same set in one undoable
+ * step, no confirmation dialog.
+ */
+test.describe('Paged documents move and remove', () => {
+  /** Drags the grip by a pixel delta with a synthetic PointerEvent sequence, the same technique whiteboard.spec.ts uses for a canvas drag. */
+  async function dragGrip(
+    page: Page,
+    importId: string,
+    deltaPx: { x: number; y: number },
+    pointerType: 'mouse' | 'touch' = 'mouse',
+  ): Promise<void> {
+    await page.evaluate(({ importId, deltaPx, pointerType }) => {
+      const pager = document.querySelector(`[data-testid="document-pager-${importId}"]`);
+      const grip = pager?.querySelector('[aria-label="Move document"]') as HTMLElement | null;
+      if (!grip) throw new Error('no move grip');
+      const box = grip.getBoundingClientRect();
+      const startX = box.left + box.width / 2;
+      const startY = box.top + box.height / 2;
+      const fire = (type: string, x: number, y: number) => grip.dispatchEvent(new PointerEvent(type, {
+        clientX: x, clientY: y, bubbles: true, cancelable: true,
+        pointerId: 1, pointerType, button: 0, buttons: 1,
+      }));
+      fire('pointerdown', startX, startY);
+      fire('pointermove', startX + deltaPx.x / 2, startY + deltaPx.y / 2);
+      fire('pointermove', startX + deltaPx.x, startY + deltaPx.y);
+      fire('pointerup', startX + deltaPx.x, startY + deltaPx.y);
+    }, { importId, deltaPx, pointerType });
+  }
+
+  async function currentZoom(page: Page): Promise<number> {
+    return page.evaluate(() => (window as any).__debugExcalidrawApi.getAppState().zoom.value as number);
+  }
+
+  test('the teacher drags the grip and a page-stamped annotation moves by the same delta for a student too; one undo reverts both', async ({ page, browser }) => {
+    test.setTimeout(180_000);
+    const roomId = await createRoomWithMaxUsers(page, 'PagerMove', 2);
+    await waitForExcalidrawApi(page);
+    const { importId, rect } = await importStackedPdf(page);
+
+    const markX = rect.x + rect.width / 2 - 50;
+    const markY = rect.y + rect.height / 2 - 25;
+    await appendElement(page, excalidrawRectangle('move-mark', markX, markY));
+    await expect
+      .poll(async () => (await sceneElements(page)).find((e) => e.id === 'move-mark')?.customData?.onPage, { timeout: 15000 })
+      .toEqual({ importId, index: 0 });
+
+    const peerContext = await newAuthenticatedContext(browser);
+    const peerPage = await peerContext.newPage();
+    try {
+      await joinExistingRoom(peerPage, roomId, 'PagerMoveStudent');
+      await expectWaiting(peerPage);
+      await approveFirstWaitingPeer(page);
+      await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+      await waitForExcalidrawApi(peerPage);
+      await expect.poll(async () => (await stackedPages(peerPage)).length, { timeout: 30000 }).toBe(3);
+
+      const zoom = await currentZoom(page);
+      const deltaPx = { x: 80, y: 40 };
+      const expectedDx = Math.round(deltaPx.x / zoom);
+      const expectedDy = Math.round(deltaPx.y / zoom);
+
+      await dragGrip(page, importId, deltaPx);
+
+      await expect.poll(async () => {
+        const pages = await stackedPages(page);
+        return pages.length === 3 ? Math.round(pages[0].x - rect.x) : null;
+      }, { timeout: 15000 }).toBe(expectedDx);
+      await expect.poll(async () => {
+        const pages = await stackedPages(page);
+        return pages.length === 3 ? Math.round(pages[0].y - rect.y) : null;
+      }).toBe(expectedDy);
+      await expect.poll(async () => {
+        const mark = (await sceneElements(page)).find((e) => e.id === 'move-mark');
+        return mark ? Math.round(mark.x - markX) : null;
+      }).toBe(expectedDx);
+
+      // The same move reaches the student once it is committed.
+      await expect.poll(async () => {
+        const pages = await stackedPages(peerPage);
+        return pages.length === 3 ? Math.round(pages[0].x - rect.x) : null;
+      }, { timeout: 15000 }).toBe(expectedDx);
+      await expect.poll(async () => {
+        const mark = (await sceneElements(peerPage)).find((e) => e.id === 'move-mark');
+        return mark ? Math.round(mark.x - markX) : null;
+      }, { timeout: 15000 }).toBe(expectedDx);
+
+      // One undo reverts the whole move -- every page and the annotation --
+      // for both, in a single step.
+      await page.locator('canvas.excalidraw__canvas.interactive').first().click({ position: { x: 5, y: 5 } });
+      await page.keyboard.press('Control+z');
+      await expect.poll(async () => {
+        const pages = await stackedPages(page);
+        return pages.length === 3 ? pages[0].x : null;
+      }, { timeout: 15000 }).toBe(rect.x);
+      await expect.poll(async () => (await sceneElements(page)).find((e) => e.id === 'move-mark')?.x).toBe(markX);
+      await expect.poll(async () => {
+        const pages = await stackedPages(peerPage);
+        return pages.length === 3 ? pages[0].x : null;
+      }, { timeout: 15000 }).toBe(rect.x);
+      await expect
+        .poll(async () => (await sceneElements(peerPage)).find((e) => e.id === 'move-mark')?.x, { timeout: 15000 })
+        .toBe(markX);
+    } finally {
+      await peerPage.close();
+      await peerContext.close();
+    }
+  });
+
+  test('an arrow-key nudge on the focused grip moves the document by one undoable step', async ({ page }) => {
+    test.setTimeout(120_000);
+    await createRoomWithMaxUsers(page, 'PagerNudge', 2);
+    await waitForExcalidrawApi(page);
+    const { importId, rect } = await importStackedPdf(page);
+
+    const grip = pagerLocator(page, importId).getByRole('button', { name: 'Move document', exact: true });
+    await grip.focus();
+    await grip.press('ArrowRight');
+    await expect.poll(async () => {
+      const pages = await stackedPages(page);
+      return pages.length === 3 ? pages[0].x : null;
+    }, { timeout: 15000 }).toBe(rect.x + 10);
+    await expect.poll(async () => {
+      const pages = await stackedPages(page);
+      return pages.length === 3 ? pages[0].y : null;
+    }).toBe(rect.y);
+
+    // One undo takes back exactly this one nudge. Excalidraw's own undo
+    // shortcut is keyed off the canvas, not the currently focused element,
+    // so focus moves there first -- the same thing every other undo
+    // assertion in this file does before pressing Control+z.
+    await page.locator('canvas.excalidraw__canvas.interactive').first().click({ position: { x: 5, y: 5 } });
+    await page.keyboard.press('Control+z');
+    await expect.poll(async () => {
+      const pages = await stackedPages(page);
+      return pages.length === 3 ? pages[0].x : null;
+    }, { timeout: 15000 }).toBe(rect.x);
+  });
+
+  test('Remove deletes the document and its annotations for both, and undo restores them', async ({ page, browser }) => {
+    test.setTimeout(180_000);
+    const roomId = await createRoomWithMaxUsers(page, 'PagerRemove', 2);
+    await waitForExcalidrawApi(page);
+    const { importId, rect } = await importStackedPdf(page);
+
+    const markX = rect.x + rect.width / 2 - 50;
+    const markY = rect.y + rect.height / 2 - 25;
+    await appendElement(page, excalidrawRectangle('remove-mark', markX, markY));
+    await expect
+      .poll(async () => (await sceneElements(page)).find((e) => e.id === 'remove-mark')?.customData?.onPage, { timeout: 15000 })
+      .toEqual({ importId, index: 0 });
+
+    const peerContext = await newAuthenticatedContext(browser);
+    const peerPage = await peerContext.newPage();
+    try {
+      await joinExistingRoom(peerPage, roomId, 'PagerRemoveStudent');
+      await expectWaiting(peerPage);
+      await approveFirstWaitingPeer(page);
+      await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+      await waitForExcalidrawApi(peerPage);
+      await expect.poll(async () => (await stackedPages(peerPage)).length, { timeout: 30000 }).toBe(3);
+
+      await pagerLocator(page, importId).getByRole('button', { name: 'Remove document' }).click();
+
+      await expect.poll(async () => (await stackedPages(page)).length, { timeout: 15000 }).toBe(0);
+      await expect.poll(async () => (await sceneElements(page)).some((e) => e.id === 'remove-mark')).toBe(false);
+      await expect.poll(async () => (await stackedPages(peerPage)).length, { timeout: 15000 }).toBe(0);
+      await expect.poll(async () => (await sceneElements(peerPage)).some((e) => e.id === 'remove-mark'), { timeout: 15000 }).toBe(false);
+
+      await page.locator('canvas.excalidraw__canvas.interactive').first().click({ position: { x: 5, y: 5 } });
+      await page.keyboard.press('Control+z');
+      await expect.poll(async () => (await stackedPages(page)).length, { timeout: 15000 }).toBe(3);
+      await expect.poll(async () => (await sceneElements(page)).some((e) => e.id === 'remove-mark')).toBe(true);
+      await expect.poll(async () => (await stackedPages(peerPage)).length, { timeout: 15000 }).toBe(3);
+      await expect.poll(async () => (await sceneElements(peerPage)).some((e) => e.id === 'remove-mark'), { timeout: 15000 }).toBe(true);
+    } finally {
+      await peerPage.close();
+      await peerContext.close();
+    }
+  });
+
+  test('a student has no Move or Remove controls', async ({ page, browser }) => {
+    test.setTimeout(120_000);
+    const roomId = await createRoomWithMaxUsers(page, 'PagerMoveNoControl', 2);
+    await waitForExcalidrawApi(page);
+    const { importId } = await importStackedPdf(page);
+
+    const peerContext = await newAuthenticatedContext(browser);
+    const peerPage = await peerContext.newPage();
+    try {
+      await joinExistingRoom(peerPage, roomId, 'PagerMoveNoControlStudent');
+      await expectWaiting(peerPage);
+      await approveFirstWaitingPeer(page);
+      await expect(peerPage.getByTestId('whiteboard-canvas-area')).toBeVisible({ timeout: 15000 });
+      await waitForExcalidrawApi(peerPage);
+      const studentPager = pagerLocator(peerPage, importId);
+      await expect(studentPager).toBeVisible({ timeout: 15000 });
+      await expect(studentPager.getByRole('button', { name: 'Move document', exact: true })).toHaveCount(0);
+      await expect(studentPager.getByRole('button', { name: 'Remove document' })).toHaveCount(0);
+      await expect(studentPager.getByRole('button', { name: 'More actions' })).toHaveCount(0);
+    } finally {
+      await peerPage.close();
+      await peerContext.close();
+    }
+  });
+
+  test('at 390x844, the grip drags with real touch pointer events, Remove/overflow is >=44x44, and the row still fits with no overlap', async ({ browser }) => {
+    test.setTimeout(120_000);
+    const base = await newAuthenticatedContext(browser, `e2e-move-touch-${crypto.randomUUID()}`);
+    const storageState = await base.storageState();
+    await base.close();
+    const context = await browser.newContext({
+      storageState,
+      viewport: { width: 390, height: 844 },
+      deviceScaleFactor: 3,
+      isMobile: true,
+      hasTouch: true,
+    });
+    const page = await context.newPage();
+    try {
+      await createRoomWithMaxUsers(page, 'PagerMoveTouch', 2);
+      await waitForExcalidrawApi(page);
+      const { importId, rect } = await importStackedPdf(page);
+
+      await dragGrip(page, importId, { x: 40, y: 20 }, 'touch');
+      await expect.poll(async () => {
+        const pages = await stackedPages(page);
+        return pages.length === 3 ? pages[0].x !== rect.x : null;
+      }, { timeout: 15000 }).toBe(true);
+
+      const pager = pagerLocator(page, importId);
+      const moreButton = pager.getByRole('button', { name: 'More actions' });
+      const removeButton = pager.getByRole('button', { name: 'Remove document' });
+      const target = (await moreButton.count()) > 0 ? moreButton : removeButton;
+      const targetBox = await target.boundingBox();
+      if (!targetBox) throw new Error('no Remove/More box');
+      expect(targetBox.width).toBeGreaterThanOrEqual(44);
+      expect(targetBox.height).toBeGreaterThanOrEqual(44);
+
+      const pagerBox = await pager.boundingBox();
+      if (!pagerBox) throw new Error('pager has no box');
+      expect(pagerBox.x).toBeGreaterThanOrEqual(0);
+      expect(pagerBox.x + pagerBox.width).toBeLessThanOrEqual(390);
+      expect(pagerBox.y).toBeGreaterThanOrEqual(0);
+      expect(pagerBox.y + pagerBox.height).toBeLessThanOrEqual(844);
+
+      const obstacles = [
+        page.getByTestId('board-tabs'),
+        page.locator('.App-toolbar').first(),
+        page.getByTestId('button-undo'),
+        page.locator('.help-icon').first(),
+      ];
+      for (const obstacle of obstacles) {
+        if (!(await obstacle.isVisible().catch(() => false))) continue;
+        const other = await obstacle.boundingBox();
+        if (!other) continue;
+        expect(boxesOverlap(pagerBox, other)).toBe(false);
+      }
+    } finally {
+      await context.close();
+    }
+  });
+});

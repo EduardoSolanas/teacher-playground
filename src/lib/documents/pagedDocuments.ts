@@ -346,3 +346,36 @@ export function nextPage(index: number, pageCount: number): number {
 export function previousPage(index: number): number {
   return Math.max(index - 1, 0);
 }
+
+/**
+ * Converts a pointer-drag delta, measured in viewport pixels, to scene units
+ * (spec §6.3 Move): dividing by `appState.zoom.value` is what
+ * `sceneCoordsToViewportCoords` does in reverse, so a drag tracks the pointer
+ * exactly regardless of zoom level.
+ */
+export function dragDeltaToScene(
+  pixelDelta: { x: number; y: number },
+  zoom: number,
+): { x: number; y: number } {
+  return { x: pixelDelta.x / zoom, y: pixelDelta.y / zoom };
+}
+
+/** Scene units moved by one unshifted arrow-key nudge (spec §6.3 Move keyboard). */
+export const MOVE_NUDGE_STEP = 10;
+/** Scene units moved by one shifted arrow-key nudge. */
+export const MOVE_NUDGE_STEP_SHIFT = 50;
+
+/**
+ * The scene delta for one keyboard nudge of the move grip (spec §6.3 Move
+ * keyboard), or null for a key that is not an arrow key.
+ */
+export function nudgeDeltaForKey(key: string, shiftKey: boolean): { x: number; y: number } | null {
+  const step = shiftKey ? MOVE_NUDGE_STEP_SHIFT : MOVE_NUDGE_STEP;
+  switch (key) {
+    case 'ArrowUp': return { x: 0, y: -step };
+    case 'ArrowDown': return { x: 0, y: step };
+    case 'ArrowLeft': return { x: -step, y: 0 };
+    case 'ArrowRight': return { x: step, y: 0 };
+    default: return null;
+  }
+}

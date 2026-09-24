@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pagerPlacement } from './pagerPlacement';
+import { pagerPlacement, shouldCollapseRemove } from './pagerPlacement';
 
 /*
  * Pure geometry for the pager (spec/PAGED_DOCUMENTS_SPEC.md §6.3, "Responsive"):
@@ -203,5 +203,23 @@ describe('pagerPlacement', () => {
     });
     expect(placement).not.toBeNull();
     expect(placement!.x).toBe(VIEWPORT.width - 24 - PAGER.width);
+  });
+});
+
+describe('shouldCollapseRemove', () => {
+  it('collapses Remove into an overflow button at 390px and narrower', () => {
+    expect(shouldCollapseRemove(390)).toBe(true);
+    expect(shouldCollapseRemove(320)).toBe(true);
+  });
+
+  it('does not collapse Remove at the 640-900px band or desktop widths', () => {
+    expect(shouldCollapseRemove(640)).toBe(false);
+    expect(shouldCollapseRemove(768)).toBe(false);
+    expect(shouldCollapseRemove(1440)).toBe(false);
+  });
+
+  it('is exact at the boundary: the widest width that still collapses is 480', () => {
+    expect(shouldCollapseRemove(480)).toBe(true);
+    expect(shouldCollapseRemove(481)).toBe(false);
   });
 });

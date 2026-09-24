@@ -35,10 +35,14 @@ import { describe, expect, it } from 'vitest';
 import {
   annotationStampFor,
   applyPageMessage,
+  dragDeltaToScene,
   elementsToMove,
   elementsToRemove,
   isHidden,
+  MOVE_NUDGE_STEP,
+  MOVE_NUDGE_STEP_SHIFT,
   nextPage,
+  nudgeDeltaForKey,
   previousPage,
   sameStackedDocuments,
   showingIndex,
@@ -623,5 +627,37 @@ describe('nextPage / previousPage', () => {
     expect(previousPage(2)).toBe(1);
     expect(previousPage(1)).toBe(0);
     expect(previousPage(0)).toBe(0);
+  });
+});
+
+describe('dragDeltaToScene', () => {
+  it('divides the pointer-pixel delta by zoom to get scene units', () => {
+    expect(dragDeltaToScene({ x: 20, y: 10 }, 1)).toEqual({ x: 20, y: 10 });
+    expect(dragDeltaToScene({ x: 20, y: 10 }, 2)).toEqual({ x: 10, y: 5 });
+    expect(dragDeltaToScene({ x: -30, y: 15 }, 0.5)).toEqual({ x: -60, y: 30 });
+  });
+
+  it('passes through a zero delta at any zoom', () => {
+    expect(dragDeltaToScene({ x: 0, y: 0 }, 3)).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe('nudgeDeltaForKey', () => {
+  it('maps each arrow key to a one-step delta', () => {
+    expect(nudgeDeltaForKey('ArrowUp', false)).toEqual({ x: 0, y: -MOVE_NUDGE_STEP });
+    expect(nudgeDeltaForKey('ArrowDown', false)).toEqual({ x: 0, y: MOVE_NUDGE_STEP });
+    expect(nudgeDeltaForKey('ArrowLeft', false)).toEqual({ x: -MOVE_NUDGE_STEP, y: 0 });
+    expect(nudgeDeltaForKey('ArrowRight', false)).toEqual({ x: MOVE_NUDGE_STEP, y: 0 });
+  });
+
+  it('uses the larger shift step when shiftKey is held', () => {
+    expect(nudgeDeltaForKey('ArrowUp', true)).toEqual({ x: 0, y: -MOVE_NUDGE_STEP_SHIFT });
+    expect(nudgeDeltaForKey('ArrowRight', true)).toEqual({ x: MOVE_NUDGE_STEP_SHIFT, y: 0 });
+  });
+
+  it('returns null for a non-arrow key', () => {
+    expect(nudgeDeltaForKey('Enter', false)).toBeNull();
+    expect(nudgeDeltaForKey('a', false)).toBeNull();
+    expect(nudgeDeltaForKey(' ', true)).toBeNull();
   });
 });

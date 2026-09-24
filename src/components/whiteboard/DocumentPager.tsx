@@ -1,7 +1,8 @@
 'use client';
 
 import { useLayoutEffect, useRef, useState } from 'react';
-import { pagerPlacement, type Rect } from '@/lib/documents/pagerPlacement';
+import { pagerPlacement, shouldCollapseRemove, type Rect } from '@/lib/documents/pagerPlacement';
+import { dragDeltaToScene, nudgeDeltaForKey } from '@/lib/documents/pagedDocuments';
 
 /**
  * The rectangles the pager must never overlap (spec §6.3 "Responsive"): the
@@ -32,10 +33,19 @@ export type DocumentPagerProps = {
   /** The clamped showing index (spec §3.4). */
   index: number;
   pageCount: number;
-  /** Owner: Previous, "Page n of m", Next. Everyone else: "Page n of m" only. */
+  /** Owner: Previous, "Page n of m", Next, Move, Remove. Everyone else: "Page n of m" only. */
   isOwner: boolean;
   onPrevious: () => void;
   onNext: () => void;
+  /** Called with each pointer-move's delta, in scene units, while the grip is being dragged (spec §6.3 Move). */
+  onMoveBy: (dxScene: number, dyScene: number) => void;
+  /** Called once, on release, to commit the drag as one undoable step. */
+  onMoveEnd: () => void;
+  /** Called with one nudge's delta, in scene units, for an arrow key pressed on the focused grip. */
+  onNudge: (dxScene: number, dyScene: number) => void;
+  onRemove: () => void;
+  /** The editor's current `appState.zoom.value`, to convert the grip's pointer-pixel delta to scene units. */
+  zoom: number;
 };
 
 /**
@@ -52,9 +62,57 @@ export default function DocumentPager({
   isOwner,
   onPrevious,
   onNext,
+  onMoveBy,
+  onMoveEnd,
+  onNudge,
+  onRemove,
+  zoom,
 }: DocumentPagerProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [placement, setPlacement] = useState<Rect | null>(null);
+  /** The grip's own pointer position, while a drag is in progress; null otherwise. */
+  const dragPointerRef = useRef<{ x: number; y: number } | null>(null);
+  const [overflowOpen, setOverflowOpen] = useState(false);
+
+  function handleGripPointerDown(event: React.PointerEvent<HTMLButtonElement>) {
+    // Capture is a convenience -- it keeps later pointermove events routed
+    // to the grip even once the pointer strays outside it -- not a
+    // requirement for correctness, so a browser that refuses it for this
+    // pointer (e.g. a synthetic pointerId in a test) does not block the drag.
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Ignored -- see above.
+    }
+    dragPointerRef.current = { x: event.clientX, y: event.clientY };
+  }
+
+  function handleGripPointerMove(event: React.PointerEvent<HTMLButtonElement>) {
+    const last = dragPointerRef.current;
+    if (!last) return;
+    const pixelDelta = { x: event.clientX - last.x, y: event.clientY - last.y };
+    dragPointerRef.current = { x: event.clientX, y: event.clientY };
+    const scene = dragDeltaToScene(pixelDelta, zoom);
+    onMoveBy(scene.x, scene.y);
+  }
+
+  function handleGripPointerUp(event: React.PointerEvent<HTMLButtonElement>) {
+    if (!dragPointerRef.current) return;
+    dragPointerRef.current = null;
+    try {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    } catch {
+      // Ignored -- see handleGripPointerDown.
+    }
+    onMoveEnd();
+  }
+
+  function handleGripKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
+    const delta = nudgeDeltaForKey(event.key, event.shiftKey);
+    if (!delta) return;
+    event.preventDefault();
+    onNudge(delta.x, delta.y);
+  }
 
   useLayoutEffect(() => {
     const el = rootRef.current;
@@ -68,11 +126,12 @@ export default function DocumentPager({
     // index/pageCount/isOwner change the pager's own content, and so its
     // measured size, so they belong in the recompute even though they are
     // not read directly here.
-  }, [documentRect, viewportSize, index, pageCount, isOwner]);
+  }, [documentRect, viewportSize, index, pageCount, isOwner, overflowOpen]);
 
   if (!documentRect) return null;
 
   const hidden = placement === null;
+  const collapseRemove = shouldCollapseRemove(viewportSize.width);
 
   return (
     <div
@@ -111,6 +170,63 @@ export default function DocumentPager({
           ›
         </button>
       )}
+      {isOwner && (
+        <button
+          type="button"
+          aria-label="Move document"
+          onPointerDown={handleGripPointerDown}
+          onPointerMove={handleGripPointerMove}
+          onPointerUp={handleGripPointerUp}
+          onPointerCancel={handleGripPointerUp}
+          onKeyDown={handleGripKeyDown}
+          style={{ touchAction: 'none' }}
+          className="flex min-h-11 min-w-11 cursor-grab items-center justify-center rounded-lg text-lg leading-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 active:cursor-grabbing"
+        >
+          ⠿
+        </button>
+      )}
+      {isOwner && (collapseRemove ? (
+        <div className="relative">
+          <button
+            type="button"
+            aria-label="More actions"
+            aria-haspopup="true"
+            aria-expanded={overflowOpen}
+            onClick={() => setOverflowOpen((open) => !open)}
+            className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-lg leading-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+          >
+            ⋯
+          </button>
+          {overflowOpen && (
+            <div
+              role="menu"
+              className="absolute right-0 top-full z-10 mt-1 rounded-lg border border-slate-700 bg-slate-800 p-1 shadow-xl"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                aria-label="Remove document"
+                onClick={() => {
+                  setOverflowOpen(false);
+                  onRemove();
+                }}
+                className="flex min-h-11 min-w-11 w-full items-center justify-center whitespace-nowrap rounded-lg px-2 text-sm leading-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+              >
+                Remove document
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <button
+          type="button"
+          aria-label="Remove document"
+          onClick={onRemove}
+          className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-lg leading-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+        >
+          ×
+        </button>
+      ))}
     </div>
   );
 }

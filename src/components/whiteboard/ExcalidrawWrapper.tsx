@@ -50,6 +50,8 @@ import type { FollowMessage } from '@/lib/whiteboard/followMessage';
 import { stackedPageRect } from '@/lib/documents/pdfImport';
 import {
   annotationStampFor,
+  elementsToMove,
+  elementsToRemove,
   isHidden,
   nextPage,
   previousPage,
@@ -509,6 +511,76 @@ export default function ExcalidrawWrapper({
   const getPagerAppState = useCallback(() => apiRef.current?.getAppState() ?? null, []);
   const handleTurnPage = useCallback((importId: string, index: number) => {
     onTurnPageRef.current?.(importId, index);
+  }, []);
+
+  /**
+   * Move (spec §6.3): applies `dxScene`/`dyScene` to every id `elementsToMove`
+   * carries for this import -- every page plus every `onPage`-stamped
+   * annotation -- with `CaptureUpdateAction.NEVER` while the grip is being
+   * dragged, so the document follows the pointer live without creating a
+   * history entry for each pointer-move event.
+   */
+  const handleMoveDocumentBy = useCallback((importId: string, dxScene: number, dyScene: number) => {
+    const api = apiRef.current;
+    if (!api) return;
+    const current = api.getSceneElementsIncludingDeleted();
+    const ids = new Set(elementsToMove(current as unknown as PagedSceneElement[], importId));
+    if (ids.size === 0) return;
+    const moved = current.map((element) => (
+      ids.has(element.id) ? { ...element, x: element.x + dxScene, y: element.y + dyScene } : element
+    ));
+    api.updateScene({ elements: moved, captureUpdate: CaptureUpdateAction.NEVER });
+  }, []);
+
+  /**
+   * Commits the drag as one undoable step (spec §6.3 Move): the scene is
+   * already at its final position from the live-preview updates above --
+   * `handleMoveDocumentBy` never bumped `version`, on purpose, so none of
+   * those in-drag updates were ever published -- so this only needs to bump
+   * `version` on the moved ids once and re-submit with
+   * `CaptureUpdateAction.IMMEDIATELY`. `bumpVersion`, not a bare re-submit:
+   * `diffScene`/`commitElements` decide what to publish purely from
+   * `version` (see the `annotationStampFor` call above), so an unbumped
+   * re-submit would create the local undo entry but never reach a peer.
+   */
+  const handleMoveDocumentEnd = useCallback((importId: string) => {
+    const api = apiRef.current;
+    if (!api) return;
+    const current = api.getSceneElementsIncludingDeleted();
+    const ids = new Set(elementsToMove(current as unknown as PagedSceneElement[], importId));
+    if (ids.size === 0) return;
+    const committed = current.map((element) => (
+      ids.has(element.id) ? bumpVersion({ ...element } as ExcalidrawElement) : element
+    ));
+    api.updateScene({ elements: committed, captureUpdate: CaptureUpdateAction.IMMEDIATELY });
+  }, []);
+
+  /** A keyboard nudge (spec §6.3 Move keyboard): one undoable, published step per press. */
+  const handleNudgeDocument = useCallback((importId: string, dxScene: number, dyScene: number) => {
+    const api = apiRef.current;
+    if (!api) return;
+    const current = api.getSceneElementsIncludingDeleted();
+    const ids = new Set(elementsToMove(current as unknown as PagedSceneElement[], importId));
+    if (ids.size === 0) return;
+    const moved = current.map((element) => (
+      ids.has(element.id)
+        ? bumpVersion({ ...element, x: element.x + dxScene, y: element.y + dyScene } as ExcalidrawElement)
+        : element
+    ));
+    api.updateScene({ elements: moved, captureUpdate: CaptureUpdateAction.IMMEDIATELY });
+  }, []);
+
+  /** Remove (spec §6.3): marks every page and onPage-stamped annotation of the import isDeleted, in one undoable, published update. */
+  const handleRemoveDocument = useCallback((importId: string) => {
+    const api = apiRef.current;
+    if (!api) return;
+    const current = api.getSceneElementsIncludingDeleted();
+    const ids = new Set(elementsToRemove(current as unknown as PagedSceneElement[], importId));
+    if (ids.size === 0) return;
+    const removed = current.map((element) => (
+      ids.has(element.id) ? bumpVersion({ ...element, isDeleted: true } as ExcalidrawElement) : element
+    ));
+    api.updateScene({ elements: removed, captureUpdate: CaptureUpdateAction.IMMEDIATELY });
   }, []);
 
   // The viewport's own resize (rotating a phone, the room's chrome changing)
@@ -2137,6 +2209,10 @@ export default function ExcalidrawWrapper({
         isOwner={isRoomOwner}
         getAppState={getPagerAppState}
         onTurnPage={handleTurnPage}
+        onMoveDocumentBy={handleMoveDocumentBy}
+        onMoveDocumentEnd={handleMoveDocumentEnd}
+        onNudgeDocument={handleNudgeDocument}
+        onRemoveDocument={handleRemoveDocument}
         registerReposition={registerPagerReposition}
       />
       {(pendingUploadCount > 0 || failedUploadIds.length > 0) && (
@@ -2187,6 +2263,10 @@ type DocumentPagerLayerProps = {
   /** Reads the editor's current appState on demand -- never held as a prop, so this layer decides for itself when to re-read it. */
   getAppState: () => PagerViewportGeometry | null;
   onTurnPage: (importId: string, index: number) => void;
+  onMoveDocumentBy: (importId: string, dxScene: number, dyScene: number) => void;
+  onMoveDocumentEnd: (importId: string) => void;
+  onNudgeDocument: (importId: string, dxScene: number, dyScene: number) => void;
+  onRemoveDocument: (importId: string) => void;
   /** Called once, with a function the parent can call to ask this layer to recompute its own position. */
   registerReposition: (reposition: () => void) => void;
 };
@@ -2210,6 +2290,10 @@ function DocumentPagerLayer({
   isOwner,
   getAppState,
   onTurnPage,
+  onMoveDocumentBy,
+  onMoveDocumentEnd,
+  onNudgeDocument,
+  onRemoveDocument,
   registerReposition,
 }: DocumentPagerLayerProps) {
   const [viewportGeometry, setViewportGeometry] = useState<PagerViewportGeometry | null>(null);
@@ -2277,6 +2361,11 @@ function DocumentPagerLayer({
           isOwner={isOwner}
           onPrevious={() => onTurnPage(importId, previousPage(index))}
           onNext={() => onTurnPage(importId, nextPage(index, pageCount))}
+          onMoveBy={(dxScene, dyScene) => onMoveDocumentBy(importId, dxScene, dyScene)}
+          onMoveEnd={() => onMoveDocumentEnd(importId)}
+          onNudge={(dxScene, dyScene) => onNudgeDocument(importId, dxScene, dyScene)}
+          onRemove={() => onRemoveDocument(importId)}
+          zoom={viewportGeometry?.zoom.value ?? 1}
         />
       ))}
     </>

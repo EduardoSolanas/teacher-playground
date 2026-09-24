@@ -99,3 +99,17 @@ export function pagerPlacement(input: PagerPlacementInput): Rect | null {
 
   return { x, y, width: pagerSize.width, height: pagerSize.height };
 }
+
+/** Widest viewport width at which Remove collapses into a small overflow button (spec §6.3 "Responsive"). */
+export const REMOVE_COLLAPSE_MAX_WIDTH = 480;
+
+/**
+ * Whether the pager's Remove control collapses into an overflow button
+ * (spec §6.3 "Responsive": "Remove may collapse into a small overflow
+ * button" at 390px). Collapsing below a fixed viewport width, rather than
+ * measuring the pager's own row, keeps the decision a pure function of
+ * something the component already has (`viewportSize`).
+ */
+export function shouldCollapseRemove(viewportWidth: number): boolean {
+  return viewportWidth <= REMOVE_COLLAPSE_MAX_WIDTH;
+}
