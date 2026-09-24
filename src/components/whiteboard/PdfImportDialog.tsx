@@ -3,6 +3,13 @@ import { createPortal } from 'react-dom';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { useDialogFocusTrap } from '@/components/ConfirmDialog';
 import { defaultPageRange, failureMessage, parsePageRange } from '@/lib/documents/pdfImport';
+import {
+  dataUrlBytes,
+  formatMegabytes,
+  freeBytes,
+  importTooLargeMessage,
+  type RoomStorage,
+} from '@/lib/documents/roomStorage';
 import { openPdf, renderPage, type RenderedPage } from './pdfRenderer';
 
 type Stage =
@@ -14,6 +21,12 @@ type Stage =
 type PdfImportDialogProps = {
   /** The file the teacher picked. The dialog opens it; it never leaves the browser. */
   file: File;
+  /**
+   * What the room's pictures already weigh, against the cap. Null when the
+   * figures could not be read, in which case the upload route stays the only
+   * check, as it was before.
+   */
+  storage: RoomStorage | null;
   /** Receives every rendered page at once, so the board gets one undoable insert. */
   onInsert: (pages: readonly RenderedPage[]) => void;
   onClose: () => void;
@@ -26,7 +39,7 @@ type PdfImportDialogProps = {
  * Rendered into document.body for the same reason ConfirmDialog is: an
  * ancestor with a backdrop filter would otherwise trap `position: fixed`.
  */
-export default function PdfImportDialog({ file, onInsert, onClose }: PdfImportDialogProps) {
+export default function PdfImportDialog({ file, storage, onInsert, onClose }: PdfImportDialogProps) {
   const [stage, setStage] = useState<Stage>({ kind: 'opening' });
   const [mounted, setMounted] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -100,6 +113,23 @@ export default function PdfImportDialog({ file, onInsert, onClose }: PdfImportDi
       }
     }
     if (cancelledRef.current) return;
+
+    /*
+     * The room's cap is checked here, with the rendered bytes in hand, rather
+     * than guessed before rendering: a page's size is not knowable until it is
+     * drawn. Refusing now costs the teacher the render but leaves the board as
+     * it was -- the alternative was pages landing on the board and their
+     * uploads failing one by one.
+     */
+    if (storage) {
+      const needed = rendered.reduce((total, page) => total + dataUrlBytes(page.dataURL), 0);
+      const tooLarge = importTooLargeMessage(needed, storage.used, storage.limit);
+      if (tooLarge) {
+        setStage({ kind: 'error', message: tooLarge });
+        return;
+      }
+    }
+
     onInsert(rendered);
     onClose();
   };
@@ -157,6 +187,11 @@ export default function PdfImportDialog({ file, onInsert, onClose }: PdfImportDi
             {stage.rangeError && (
               <p id="pdf-import-range-error" data-testid="pdf-import-range-error" role="alert" className="m-0 mt-2 text-sm text-red-700">
                 {stage.rangeError}
+              </p>
+            )}
+            {storage && (
+              <p className="m-0 mt-2 text-xs text-slate-500" data-testid="pdf-import-storage">
+                {formatMegabytes(freeBytes(storage.used, storage.limit))} free in this room
               </p>
             )}
             <div className="flex gap-3 justify-end mt-6">

@@ -185,7 +185,7 @@ test.describe('Excalidraw scene sync', () => {
      */
     const roomId = await createRoomWithMaxUsers(page, 'ExportHost', 2);
     await page.getByTestId('room-title-trigger').click();
-    await expect(page.getByTestId('room-menu-save')).toBeVisible();
+    await expect(page.getByTestId('room-menu-download-pdf')).toBeVisible();
     await page.keyboard.press('Escape');
 
     const peerContext = await newAuthenticatedContext(browser);
@@ -199,7 +199,7 @@ test.describe('Excalidraw scene sync', () => {
       // No menu at all rather than a menu that refuses: the trigger is the
       // owner's, and with it goes the only way to take a copy away.
       await expect(peerPage.getByTestId('room-title-trigger')).toHaveCount(0);
-      await expect(peerPage.getByTestId('room-menu-save')).toHaveCount(0);
+      await expect(peerPage.getByTestId('room-menu-download-pdf')).toHaveCount(0);
     } finally {
       await peerPage.close();
       await peerContext.close();

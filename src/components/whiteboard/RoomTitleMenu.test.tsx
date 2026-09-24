@@ -13,9 +13,9 @@ function make(overrides: Partial<Parameters<typeof RoomTitleMenu>[0]> = {}) {
     canManage: true,
     seats: 2,
     onRename: vi.fn(),
-    onSaveAs: vi.fn(),
     onOpenLibrary: vi.fn(),
     onInsertPdf: () => {},
+    onDownloadPdf: () => {},
     onSeatsChanged: vi.fn(),
     // A real async function returning real Response objects, the same seam the
     // room list uses; no test doubles.
@@ -63,13 +63,23 @@ describe('RoomTitleMenu', () => {
     expect(screen.getByTestId('room-title-chevron')).toBeTruthy();
   });
 
-  it('offers save, rename and the library', () => {
+  it('offers rename and the library', () => {
     render(<RoomTitleMenu {...make()} />);
     fireEvent.click(screen.getByTestId('room-title-trigger'));
     expect(screen.getByTestId('room-title-trigger').getAttribute('aria-expanded')).toBe('true');
-    expect(screen.getByTestId('room-menu-save')).toBeTruthy();
     expect(screen.getByTestId('room-menu-rename')).toBeTruthy();
     expect(screen.getByTestId('room-menu-library')).toBeTruthy();
+  });
+
+  it('no longer offers the Excalidraw copy, which Download as PDF replaced', () => {
+    // The .excalidraw file only opened in this application or in Excalidraw
+    // itself; a parent or a colleague could do nothing with it. The PDF is the
+    // copy somebody outside the room can actually read.
+    render(<RoomTitleMenu {...make()} />);
+    fireEvent.click(screen.getByTestId('room-title-trigger'));
+
+    expect(screen.queryByTestId('room-menu-save')).toBeNull();
+    expect(screen.getByTestId('room-title-menu').textContent).not.toContain('Save as');
   });
 
   it('says what the library item does, which is more than adding to it', () => {
@@ -95,11 +105,26 @@ describe('RoomTitleMenu', () => {
     expect(screen.getByTestId('room-title-trigger').getAttribute('aria-expanded')).toBe('false');
   });
 
+  it('offers Download as PDF, which is how a lesson reaches a parent', () => {
+    // Save as writes an .excalidraw file that only this application opens; the
+    // PDF is the copy somebody outside it can read.
+    let downloaded = 0;
+    render(<RoomTitleMenu {...make({ onDownloadPdf: () => { downloaded += 1; } })} />);
+    fireEvent.click(screen.getByTestId('room-title-trigger'));
+
+    const item = screen.getByTestId('room-menu-download-pdf');
+    expect(item.textContent).toBe('Download as PDF…');
+    fireEvent.click(item);
+
+    expect(downloaded).toBe(1);
+    expect(screen.getByTestId('room-title-trigger').getAttribute('aria-expanded')).toBe('false');
+  });
+
   it('gives every menu item the 14px inline icon the menu contract calls for (UX-B19)', () => {
     render(<RoomTitleMenu {...make()} />);
     fireEvent.click(screen.getByTestId('room-title-trigger'));
 
-    for (const id of ['room-menu-share', 'room-menu-save', 'room-menu-rename', 'room-menu-library', 'room-menu-insert-pdf']) {
+    for (const id of ['room-menu-share', 'room-menu-rename', 'room-menu-library', 'room-menu-insert-pdf', 'room-menu-download-pdf']) {
       const icon = screen.getByTestId(id).querySelector('svg');
       expect(icon, `${id} has no icon`).toBeTruthy();
       expect(icon?.getAttribute('width'), `${id} icon width`).toBe('14');
@@ -107,15 +132,9 @@ describe('RoomTitleMenu', () => {
     }
   });
 
-  it('saves and opens the library through the caller', () => {
+  it('opens the library through the caller', () => {
     const props = make();
     render(<RoomTitleMenu {...props} />);
-
-    fireEvent.click(screen.getByTestId('room-title-trigger'));
-    fireEvent.click(screen.getByTestId('room-menu-save'));
-    expect(props.onSaveAs).toHaveBeenCalledTimes(1);
-    // The menu closes behind a choice, or it sits over the board.
-    expect(screen.queryByTestId('room-menu-save')).toBeNull();
 
     fireEvent.click(screen.getByTestId('room-title-trigger'));
     fireEvent.click(screen.getByTestId('room-menu-library'));
@@ -186,7 +205,6 @@ describe('RoomTitleMenu', () => {
       });
 
       // Nothing behind the entry navigates away from the board.
-      expect(props.onSaveAs).not.toHaveBeenCalled();
       expect(props.onOpenLibrary).not.toHaveBeenCalled();
     });
 
@@ -255,7 +273,7 @@ describe('RoomTitleMenu', () => {
       expect(screen.getByTestId('room-share-url')).toBeTruthy();
 
       fireEvent.click(screen.getByTestId('room-share-back'));
-      expect(screen.getByTestId('room-menu-save')).toBeTruthy();
+      expect(screen.getByTestId('room-menu-rename')).toBeTruthy();
       expect(screen.queryByTestId('room-share-url')).toBeNull();
     });
 
@@ -282,7 +300,7 @@ describe('RoomTitleMenu', () => {
       fireEvent.keyDown(screen.getByTestId('room-title-share'), { key: 'ArrowDown' });
 
       expect(screen.getByTestId('room-share-url')).toBeTruthy();
-      expect(screen.queryByTestId('room-menu-save')).toBeNull();
+      expect(screen.queryByTestId('room-menu-rename')).toBeNull();
     });
 
     it('resets the copied affordance after two seconds', async () => {
@@ -349,10 +367,10 @@ describe('RoomTitleMenu', () => {
   it('closes when the room is clicked away from', () => {
     render(<RoomTitleMenu {...make()} />);
     fireEvent.click(screen.getByTestId('room-title-trigger'));
-    expect(screen.getByTestId('room-menu-save')).toBeTruthy();
+    expect(screen.getByTestId('room-menu-rename')).toBeTruthy();
 
     fireEvent.pointerDown(document.body);
-    expect(screen.queryByTestId('room-menu-save')).toBeNull();
+    expect(screen.queryByTestId('room-menu-rename')).toBeNull();
   });
 
   it('stays open when the pointer goes down inside the menu', () => {
@@ -361,7 +379,7 @@ describe('RoomTitleMenu', () => {
 
     fireEvent.pointerDown(screen.getByTestId('room-title-menu'));
 
-    expect(screen.getByTestId('room-menu-save')).toBeTruthy();
+    expect(screen.getByTestId('room-menu-rename')).toBeTruthy();
   });
 
   it('closes when the open title is pressed again', () => {
@@ -392,7 +410,7 @@ describe('RoomTitleMenu', () => {
     await user.click(screen.getByTestId('room-title-trigger'));
     await user.keyboard('a');
 
-    expect(screen.getByTestId('room-menu-save')).toBeTruthy();
+    expect(screen.getByTestId('room-menu-rename')).toBeTruthy();
   });
 
   it('moves focus into the menu and walks it with the arrow keys (UX-A5)', async () => {
@@ -402,21 +420,21 @@ describe('RoomTitleMenu', () => {
     await user.click(screen.getByTestId('room-title-trigger'));
 
     const share = screen.getByTestId('room-menu-share');
-    const save = screen.getByTestId('room-menu-save');
     const rename = screen.getByTestId('room-menu-rename');
     const library = screen.getByTestId('room-menu-library');
     const insertPdf = screen.getByTestId('room-menu-insert-pdf');
+    const downloadPdf = screen.getByTestId('room-menu-download-pdf');
     const seats = screen.getByTestId('room-menu-seats');
     expect(document.activeElement).toBe(share);
 
-    await user.keyboard('{ArrowDown}');
-    expect(document.activeElement).toBe(save);
     await user.keyboard('{ArrowDown}');
     expect(document.activeElement).toBe(rename);
     await user.keyboard('{ArrowDown}');
     expect(document.activeElement).toBe(library);
     await user.keyboard('{ArrowDown}');
     expect(document.activeElement).toBe(insertPdf);
+    await user.keyboard('{ArrowDown}');
+    expect(document.activeElement).toBe(downloadPdf);
     await user.keyboard('{ArrowDown}');
     expect(document.activeElement).toBe(seats);
     // Wraps at the end rather than falling out of the menu.
@@ -438,7 +456,7 @@ describe('RoomTitleMenu', () => {
 
     await user.click(trigger);
     await user.keyboard('{ArrowDown}');
-    expect(document.activeElement).toBe(screen.getByTestId('room-menu-save'));
+    expect(document.activeElement).toBe(screen.getByTestId('room-menu-rename'));
     await user.keyboard('{Escape}');
 
     expect(screen.queryByTestId('room-title-menu')).toBeNull();

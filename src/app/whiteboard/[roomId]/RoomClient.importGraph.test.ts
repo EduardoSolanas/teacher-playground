@@ -29,8 +29,14 @@ const LIVEKIT_SPECIFIERS = ['livekit-client', '@livekit/components-react'];
  * static imports; next/dynamic is the only boundary that keeps them out of the
  * entry graph.
  */
-const PDF_ENTRY_SPECIFIERS = ['pdfjs-dist'];
-const PDF_ENTRY_FILES = ['PdfImportDialog.tsx'];
+const PDF_ENTRY_SPECIFIERS = ['pdfjs-dist', 'jspdf'];
+/*
+ * pdfExporter.ts is the same story on the way out: it pulls Excalidraw's own
+ * exportToCanvas and jsPDF, so only the editor (already behind next/dynamic)
+ * may reach it. The room keeps the failure wording, which lives in the pure
+ * lib module and costs nothing.
+ */
+const PDF_ENTRY_FILES = ['PdfImportDialog.tsx', 'pdfExporter.ts'];
 
 function stripComments(source: string): string {
   return source
@@ -123,7 +129,7 @@ describe('RoomClient static import graph', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('keeps PdfImportDialog and pdfjs-dist out of the room entry chunk (PERF-S2)', () => {
+  it('keeps the PDF import and export code out of the room entry chunk (PERF-S2)', () => {
     const { files, bareSpecifiers } = staticClosure();
 
     const pdfFiles = files

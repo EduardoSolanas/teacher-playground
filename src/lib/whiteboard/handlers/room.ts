@@ -9,7 +9,8 @@ import {
   roomSceneSchema,
   roomSettingsSchema,
 } from '../requestSchemas';
-import { deleteRoomScopedData } from '../roomSchema';
+import { deleteRoomScopedData, getFileBytesTotal } from '../roomSchema';
+import { MAX_ROOM_FILE_BYTES_TOTAL } from '../boardFileRoutes';
 import {
   assertNotTombstoned,
   createSqlTombstoneStore,
@@ -415,6 +416,13 @@ export async function handleRoomSettingsGet(
 
     return roomSettingsResponse(settings, {
       created_at: settings.created_at,
+      /*
+       * What the room's pictures weigh, against the cap they are refused at.
+       * Owner-only like the rest of this surface: it is the teacher's warning
+       * that the next import may not fit, and nobody else's business.
+       */
+      fileBytesUsed: getFileBytesTotal(db, roomId),
+      fileBytesLimit: MAX_ROOM_FILE_BYTES_TOTAL,
       ...guestSettingsExtra(db, roomId),
     });
   } catch (e) {

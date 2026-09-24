@@ -162,7 +162,7 @@ describe('ExcalidrawWrapper rendering', () => {
 
     const actions = onBoardActions.mock.calls.at(-1)?.[0];
     expect(actions).toBeTruthy();
-    expect(actions.readScene().elements).toEqual(expect.any(Array));
+    expect(typeof actions.buildPdf).toBe('function');
 
     await act(async () => {
       actions.openLibrary();

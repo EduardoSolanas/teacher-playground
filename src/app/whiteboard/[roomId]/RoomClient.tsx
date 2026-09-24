@@ -30,7 +30,9 @@ import ConnectionLostNotice from '@/components/whiteboard/ConnectionLostNotice';
 import SyncDegradedNotice from '@/components/whiteboard/SyncDegradedNotice';
 import RoomTitleMenu from '@/components/whiteboard/RoomTitleMenu';
 import { saveBlob } from '@/lib/whiteboard/saveBlob';
-import { boardFileName, buildExcalidrawContainer } from '@/lib/whiteboard/boardExport';
+import { boardFileName } from '@/lib/whiteboard/boardExport';
+import { exportFailureMessage } from '@/lib/documents/pdfExport';
+import type { RoomStorage } from '@/lib/documents/roomStorage';
 import type { BoardActions } from '@/components/whiteboard/ExcalidrawWrapper';
 import SupportButton from '@/components/whiteboard/SupportButton';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
@@ -429,6 +431,13 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
   /** The PDF the teacher picked for Insert PDF; the dialog is open while set. */
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
+  /**
+   * What the room's pictures weigh, read when a PDF is picked so the dialog can
+   * say how much is free and refuse an import that would not fit. Owner only,
+   * from the owner-only settings surface; null when it cannot be read, leaving
+   * the upload route as the only check, as before.
+   */
+  const [roomStorage, setRoomStorage] = useState<RoomStorage | null>(null);
   const [clearFailed, setClearFailed] = useState(false);
   // The store is the single source of truth for the active tool: keyboard
   // shortcuts write to it directly, so deriving from it keeps the sidebar
@@ -921,14 +930,28 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
    */
   const boardActionsRef = useRef<BoardActions | null>(null);
 
-  const handleSaveAs = useCallback(() => {
-    const scene = boardActionsRef.current?.readScene();
-    if (!scene) return;
-    const container = buildExcalidrawContainer(scene.elements, scene.files, 'teacher-playground');
-    saveBlob(
-      new Blob([JSON.stringify(container)], { type: 'application/json' }),
-      boardFileName(roomId, roomName, 'excalidraw', Date.now()),
-    );
+  /**
+   * Download as PDF (spec/PDF_EXPORT_SPEC.md). The file is built from the scene
+   * this browser already holds and written to disk with saveBlob; a
+   * failure says which one it was and writes nothing.
+   */
+  const [pdfExportError, setPdfExportError] = useState<string | null>(null);
+  const [pdfExporting, setPdfExporting] = useState(false);
+  const handleDownloadPdf = useCallback(async () => {
+    const actions = boardActionsRef.current;
+    if (!actions) return;
+    setPdfExportError(null);
+    setPdfExporting(true);
+    try {
+      const result = await actions.buildPdf();
+      if (!result.ok) {
+        setPdfExportError(exportFailureMessage(result.failure));
+        return;
+      }
+      saveBlob(result.blob, boardFileName(roomId, roomName, 'pdf', Date.now()));
+    } finally {
+      setPdfExporting(false);
+    }
   }, [roomId, roomName]);
 
   const handleOpenLibrary = useCallback(() => {
@@ -1147,9 +1170,9 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
               onSeatsChanged={setRoomCapacity}
               request={request}
               onRename={handleRenameRoom}
-              onSaveAs={handleSaveAs}
               onOpenLibrary={handleOpenLibrary}
               onInsertPdf={() => pdfInputRef.current?.click()}
+              onDownloadPdf={() => { void handleDownloadPdf(); }}
             />
             {shouldShowStartCall({
               isHost: isLocalHost,
@@ -1289,6 +1312,15 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
           Couldn&rsquo;t clear this board. Check your connection and try again.
         </div>
       )}
+      {(pdfExporting || pdfExportError !== null) && (
+        <div
+          role="status"
+          data-testid="whiteboard-pdf-export-notice"
+          className="fixed left-1/2 top-16 z-[1450] -translate-x-1/2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-[0.8rem] text-amber-300 shadow-xl shadow-slate-950/40"
+        >
+          {pdfExporting ? 'Building the PDF…' : pdfExportError}
+        </div>
+      )}
       {shouldOverlayConnectingScreen({ boardEverShown, isSynced }) && <LoadingScreen />}
       {/*
         * The picker behind Insert PDF, opened from the board footer and from
@@ -1308,13 +1340,27 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
             const chosen = event.target.files?.[0] ?? null;
             // Cleared so choosing the same file again still fires a change.
             event.target.value = '';
-            if (chosen) setPdfFile(chosen);
+            if (!chosen) return;
+            setRoomStorage(null);
+            setPdfFile(chosen);
+            void (async () => {
+              try {
+                const response = await request(`/api/whiteboard/room/${roomId}/settings`);
+                if (!response.ok) return;
+                const body = await response.json() as { fileBytesUsed?: unknown; fileBytesLimit?: unknown };
+                if (typeof body.fileBytesUsed !== 'number' || typeof body.fileBytesLimit !== 'number') return;
+                setRoomStorage({ used: body.fileBytesUsed, limit: body.fileBytesLimit });
+              } catch {
+                // The dialog simply says nothing about storage.
+              }
+            })();
           }}
         />
       )}
       {pdfFile && (
         <PdfImportDialog
           file={pdfFile}
+          storage={roomStorage}
           onInsert={(pages) => boardActionsRef.current?.insertPages(pages)}
           onClose={() => setPdfFile(null)}
         />
