@@ -16,7 +16,7 @@ import GuestJoinPrompt from '@/components/whiteboard/GuestJoinPrompt';
 import LoadingScreen from '@/components/whiteboard/LoadingScreen';
 import WaitingRoom from '@/components/whiteboard/WaitingRoom';
 import { isGuestHostname } from '@/lib/guest/guestHost';
-import PresencePanel from '@/components/whiteboard/PresencePanel';
+import PresencePanel, { PRESENCE_PANEL_WIDTH } from '@/components/whiteboard/PresencePanel';
 import RaisedHandCue from '@/components/whiteboard/RaisedHandCue';
 import { shouldCollapsePresenceForViewport } from '@/lib/whiteboard/presenceViewport';
 import { shouldOverlayConnectingScreen } from '@/lib/whiteboard/connectingOverlay';
@@ -140,7 +140,15 @@ const ExcalidrawWrapper = dynamic(
  * the top instead. `w-max` sizes the notice to its text, so a short line never
  * wraps; the max width keeps a long one inside the screen.
  */
-const BOARD_NOTICE_CLASS = 'fixed left-1/2 bottom-24 sm:bottom-auto sm:top-24 z-[1450] -translate-x-1/2 w-max max-w-[calc(100vw-2rem)] rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-[0.8rem] text-amber-300 shadow-xl shadow-slate-950/40';
+/*
+ * Centred at 50% below 640px, where nothing is reserved on either side. From
+ * 640px up, centred within the board area instead of the full window: the
+ * sm:left override reads the same --call-rail-w/--presence-w variables the
+ * canvas itself reserves space with (set on the room shell below), each with
+ * a 0px fallback so the calc is always valid even when neither is open --
+ * at which point it resolves back to plain 50%.
+ */
+const BOARD_NOTICE_CLASS = 'fixed left-1/2 bottom-24 sm:bottom-auto sm:top-24 sm:left-[calc(50%-var(--call-rail-w,0px)/2-var(--presence-w,0px)/2)] z-[1450] -translate-x-1/2 w-max max-w-[calc(100vw-2rem)] rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-[0.8rem] text-amber-300 shadow-xl shadow-slate-950/40';
 
 const PdfImportDialog = dynamic(
   () => import('@/components/whiteboard/PdfImportDialog'),
@@ -199,29 +207,53 @@ export const ROOM_CANVAS_CLASS =
  * Only from `sm:` up. On a phone the rail is a strip along the bottom, and
  * reserving its height would leave almost nothing to draw on.
  */
-export function roomCanvasRightClass(railVisible: boolean): string {
+/**
+ * How much of the canvas the docked presence/roster panel takes, if it is
+ * open.
+ *
+ * The panel used to be `fixed` clean over the board -- covering the right
+ * end of Excalidraw's toolbar, the document pager and, on top of the
+ * toolbar, the help button -- exactly the overlap the call rail reservation
+ * above was written to avoid for the rail. This is the same fix for the
+ * panel: the board makes room for it instead of drawing underneath it.
+ *
+ * Only from `sm:` up, same as the rail: below that the panel is a sheet over
+ * the board (its intended phone behaviour), not something docked beside it.
+ */
+export function roomCanvasRightClass(railVisible: boolean, presenceOpen: boolean = false): string {
   /*
-   * The width reaches CSS through the --call-rail-w variable, set inline by
-   * {@link roomCanvasRailStyle}, rather than through a class assembled by
-   * interpolation. An interpolated arbitrary value is invisible to Tailwind's
-   * source scan: the generated stylesheet only ever contained this one because
-   * the unit test spelled the resolved literal out, and any reshuffle of the
-   * test files would have silently deleted the reservation. PresencePanel
-   * already carried the variable for the same constant; the canvas now does
-   * too, and both read the same static `sm:right-[var(--call-rail-w)]`.
+   * The width reaches CSS through the --call-rail-w / --presence-w
+   * variables, set inline by {@link roomCanvasRailStyle}, rather than
+   * through a class assembled by interpolation. An interpolated arbitrary
+   * value is invisible to Tailwind's source scan: the generated stylesheet
+   * only ever contained this one because the unit test spelled the resolved
+   * literal out, and any reshuffle of the test files would have silently
+   * deleted the reservation. PresencePanel already carried the variable for
+   * the same constant; the canvas now does too, and both read the same
+   * static classes below.
    */
-  return railVisible ? 'sm:right-[var(--call-rail-w)]' : '';
+  if (railVisible && presenceOpen) {
+    return 'sm:right-[calc(var(--call-rail-w)_+_var(--presence-w))]';
+  }
+  if (railVisible) return 'sm:right-[var(--call-rail-w)]';
+  if (presenceOpen) return 'sm:right-[var(--presence-w)]';
+  return '';
 }
 
 /**
- * The inline CSS variable the rail-width class reads. Paired with
- * {@link roomCanvasRightClass}: the class reserves the space, this names how
- * much. Absent when the rail is hidden, so nothing is reserved for nothing.
+ * The inline CSS variables the rail-width and panel-width classes read.
+ * Paired with {@link roomCanvasRightClass}: the class reserves the space,
+ * this names how much. A variable is set only while its furniture is open,
+ * so nothing is reserved for nothing.
  */
-export function roomCanvasRailStyle(railVisible: boolean): React.CSSProperties {
-  return railVisible
-    ? ({ ['--call-rail-w' as string]: CALL_RAIL_WIDTH } as React.CSSProperties)
-    : {};
+export function roomCanvasRailStyle(
+  railVisible: boolean,
+  presenceOpen: boolean = false,
+): React.CSSProperties {
+  const style: Record<string, string> = {};
+  if (railVisible) style['--call-rail-w'] = CALL_RAIL_WIDTH;
+  if (presenceOpen) style['--presence-w'] = PRESENCE_PANEL_WIDTH;
+  return style as React.CSSProperties;
 }
 
 export function roomCanvasTopClass(guestHost: boolean): string {
@@ -1385,7 +1417,16 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
   }
 
   return (
-    <div className="room-shell">
+    <div
+      className="room-shell"
+      /*
+       * Set here, not only on the canvas div below, so the board notices
+       * (BOARD_NOTICE_CLASS) -- fixed siblings of the canvas, not its
+       * descendants -- inherit the same --call-rail-w/--presence-w variables
+       * and centre within the board area instead of the full window.
+       */
+      style={roomCanvasRailStyle(callRailVisible, !presenceCollapsed)}
+    >
       <RoomTopNav
         displayName={userName}
         onDisplayNameChange={handleJoin}
@@ -1415,6 +1456,9 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
               onRename={handleRenameRoom}
               onOpenLibrary={handleOpenLibrary}
               onDownloadPdf={() => { void handleDownloadPdf(); }}
+              isGuiding={isGuiding}
+              onToggleGuide={handleToggleGuide}
+              onClearBoard={() => setClearModalOpen(true)}
             />
             {shouldShowStartCall({
               isHost: isLocalHost,
@@ -1432,8 +1476,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
       />
       <div
         ref={canvasAreaRef}
-        className={`flex flex-col ${ROOM_CANVAS_CLASS} ${roomCanvasTopClass(guestHost)} ${roomCanvasRightClass(callRailVisible)}`}
-        style={roomCanvasRailStyle(callRailVisible)}
+        className={`flex flex-col ${ROOM_CANVAS_CLASS} ${roomCanvasTopClass(guestHost)} ${roomCanvasRightClass(callRailVisible, !presenceCollapsed)}`}
         data-testid="whiteboard-canvas-area"
         /*
          * Caught here, in the capture phase, so a PDF never reaches Excalidraw
@@ -1492,6 +1535,10 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
             pageState={pageState}
             onTurnPage={turnPage}
             isRoomOwner={isRoomOwner}
+            boardNoticeCount={
+              [clearFailed, pdfExporting || pdfExportError !== null, pdfDragHint, pdfStatus !== null]
+                .filter(Boolean).length
+            }
             onDocumentFile={handlePickedDocumentFile}
           />
         </div>
@@ -1568,6 +1615,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         <div
           role="status"
           data-testid="whiteboard-clear-failed"
+          data-board-notice="true"
           className={BOARD_NOTICE_CLASS}
         >
           Couldn&rsquo;t clear this board. Check your connection and try again.
@@ -1577,6 +1625,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         <div
           role="status"
           data-testid="whiteboard-pdf-export-notice"
+          data-board-notice="true"
           className={BOARD_NOTICE_CLASS}
         >
           {pdfExporting ? 'Building the PDF…' : pdfExportError}
@@ -1593,6 +1642,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         <div
           role="status"
           data-testid="whiteboard-pdf-drop-hint"
+          data-board-notice="true"
           className={BOARD_NOTICE_CLASS}
         >
           Drop to add this PDF
@@ -1602,6 +1652,7 @@ export function RoomContent({ roomId, request = ajaxFetch }: { roomId: string; r
         <div
           role="status"
           data-testid="whiteboard-pdf-import-notice"
+          data-board-notice="true"
           className={`${BOARD_NOTICE_CLASS} flex items-center gap-3`}
         >
           <span>{pdfStatus.kind === 'progress' ? pdfStatus.message : pdfStatus.text}</span>

@@ -8,6 +8,7 @@ vi.mock('next/navigation', () => ({
 import type { WhiteboardUser } from '@/types/whiteboard';
 import type { AjaxFetch } from '@/lib/whiteboard/teacherRooms';
 import { CALL_RAIL_WIDTH } from '@/lib/av/callRail';
+import { PRESENCE_PANEL_WIDTH } from '@/components/whiteboard/PresencePanel';
 
 import WhiteboardRoomPage, {
   ROOM_CANVAS_CLASS,
@@ -163,6 +164,30 @@ describe('room canvas width', () => {
 
   it('gives the width back when the rail is hidden or there is no call', () => {
     expect(roomCanvasRightClass(false)).toBe('');
+  });
+
+  it('also ends where the presence panel begins, docked beside the board from 640px up', () => {
+    /*
+     * The panel used to be `fixed` over the board like the roster used to be
+     * over the rail -- floating on top of Excalidraw's toolbar rather than
+     * making room for it. This is the same reservation shape as the call
+     * rail: a static class reading a variable set inline, so the width has
+     * one source (PRESENCE_PANEL_WIDTH) and the class survives Tailwind's
+     * purge scan.
+     */
+    expect(roomCanvasRightClass(false, true)).toBe('sm:right-[var(--presence-w)]');
+  });
+
+  it('reserves both the rail and the panel when both are open', () => {
+    expect(roomCanvasRightClass(true, true)).toBe(
+      'sm:right-[calc(var(--call-rail-w)_+_var(--presence-w))]',
+    );
+  });
+
+  it('sets the panel width variable on the canvas only while the panel is docked open', () => {
+    const open = roomCanvasRailStyle(false, true) as Record<string, string>;
+    expect(open['--presence-w']).toBe(PRESENCE_PANEL_WIDTH);
+    expect(roomCanvasRailStyle(false, false)).toEqual({});
   });
 });
 

@@ -7,12 +7,16 @@ import { dragDeltaToScene, nudgeDeltaForKey } from '@/lib/documents/pagedDocumen
 /**
  * The rectangles the pager must never overlap (spec §6.3 "Responsive"): the
  * room's board tabs, Excalidraw's own toolbar, its undo button (part of the
- * bottom bar), its help button and the room's board notices (all `role`d
+ * bottom bar), its help button, the room's board notices (all `role`d
  * `status`, `RoomClient.tsx`'s `BOARD_NOTICE_CLASS`, plus this editor's own
- * upload-status panel, which carries the same role).
+ * upload-status panel, which carries the same role) and the docked presence
+ * panel. The panel is belt-and-braces: RoomClient narrows the board area
+ * itself while the panel is docked open, so `documentRect` (derived from
+ * Excalidraw's own, now-narrower, viewport geometry) should already stay
+ * clear of it. This entry catches whatever that narrowing does not.
  */
 export const PAGER_OBSTACLE_SELECTOR =
-  '[data-testid="board-tabs"], .App-toolbar, [data-testid="button-undo"], .help-icon, [role="status"]';
+  '[data-testid="board-tabs"], .App-toolbar, [data-testid="button-undo"], .help-icon, [role="status"], [data-testid="whiteboard-presence-panel"]';
 
 function readObstacles(excludeEl: HTMLElement | null): Rect[] {
   if (typeof document === 'undefined') return [];

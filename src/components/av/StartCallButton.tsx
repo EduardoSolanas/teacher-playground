@@ -29,7 +29,7 @@ export default function StartCallButton({
       data-testid="av-start-call"
       aria-label={label}
       onClick={onStart}
-      className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-full border border-[var(--blue)]/50 bg-[var(--blue)]/25 px-3 text-xs font-semibold text-slate-100 shadow-sm transition-colors duration-150 hover:border-[var(--blue)] hover:bg-[var(--blue)]/40 sm:min-h-8"
+      className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-full border border-[var(--blue)]/50 bg-[var(--blue)]/25 px-3 text-xs font-semibold text-slate-100 shadow-sm transition-colors duration-150 hover:border-[var(--blue)] hover:bg-[var(--blue)]/40 sm:min-h-8 sm:min-w-0"
     >
       <svg
         className="h-3.5 w-3.5 shrink-0 text-slate-100"

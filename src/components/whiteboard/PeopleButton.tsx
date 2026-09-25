@@ -45,7 +45,7 @@ export default function PeopleButton({
       aria-expanded={expanded}
       aria-label={labelParts.join(', ')}
       title={label}
-      className="relative inline-flex items-center gap-1.5 rounded-full border border-slate-600 bg-slate-800 py-1 pl-1 pr-2.5 text-slate-100 transition-colors hover:border-slate-400 hover:bg-slate-700"
+      className="relative inline-flex min-h-11 items-center gap-1.5 rounded-full border border-slate-600 bg-slate-800 py-1 pl-1 pr-2.5 text-slate-100 transition-colors hover:border-slate-400 hover:bg-slate-700 sm:min-h-0"
     >
       <span className="flex -space-x-1.5">
         {shown.map((user) => (

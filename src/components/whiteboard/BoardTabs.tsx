@@ -195,7 +195,7 @@ export default function BoardTabs({
               }}
               onBlur={commitRename}
               style={{ width: `${Math.max(8, renameDraft.length + 3)}ch`, outline: 'none', boxShadow: 'none' }}
-              className="relative z-30 shrink-0 rounded-t-lg border-t border-x border-slate-200 bg-white px-2.5 py-1 text-[0.75rem] font-medium text-slate-800 caret-slate-800 outline-none focus:outline-none focus:ring-0 selection:bg-slate-200 selection:text-slate-800"
+              className="relative z-30 min-h-11 shrink-0 rounded-t-lg border-t border-x border-slate-200 bg-white px-2.5 py-1 text-[0.75rem] font-medium text-slate-800 caret-slate-800 outline-none focus:outline-none focus:ring-0 selection:bg-slate-200 selection:text-slate-800 sm:min-h-0"
             />
           ) : (
             <div
@@ -220,7 +220,7 @@ export default function BoardTabs({
                 onKeyDown={(event) => {
                   if (event.key === 'F2') startRename(board.id, board.name);
                 }}
-                className="flex min-w-0 items-center rounded-t-lg px-2.5 py-1 text-[0.75rem] font-medium"
+                className="flex min-h-11 min-w-0 items-center rounded-t-lg px-2.5 py-1 text-[0.75rem] font-medium sm:min-h-0"
               >
                 <span className="truncate">{board.name}</span>
               </button>
@@ -231,7 +231,7 @@ export default function BoardTabs({
                   aria-label={`Rename ${board.name}`}
                   title={`Rename ${board.name}`}
                   onClick={() => startRename(board.id, board.name)}
-                  className="mr-1.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:text-slate-600"
+                  className="mr-1.5 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:text-slate-600 sm:h-4 sm:w-4"
                 >
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                     <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
@@ -248,7 +248,7 @@ export default function BoardTabs({
         aria-label="Add board"
         title="Add board"
         onClick={handleAdd}
-        className="relative z-30 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/10 hover:text-slate-700"
+        className="relative z-30 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800/10 hover:text-slate-700 sm:h-6 sm:w-6"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
           <path d="M12 5v14" />
@@ -263,7 +263,7 @@ export default function BoardTabs({
           title="Delete this board"
           disabled={deleting}
           onClick={() => { setConfirmingDelete(true); }}
-          className="relative z-30 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+          className="relative z-30 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50 sm:h-6 sm:w-6"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M4 7h16" />

@@ -27,6 +27,10 @@ import {
  * Everything behind it is the owner's, so somebody who may not manage the room
  * sees the name and no menu at all rather than a menu that refuses them.
  */
+
+/** Where Tailwind's `sm:` starts; the phone-only items are shown below it. */
+const PHONE_ONLY_MEDIA = '(max-width: 639px)';
+
 export default function RoomTitleMenu({
   name,
   roomId,
@@ -36,6 +40,9 @@ export default function RoomTitleMenu({
   onRename,
   onOpenLibrary,
   onDownloadPdf,
+  isGuiding,
+  onToggleGuide,
+  onClearBoard,
   request = ajaxFetch,
 }: {
   readonly name: string | null;
@@ -49,6 +56,15 @@ export default function RoomTitleMenu({
   readonly onOpenLibrary: () => void;
   /** Writes the board being looked at to a PDF file (spec/PDF_EXPORT_SPEC.md). */
   readonly onDownloadPdf: () => void;
+  /**
+   * Whether the room is currently guiding the class -- the same state the
+   * board footer's toggle reads, so the label agrees wherever it is shown.
+   */
+  readonly isGuiding: boolean;
+  /** The board footer's own guide toggle; below sm: this is its only home. */
+  readonly onToggleGuide: () => void;
+  /** Opens the same confirmation the board footer's Clear button opens. */
+  readonly onClearBoard: () => void;
   /** Injected so tests can drive the share panel with real responses. */
   readonly request?: AjaxFetch;
 }) {
@@ -141,8 +157,18 @@ export default function RoomTitleMenu({
     // While the share panel is showing there are no menu items to walk; its
     // own buttons keep their ordinary tab order.
     if (!showMenuItems) return;
+    // The phone-only pair (`data-phone-only`) is shown below sm: and is CSS
+    // `display: none` above it. This component walks the DOM itself for
+    // arrow/Home/End, so it has to follow the same breakpoint by hand: on a
+    // phone the pair is walked like every other item (a keyboard user there
+    // must reach it), and above sm: it is left out, because focusing a hidden
+    // button is a silent `.focus()` no-op and the cycle would get stuck.
+    const phoneWidth = typeof window.matchMedia === 'function'
+      && window.matchMedia(PHONE_ONLY_MEDIA).matches;
     const items = Array.from(
-      event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+      event.currentTarget.querySelectorAll<HTMLElement>(
+        phoneWidth ? '[role="menuitem"]' : '[role="menuitem"]:not([data-phone-only])',
+      ),
     );
     if (items.length === 0) return;
     const current = items.indexOf(document.activeElement as HTMLElement);
@@ -300,7 +326,7 @@ export default function RoomTitleMenu({
           setSeatsOutcome(null);
           setOpen(true);
         }}
-        className="flex min-w-0 items-center gap-1 rounded-md px-2 py-1 text-[0.8125rem] font-medium text-slate-200 transition-colors hover:bg-slate-700"
+        className="flex min-h-11 min-w-0 items-center gap-1 rounded-md px-2 py-1 text-[0.8125rem] font-medium text-slate-200 transition-colors hover:bg-slate-700 sm:min-h-0"
       >
         {label}
         {/* Without this the title is a word, and a word is not a control. */}
@@ -577,6 +603,50 @@ export default function RoomTitleMenu({
                   <path d="M16 3.13a4 4 0 0 1 0 7.75" />
                 </svg>
                 Room seats
+              </button>
+              {/*
+               * Below sm: the board footer that normally carries Guide class
+               * and Clear board is hidden (Excalidraw owns the bottom edge
+               * there -- see the UX-V8 comment in globals.css), so this menu
+               * is the phone's only reachable route to either control. From
+               * sm: up the footer already shows both, so these stay hidden
+               * there rather than giving each control two homes.
+               */}
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="room-menu-guide"
+                data-phone-only="true"
+                className={`${item} min-h-11 sm:hidden`}
+                onClick={() => {
+                  setOpen(false);
+                  onToggleGuide();
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="h-3.5 w-3.5 shrink-0">
+                  <path d="M3 12h18" />
+                  <path d="M12 3v18" />
+                  <circle cx="12" cy="12" r="8" />
+                </svg>
+                {isGuiding ? 'Stop guiding' : 'Guide class'}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="room-menu-clear"
+                data-phone-only="true"
+                className={`${item} min-h-11 sm:hidden`}
+                onClick={() => {
+                  setOpen(false);
+                  onClearBoard();
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="h-3.5 w-3.5 shrink-0">
+                  <path d="M3 6h18" />
+                  <path d="M8 6V4h8v2" />
+                  <path d="M19 6l-1 14H6L5 6" />
+                </svg>
+                Clear board…
               </button>
             </>
           )}
